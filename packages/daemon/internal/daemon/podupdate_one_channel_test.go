@@ -17,9 +17,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
@@ -49,6 +51,19 @@ func (r *podUpdateRig) asks() []record.UpdateAsk {
 	return asks
 }
 
+// wantAskOf holds an ask the sweep queued to the facts of the round's ask (record.UpdateAsk): the
+// rig's round over the rig's pod, the drift as the round recorded it — each image by its short
+// digest and each setting by its key, or, for a round an older daemon opened, its text as the
+// reasons — and the end at endsAt, with no text of an older daemon's sweep.
+func wantAskOf(t *testing.T, ask record.UpdateAsk, images, settings []string, reasons string, endsAt time.Time) {
+	t.Helper()
+	if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != "" || !slices.Equal(ask.Images, images) ||
+		!slices.Equal(ask.Settings, settings) || ask.Reasons != reasons || !ask.EndsAt.Equal(endsAt) {
+		t.Errorf("the ask to the %s is %+v, want round %s of pod %s, images %q, settings %q, reasons %q, ending at %s, and no text",
+			ask.Role, ask, podUpdateRound, podUpdatePod, images, settings, reasons, endsAt)
+	}
+}
+
 // prompts is how many prompts every role's connection has received, by role.
 func (r *podUpdateRig) prompts() map[claim.Role]int {
 	r.t.Helper()
@@ -62,24 +77,28 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
 // issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps,
 // the role-message lane running after each, each asked claim gets exactly one update-ask row, the
-// architect's included, each naming its own role, the round, the pod and the round's one text:
-// the reasons the round opened with and the moment it ends, its opening plus
-// pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim asked. The
-// failed claim and the claim that left the pod are asked nothing, although each records the round
-// with no publish mark. No claim is sent a prompt for the round: the machine queues no task.
+// architect's included, each naming its own role, the round, the pod and the round's one set of
+// facts: the image the round opened for by its short digest, and the moment it ends, its opening
+// plus pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim
+// asked. The failed claim and the claim that left the pod are asked nothing, although each
+// records the round with no publish mark. No claim is sent a prompt for the round: the machine
+// queues no task.
 //
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	t.Parallel()
+	// The round the failed and the departed claims already record, as this daemon opens one: its
+	// reasons and its items, which every claim that joins the round is given (roundTerms).
+	opened := []runtime.DriftItem{{Key: runtime.DriftImage, Image: podUpdateImage}}
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		readyWorker(claim.RoleArchitect),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion,
-			round: podUpdateRound, reasons: podUpdateDrift, unasked: true},
+			round: podUpdateRound, reasons: podUpdateDrift, drift: opened, unasked: true},
 		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
-			suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, left: podUpdateRound, unasked: true},
+			suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, drift: opened, left: podUpdateRound, unasked: true},
 	)
 	rig.drifts(podUpdateDrift)
 	asked := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}
@@ -101,10 +120,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
-		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
-		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
-			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the round's text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
-		}
+		wantAskOf(t, ask, []string{podUpdateDigest}, nil, "", podUpdateStart.Add(podUpdateGrace))
 	}
 	for _, role := range asked {
 		if rows[role] != 1 {
@@ -152,10 +168,11 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 }
 
 // The reviewer creates no commit and pushes nothing (its role part), so the ask a pod round sends
-// it tells it to push nothing, and asks it to commit nothing a subagent made. A role that commits
-// is still told to push its commits and what its subagents made: the implementer, and the merger,
-// which makes and pushes the merge of the base forward in merging (roles/merger.md), whose
-// unpushed merge commit the pod's replacement would lose.
+// it names no branch to push to, and its steps of background work ask it to commit nothing a
+// subagent made (texts.UpdateBackgroundStepNoCommit, texts.UpdateLateBackgroundWorkNoCommit). A
+// role that commits is still told to push its commits and what its subagents made: the
+// implementer, and the merger, which makes and pushes the merge of the base forward in merging
+// (roles/merger.md), whose unpushed merge commit the pod's replacement would lose.
 func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}
@@ -167,33 +184,34 @@ func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 	}
 	rig.clock.advance(time.Minute)
 	rig.tick()
-	told := map[claim.Role]string{}
+	// told is the record each role's row publishes (record.UpdateAsk.Record).
+	told := map[claim.Role]texts.UpdateAskRecord{}
 	for _, ask := range rig.asks() {
-		told[ask.Role] = ask.Text
+		told[ask.Role] = ask.Record(podUpdateIssue)
 	}
 	for _, role := range roles {
-		text, commits := told[role], role != claim.RoleReviewer
-		if text == "" {
+		ask, asked := told[role]
+		if !asked {
 			t.Fatalf("the %s was asked nothing, want one ask", role)
 		}
-		for _, says := range []string{"1. Push every commit that you want to keep to this issue's branch.", "Then commit and push what it made."} {
-			if strings.Contains(text, says) != commits {
-				t.Errorf("the ask to the %s holds %q: %t, want %t", role, says, !commits, commits)
-			}
+		push, background, late := claim.IssueBranch(podUpdateIssue), texts.UpdateBackgroundStep, texts.UpdateLateBackgroundWork
+		if role == claim.RoleReviewer {
+			push, background, late = "", texts.UpdateBackgroundStepNoCommit, texts.UpdateLateBackgroundWorkNoCommit
 		}
-		if says := "1. You create no commit, so you push nothing."; strings.Contains(text, says) == commits {
-			t.Errorf("the ask to the %s holds %q: %t, want %t", role, says, commits, !commits)
+		if ask.PushTo != push || ask.BackgroundWork != background || ask.LateBackgroundWork != late {
+			t.Errorf("the ask to the %s has push_to %q, background_work %q and late_background_work %q; want %q, %q and %q",
+				role, ask.PushTo, ask.BackgroundWork, ask.LateBackgroundWork, push, background, late)
 		}
 	}
 }
 
 // The round's terms are fixed when it opens (dispatch://INFRA-2981 R9, verification's
 // c-early-release terms case). A later sweep that reads other drift for the same pod writes no
-// new reasons over the open round, and the ask the sweep publishes names the reasons the round
+// new reasons over the open round, and the ask the sweep publishes names the drift the round
 // opened with: the ask a role reads and the record an operator reads name one thing for one
-// round id. The late-round notice names them too: an operator's suspension holds the round past
-// its bound while the pod still reads the later drift, and the notice names the reasons recorded
-// at the round's open, not that drift.
+// round id. The late-round notice names it too: an operator's suspension holds the round past
+// its bound while the pod still reads the later drift, and the notice names the image the round
+// opened for by its short digest, and not the disk that drifted later.
 func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -223,9 +241,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 		t.Fatalf("the sweeps enqueued %d asks, want one for each of the %d roles: %+v", len(asks), len(roles), asks)
 	}
 	for _, ask := range asks {
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace)); ask.Text != text {
-			t.Errorf("the ask to the %s says:\n%s\nwant the round's own terms:\n%s", ask.Role, ask.Text, text)
-		}
+		wantAskOf(t, ask, []string{podUpdateDigest}, nil, "", podUpdateStart.Add(podUpdateGrace))
 	}
 
 	rig.suspendByOperator(claim.RoleTester)
@@ -235,8 +251,9 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 	if len(notices) != 1 || notices[0].Update == nil {
 		t.Fatalf("at the bound %s the controller was told %+v, want one update-stalled notice", rig.clock.Now(), notices)
 	}
-	if got := notices[0].Update.Reasons; got != podUpdateDrift {
-		t.Errorf("the late-round notice names reasons %q, want the %q the round opened with", got, podUpdateDrift)
+	if got := notices[0].Update; !slices.Equal(got.Images, []string{podUpdateDigest}) || len(got.Settings) != 0 || got.Reasons != "" {
+		t.Errorf("the late-round notice names images %q, settings %q and reasons %q; want the image %s the round opened with and nothing else",
+			got.Images, got.Settings, got.Reasons, podUpdateDigest)
 	}
 }
 
@@ -308,7 +325,7 @@ func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T
 		t.Fatalf("restore the spawn of %s: %v", other, err)
 	}
 	rig.conns.Register(token, fake.NewConn())
-	rig.rt.ScriptPodDrift(token, podUpdateDrift)
+	rig.rt.ScriptPodDrift(token, driftOf(podUpdateDrift)...)
 	round := supervise.PodRound(otherPod)
 	since := len(rig.logs.String())
 

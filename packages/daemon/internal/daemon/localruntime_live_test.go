@@ -660,7 +660,9 @@ func (r *localRuntime) ProvisionBound() time.Duration { return 0 }
 func (r *localRuntime) LaunchBound() time.Duration { return 0 }
 
 // PodDrift answers nothing: a child process group shares no place fixed at its creation.
-func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
+func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]runtime.Drift, error) {
+	return nil, nil
+}
 
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {

@@ -918,24 +918,25 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 
 // toldOnceWithNews holds that issue's merger was given exactly two tasks over its whole life in
 // this test, in either order: its merging task once, as toldOnce reads it, and once the news of
-// the approved design its phase is owed, which names the command that reads version of the
-// issue's spec. The start the repair owed hands the merger work it was already on, so it carries
-// no news (record.SuperviseRequest.Entry); the reconcile's news-only start
-// (record.SuperviseRequest.News) is what tells it, and the two run in whichever order the
-// outbox's backoff gives them. The daemon's own delivery of a relaunch's record is no task and is
-// not counted (cutoverAgent.told); a news-only start that takes its place carries the record's
-// sentence in front of the news, and is counted as the news.
+// the approved design its phase is owed, a design-news record whose item names version of the
+// issue's spec by its step, its artifact and that version (newsTells). The start the repair owed
+// hands the merger work it was already on, so it carries no news (record.SuperviseRequest.Entry);
+// the reconcile's news-only start (record.SuperviseRequest.News) is what tells it, and the two run
+// in whichever order the outbox's backoff gives them. The daemon's own delivery of a relaunch's
+// record is no task and is not counted (cutoverAgent.told); a news-only start that takes its place
+// carries the relaunch note (supervise.RelaunchNote) in front of the news record, and is counted
+// as the news.
 func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
 	t.Helper()
 	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
-	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
+	read := fmt.Sprintf("spec spec-%s %d ", issue.key, version)
 	told := r.tasks(issue.merger)
 	merging, news := 0, 0
 	for _, given := range told {
 		switch {
 		case given == task:
 			merging++
-		case strings.Contains(given, read):
+		case newsTells(t, given, read):
 			news++
 		}
 	}

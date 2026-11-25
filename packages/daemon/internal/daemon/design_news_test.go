@@ -561,13 +561,13 @@ func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T
 		t.Fatalf("run the news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	for _, want := range []string{"The design gate of LEGION-600 opened", "Nothing your issue holds changed since version 4, which your phase took."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the task = %q, want it to say %q", task, want)
-		}
+	rec := oneNewsRecord(t, task)
+	if got, want := rec.gate(), "open spec "+reconcileDoc+" 5 merge=released"; got != want {
+		t.Fatalf("the task's gate = %q, want %q:\n%s", got, want, task)
 	}
-	if strings.Contains(task, "Sections:") || len(news.Openings) != 1 || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {
-		t.Fatalf("the task = %q carrying %+v, want no change list, the opening and the one item", task, news)
+	wantNewsLines(t, "items", rec.items(), []string{"spec " + reconcileDoc + " 5 taken=4 decision_blocks_only"})
+	if len(rec.named()) != 0 || len(news.Openings) != 1 || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {
+		t.Fatalf("the task = %q carrying %+v, want no change row, the opening and the one item", task, news)
 	}
 }
 
@@ -723,9 +723,12 @@ func TestAPhaseStartIntoReviewingCarriesTheNewsTheTesterNeverTook(t *testing.T) 
 				}
 				return
 			}
-			if !strings.HasPrefix(task, own+"\n\nThe approved design of LEGION-600 changed for LEGION-600, which you hold in reviewing:") ||
-				!strings.Contains(task, "version 5, since version 4, which your phase last took") {
-				t.Fatalf("the reviewer's task = %q, want its own text, a blank line, then the news the tester never took", task)
+			if !strings.HasPrefix(task, own+"\n\n"+newsKindLine+"\n") {
+				t.Fatalf("the reviewer's task = %q, want its own text, then the news record of what the tester never took", task)
+			}
+			if rec := newsRecordOf(t, task, "holder", reconcileRoot); rec.fields["phase"] != "reviewing" ||
+				strings.Join(rec.items(), "\n") != "spec "+reconcileDoc+" 5 taken=4 listed" {
+				t.Fatalf("the reviewer's news = %v in %s, want the spec since version 4 to its holder in reviewing:\n%s", rec.items(), rec.fields["phase"], task)
 			}
 			if news.Task != own || machine.Claim().Pending.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 				t.Fatalf("the reviewer's task carries %+v, want its own text and the spec from 4 to 5", news)
@@ -754,8 +757,9 @@ func TestAHeldRestartsTaskCarriesTheNews(t *testing.T) {
 		t.Fatalf("run the held restart: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	if !strings.HasPrefix(task, retry+"\n\n") || !strings.Contains(task, "version 5, since version 4, which your phase last took") {
-		t.Fatalf("the restart's task = %q, want its own text and the news after it", task)
+	if !strings.HasPrefix(task, retry+"\n\n"+newsKindLine+"\n") ||
+		strings.Join(newsItemsIn(t, task), "\n") != "spec "+reconcileDoc+" 5 taken=4 listed" {
+		t.Fatalf("the restart's task = %q, want its own text and the news record after it", task)
 	}
 	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 		t.Fatalf("the restart's task carries %+v, want the spec from 4 to 5", news)
@@ -798,8 +802,9 @@ func TestANewsOnlyStartForAMemberWhosePhaseMovedFinishesWithoutActing(t *testing
 
 // A member in accepting is held by the architect that owns it, here the tree's root architect: the
 // reconcile queues the news-only start on that architect's claim, and the start hands it the holder
-// form of the member's news — the change list and the accepting answer, sign-off or a move back —
-// and no summary of the tree, since the root architect took the approved version itself.
+// form of the member's news — the member in accepting and the pair it is owed, whose answer, a
+// sign-off or a move back, the architect's prompt gives — and no summary of the tree, since the
+// root architect took the approved version itself.
 func TestANewsOnlyStartForAnAcceptingMemberReachesItsOwningArchitectInTheHolderForm(t *testing.T) {
 	t.Parallel()
 	r := newNewsReconcileRig(t)
@@ -822,13 +827,12 @@ func TestANewsOnlyStartForAnAcceptingMemberReachesItsOwningArchitectInTheHolderF
 		t.Fatalf("run the architect's news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	for _, want := range []string{"changed for LEGION-601, which you hold in accepting:", "sign LEGION-601 off with `sign_off`",
-		"move it back to planning, implementing or testing"} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the architect's task = %q, want the holder form to say %q", task, want)
-		}
+	rec := oneNewsRecord(t, task)
+	if rec.fields["issue"] != reconcileChild || rec.fields["audience"] != "holder" || rec.fields["phase"] != "accepting" {
+		t.Fatalf("the architect's task = %q, want the holder form of %s in accepting", task, reconcileChild)
 	}
-	if strings.Contains(task, "Each issue of the tree") {
+	wantNewsLines(t, "items", rec.items(), []string{"spec " + reconcileDoc + " 5 taken=4 listed"})
+	if len(newsRecords(t, task)) != 1 || strings.Contains(task, "root_architect") {
 		t.Fatalf("the architect's task = %q, want no summary of the tree: the architect took the approved version", task)
 	}
 	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {

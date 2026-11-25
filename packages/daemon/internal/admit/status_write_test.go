@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -125,7 +124,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if len(told) != wantTold {
 					t.Fatalf("notices %+v after %s, want %d status-reasserted", told, tc.name, wantTold)
 				}
-				if wantTold == 1 && (told[0].Role != claim.RoleArchitect || !strings.Contains(told[0].Reason, tc.actor) || !strings.Contains(told[0].Reason, tc.status)) {
+				if wantTold == 1 && (told[0].Issue != "LEGION-1" || told[0].Session != tc.actor || told[0].Wrote != tc.status || told[0].Status != "retro" || told[0].Reason != "") {
 					t.Fatalf("notice %+v, want it for the architect, naming %s and the %s it wrote", told[0], tc.actor, tc.status)
 				}
 			}

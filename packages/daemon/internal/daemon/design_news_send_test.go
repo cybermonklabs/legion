@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const (
@@ -157,7 +159,7 @@ func newsItem(issue string, audience record.DesignAudience, step record.DesignSt
 // change set is not recorded yet, each from the text and from the news the delivery goes on
 // carrying, and a send that drops one queues the reconcile of its tree's news once, which weighs
 // again what the tree is owed now. A phase start left with no news is sent as its own text; a task
-// queued for its news alone is left with nothing to say. And the gate sentence is said of the gate
+// queued for its news alone is left with nothing to say. And the gate's fields are said of the gate
 // at the send: a task composed while the gate stood open and sent after a later version closed it
 // says closed.
 func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
@@ -171,14 +173,15 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 
 	task, carried := r.send(newsRoot, claim.RoleImplementer, implementer)
 
-	if !strings.HasPrefix(task, ownText+"\n\nThe design gate of LEGION-500 opened: a person approved version 5 of its spec document (artifact-spec)") {
-		t.Fatalf("task = %q, want the start's own text, a blank line, then the opened gate sentence", task)
+	if !strings.HasPrefix(task, ownText+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("task = %q, want the start's own text, then the news record", task)
 	}
-	for _, want := range []string{"version 5, since version 3, which your phase last took", `"Design" changed`, `"r2" changed`} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("task = %q, want the standing spec item rendered with its recorded change set (%q)", task, want)
-		}
+	rec := oneNewsRecord(t, task)
+	if got, want := rec.gate(), "open spec artifact-spec 5 merge=released"; got != want {
+		t.Fatalf("the task's gate = %q, want %q:\n%s", got, want, task)
 	}
+	wantNewsLines(t, "items", rec.items(), []string{"spec artifact-spec 5 taken=3 listed"})
+	wantNewsLines(t, "changes", rec.named(), []string{"0 Design changed", "0 requirement r2 changed"})
 	if strings.Contains(task, "artifact-checks") {
 		t.Fatalf("task = %q, want no word of the Verification document item the gate has approved past", task)
 	}
@@ -216,12 +219,14 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 
 	task, carried = r.send(newsRoot, claim.RoleImplementer, implementer)
 
-	if !strings.HasPrefix(task, ownText+"\n\nThe design gate of LEGION-500 closed: version 6 of its spec document (artifact-spec) is with its reviewer") {
-		t.Fatalf("task = %q, want the closed gate sentence, said of the gate at the send", task)
+	if !strings.HasPrefix(task, ownText+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("task = %q, want the start's own text, then the news record", task)
 	}
-	if strings.Contains(task, "opened") || !strings.Contains(task, "version 5, since version 3") {
-		t.Fatalf("task = %q, want no opened sentence and the standing spec item still told", task)
+	rec = oneNewsRecord(t, task)
+	if got, want := rec.gate(), "closed spec artifact-spec 6 merge=held"; got != want {
+		t.Fatalf("the task's gate = %q, want %q, said of the gate at the send:\n%s", got, want, task)
 	}
+	wantNewsLines(t, "items", rec.items(), []string{"spec artifact-spec 5 taken=3 listed"})
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{standing}) {
 		t.Fatalf("the task still carries %+v, want the standing spec item", carried)
 	}
@@ -274,15 +279,11 @@ func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropp
 		t.Fatalf("finish the tree's reconcile: %v", err)
 	}
 	task, carried := r.send(newsTested, claim.RoleTester, tester)
-	for _, want := range []string{testerText + "\n\n", "version 5, since a version the daemon could not read",
-		`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the tester's task with its history recorded unread = %q, want it to say %q", task, want)
-		}
+	if !strings.HasPrefix(task, testerText+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("the tester's task with its history recorded unread = %q, want its own text, then the news record", task)
 	}
-	if strings.Contains(task, "first version a person approved") {
-		t.Fatalf("the tester's task = %q, want no first approval: the history was not read", task)
-	}
+	wantNewsLines(t, "items", oneNewsRecord(t, task).items(), []string{`spec artifact-spec 5 taken=null no_pair ` +
+		`reason="Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"`})
 	if carried == nil || len(carried.Items) != 1 || carried.Items[0].From != nil || carried.Items[0].HistoryUnread == nil ||
 		!strings.Contains(carried.Items[0].HistoryUnread.Reason, "502 BAD_GATEWAY") {
 		t.Fatalf("the tester's task still carries %+v, want the item with no earlier version and the unread history it takes on", carried)
@@ -309,16 +310,16 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 		Generation: 1, TreeGeneration: 1,
 		HistoryUnread: &record.DeliveryHistoryUnread{Reason: reason, ReadAt: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}}
 	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{attached}}
-	unreadWords := "The version your phase last took could not be read: " + strconv.Quote(reason) + "."
+	unread := `spec artifact-spec 5 taken=null no_pair reason=` + strconv.Quote(reason)
 
 	// A reconcile of the tree is queued, and the record holds no unread row: a start would attach
 	// nothing, but the delivery carries the item as it was attached.
 	r.inTx(func(tx pgx.Tx) error { return record.QueueDesignNews(r.ctx, r.records, tx, newsRoot, time.Now()) })
 	task, carried := r.send(newsTested, claim.RoleTester, tester)
-	if !strings.HasPrefix(task, testerText+"\n\n") || !strings.Contains(task, "version 5, since a version the daemon could not read") ||
-		!strings.Contains(task, unreadWords) {
-		t.Fatalf("the re-sent task with a reconcile pending = %q, want the unread history it carries, with its reason", task)
+	if !strings.HasPrefix(task, testerText+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("the re-sent task with a reconcile pending = %q, want its own text, then the news record", task)
 	}
+	wantNewsLines(t, "items with a reconcile pending", oneNewsRecord(t, task).items(), []string{unread})
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{attached}) {
 		t.Fatalf("the re-sent task carries %+v, want the item as attached", carried)
 	}
@@ -328,9 +329,7 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 		return r.records.FillTold(r.ctx, tx, newsTested, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 4}, time.Now())
 	})
 	task, carried = r.send(newsTested, claim.RoleTester, tester)
-	if !strings.Contains(task, unreadWords) || strings.Contains(task, "since version 4") {
-		t.Fatalf("the re-sent task with the pair from version 4 not recorded = %q, want the unread history it carries", task)
-	}
+	wantNewsLines(t, "items with the pair from version 4 not recorded", oneNewsRecord(t, task).items(), []string{unread})
 	rekeyed := attached
 	rekeyed.From = new(4)
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{rekeyed}) {
@@ -344,10 +343,8 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 			Sections: []record.SectionChange{{Heading: "Rollout", Change: "added"}}, ReadAt: time.Now()})
 	})
 	task, carried = r.send(newsTested, claim.RoleTester, *carried)
-	if !strings.Contains(task, "version 5, since version 4, which your phase last took") || !strings.Contains(task, `"Rollout" added`) ||
-		strings.Contains(task, "could not be read") {
-		t.Fatalf("the re-sent task with the pair from version 4 recorded = %q, want that pair told and no word of the unread history", task)
-	}
+	wantNewsLines(t, "items with the pair from version 4 recorded", oneNewsRecord(t, task).items(), []string{"spec artifact-spec 5 taken=4 listed"})
+	wantNewsLines(t, "changes with the pair from version 4 recorded", oneNewsRecord(t, task).named(), []string{"0 Rollout added"})
 	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{newsItem(newsTested, record.AudienceHolder, record.DesignStepSpec, "artifact-spec", 4, 5)}) {
 		t.Fatalf("the re-sent task carries %+v, want the item from version 4 with no unread history", carried)
 	}
@@ -366,19 +363,19 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 
 	task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, summary)
 
-	for _, want := range []string{
-		ownText + "\n\nA person approved a new version of the design of LEGION-500. What changed",
-		"version 5, since version 3, which you last took",
-		"- LEGION-500, in implementing: owed version 5 of the spec document, since version 3, which its phase last took; " +
-			"the next start of its implementer carries it.",
-		"- LEGION-501, in reviewing: told nothing: only the root's checks changed",
-		"- LEGION-502, in testing: owed news of the approved design; the next start of its tester carries it.",
-		"- LEGION-503, in admitted: told nothing: it has not started",
-	} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("summary = %q, want it to say %q", task, want)
-		}
+	if !strings.HasPrefix(task, ownText+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("summary = %q, want its own text, then the news record", task)
 	}
+	rec := newsRecordOf(t, task, "root_architect", newsRoot)
+	wantNewsLines(t, "summary's items", rec.items(), []string{"spec artifact-spec 5 taken=3 yours=true listed"})
+	wantNewsLines(t, "summary's members", rec.members(), []string{
+		"LEGION-500 implementing told=at_next_start why= holder=implementer architect_of=",
+		"LEGION-501 reviewing told=nothing why=root_checks_only holder= architect_of=",
+		"LEGION-502 testing told=at_next_start why= holder=tester architect_of=",
+		"LEGION-503 admitted told=nothing why=not_started holder= architect_of=",
+	})
+	// The tester's change set is not recorded, so it is owed news no item names yet.
+	wantNewsLines(t, "summary's owed", rec.owed(), []string{"LEGION-500: spec artifact-spec 5 taken=3 yours=true listed"})
 	if carried == nil || len(carried.Items) != 1 {
 		t.Fatalf("the summary still carries %+v, want its one standing item", carried)
 	}
@@ -400,8 +397,9 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 	})
 
 	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if want := "- LEGION-502, in testing: told nothing: its status takes it out of the workflow."; !strings.Contains(task, want) {
-		t.Fatalf("summary = %q, want it to say %q", task, want)
+	if got, want := newsRecordOf(t, task, "root_architect", newsRoot).member(newsTested),
+		"LEGION-502 testing told=nothing why=out_of_workflow holder= architect_of="; got != want {
+		t.Fatalf("the summary's member %s = %q, want %q:\n%s", newsTested, got, want, task)
 	}
 }
 
@@ -428,43 +426,43 @@ func TestTheRootArchitectsSummaryNamesAnUnchangedMemberAsToldNothingAndOneOwedTh
 }
 
 // summaryOfAMemberOwedNoWork records changes, a pair from version 4 to 5 that changes nothing of
-// the work (record.DesignChanges.WorkUnchanged), and reads the tester's line of the root
-// architect's summary twice: owed no opening, it is told nothing in words true of either such pair;
-// owed the opening, it is owed the version and its next start carries it, and the summary names
-// the pair with no change list, empty or not.
+// the work (record.DesignChanges.WorkUnchanged), and reads the tester's row of the root
+// architect's summary twice: owed no opening, it is told nothing, its work unchanged, which is
+// true of either such pair; owed the opening, it is owed the version and its next start carries
+// it, and the summary names the pair as changing nothing of the work, with no change row.
 func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 	t.Helper()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.PutDesignChanges(r.ctx, tx, changes)
 	})
-	const tested = "- LEGION-502, in testing: "
-	line := func(task string) string {
-		t.Helper()
-		for _, line := range strings.Split(task, "\n") {
-			if strings.HasPrefix(line, tested) {
-				return line
-			}
-		}
-		t.Fatalf("summary = %q, want a line for LEGION-502", task)
-		return ""
-	}
 
 	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from decision blocks."; got != want {
-		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
+	rec := newsRecordOf(t, task, "root_architect", newsRoot)
+	if got, want := rec.member(newsTested), "LEGION-502 testing told=nothing why=work_unchanged holder= architect_of="; got != want {
+		t.Fatalf("the tester's row, owed no opening = %q, want %q", got, want)
 	}
 
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.SettleOpening(r.ctx, tx, newsTested, record.AudienceHolder, true)
 	})
 	task, _ = r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if got, want := line(task), tested+"owed version 5 of the spec document, since version 4, which its phase last took; "+
-		"the next start of its tester carries it."; got != want {
-		t.Fatalf("the tester's line, owed the opening = %q, want %q", got, want)
+	rec = newsRecordOf(t, task, "root_architect", newsRoot)
+	if got, want := rec.member(newsTested), "LEGION-502 testing told=at_next_start why= holder=tester architect_of="; got != want {
+		t.Fatalf("the tester's row, owed the opening = %q, want %q", got, want)
 	}
-	if pair := "- The spec document (artifact-spec): version 5, since version 4. "; !strings.Contains(task, pair) || strings.Contains(task, "Dispatch named no") {
-		t.Fatalf("summary = %q, want the pair from version 4 named as %q with no change list", task, pair)
+	unchanged := texts.NewsChangesDecisionBlocksOnly
+	if changes.Unchanged {
+		unchanged = texts.NewsChangesSameText
+	}
+	pair := "spec artifact-spec 5 taken=4 yours=false " + unchanged
+	if owed := rec.owed(); !slices.Contains(owed, "LEGION-502: "+pair) {
+		t.Fatalf("the summary's owed rows = %q, want the tester owed the pair from version 4, %s", owed, pair)
+	}
+	for _, named := range rec.named() {
+		if !strings.HasPrefix(named, "0 ") {
+			t.Fatalf("the summary names a change of the pair from version 4, which changed nothing of the work: %s", named)
+		}
 	}
 }
 
@@ -485,24 +483,14 @@ func TestTheRootArchitectsSummarySentAfterTheGateClosedAgainTellsOwedMembersNoth
 
 	task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
 
-	const nothingYet = "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves " +
-		"the version now with its reviewer."
-	for _, want := range []string{
-		"version 5, since version 3, which you last took",
-		"- LEGION-500, in implementing: " + nothingYet,
-		"- LEGION-502, in testing: " + nothingYet,
-		"- LEGION-501, in reviewing: told nothing: only the root's checks changed",
-		"- LEGION-503, in admitted: told nothing: it has not started",
-	} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("summary = %q, want it to say %q", task, want)
-		}
-	}
-	for _, never := range []string{"the next start of", "a task tells"} {
-		if strings.Contains(task, never) {
-			t.Fatalf("summary = %q, want no member said to be told by %q while the gate is closed", task, never)
-		}
-	}
+	rec := newsRecordOf(t, task, "root_architect", newsRoot)
+	wantNewsLines(t, "summary's items", rec.items(), []string{"spec artifact-spec 5 taken=3 yours=true listed"})
+	wantNewsLines(t, "summary's members", rec.members(), []string{
+		"LEGION-500 implementing told=not_yet why=gate_closed holder= architect_of=",
+		"LEGION-501 reviewing told=nothing why=root_checks_only holder= architect_of=",
+		"LEGION-502 testing told=not_yet why=gate_closed holder= architect_of=",
+		"LEGION-503 admitted told=nothing why=not_started holder= architect_of=",
+	})
 	if carried == nil || len(carried.Items) != 1 {
 		t.Fatalf("the summary still carries %+v, want its one standing item", carried)
 	}

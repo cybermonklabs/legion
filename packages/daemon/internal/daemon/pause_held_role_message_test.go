@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // R4 of dispatch://INFRA-3759: a resume launches each session the pause held something for,
@@ -110,14 +111,24 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 
 // The boundary of the rule above: a role that an idle release took before the pause was not
 // stopped by the pause, and main's rule for a role message to a released role still holds for it
-// (outbox.roleMessage, cybermonklabs/legion#4088): the message the pause held finishes undelivered
-// once the resume lets its row run, and launches nothing.
+// (outbox.roleMessage, cybermonklabs/legion#4088), which since dispatch://INFRA-3686 is the rule
+// of a `low` message (a `med` one is published, and the listener's answer wakes the role): the
+// low message the pause held finishes undelivered once the resume lets its row run, and launches
+// nothing. The message is a CI settlement of an issue in testing, `low` to the implementer.
+//
+// The role was released before the pause, so without the pause the message would have reached
+// no session either, and a launch at the resume would wake a session for nothing. In the sixth
+// test round of dispatch://INFRA-3686 the tester read R5 ("A project's resume still launches each
+// reader it held a `low` text for") as asking for that launch, and wrote a red test that wanted
+// the resume to launch such a role. The issue's architect ruled, in the seventh implementing
+// round, that main's #4088 rule stands here and that the red test is deleted. So this change keeps
+// main's behaviour for a `low` role message held for a role released before the pause.
 func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t *testing.T) {
 	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
-	r.seed(r.root(issue, phase.Implementing), r.released(issue, claim.RoleImplementer))
+	r.seed(r.root(issue, phase.Testing), r.released(issue, claim.RoleImplementer))
 	if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
 		values ($1, $2, 1, 'implementer', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("record a release of %s's pod: %v", issue, err)
@@ -125,7 +136,16 @@ func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t 
 	r.boot()
 
 	r.pauseProject()
-	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: "The checks of your head settled."})
+	urgency := texts.UrgencyOf(texts.CISettled, claim.RoleImplementer, texts.Variant{Phase: phase.Testing})
+	if urgency != texts.Low {
+		t.Fatalf("a CI settlement of an issue in testing goes to the implementer at %q, want low: this case proves nothing", urgency)
+	}
+	settled, err := record.NewRoleMessage(string(worker), texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: issue},
+		PullRequest: texts.PullRequestRef(liveRepo, 42), Head: "c0de", Phase: phase.Testing, Passed: 3, ListPassed: texts.ListPassed(liveRepo, 42)}, urgency)
+	if err != nil {
+		t.Fatalf("build the CI settlement: %v", err)
+	}
+	message := r.enqueue(issue, settled)
 	time.Sleep(time.Second)
 	if n := r.count(`select count(*) from outbox where id = $1`, message); n != 1 {
 		t.Fatalf("the role message's row is gone while the project is paused, want it held")

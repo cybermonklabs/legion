@@ -61,7 +61,7 @@ func unlabelledTodo(key string) intake.DispatchIssue {
 // so an edit burst is one wake even though the outbox publishes whatever is due at once.
 func TestATodoIssueNotHandedToLegionWakesTheControllerWhileASlotIsFree(t *testing.T) {
 	todo := func(issue string) []effect {
-		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.TodoNotice}}}
+		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.TodoNotice, Issue: issue}}}
 	}
 	t.Run("no controller registered", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -105,7 +105,7 @@ func TestATodoIssueNotHandedToLegionWakesTheControllerWhileASlotIsFree(t *testin
 // nothing, and only the controller's turn rechecks the claim. It is also the turn that posts the
 // day's report on a day nothing else wakes the controller.
 func TestTheControllerTickWakesARegisteredControllerWhateverTheSlots(t *testing.T) {
-	tickNotice := []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice}}}
+	tickNotice := []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject}}}
 	t.Run("no controller registered", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -156,8 +156,8 @@ func TestTheTickAloneCarriesTheOpenCapabilities(t *testing.T) {
 		apply(t, pool, admission, "todo-1", unlabelledTodo("LEGION-1"), engineStub{})
 		tick(t, pool, admission, "tick-1")
 		assertControllerNotices(t, pool, []effect{
-			{kind: record.OutboxKindControllerNotice, issue: "LEGION-1", payload: record.ControllerNotice{Kind: record.TodoNotice}},
-			{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, OpenCapabilities: []string{"secrets", "resource-limits"}}},
+			{kind: record.OutboxKindControllerNotice, issue: "LEGION-1", payload: record.ControllerNotice{Kind: record.TodoNotice, Issue: "LEGION-1"}},
+			{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject, OpenCapabilities: []string{"secrets", "resource-limits"}}},
 		})
 	})
 	t.Run("no gap, and no function registered", func(t *testing.T) {
@@ -170,7 +170,7 @@ func TestTheTickAloneCarriesTheOpenCapabilities(t *testing.T) {
 				}
 				registerController(t, pool)
 				tick(t, pool, admission, "tick-1")
-				assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice}}})
+				assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject}}})
 			})
 		}
 	})
@@ -207,8 +207,8 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 		// (TestTheTickNoticeCarriesTheHeldIssues), while the waiting root keeps its place in the
 		// line and takes a blocked row alone.
 		assertControllerNotices(t, pool, []effect{
-			{kind: record.OutboxKindControllerNotice, issue: "LEGION-1", payload: record.ControllerNotice{Kind: record.TodoNotice}},
-			{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Blocked: []record.BlockedIssue{
+			{kind: record.OutboxKindControllerNotice, issue: "LEGION-1", payload: record.ControllerNotice{Kind: record.TodoNotice, Issue: "LEGION-1"}},
+			{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject, Blocked: []record.BlockedIssue{
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-300"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-301"}},
 			}, Held: []record.HeldIssue{
@@ -227,7 +227,7 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 		apply(t, pool, admission, "phase-done", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "LEGION-208", Rank: "A", HandedOver: handed}, engineStub{store: record.NewStore(), done: "LEGION-208"})
 
 		assertControllerNotices(t, pool, []effect{
-			{kind: record.OutboxKindControllerNotice, issue: "LEGION-208", payload: record.ControllerNotice{Kind: record.SlotFreeNotice}},
+			{kind: record.OutboxKindControllerNotice, issue: "LEGION-208", payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: "LEGION-208"}},
 		})
 	})
 	t.Run("nothing blocked", func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 
 		tick(t, pool, admission, "tick-1")
 
-		assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice}}})
+		assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Issue: testProject}}})
 	})
 }
 
@@ -299,6 +299,6 @@ func TestASlotFreeWakeStaysOnePerProject(t *testing.T) {
 	apply(t, pool, admission, "second-done", intake.DispatchIssue{Key: "LEGION-212", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "LEGION-212", Rank: "B", HandedOver: handed}, engineStub{store: record.NewStore(), done: "LEGION-212"})
 
 	assertControllerNotices(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: "LEGION-208", payload: record.ControllerNotice{Kind: record.SlotFreeNotice}},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-208", payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: "LEGION-208"}},
 	})
 }

@@ -1257,7 +1257,7 @@ describe("an Envoy card the session displays", () => {
       [
         `Envoy message from ${peer}:`,
         `Ask ${named} about it.`,
-        `note: body names session ${named}; the sender is ${peer}`,
+        `note: body names session ${named}`,
       ].join("\n\n")
     );
   });
@@ -1268,7 +1268,7 @@ describe("an Envoy card the session displays", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
     const empty = rendered({ payload: "", payload_summary: "Nothing here." });
-    expect(empty).toContain('  message: ""');
+    expect(empty).toContain("<message>\n\n</message>");
     publisher.record(SUBJECT, card(10, empty), false);
 
     expect(textOf(published[0])).toBe(`Envoy message from agent:\n\n\`\`\`\n${empty}\n\`\`\``);

@@ -239,14 +239,14 @@ test.skipIf(skip)(
     // the local date has changed since the wedging turn's request, as it does for a case that
     // runs across midnight (`ownMessages` in the harness).
     const again = await pane.until("the turn the worker's own message started", () =>
-      pane.turns().find((turn) => newestMessage(turn.body).includes("Your turn was ended because"))
+      pane.turns().find((turn) => newestMessage(turn.body).includes("notice: turn ended"))
     );
-    expect(newestMessage(again.body)).toContain("`eval` call");
-    expect(newestMessage(again.body)).toContain("Decide whether that call is still worth making");
+    expect(newestMessage(again.body)).toContain("call_tool: eval");
+    expect(newestMessage(again.body)).toContain(`call_id: ${evidence.toolCallId}`);
     await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
-    expect(restarts[0]).toContain("Your turn was ended because its `eval` call");
+    expect(restarts[0]).toContain("call_tool: eval");
     expect(pane.running()).toBe(true);
 
     // The ladder stopped at the abort: the turn it ended closed the call's record, so the step

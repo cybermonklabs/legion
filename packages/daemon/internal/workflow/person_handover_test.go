@@ -448,19 +448,22 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 // is no silent drop. Once the fact commits the daemon logs one warning naming the approval's
 // sequence and the sequence of the Dispatch event that changed the root's status after it, which
 // the preparation read from the root's event log, and the controller gets one parked-decision of
-// the approval, whose reason says it came before a change of the root's status and that todo on
-// the root brings it back. The root's own gate records the approval quietly, so it writes no
-// design-approved notice that the outbox would relay as a second parked-decision. A root the
-// daemon does not record has no tree to relay for, and is told by the warning alone. An approval
-// no later status change refuses queues the handover and tells nobody, as before.
+// the approval, which names as fields the approval's event, the later event that changed the
+// root's status and the status the root stands at, that the approval queued nothing, and the root
+// as the issue whose todo brings it back (record.RefusedHandoverNoticeOf). The root's own gate
+// records the approval quietly, so it writes no design-approved notice that the outbox would relay
+// as a second parked-decision. A root the daemon does not record has no tree to relay for, and is
+// told by the warning alone. An approval no later status change refuses queues the handover and
+// tells nobody, as before.
 func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing.T) {
 	event := func(seq int64, title string) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
 			Title: title, Rank: "U", HandedOver: true}
 	}
 	const warning = "workflow: a person's approval of a parked root is older than a change of the root's status; the root is not queued as their handover"
-	relayed := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-208",
-		Ref: "dispatch://LEGION-208/spec", Actor: askPerson.Name(), Version: 2}
+	relayed := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Issue: "LEGION-208", Decision: record.DecisionDesignApproved, Root: "LEGION-208",
+		Ref: "dispatch://LEGION-208/spec", Actor: askPerson.Name(), Version: 2,
+		ApprovalSeq: 9, StatusChangedSeq: 10, Status: "icebox", NotQueued: true, SetTodo: "LEGION-208"}
 	for _, tc := range []struct {
 		name     string
 		recorded bool
@@ -471,8 +474,8 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 		queued bool
 		// warned is the sequence of the status change the warning names, 0 for no warning.
 		warned float64
-		// told is every notice and controller notice the approval leaves, a relayed
-		// parked-decision's reason aside.
+		// told is every notice and controller notice the approval leaves, the time a relayed
+		// parked-decision keeps the approval at aside.
 		told []record.OutboxPayload
 	}{
 		{name: "a recorded root parked after the approval", recorded: true, events: []intake.DispatchIssue{event(10, "root")}, log: parkedAfterTheApproval,
@@ -521,10 +524,12 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 				if !ok || notice.Kind != record.ParkedDecisionNotice {
 					continue
 				}
-				if !strings.Contains(notice.Reason, "came before a change of LEGION-208's status") || !strings.Contains(notice.Reason, "set LEGION-208 to todo") {
-					t.Errorf("the parked-decision's reason %q does not say the approval came before a change of the root's status and that todo brings it back", notice.Reason)
+				// The approval's event carries no time, so it is kept at the engine's clock
+				// (decidedAt), which this test does not read.
+				if notice.At.IsZero() {
+					t.Errorf("the parked-decision names no time the approval is kept at")
 				}
-				notice.Reason = ""
+				notice.At = time.Time{}
 				told[i] = notice
 			}
 			if !sameNotices(told, tc.told) {

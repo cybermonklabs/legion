@@ -438,7 +438,7 @@ func (r *Runtime) LaunchBound() time.Duration { return 0 }
 // PodDrift is nil: a pane is not a place built from a configuration — it has no pod, no image and
 // no template — so no process of this runtime ever drifts from one, and no update round is ever
 // opened over a pane.
-func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
+func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]runtime.Drift, error) { return nil, nil }
 
 // ReplacePod does nothing and returns nil: this runtime has no pod to replace, and a pane is
 // ended by the claim's own Suspend and Release. due is never asked, because nothing here waits

@@ -32,8 +32,7 @@ import {
   closeReplayedRemoval,
   createDeliveryLedger,
   type DeliveryLedger,
-  envoyNoticeText,
-  failureNoticeFields,
+  failureNoticeText,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
@@ -943,7 +942,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // as a notice that could not be shown, and nothing is carded to a conversation the
       // message was never sent to.
       showFailureNotice: (addressed, notice) =>
-        delivery.notice(envoyNoticeText(failureNoticeFields(notice)), addressed),
+        delivery.notice(failureNoticeText(notice), addressed),
       failureNoticeFailed: (notice, error) => {
         process.stderr.write(
           `envoy-channel: message ${notice.eventId} from ${notice.sender} was not shown, nor was the notice naming it — ${messageFor(error)}\n`,

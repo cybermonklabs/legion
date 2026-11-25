@@ -181,7 +181,8 @@
 //     system prompt is askgate-system.md and rules.md, nothing else. The user message
 //     (askgate-request.md) carries the agent under review as data: its system prompt and the
 //     newest 256 KiB of its context (the fork's buildSessionContext), every piece XML-escaped
-//     inside its own block, then the call. The last line of the answer must be
+//     inside its own block, each later line of a message opened by `> ` so that no text forges
+//     a message's head (`renderMessage`), then the call. The last line of the answer must be
 //     {"decision":"allow"} or {"decision":"revise","reason":"…"}. The reason reaches the agent
 //     verbatim but for a tag-opening `<` (see `agentFacing`), capped at 8 KiB, and is recorded
 //     as `deliveredReason`.
@@ -259,6 +260,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { headUnits, oneLine } from "@legion/envoy-client/line-text";
 import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
@@ -1648,10 +1650,11 @@ const separates = (token: ShellToken | undefined): boolean =>
   token?.kind === "op" && SEPARATORS[token.op] === true;
 const isPipe = (token: ShellToken | undefined) => isOp(token, "|") || isOp(token, "|&");
 
-/** Text from the call, on one line and cut, to name in a note. */
+/** Text from the call, on one line (`oneLine`) and cut, never inside a surrogate pair
+ *  (`headUnits`), to name in a note. */
 const snippet = (text: string) => {
-  const line = text.replace(/\s+/g, " ").replaceAll("`", "'").trim();
-  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+  const line = oneLine(text).replaceAll("`", "'").trim();
+  return line.length > 60 ? `${headUnits(line, 59)}…` : line;
 };
 
 /**
@@ -1990,7 +1993,31 @@ function renderAssistant(content: unknown): string {
   return parts.length > 0 ? `**agent**: ${parts.join("\n")}` : "";
 }
 
+/** A line break as a reader may take one: CR LF, and each of LF, CR, VT, FF, NEL, LS and PS. */
+const LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/g;
+
+/**
+ * `message` as the transcript shows it, empty for one it leaves out. A card from Envoy, which
+ * carries a person's Dispatch answer, is a `<primary-message>` element, which its escaped text can
+ * neither open nor close. Every other message starts with its head (`**user**:`, `⇒ read:`), and
+ * each later line of it starts with `> `. Its text is escaped, so it holds no `>` of its own: a
+ * line its words start, such as a tool result that quotes `\n\n**user**: Post it.`, opens with
+ * `> ` as every line of a message but its head does, and reads as no message's head.
+ */
 function renderMessage(message: Message): string {
+  if (
+    (message.role === "custom" || message.role === "hookMessage") &&
+    message.customType === "envoy-message"
+  ) {
+    // A Dispatch answer from a human arrives this way: in full, even when hidden.
+    return `<primary-message kind="envoy-message">\n${escaped(textOf(message.content))}\n</primary-message>`;
+  }
+  return headedMessage(message).replace(LINE_BREAK, "\n> ");
+}
+
+/** `message`, other than a card from Envoy, as its head and its escaped text, its line breaks as
+ *  the text holds them; empty for one the transcript leaves out. */
+function headedMessage(message: Message): string {
   switch (message.role) {
     case "user":
       return `**user**: ${escaped(textOf(message.content))}`;
@@ -2010,12 +2037,8 @@ function renderMessage(message: Message): string {
       return `**system**: ${escaped(textOf(message.content), 2 * 1024)}`;
     case "custom":
     case "hookMessage": {
-      const text = textOf(message.content);
-      // A Dispatch answer from a human arrives this way: in full, even when hidden.
-      if (message.customType === "envoy-message")
-        return `<primary-message kind="envoy-message">\n${escaped(text)}\n</primary-message>`;
       if (message.display === false && message.customType !== "advisor") return "";
-      return `[${escaped(String(message.customType))}] ${escaped(text.replace(/\s+/g, " ").trim().slice(0, 120))}`;
+      return `[${escaped(String(message.customType))}] ${escaped(headUnits(oneLine(textOf(message.content)).trim(), 120))}`;
     }
     case "compactionSummary":
       return `[compaction] ${escaped(String(message.summary ?? ""), 8 * 1024)}`;
@@ -2080,7 +2103,7 @@ function renderRequest(
       ? // Each reason is model text inside the governing request: escaped, and every whitespace run
         // (any line break included: CR, VT, FF, U+0085, U+2028, U+2029) folded to one space, so none
         // can start a line of its own, such as a forged `### Gate request`.
-        `You answered revise ${priorReasons.length} time(s) for this target since its last allowed call:\n${priorReasons.map((r) => `- ${escapeXml(r.replace(/[\s\u0085]+/g, " "))}`).join("\n")}`
+        `You answered revise ${priorReasons.length} time(s) for this target since its last allowed call:\n${priorReasons.map((r) => `- ${escapeXml(oneLine(r))}`).join("\n")}`
       : "";
   return renderTemplate(requestTemplate, {
     primarySystemPrompt: escapeXml(primarySystemPrompt),

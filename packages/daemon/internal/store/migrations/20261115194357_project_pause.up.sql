@@ -66,28 +66,31 @@
 -- and it launches every role a pause still holds. Second, resume one role of each pod a pause
 -- still holds, until each hold has ended (select issue from project_pause_pod_holds where
 -- ended_at is null): the earlier release reads no hold, and it deletes a held pod in which no
--- role is live as a pod no claim owns, with the unpushed work on its disk. Third, with the daemon
--- stopped, run the three statements below. The earlier release decodes a row strictly
+-- role is live as a pod no claim owns, with the unpushed work on its disk. Third, with the
+-- project's daemon stopped, run the three statements below, with the project's key in place of
+-- <KEY>: the outbox is shared by every project's daemon on the database, and split_part(issue,
+-- '-', 1) is a row's project (a project-level row carries the bare key), so each takes that
+-- project's rows alone. The earlier release decodes a row strictly
 -- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row it cannot decode fails and is
 -- retried on its backoff for ever, as 20261111041503 says of its notice kind. The rows of the two
 -- new notice kinds go:
 --
 --   delete from outbox where kind = 'controller_notice'
---     and payload->>'kind' in ('project-paused', 'project-resumed');
+--     and payload->>'kind' in ('project-paused', 'project-resumed') and split_part(issue, '-', 1) = '<KEY>';
 --
 -- The stops of the pause go too (a resume deletes the ones that have not run, so this finds only
 -- a stop that was running at the resume), the stops of claims of another project's issue among
 -- them, which are keyed by the project and name their claim's issue (record.SuperviseRequest's
 -- Issue), a key the earlier release does not know either:
 --
---   delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
+--   delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop' and split_part(issue, '-', 1) = '<KEY>';
 --
 -- And a start keeps its work but loses the two keys the earlier release does not know, the pause
 -- and the wake's kind (record.SuperviseRequest's Pause and WakeKind):
 --
 --   update outbox set payload = payload - 'pause' - 'wakeKind'
 --     where kind = 'supervise' and payload->>'op' = 'start'
---     and (payload ? 'pause' or payload ? 'wakeKind');
+--     and (payload ? 'pause' or payload ? 'wakeKind') and split_part(issue, '-', 1) = '<KEY>';
 create table project_pauses (
   id bigserial primary key,
   project text not null check (project ~ '^[A-Z][A-Z0-9]*$'),

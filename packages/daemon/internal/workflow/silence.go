@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,11 +9,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
-
-// workerSilentNotice is the notice of a worker that stopped between turns, which the daemon
-// repairs; `worker-stalled` is the one of a worker that stopped stepping inside a turn.
-const workerSilentNotice record.NoticeKind = "worker-silent"
 
 // workerSilent applies one intake.WorkerSilent, deciding on the record read inside the fact's own
 // transaction (the sweep only filters: daemon's tellSilentPhaseWorkers).
@@ -159,42 +154,32 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	}
-	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
+	silent := WorkerSilentNotice(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), fact.Bound, behind, row.Entry, given)
+	if err := e.notice(ctx, tx, issue.Key, silent); err != nil {
 		return err
 	}
 	e.warnOnCommit(ctx, "workflow: a phase worker nothing will prompt was found silent; its architect is told",
-		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "entry", row.Entry, "given", given, "behind", behind, "record", found)
+		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "entry", row.Entry, "given", given, "behind", behind,
+		"last_step", fact.LastStep, "silent_for", silent.SilentFor, "sent", silent.Sent)
 	return nil
 }
 
-// workerSilentDid is what the notice says the daemon did: which work the start row sends, read
-// from the entry the phases row names (entry) and the one the claim was last given (given). It
-// names the start row and not a prompt: a suspension held over the claim refuses the start when
-// the outbox runs it (supervise's RuleHolds), which no record this handler reads shows.
-func workerSilentDid(behind bool, entry, given int64) string {
-	var did string
-	switch {
-	case behind:
-		did = fmt.Sprintf("the daemon wrote the start row that sends the work of phase entry %d its phase row names, which its claim, last given entry %d, never had", entry, given)
-	case entry > 0:
-		did = fmt.Sprintf("the daemon wrote the start row that sends the phase's task again, on phase entry %d its phase row names and its claim was already given", entry)
-	default:
-		did = "the daemon wrote the start row that sends the phase's task again"
+// WorkerSilentNotice is the worker-silent notice of role, issue's phase worker that nothing will
+// prompt: when its agent last stepped, for how long it has been silent (to the minute), the bound
+// this deployment gives a phase worker (worker_silence_minutes), and the start row the daemon
+// wrote, read from the entry the phases row names (entry) and the one the claim was last given
+// (given): the work of that entry where the claim is behind it (texts.SentOwedEntry), the phase's
+// task again otherwise (texts.SentPhaseTask). It names the start row and not a prompt: a
+// suspension held over the claim refuses the start when the outbox runs it (supervise's
+// RuleHolds), which no record this handler reads shows.
+func WorkerSilentNotice(issue record.Issue, role claim.Role, lastStep time.Time, silent, bound time.Duration, behind bool, entry, given int64) texts.WorkerSilentRecord {
+	sent := texts.SentPhaseTask
+	if behind {
+		sent = texts.SentOwedEntry
 	}
-	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
+	return texts.WorkerSilentRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerSilent, Issue: issue.Key}, Role: role, Phase: issue.Phase,
+		LastStep: lastStep.UTC(), SilentFor: silent.Round(time.Minute).String(), Bound: bound.String(), Sent: sent, Entry: entry, Given: given}
 }
-
-// workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,
-// which workerSilentDid composes.
-func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, did string) string {
-	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so %s.",
-		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), did)
-}
-
-// workerBackgroundNotice is the notice of a worker waiting on background work of its own that
-// has stood too long, which the daemon tells of and never prompts.
-const workerBackgroundNotice record.NoticeKind = "worker-background-stalled"
 
 // workerBackgroundStalled applies one intake.WorkerBackgroundStalled, deciding on the record read
 // inside the fact's own transaction as workerSilent does, and returning store errors as it does.
@@ -216,12 +201,12 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 	if !read.run.Claim.ActivityAt.Equal(fact.ReportedAt) {
 		return intake.Result{}, nil
 	}
-	found := workerBackgroundRecord(issue, fact.Role, fact.Kinds, fact.ReportedAt, now.Sub(fact.ReportedAt))
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerBackgroundNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
+	stalled := WorkerBackgroundNotice(issue, fact.Role, fact.Kinds, fact.ReportedAt, now.Sub(fact.ReportedAt), fact.Bound)
+	if err := e.notice(ctx, tx, issue.Key, stalled); err != nil {
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: a phase worker is waiting on background work that has stood past the bound; its architect is told",
-		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "record", found)
+		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "work", fact.Kinds, "reported_at", fact.ReportedAt, "stood_for", stalled.StoodFor)
 	return intake.Result{}, nil
 }
 
@@ -239,21 +224,17 @@ func BackgroundStalledWorker(issue, root record.Issue, gate record.TreeGate, rol
 	return c.ActivityBackground && PastBound(c.ActivityAt, bound, now)
 }
 
-// workerBackgroundDid is what the notice says the daemon did: nothing, and why.
-const workerBackgroundDid = "The daemon sent that worker nothing and will send it nothing for this: nothing can tell a background job that hung from a long one, so read what its session says it is waiting on and decide whether that work needs a decision of its own"
-
-// workerBackgroundRecord is the notice's and the log line's text: what the daemon read, then
-// workerBackgroundDid.
-func workerBackgroundRecord(issue record.Issue, role claim.Role, kinds []string, reported time.Time, stood time.Duration) string {
-	return fmt.Sprintf("%s's %s, the worker of %s, is waiting on background work of its own: its session reported %s at %s, %s ago, and has reported nothing since, which is past the bound this deployment sets for it (worker_background_hours). %s.",
-		issue.Key, role, issue.Phase, workerBackgroundWork(kinds), reported.UTC().Format(time.RFC3339), stood.Round(time.Minute), workerBackgroundDid)
-}
-
-// workerBackgroundWork names the work: the kinds the session reported, in its order, or a clause
-// of its own for a report that named none.
-func workerBackgroundWork(kinds []string) string {
-	if len(kinds) == 0 {
-		return "background work running, naming no kind of it"
+// WorkerBackgroundNotice is the worker-background-stalled notice of role, issue's phase worker
+// that waits on background work of its own: each kind of work its session reported, in its order
+// (none where the report named no kind), when it reported it, how long the report has stood (to
+// the minute), and the bound this deployment sets for it (worker_background_hours). The daemon
+// sends that worker nothing for it, since nothing can tell a background job that hung from a long
+// one.
+func WorkerBackgroundNotice(issue record.Issue, role claim.Role, kinds []string, reported time.Time, stood, bound time.Duration) texts.WorkerBackgroundStalledRecord {
+	work := kinds
+	if work == nil {
+		work = []string{}
 	}
-	return "background work running of kind " + strings.Join(kinds, ", ")
+	return texts.WorkerBackgroundStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerBackgroundStalled, Issue: issue.Key}, Role: role,
+		Phase: issue.Phase, Work: work, ReportedAt: reported.UTC(), StoodFor: stood.Round(time.Minute).String(), Bound: bound.String()}
 }

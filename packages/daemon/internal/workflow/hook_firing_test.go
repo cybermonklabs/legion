@@ -162,8 +162,12 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 			if prompt.PullRequest != "" {
 				t.Fatalf("the %s's message names pull request %q, want none: the issue has no pull request recorded", prompt.Role, prompt.PullRequest)
 			}
-			if message := prompt.Message("LEGION-208"); strings.Contains(message, "Pull request") {
-				t.Fatalf("the %s reads %q, want no pull-request sentence in it", prompt.Role, message)
+			message, err := prompt.Message("LEGION-208")
+			if err != nil {
+				t.Fatalf("the %s's hook prompt text: %v", prompt.Role, err)
+			}
+			if strings.Contains(message, "\npull_request:") {
+				t.Fatalf("the %s reads %q, want no pull_request field in it", prompt.Role, message)
 			}
 		}
 	})
@@ -191,11 +195,14 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 			if prompt.Prompt != words {
 				t.Fatalf("the %s's message from hook %s carries %q, want its own hook's words %q", prompt.Role, prompt.Hook, prompt.Prompt, words)
 			}
-			message := prompt.Message("LEGION-208")
-			// The words stand between the daemon's header and the daemon's counts, each marked
-			// off by a blank line, so the counts the shipped words point at are below them.
-			if !strings.Contains(message, "\n\n"+words+"\n\nMoves back this hook counts:") {
-				t.Fatalf("the %s reads %q, want its own hook's words %q between the header and the counts", prompt.Role, message, words)
+			message, err := prompt.Message("LEGION-208")
+			if err != nil {
+				t.Fatalf("the %s's hook prompt text: %v", prompt.Role, err)
+			}
+			// The words stand between the first line and the facts, each marked off by a blank
+			// line, so the counts the shipped words point at are below them.
+			if !strings.Contains(message, "\n\n"+words+"\n\ncount: ") {
+				t.Fatalf("the %s reads %q, want its own hook's words %q between the first line and the facts", prompt.Role, message, words)
 			}
 			if strings.Contains(message, config.DefaultWorkBackPrompt) {
 				t.Fatalf("the %s reads %q, want the words of hook %s and not the ones Legion ships with no hooks configured", prompt.Role, message, prompt.Hook)

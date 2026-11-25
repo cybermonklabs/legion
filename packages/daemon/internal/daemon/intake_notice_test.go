@@ -17,9 +17,10 @@ import (
 
 // Each give-up counts itself in the project's intake-gave-up notice (record.Postgres.RecordUndecodable
 // here), and the outbox executor publishes that row as it publishes every controller notice: on the
-// controller topic of the daemon's own project, under the row's own key, with the count of the
-// give-ups it took and the id, consumer and subject of each. The two give-ups come from two of the
-// project's consumers, so the row they join is the project's, not one consumer's.
+// controller topic of the daemon's own project, under the row's own key, as the record of its kind
+// (record.GaveUpNotice): the project key as its issue, the count of the give-ups it took and the
+// id, consumer and subject of each. The two give-ups come from two of the project's consumers, so
+// the row they join is the project's, not one consumer's.
 func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -81,7 +82,7 @@ func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
 	if want := record.OutboxKey(given[0].NoticeID); got.key != want {
 		t.Errorf("the notice was published under key %q, want its row's own, %q", got.key, want)
 	}
-	want := record.Notice{Kind: record.IntakeGaveUpNotice, Count: 2, GiveUps: []record.NoticeGiveUp{
+	want := record.Notice{Kind: record.IntakeGaveUpNotice, Issue: project, Count: 2, GiveUps: []record.NoticeGiveUp{
 		{ID: given[0].ID, Consumer: given[0].Consumer, Subject: given[0].Subject},
 		{ID: given[1].ID, Consumer: given[1].Consumer, Subject: given[1].Subject},
 	}}

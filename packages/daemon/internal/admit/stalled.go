@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -315,8 +315,10 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	}
 	for _, root := range unsent {
 		measure := quiet[root.Key]
-		notice := record.ControllerNotice{Kind: record.TreeStalledNotice,
-			Reason: stalledTreeReason(root.Key, measure, members[root.Key], requests)}
+		notice, err := record.ControllerNoticeOf(TreeStalledNotice(root.Key, measure, members[root.Key], requests))
+		if err != nil {
+			return err
+		}
 		told, err := a.wakeController(ctx, tx, notice, root.Key, a.now())
 		if err != nil {
 			return fmt.Errorf("tell the controller that the tree of %s has stopped: %w", root.Key, err)
@@ -829,16 +831,16 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 	return true
 }
 
-// stalledTreeReason is what a stalled-tree notice tells the project's controller: the root, how
-// long the tree has been quiet, and, for each member of the tree (record.TreeMember), the phase
-// its record carries — `held` for a held issue — the role whose turn that issue's standing is
-// (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
-// that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide. An issue standing at admitted is told as a phase no
-// role works, as it was before workflow.RoleFor named the architect there: that answer is for
-// the readers that start, resume or report the architect, and this notice keeps the words it
-// had (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue
-// standing there names the architect, as it did.
+// TreeStalledNotice is what a stalled-tree notice tells the project's controller: the root, how
+// long the tree has been quiet (to the minute), and, for each member of the tree
+// (record.TreeMember), the phase its record carries — `held` for a held issue — the role whose
+// turn that issue's standing is (workflow.RoleFor over record.StandsAt, which is the phase a held
+// issue was held from), empty where the phase has no role, and its pull request with that pull
+// request's state, each empty where the record holds none. An issue standing at admitted is told
+// as a phase no role works, as it was before workflow.RoleFor named the architect there: that
+// answer is for the readers that start, resume or report the architect, and this notice keeps
+// what it said (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an
+// issue standing there names the architect, as it did.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and
@@ -846,33 +848,29 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // predicate (tellStalledTrees), so each member it hands over is named here and nothing is
 // tested a second time.
 //
-// It is written in short sentences a controller agent reads without decoding anything: the
-// daemon knows the tree has stopped and knows nothing of why, so what it hands over is the
-// facts and the decision, never a guess. The pull request is named from the record of its own
-// table (requests, keyed by issue), because the state a stopped tree is most often in is a
-// merged one — the tree whose work landed and whose roles then stopped — which no list of the
-// open pull requests could answer.
-func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest) string {
-	var reason strings.Builder
-	fmt.Fprintf(&reason, "%s has stopped. The tree has been quiet for %.1f hours. No agent of the tree is at work.",
-		root, measure.Quiet.Hours())
+// The daemon knows the tree has stopped and knows nothing of why, so what it hands over is the
+// facts, never a guess. The pull request is named from the record of its own table (requests,
+// keyed by issue), because the state a stopped tree is most often in is a merged one — the tree
+// whose work landed and whose roles then stopped — which no list of the open pull requests could
+// answer. It tells the controller to read the tree first (texts.TreeStalledFirst) and names what
+// it decides among once it has read the tree (texts.TreeStalledChoices), the step
+// dispatch://INFRA-2560's R5 has the notice give: read the tree and decide.
+func TreeStalledNotice(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest) texts.TreeStalledRecord {
+	stalled := texts.TreeStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.TreeStalled, Issue: root},
+		QuietFor: measure.Quiet.Round(time.Minute).String(), Members: make([]texts.TreeMember, 0, len(members)),
+		First: texts.TreeStalledFirst, Decide: texts.TreeStalledChoices()}
 	for _, member := range members {
-		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
+		named := texts.TreeMember{Key: member.Key, Phase: member.Phase}
 		// The architect works admitted (workflow.RoleFor), and this notice says what it said
 		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
 		standsAt := record.StandsAt(member)
-		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
-			fmt.Fprintf(&reason, "The %s has the turn. ", role)
-		} else {
-			reason.WriteString("No role works this phase. ")
+		if role := workflow.RoleFor(standsAt); standsAt != phase.Admitted {
+			named.Turn = role
 		}
 		if pr, recorded := requests[member.Key]; recorded {
-			fmt.Fprintf(&reason, "Pull request %d is %s.", pr.Number, pr.State)
-		} else {
-			reason.WriteString("The record holds no pull request.")
+			named.PullRequest, named.PullRequestState = texts.PullRequestRef(pr.Repo, pr.Number), string(pr.State)
 		}
+		stalled.Members = append(stalled.Members, named)
 	}
-	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can park the tree.")
-	return reason.String()
+	return stalled
 }

@@ -881,16 +881,18 @@ func samePullRequest(got, want PullRequest) bool {
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
-// that works it and the wake it named among them — with its null columns (the wake times, the
-// close and the outcome) absent until written; it is keyed by its issue, so a second write of the
-// same issue replaces the first. The open lists leave a closed check out,
-// OpenProductionChecksOfTree those of other trees too, and both order by the open.
+// that works it, the wake it named and the time of the report that named it among them — with its
+// null columns (the wake times, the report's time, the close and the outcome) absent until
+// written; it is keyed by its issue, so a second write of the same issue replaces the first. The
+// open lists leave a closed check out, OpenProductionChecksOfTree those of other trees too, and
+// both order by the open.
 func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	opened := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
 	woke, lastWoke, wakeAt, closed := opened.Add(time.Minute), opened.Add(2*time.Hour), opened.Add(4*time.Hour), opened.Add(3*time.Hour)
+	reported := opened.Add(150 * time.Minute)
 	root, child, other := issueFixture("LEGION-300"), issueFixture("LEGION-301"), issueFixture("LEGION-310")
 	child.Tree, other.Tree = root.Key, other.Key
 	// fresh carries no wake: nothing has named one and no look has gone unreported.
@@ -902,7 +904,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		Issue: root.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1300, MergeSHA: "d4e5f6", Role: claim.RoleTester,
 		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 2, LookOpen: true, LookWakeAt: &woke,
 		LastWakeKind: "check wake", LastWakeDetail: "the tester's own wake", LastWakeAt: &lastWoke,
-		WakeAt: &wakeAt, Last: true,
+		WakeAt: &wakeAt, ReportedAt: &reported, Last: true,
 	}
 	done := ProductionCheck{
 		Issue: other.Key, Project: "LEGION", Tree: other.Key, Repo: "sjawhar/legion", Number: 1310, MergeSHA: "e5f6a7", Role: claim.RoleImplementer,
@@ -962,7 +964,7 @@ func sameProductionCheck(got *ProductionCheck, want ProductionCheck) bool {
 		got.Number == want.Number && got.MergeSHA == want.MergeSHA && got.OpenedAt.Equal(want.OpenedAt) && got.BoundAt.Equal(want.BoundAt) &&
 		got.Role == want.Role && got.Looks == want.Looks && got.LookOpen == want.LookOpen && sameInstant(got.LookWakeAt, want.LookWakeAt) &&
 		got.LastWakeKind == want.LastWakeKind && got.LastWakeDetail == want.LastWakeDetail && sameInstant(got.LastWakeAt, want.LastWakeAt) &&
-		sameInstant(got.WakeAt, want.WakeAt) && got.Last == want.Last &&
+		sameInstant(got.WakeAt, want.WakeAt) && sameInstant(got.ReportedAt, want.ReportedAt) && got.Last == want.Last &&
 		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome
 }
 
@@ -2368,9 +2370,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
-		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
-		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
-		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
+		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "reported_at", "last", "closed_at", "outcome"},
+		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "told_changes_by", "document_issue"},
+		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words", "person_answer_words", "person_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
 			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq", "applied_seq"},
 		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
@@ -2763,6 +2765,91 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		must(t, err)
 		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
 			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)
+		}
+	})
+}
+
+// A kept decision keeps the person's words of it on its row, whole, and reads them back through
+// Postgres, so the send-time rewrite of a start task, which builds the task again from the marks
+// the rows gave (ParkedDecision.Mark), names the same words: an answer's text with the options it
+// chose, a reply whose event marked more to follow, each by the person at the act's own time, and
+// none for an approval. A newer decision on the same reference replaces the words with its own,
+// or with none. RelayParkedDecision keeps a changes request's reason as the words of that review.
+func TestAKeptDecisionKeepsThePersonsWords(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	t0 := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	ask, reply, spec := "dispatch://LEGION-212/ask/a", "dispatch://LEGION-212/comment/c", "dispatch://LEGION-212/spec"
+	answer := &ActWords{Text: strings.Repeat("é", 1500), Options: []string{"ship", "tell the vendor"}, By: "user:alice", At: t0.Add(-time.Minute)}
+	cut := &ActWords{Text: "The first part of a long reply", By: "user:alice", At: t0.Add(-2 * time.Minute), More: true}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-212")))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: ask, Decision: DecisionAskAnswered,
+			Actor: "user:alice", At: t0, Words: answer}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: reply, Decision: DecisionAskReply,
+			Actor: "user:alice", At: t0.Add(time.Second), Words: cut}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: spec, Decision: DecisionDesignApproved,
+			Actor: "user:alice", At: t0.Add(2 * time.Second)}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, _, err := records.UnclaimedKept(ctx, tx, "LEGION-212")
+		must(t, err)
+		if len(named) != 3 || named[0].Ref != spec || named[1].Ref != reply || named[2].Ref != ask {
+			t.Fatalf("the tree is owed %#v, want the approval, the reply and the answer, newest first", named)
+		}
+		for i, want := range []*ActWords{nil, cut, answer} {
+			if !reflect.DeepEqual(named[i].Words, want) {
+				t.Fatalf("%s reads back the words %#v, want %#v", named[i].Ref, named[i].Words, want)
+			}
+		}
+		mark := named[2].Mark()
+		if mark.Ref != ask || !mark.At.Equal(t0) || mark.Issue != "LEGION-212" || mark.Decision != DecisionAskAnswered || mark.Actor != "user:alice" ||
+			mark.Answer != answer.Text || !reflect.DeepEqual(mark.Options, answer.Options) || !mark.AnswerAt.Equal(answer.At) || mark.More {
+			t.Fatalf("the answer's mark is %#v, want its identity, its author and its words whole", mark)
+		}
+		if mark := named[1].Mark(); mark.Answer != cut.Text || !mark.More || !mark.AnswerAt.Equal(cut.At) || mark.Options != nil {
+			t.Fatalf("the reply's mark is %#v, want its body with more to follow", mark)
+		}
+		if mark := named[0].Mark(); mark.Answer != "" || mark.Options != nil || !mark.AnswerAt.IsZero() || mark.More {
+			t.Fatalf("the approval's mark is %#v, want no words", mark)
+		}
+		t.Logf("the answer's mark: %d units of words, options %v, at %s", len([]rune(mark.Answer)), mark.Options, mark.AnswerAt)
+	})
+	newer := &ActWords{Text: "Hold it a week.", By: "user:bob", At: t0.Add(time.Hour)}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: ask, Decision: DecisionAskAnswered,
+			Actor: "user:bob", At: t0.Add(time.Hour), Words: newer}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: reply, Decision: DecisionAskResolved,
+			Actor: "user:bob", At: t0.Add(time.Hour)}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, err := records.ParkedDecisions(ctx, tx, "LEGION-212")
+		must(t, err)
+		words := map[string]*ActWords{}
+		for _, decision := range named {
+			words[decision.Ref] = decision.Words
+		}
+		if !reflect.DeepEqual(words, map[string]*ActWords{ask: newer, reply: nil, spec: nil}) {
+			t.Fatalf("after newer decisions the words are %#v, want the newer answer's words and none for the resolution", words)
+		}
+	})
+	changes := &ActWords{Text: "Name the vendor's date.\nThen ask again.", By: "user:carol", At: t0.Add(2 * time.Hour)}
+	inTx(t, st, func(tx pgx.Tx) {
+		root, err := records.Issue(ctx, tx, "LEGION-212")
+		must(t, err)
+		outcome, err := RelayParkedDecision(ctx, tx, records, "LEGION-212", *root, true, ParkedDecision{Ref: spec,
+			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(2 * time.Hour), Words: changes}, 3, nil)
+		must(t, err)
+		if outcome != RelaySent {
+			t.Fatalf("the changes request on a parked tree = %v, want it sent to the controller", outcome)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, err := records.ParkedDecisions(ctx, tx, "LEGION-212")
+		must(t, err)
+		if len(named) == 0 || named[0].Ref != spec || !reflect.DeepEqual(named[0].Words, changes) {
+			t.Fatalf("the tree is owed %#v first, want the changes request with its reason as the person's words %#v", named, changes)
 		}
 	})
 }

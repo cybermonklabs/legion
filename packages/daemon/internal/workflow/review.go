@@ -3,8 +3,8 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -326,116 +327,100 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 				"required", required, "green", green)
 		}
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByMergeState)
+}
+
+// settledHead is what the CI settlement standing for a pull request's head says: the head it
+// settled on, each check it reports with what the texts name it as (shownChecks), and each commit
+// status the record keeps for that head, in context order (settledChecks).
+type settledHead struct {
+	head     string
+	shown    map[string]string
+	statuses []record.CommitStatus
+}
+
+// same is whether s and other say the same: one head, each check named alike, and each commit
+// status context in one state. Two settlements that leave it the same say nothing new
+// (tellChecks): a newer status of a context in the state the record kept is no news
+// (dispatch://INFRA-1997's R6), while a settlement that changes only the word GitHub gave a run,
+// or makes a run skipped, is a new judgement of the head and is told (dispatch://INFRA-4135 R1).
+func (s settledHead) same(other settledHead) bool {
+	return s.head == other.head && maps.Equal(s.shown, other.shown) &&
+		slices.EqualFunc(s.statuses, other.statuses, func(a, b record.CommitStatus) bool { return a.Context == b.Context && a.State == b.State })
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
-// settled on, and each check it reports with what it came to, in name order; "" while no
-// settlement stands. A check the settlement names as failed failed, one it names as cancelled was
-// cancelled, one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a
-// run and names no other way succeeded - the listener settles a commit once every check it has
-// seen is terminal. Nothing here judges those conclusions: a job GitHub never started is named
-// skipped and decides nothing, and what they mean for the work is the reading worker's
-// (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon knows of that head's
-// CI, so two settlements that leave it the same say nothing new (tellChecks).
+// settled on, and each check it reports with what it came to; a settlement of no head while none
+// stands. A check the settlement names as failed failed, one it names as cancelled was cancelled,
+// one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a run and
+// names no other way succeeded - the listener settles a commit once every check it has seen is
+// terminal. Nothing here judges those conclusions: a job GitHub never started is named skipped and
+// decides nothing, and what they mean for the work is the reading worker's
+// (dispatch://INFRA-714/spec R1). It is the whole of what the daemon knows of that head's CI.
 //
 // Each check is named by the word GitHub gave its run (record.AttemptRun.GitHubConclusion) where
 // the settlement carried one, and by the daemon's conclusion where it did not (shownAs). GitHub's
 // word is what tells a check that ran from one that did not, where the daemon's conclusion takes
 // every run that neither failed nor was cancelled as succeeded or skipped. A skipped check ran
 // nothing on the head, and a role that read it as a pass would believe a suite held back for the
-// merge queue passed on a head where it never ran (dispatch://INFRA-4135 R1), so where the line
-// names any check skipped it says once, after the commit statuses, that a skipped check ran
-// nothing (skippedClause). A settlement that carries no word and names no run skipped, as a
-// listener of an earlier release sends, gives the line the daemon gave before it read either.
+// merge queue passed on a head where it never ran (dispatch://INFRA-4135 R1), so the texts name it
+// apart from the checks that passed and from those that did not (tallyChecks). A settlement that
+// carries no word and names no run skipped, as a listener of an earlier release sends, names each
+// check by its conclusion, as the daemon did before it read either.
 //
 // Each name's conclusion is the newest run of it among the settlements of the head the fence
 // stands at, which is what the record holds (classify.SettlementFor): a settlement stands only
 // for the head it names, so a check re-run there and passed is no longer red however its earlier
 // run ended. A check still running on that head is in no settlement of it - the listener settles
-// a commit only once every check it has seen there is terminal - so this line names it not at
-// all: a pending check is no verdict, and never a failure.
+// a commit only once every check it has seen there is terminal - so this names it not at all: a
+// pending check is no verdict, and never a failure.
 //
-// A check run's name is whoever wrote the workflow's text, and this line is read into an agent's
-// prompt, so each name is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote
-// or a newline inside it is escaped rather than closing the one around it. A name of ordinary
-// characters reads as itself inside the quotes.
-//
-// After the check runs it names each commit status the record keeps for the checked head, with
-// its state, in context order (namedStatuses), and nothing where it keeps none, so the line of a
-// head that carries no status reads as it did before the daemon kept any. A status is an entry of
-// its own kind, apart from the check runs: a context that shares a check run's name is named in
-// both places.
-func settledChecks(pr record.PullRequest) string {
+// Beside the check runs it holds each commit status the record keeps for the checked head
+// (keptStatuses), and none where it keeps none. A status is an entry of its own kind, apart from
+// the check runs: a context that shares a check run's name is held in both places.
+func settledChecks(pr record.PullRequest) settledHead {
 	if pr.CheckedHead == "" {
-		return ""
+		return settledHead{}
 	}
-	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
-	for _, run := range pr.CheckRuns {
+	return settledHead{head: pr.CheckedHead, shown: shownChecks(pr.CheckRuns, pr.Cancelled, pr.Failing),
+		statuses: keptStatuses(pr, pr.CheckedHead)}
+}
+
+// checkConclusions is each check a settlement reports, by name, with what it concluded: a run it
+// names neither cancelled nor failing passed, or was skipped where its run is (record.RunSkipped),
+// and a name in both failed. It is the one reading of a settlement's lists, which the record's
+// settlement (settledChecks) and the settlement that wakes a released pod (SettlementWake) share.
+func checkConclusions(runs []record.AttemptRun, cancelled, failing []string) map[string]record.RunConclusion {
+	conclusions := make(map[string]record.RunConclusion, len(runs)+len(cancelled)+len(failing))
+	for _, run := range runs {
 		conclusions[run.Name] = record.RunSucceeded
 		if run.Conclusion == record.RunSkipped {
 			conclusions[run.Name] = record.RunSkipped
 		}
 	}
-	for _, name := range pr.Cancelled {
+	for _, name := range cancelled {
 		conclusions[name] = record.RunCancelled
 	}
-	for _, name := range pr.Failing {
+	for _, name := range failing {
 		conclusions[name] = record.RunFailed
 	}
+	return conclusions
+}
+
+// shownChecks is each check a settlement reports, by name, with what the texts name it as: its
+// conclusion (checkConclusions), or the word GitHub gave its run where the settlement carried one
+// (shownAs). The fence holds one run per name (classify's mergeAttemptSets), the run that decided
+// it, and a settlement holds one run per name too.
+func shownChecks(runs []record.AttemptRun, cancelled, failing []string) map[string]string {
+	conclusions := checkConclusions(runs, cancelled, failing)
 	shown := make(map[string]string, len(conclusions))
 	for name, conclusion := range conclusions {
 		shown[name] = string(conclusion)
 	}
-	// The fence holds one run per name (classify's mergeAttemptSets), the run that decided it.
-	for _, run := range pr.CheckRuns {
+	for _, run := range runs {
 		shown[run.Name] = shownAs(run, conclusions[run.Name])
 	}
-	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
-	if len(shown) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
-	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + statuses + skippedClause(shown)
-}
-
-// headChecks is every check run GitHub reported on the pull request's current head with what that
-// run concluded, in name order; "" when the record holds none. It is the line the notice of a head
-// GitHub will not merge from names (stuckMergeStateReason), where the settlement's own line would
-// not be true: a settlement standing for the head can be of the code head below it, and a name
-// whose newest run is there ran on other heads of the tree and not on this one. What GitHub
-// weighs for the merge is the current head, so that is the head whose checks the notice names,
-// and a required check whose run is missing here is the thing its reader looks for.
-//
-// Each run is named by the word GitHub gave it where the settlement carried one, and by its
-// conclusion where it did not (shownAs), and where any run is named skipped the line says once,
-// after the commit statuses, that a skipped check ran nothing on this head (skippedClause), as
-// settledChecks does and for the same reason: a required check GitHub skipped is one that never
-// ran there, and its reader must not take it for a pass (dispatch://INFRA-4135 R1).
-//
-// Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
-// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
-// of a run's head the daemon's readers share: a check run on this head that a newer run of the
-// same name on another head has replaced in the fence is not named, and nor is a run stored before
-// the fence carried its head.
-//
-// After the runs it names each commit status the record keeps for the current head, with its
-// state (namedStatuses), when the checked head is the current head (classify.Settled), and none
-// otherwise: a status the record keeps is stamped with the head whose settlement named it, and one
-// of another head says nothing of this one.
-func headChecks(pr record.PullRequest) string {
-	runs := classify.HeadRuns(pr)
-	shown := make(map[string]string, len(runs))
-	for _, run := range runs {
-		shown[run.Name] = shownAs(run, run.Conclusion)
-	}
-	if len(shown) == 0 {
-		return ""
-	}
-	var statuses []record.CommitStatus
-	if classify.Settled(pr) {
-		statuses = keptStatuses(pr, pr.HeadSHA)
-	}
-	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(shown) + namedStatuses(statuses) + skippedClause(shown)
+	return shown
 }
 
 // shownAs is what a text names run's check as, conclusion being what the text concludes the check
@@ -444,46 +429,112 @@ func headChecks(pr record.PullRequest) string {
 // word is the run's, so it names the check only where that run is what decided it: a name the
 // settlement's lists give another conclusion than its run's is named by the lists' conclusion, and
 // a run with no word - from a listener that sends none, or a word the decoder refused - by the
-// daemon's conclusion, as before the daemon kept a word. Unlike a check's name, the word is shown
-// unquoted: the decoder keeps only a word of lower-case letters and underscores (intake's
-// conclusionWord), so it can carry nothing else into the agent's prompt the line is read into.
+// daemon's conclusion, as before the daemon kept a word. A run of a settlement not yet applied
+// carries no conclusion of its own but skipped (intake's decodeChecks; the wake reads it so,
+// SettlementWake), and its word names it as the stored run's would. A check the lists name failed
+// or cancelled is that, and never skipped or passed, whatever its run's word: the lists are what
+// the decisions read (dispatch://INFRA-4135 R2). The word needs no quoting: the decoder keeps only
+// a word of lower-case letters and underscores (intake's conclusionWord).
 func shownAs(run record.AttemptRun, conclusion record.RunConclusion) string {
-	if run.GitHubConclusion != "" && run.Conclusion == conclusion {
-		return run.GitHubConclusion
+	if run.GitHubConclusion == "" || (run.Conclusion != "" && run.Conclusion != conclusion) {
+		return string(conclusion)
 	}
-	return string(conclusion)
-}
-
-// namedConclusions is each check name with what the line names it as (shownAs: GitHub's word where
-// the settlement carried one, else the daemon's conclusion), in name order, as both lines above
-// spell it.
-func namedConclusions(shown map[string]string) string {
-	names := make([]string, 0, len(shown))
-	for name := range shown {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for i, name := range names {
-		names[i] = strconv.Quote(name) + " " + shown[name]
-	}
-	return strings.Join(names, ", ")
-}
-
-// skippedRanNothing is what each text the roles read of a head's CI says once where it names a
-// check skipped: GitHub skipped the check, so it ran nothing on the head, and a role must not read
-// it as a pass (dispatch://INFRA-4135 R1).
-const skippedRanNothing = "a skipped check ran nothing on this head"
-
-// skippedClause is what settledChecks and headChecks add after the commit statuses where they name
-// any check skipped, by GitHub's word or by the daemon's conclusion, the two being spelled alike
-// (record.RunSkipped); "" where they name none, so a line with no skipped check reads as before.
-func skippedClause(shown map[string]string) string {
-	for _, word := range shown {
-		if word == string(record.RunSkipped) {
-			return "; " + skippedRanNothing
+	if conclusion == record.RunFailed || conclusion == record.RunCancelled {
+		switch run.GitHubConclusion {
+		case string(record.RunSkipped), wordSuccess, wordNeutral:
+			return string(conclusion)
 		}
 	}
-	return ""
+	return run.GitHubConclusion
+}
+
+// The words GitHub gives a check run that passed (dispatch://INFRA-4135 R1): a check named by
+// either, or by the daemon's conclusion succeeded where its run carries no word, counts as passed.
+const (
+	wordSuccess = "success"
+	wordNeutral = "neutral"
+)
+
+// checkTally is what a text of a head's CI states of its checks and commit statuses
+// (dispatch://INFRA-3686 R3): each check that did not pass with what it came to, each check
+// GitHub skipped, each commit status that did not pass with its state, the count of the checks
+// that passed (passed) and the count of the commit statuses that passed (passedStatuses). The two
+// counts stay apart, so a head on which no check ran reads as one (no check named and passed: 0),
+// whatever its statuses, as main's settlement said "reporting no check" beside them.
+type checkTally struct {
+	notPassed         []texts.CheckConclusion
+	skipped           []string
+	notPassedStatuses []texts.StatusState
+	passed            int
+	passedStatuses    int
+}
+
+// tallyChecks is the checkTally of the checks shown names (shownChecks, headRuns) and of
+// statuses. A check named success or neutral, or succeeded, passed, and is counted. A check named
+// skipped ran nothing on the head, so it is no pass, and it neither failed nor was cancelled: it
+// is named in the list of skipped checks, in name order. Every other check did not pass, and is
+// named with what it came to - GitHub's word where the settlement carried one, else failed or
+// cancelled - in name order. A commit status in state failure or error
+// (record.CommitStatus.Failed) did not pass and is named with its state, in context order, and
+// every other status is counted with the statuses that passed, apart from the checks. A check
+// run's name and a status's context are whoever wrote the workflow's text, and each is a field of
+// its own here, which the card's encoder quotes where it must.
+func tallyChecks(shown map[string]string, statuses []record.CommitStatus) checkTally {
+	var tally checkTally
+	for _, name := range slices.Sorted(maps.Keys(shown)) {
+		switch word := shown[name]; word {
+		case wordSuccess, wordNeutral, string(record.RunSucceeded):
+			tally.passed++
+		case string(record.RunSkipped):
+			tally.skipped = append(tally.skipped, name)
+		default:
+			tally.notPassed = append(tally.notPassed, texts.CheckConclusion{Check: name, Conclusion: word})
+		}
+	}
+	for _, status := range statuses {
+		if status.Failed() {
+			tally.notPassedStatuses = append(tally.notPassedStatuses, texts.StatusState{Context: status.Context, State: string(status.State)})
+		} else {
+			tally.passedStatuses++
+		}
+	}
+	slices.SortFunc(tally.notPassedStatuses, func(a, b texts.StatusState) int { return strings.Compare(a.Context, b.Context) })
+	return tally
+}
+
+// headRuns is every check run GitHub reported on the pull request's current head with what the
+// texts name it as (shownAs: GitHub's word where the settlement carried one, else the run's
+// conclusion), by name. It is what the texts of a head GitHub will not merge name, where the
+// settlement's own checks would not be true: a settlement standing for the head can be of the code
+// head below it, and a name whose newest run is there ran on other heads of the tree and not on
+// this one. What GitHub weighs for the merge is the current head, so that is the head whose checks
+// those texts name, and a required check whose run is missing here is the thing its reader looks
+// for.
+//
+// Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
+// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
+// of a run's head the daemon's readers share: a check run on this head that a newer run of the
+// same name on another head has replaced in the fence is not named, and nor is a run stored before
+// the fence carried its head.
+func headRuns(pr record.PullRequest) map[string]string {
+	runs := classify.HeadRuns(pr)
+	shown := make(map[string]string, len(runs))
+	for _, run := range runs {
+		shown[run.Name] = shownAs(run, run.Conclusion)
+	}
+	return shown
+}
+
+// headStatuses is every commit status the record keeps for the pull request's current head
+// (keptStatuses), when the checked head is the current head (classify.Settled), and none
+// otherwise: a status the record keeps is stamped with the head whose settlement named it, and
+// one of another head says nothing of this one. The texts of a head GitHub will not merge read it
+// beside the head's own check runs (headRuns).
+func headStatuses(pr record.PullRequest) []record.CommitStatus {
+	if !classify.Settled(pr) {
+		return nil
+	}
+	return keptStatuses(pr, pr.HeadSHA)
 }
 
 // keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context
@@ -501,38 +552,27 @@ func keptStatuses(pr record.PullRequest, head string) []record.CommitStatus {
 	return kept
 }
 
-// namedStatuses is what settledChecks and headChecks add after the check runs for statuses: each
-// context, quoted as a check name is (namedConclusions), with its state as GitHub spells it, in
-// the order given; "" for none.
-func namedStatuses(statuses []record.CommitStatus) string {
-	if len(statuses) == 0 {
-		return ""
-	}
-	named := make([]string, len(statuses))
-	for i, status := range statuses {
-		named[i] = strconv.Quote(status.Context) + " " + string(status.State)
-	}
-	return "; commit statuses: " + strings.Join(named, ", ")
-}
-
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
-// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
-// the worker that holds the phase decides whether to re-run, wait or fix
+// request's head says (CISettledMessage), and moves nothing: the daemon passes the CI result on,
+// and the worker that holds the phase decides whether to re-run, wait or fix
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. In merging the implementer is not told: the merge and what breaks
-// it are the merger's to decide, and the merger asks the implementer when it needs it
-// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
-// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
+// a role holder with a message, at the urgency the settlement's rule gives that reader in the
+// issue's phase (texts.UrgencyOf): med for the worker of the phase, and for the architect where
+// no worker holds the phase, low for the others. In merging the implementer is not told: the merge
+// and what breaks it are the merger's to decide, and the merger asks the implementer when it needs
+// it (cybermonklabs/legion#4979). A held issue tells the worker of Hold.From (record.StandsAt),
+// at the urgency the rule gives it in the held phase, where no worker works: low. A role named
+// twice, the implementer holding the phase, is told once, and a phase no worker holds names none
+// (addressRoles). told is what the settlement standing for the head said before this one, so a
+// second settlement of the same head that leaves the same conclusions and each commit status in
+// the same state tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
 // suspended there, so the settlement is recorded and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
-// names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
+// names the settlement (SettlementWake), and a message about the same settlement
 // would reach it as a second wake of one release, described to the worker as something somebody
 // published to its role topic. woken is that role, "" when the settlement woke nobody, and every
 // other role — a live one, and one the wake did not reach — is told as before.
@@ -540,9 +580,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told settledHead, woken claim.Role) error {
 	settled := settledChecks(*pr)
-	if settled == "" || settled == told {
+	if settled.head == "" || settled.same(told) {
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -579,13 +619,29 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
+	message := CISettledMessage(issue.Key, *pr, issue.Phase)
 	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		urgency := texts.UrgencyOf(texts.CISettled, to.role, texts.Variant{Phase: issue.Phase})
+		if err := e.roleMessage(ctx, tx, to.issue, to.token, message, urgency); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// CISettledMessage is the ci-settled message of issue for the settlement standing for pr's head
+// (settledChecks): the pull request, the head it settled on, the issue's phase (at), each check
+// that did not pass with what it came to, each check GitHub skipped with the field that says once
+// that such a check ran nothing (texts.EachSkippedCheck), each commit status the record keeps for
+// that head in state failure or error with its state, the count of the checks that passed, the
+// count of the statuses that passed, and the command that lists them all (tallyChecks).
+func CISettledMessage(issue string, pr record.PullRequest, at phase.Phase) texts.CISettledRecord {
+	settled := settledChecks(pr)
+	tally := tallyChecks(settled.shown, settled.statuses)
+	return texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: issue}, PullRequest: pullRequestRef(pr),
+		Head: settled.head, Phase: at, NotPassed: tally.notPassed, Skipped: tally.skipped, EachSkippedCheck: texts.EachSkippedCheck(tally.skipped),
+		NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed, PassedStatuses: tally.passedStatuses,
+		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
@@ -825,9 +881,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	}
 	// The reviewer's answer tells whenever it leaves the round stuck; any other review, only when it
 	// changes how the round is stuck.
-	before, by := e.reviewRound(*issue, reviewer, pr), byOtherReview
+	before, by := e.reviewRound(*issue, reviewer, pr), texts.StuckByOtherReview
 	if e.reviewersAnswer(fact, reviewer, reviewerSession) {
-		before, by = round{}, byAnswer
+		before, by = round{}, texts.StuckByAnswer
 	}
 	// Only changes_requested and approved decide anything, and one judgement says whether such a
 	// review may decide this round (RefusesRound): who wrote it, and the head it says it read.
@@ -918,7 +974,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact), Author: fact.Author,
+		Person: !e.byReviewApp(fact.Author), SubmittedAt: fact.SubmittedAt, BodyCut: fact.BodyTruncated, ID: fact.ID}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
 	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
@@ -1025,18 +1082,6 @@ func (e *Engine) reviewHead(review intake.PullRequestReview) string {
 	return review.CommitID
 }
 
-// The fact that wrote a review-stuck notice, its summary. The architect prompt
-// (prompts/go/architect-common.md) reads a notice the reviewer's completion or answer wrote after
-// the architect asked as the reviewer answering, and every other as news about the round.
-const (
-	byCompletion  = "the reviewer's completion"
-	byAnswer      = "the reviewer's review"
-	byOtherReview = "a review that is not the reviewer's answer"
-	byPush        = "a push"
-	byMergeState  = "GitHub's merge state for the head"
-	byMerge       = "the pull request's merge"
-)
-
 // roundOutcome is what a review round comes to after a fact (reviewRound).
 type roundOutcome int
 
@@ -1077,9 +1122,23 @@ const (
 	stuckMergeState
 )
 
+// word is the cause as a review-stuck notice names it (texts.CauseUndecided and the others).
+func (c stuckCause) word() string {
+	switch c {
+	case stuckUndecided:
+		return texts.CauseUndecided
+	case stuckApprovedOtherCode:
+		return texts.CauseApprovedOtherCode
+	case stuckMergeState:
+		return texts.CauseMergeState
+	}
+	return ""
+}
+
 // round is reviewRound's account of a review round. A stuck round names its cause, the head it is
-// stuck at, the merge state GitHub gave for that head, and what the architect, the reviewer and a
-// restarted reviewer are told of it. waitsOnMergeState is the one thing the round is owed from
+// stuck at, the merge state GitHub gave for that head, and, where its approval is of other code,
+// the head the reviewer approved, which a restarted reviewer's task names (retryPhase).
+// waitsOnMergeState is the one thing the round is owed from
 // outside the record: an approval that stands on the head with GitHub's answer for it not one the
 // issue may advance on, which the daemon reads GitHub for (settleRound, daemon's readMergeState).
 // It is set for the round that waits for a first answer and for the stuck one alike, since the
@@ -1092,8 +1151,17 @@ type round struct {
 	cause             stuckCause
 	head              string
 	state             record.MergeState
-	reason            string
+	approved          string
+	setAside          string
 	waitsOnMergeState bool
+}
+
+// stuck is r as the task of its restarted reviewer names a stuck round (StuckRound): an APPROVE of
+// the head or a REQUEST_CHANGES ends every stuck round but the one GitHub will not merge from,
+// which names the merge state GitHub reported for the head instead.
+func (r round) stuck() *StuckRound {
+	return &StuckRound{Cause: r.cause.word(), Head: r.head, Approved: r.approved, EndsRound: r.cause != stuckMergeState, SetAside: r.setAside,
+		MergeState: string(r.state)}
 }
 
 // stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
@@ -1107,37 +1175,6 @@ type round struct {
 func (r round) stuckAs(other round) bool {
 	return r.outcome == roundStuck && other.outcome == roundStuck &&
 		r.cause == other.cause && r.head == other.head
-}
-
-// stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
-// on a head GitHub answers for with a merge state it would not merge from: the head, the pull
-// request, the state in GitHub's own spelling, every check run GitHub reported on that head
-// with the conclusion it came to, and every commit status the record keeps for that head with
-// its state (headChecks), which is the whole of what the daemon knows of the head's own CI. There
-// is always a run to name: the only caller builds this reason for a round it has already reported
-// a head for, which it does only once GitHub has reported a check run on that head itself and
-// every one of them has concluded (reviewRound, classify.ChecksConcludedOnHead), and that gate
-// and headChecks read the same runs of the fence (classify.HeadRuns), so headChecks names at least
-// the run the gate found.
-//
-// It names the head's own check runs rather than everything the settlement standing for the head
-// reports, which can be the code head's below it: GitHub weighs the current head for the merge,
-// so a name whose newest run ran on another head of the tree says nothing about why this head is
-// held, and naming it here would read as a run GitHub made on this one.
-//
-// The daemon reads the base's rules for its required checks only on a read that finds the head
-// conflicting with its base (intake.PullRequestMergeability.Rules, dispatch://INFRA-4374 R0), and
-// a head this reason is built for is not one: an approval of a head held in a confirmed conflict
-// ends its round, and one whose first conflicting read waits for its second waits (reviewRound).
-// So here it does not know which checks the base requires: a required check that has never run is
-// in no list GitHub gives for the head, so it is simply absent from the checks named here. The
-// reason says so, because a reader who does not know that would take a short list for the daemon
-// leaving something out rather than for the finding it is - the check that is missing is the one
-// to look for. It says nothing of what clears the state: a push that earns what the base requires
-// is one way, and a check the base requires finishing on the head as it stands is another.
-func stuckMergeStateReason(pr record.PullRequest) string {
-	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge. %s. The daemon reads the base's rules only on a conflicting read and so names no required check: one the base requires that has never run is in nothing GitHub reports for the head, so it is absent here rather than named as missing, which makes the missing check the thing to look for. The issue waits in reviewing until GitHub reports the head clean, unstable or has_hooks",
-		pr.HeadSHA, pr.Number, pr.MergeState, headChecks(pr))
 }
 
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
@@ -1184,8 +1221,8 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // The round reads no CI verdict: what a check concluded moves nothing and
 // decides no round - only whether every check reported has concluded, which is what GitHub's own
 // state is waiting for - and the reviewer reads the head's checks on GitHub itself. A completed round
-// that nothing on its way would end is stuck, its reason naming the
-// head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
+// that nothing on its way would end is stuck, and its stuck notice and a restarted reviewer's task
+// name the head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
 // approval is of other code than the head's (stuckApprovedOtherCode). An approval of a head that
 // code is on its way from keeps the round open, and classify.CodeOnItsWay says when that is.
 func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
@@ -1238,32 +1275,19 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,
-			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr)}
+			waitsOnMergeState: true}
 	case !completed:
 		return round{}
 	case decided == "":
-		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(row, *pr)}
+		stuck := round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA}
+		if row.Decision != nil {
+			stuck.setAside = row.Decision.Refused
+		}
+		return stuck
 	case classify.ApprovalSetAside(*pr, row.Decision.Head):
-		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA,
-			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
-				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
+		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA, approved: row.Decision.Head}
 	}
 	return round{}
-}
-
-// undecidedReason is what the architect is told of a round its reviewer completed with no review
-// that decided it (stuckUndecided): what would end the round, and, when the daemon set a review
-// aside that would otherwise have decided it, why it did (record.ReviewDecision.Refused). The
-// refusal is the only thing that says why the round has no decision - the review is on GitHub,
-// approving what looks like the head - so a reader who was not told it would look for a review
-// that never came.
-func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
-	reason := fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
-		pr.Number, pr.HeadSHA, pr.HeadSHA)
-	if row.Decision != nil && row.Decision.Refused != "" {
-		reason += "; a review that would otherwise have decided this round was set aside - " + row.Decision.Refused
-	}
-	return reason
 }
 
 // implementationReady moves issue from implementing to its task's next step (testing, in the
@@ -1299,12 +1323,12 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, "")
 	case roundApproved:
 		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
-			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
+			return false, e.tellStuckMergeState(ctx, tx, issue, row, *pr, r, by)
 		}
 		// Every other cause is deduped against the round as this fact found it, which the record
 		// answers for.
@@ -1318,10 +1342,65 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if err != nil {
 			return false, err
 		}
-		return false, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
-			Summary: by, Reason: r.reason, Topic: notify.RoleTopicPrefix + string(reviewer)})
+		// The head the reviewer approved, for a round whose approval is of other code; the reason
+		// the daemon set a review aside, for a round no review decided.
+		var approved, setAside string
+		switch {
+		case r.cause == stuckApprovedOtherCode:
+			approved = row.Decision.Head
+		case row.Decision != nil:
+			setAside = row.Decision.Refused
+		}
+		return false, e.notice(ctx, tx, issue.Key, ReviewStuckNotice(issue.Key, *pr, r.cause.word(), by, notify.RoleTopicPrefix+string(reviewer), approved, setAside))
 	}
 	return false, nil
+}
+
+// ReviewStuckNotice is the review-stuck notice of issue for a round of pr that nothing on its way
+// ends, stuck at pr's head for cause (a texts.Cause word): the reviewer's role and the phase, the
+// fact that wrote it (by, one of the texts.StuckBy words dispatch://INFRA-3498's R4 keeps), the
+// reviewer's role topic where the reviewer decides the round (topic, empty where no decision of
+// the reviewer's would move it), the pull request and the head. A round no review decided, and a
+// round whose approval is of other code (approved, the head the reviewer approved), name the
+// review that ends the round (texts.EndsRound, which keeps the phrase `APPROVE of head <sha>`);
+// the first names the reason the daemon set a review aside that would otherwise have decided it
+// (setAside), the only thing that says why the round has no decision. A round GitHub will not
+// merge from names the merge state GitHub reports for the head, each check run GitHub reported on
+// that head that did not pass with what it came to, each one GitHub skipped with the field that
+// says once that such a check ran nothing (texts.EachSkippedCheck), each commit status the record
+// keeps for that head in state failure or error, where the checked head is that head
+// (headStatuses), the count of the checks that passed, the count of the statuses that passed, and
+// the command that lists them (tallyChecks): the daemon reads no ruleset, so a check the base
+// requires that never ran is in none of them.
+func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, approved, setAside string) texts.ReviewStuckRecord {
+	stuck := texts.ReviewStuckRecord{NoticeHead: texts.NoticeHead{Kind: texts.ReviewStuck, Issue: issue}, Role: claim.RoleReviewer,
+		Phase: phase.Reviewing, Summary: by, Topic: topic, Cause: cause, PullRequest: pullRequestRef(pr), Head: pr.HeadSHA,
+		ApprovedHead: approved, SetAside: setAside}
+	if cause == texts.CauseMergeState {
+		tally := tallyChecks(headRuns(pr), headStatuses(pr))
+		stuck.MergeState, stuck.NotPassed, stuck.Skipped = string(pr.MergeState), tally.notPassed, tally.skipped
+		stuck.EachSkippedCheck = texts.EachSkippedCheck(tally.skipped)
+		stuck.NotPassedStatuses, stuck.Passed, stuck.PassedStatuses = tally.notPassedStatuses, &tally.passed, tally.passedStatuses
+		stuck.ListPassed = texts.ListPassed(pr.Repo, pr.Number)
+	} else {
+		stuck.EndsRound = texts.EndsRound(pr.HeadSHA)
+	}
+	return stuck
+}
+
+// ApprovedRoundStuckMessage is the approved-round-stuck message of issue to its reviewer, whose
+// approval of pr's head GitHub will not merge from: the pull request, the head, the merge state
+// GitHub reports for it, each check run GitHub reported on that head that did not pass with what
+// it came to, each one GitHub skipped with the field that says once that such a check ran nothing
+// (texts.EachSkippedCheck), each commit status the record keeps for that head in state failure or
+// error (headStatuses), the count of the checks that passed, the count of the statuses that
+// passed, and the command that lists them (tallyChecks).
+func ApprovedRoundStuckMessage(issue string, pr record.PullRequest) texts.ApprovedRoundStuckRecord {
+	tally := tallyChecks(headRuns(pr), headStatuses(pr))
+	return texts.ApprovedRoundStuckRecord{RoleHead: texts.RoleHead{Kind: texts.ApprovedRoundStuck, Issue: issue}, PullRequest: pullRequestRef(pr),
+		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: tally.notPassed, Skipped: tally.skipped,
+		EachSkippedCheck: texts.EachSkippedCheck(tally.skipped), NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed,
+		PassedStatuses: tally.passedStatuses, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // tellStuckMergeState tells the architect and the reviewer of the one stuck cause a review
@@ -1342,7 +1421,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // a round it decided go nowhere, and it is the role reading the head's checks on GitHub, which
 // is where what the notice names is answered. The architect's notice names no role topic, since
 // no decision of the reviewer's would move this round.
-func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, r round, by string) error {
+func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr record.PullRequest, r round, by string) error {
 	if told(row, r) {
 		return nil
 	}
@@ -1353,16 +1432,15 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(reviewer),
-		Body: "The round you approved is stuck: " + r.reason + "."}); err != nil {
+	urgency := texts.UrgencyOf(texts.ApprovedRoundStuck, claim.RoleReviewer, texts.Variant{})
+	if err := e.roleMessage(ctx, tx, issue.Key, reviewer, ApprovedRoundStuckMessage(issue.Key, pr), urgency); err != nil {
 		return err
 	}
 	row.Decision.ToldStuckHead, row.Decision.ToldStuckState = r.head, r.state
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
-		Summary: by, Reason: r.reason})
+	return e.notice(ctx, tx, issue.Key, ReviewStuckNotice(issue.Key, pr, texts.CauseMergeState, by, "", "", ""))
 }
 
 // reviewerToken is the claim token of issue's reviewer, whose role topic the architect is given
@@ -1584,9 +1662,17 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message}); err != nil {
 			return err
 		}
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, PRBlockedNotice(issue.Key, e.cfg.ReviewRoundCap, counted, counts.ConflictRounds)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// PRBlockedNotice is the pr-blocked notice of issue, which reached the review round cap: the cap
+// (roundCap), the rounds counted and the conflict rounds not counted, 0 included, as
+// dispatch://INFRA-1442's R5 has it name them.
+func PRBlockedNotice(issue string, roundCap, counted, conflictRounds int) texts.PRBlockedRecord {
+	return texts.PRBlockedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRBlocked, Issue: issue}, Cap: roundCap, Counted: counted,
+		ConflictRounds: conflictRounds}
 }

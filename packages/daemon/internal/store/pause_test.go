@@ -729,8 +729,9 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 }
 
 // The pause a wake of a claim belongs to is the pause of the claim's newest stop, whatever that
-// stop's end, where it ended `stopped` after both the issue's newest pod release and the claim's
-// last ready (StoppingPauseTx, decision 15 of dispatch://INFRA-3759). Each claim here has a stop
+// stop's end, where it ended `stopped` after both the claim's last ready and every release of the
+// issue's pod that suspended the stop's role (StoppingPauseTx, stopOutlivesItsRolesRelease,
+// decision 15 of dispatch://INFRA-3759). Each claim here has a stop
 // by the first pause that ended `stopped`, and some a later one: stopped again after a ready the
 // resume's launch reported, the wake is the second pause's; a later stop that the resume
 // cancelled answers no pause, since the claim's newest stop stopped nothing.

@@ -347,7 +347,7 @@ func (r *heldTaskRig) decide(issue string) string {
 			return err
 		}
 		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: r.at}, 0, "", nil)
+			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: r.at}, 0, nil)
 		return err
 	}); err != nil {
 		r.t.Fatalf("keep the decision %s: %v", ref, err)

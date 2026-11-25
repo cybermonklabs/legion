@@ -124,6 +124,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
 		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
+		UpdateDrift:    []runtime.DriftItem{{Key: runtime.DriftImage, Image: "ghcr.io/cybermonklabs/legion-worker@sha256:4c1b8e2a6f9d"}},
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		UpdateToldAt:       &answeredAt,

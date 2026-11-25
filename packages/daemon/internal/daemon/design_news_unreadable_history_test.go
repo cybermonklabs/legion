@@ -32,11 +32,11 @@ func TestAnUnreadableReviewHistoryIsReadAgainOnceDispatchAnswers(t *testing.T) {
 		// before is the version Dispatch's review history shows approved before version 5, once it
 		// answers.
 		before int
-		// says is what the second build must say of that version.
+		// says is the item the second build must give for that version, as its record names it.
 		says string
 	}{
-		{name: "an earlier approval", before: 3, says: "version 5, since version 3, which your phase last took"},
-		{name: "no earlier approval", before: 0, says: "version 5, the first version a person approved; your phase took none before it"},
+		{name: "an earlier approval", before: 3, says: "spec " + reconcileDoc + " 5 taken=3 listed"},
+		{name: "no earlier approval", before: 0, says: "spec " + reconcileDoc + " 5 taken=0 no_pair"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsReconcileRig(t)
@@ -75,11 +75,9 @@ func TestAnUnreadableReviewHistoryIsReadAgainOnceDispatchAnswers(t *testing.T) {
 				t.Fatal("the reviewer's start created no claim")
 			}
 			first, _ := pendingNews(t, reviewer)
-			if !(strings.Contains(first, "could not be read") || strings.Contains(first, "unreadable")) || !strings.Contains(first, "502 BAD_GATEWAY") {
-				t.Fatalf("the first build = %q, want it to say the review history could not be read, and why", first)
-			}
-			if strings.Contains(first, "the first version a person approved") {
-				t.Fatalf("the first build = %q, want no first approval: the history was not read", first)
+			if items := newsItemsIn(t, first); len(items) != 1 || !strings.HasPrefix(items[0], "spec "+reconcileDoc+" 5 taken=null no_pair reason=") ||
+				!strings.Contains(items[0], "502 BAD_GATEWAY") {
+				t.Fatalf("the first build = %q, want it to say the review history could not be read, and why, and no first approval", first)
 			}
 
 			// Dispatch answers again. The reviewer never took its task, so the issue's told row did not
@@ -103,10 +101,10 @@ func TestAnUnreadableReviewHistoryIsReadAgainOnceDispatchAnswers(t *testing.T) {
 				t.Fatal("the merger's start created no claim")
 			}
 			second, news := pendingNews(t, merger)
-			if !strings.Contains(second, tc.says) {
-				t.Fatalf("the second build = %q, want it to say %q: Dispatch answered, so the news carries what its history says", second, tc.says)
+			if items := newsItemsIn(t, second); len(items) != 1 || items[0] != tc.says {
+				t.Fatalf("the second build = %q, want it to give %q: Dispatch answered, so the news carries what its history says", second, tc.says)
 			}
-			if strings.Contains(second, "could not be read") || strings.Contains(second, "unreadable") || strings.Contains(second, "502 BAD_GATEWAY") {
+			if strings.Contains(second, "502 BAD_GATEWAY") {
 				t.Fatalf("the second build = %q, want no word of the failed read: Dispatch answered", second)
 			}
 			if len(news.Items) != 1 || news.Items[0].From == nil || *news.Items[0].From != tc.before {

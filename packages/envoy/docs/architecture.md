@@ -319,6 +319,9 @@ publish that follows meets the same silent bus and answers the 503 above inside 
 attempt. The stamp's `roles` are the roles whose claims name the sender, from the claims view the
 session routes read; a view that is not complete (`store.ErrRoleViewNotReady`) leaves them out,
 and the send goes on.
+The sender is the session a broker token proves, else the body's `source_session`
+(`messageSender`): a message of a token's session carries the stamp whether its body names the
+session or not, and a message with neither carries none.
 
 A publish whose caller's context has already ended puts nothing on the wire; on these two routes it
 is answered the 503 above. A role send's forward, published as a core message whose reply carries
@@ -538,23 +541,30 @@ holds one dead letter for each copy, however many walks send it. A copy whose ho
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
 letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour
 left, and no live session holds the role, each sweep raises the role's wake report again, at
-most once for a role in each five-minute interval across every listener. `GET /v1/roles/<role>`
-still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
-the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
-sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
-the publish body) and gets the 404. The Legion daemon's notice queue does. The opt-out is the
-route's alone: a message published straight onto a role lane is always kept. Dispatch's
-role-routed events do not cross the lane: the outbox keeps its own copies on the kept lane (below).
+most once for a role in each five-minute interval across every listener. A message at urgency
+`low` with no sender raises no wake report, on the publish route or in the sweep (`wakesItsRole`):
+its body names no `source_session`, no broker token proves a session, and so the envelope and its
+kept copy carry no `sender` stamp. That is how the Legion daemon sends a text that its reader can
+act on at its next turn, under the shared listener bearer, and such a text brings no released pod
+back. A `low` message of an agent session wakes the role whether its body names the session or
+not. `GET /v1/roles/<role>` still answers 404 for an unheld or lapsed role: only the publish route
+gained the kept answer, and the send route's for a send Dispatch marks with its role, whose role
+moved before it arrived. A sender that keeps a queue of its own and redelivers from it asks not to
+be kept (`keep: false` in the publish body) and gets the 404. The Legion daemon's notice queue
+does. The opt-out is the route's alone: a message published straight onto a role lane is always
+kept. Dispatch's role-routed events do not cross the lane: the outbox keeps its own copies on the
+kept lane (below).
 
 A released Legion role gets the copies kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
 minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
 the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass (`internal/store/reaper.go`). Either way it is kept and raises the
-role's wake report. When the role comes back, its session registers again or claims the role, and
-either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that
-carries `kept_at` (a registration that makes the session live again starts that handover, in
-`subscribeHandler`). The card can arrive before the task the daemon gives the woken role (`WakeTask`,
+the claim at its next pass (`internal/store/reaper.go`). Either way it is kept, and it raises the
+role's wake report unless it is at urgency `low` with no sender. When the role comes back, its
+session registers again or claims the role, and either one hands it each copy kept for
+the role whose hour has not ended, as an Envoy card that carries `kept_at` (a registration that
+makes the session live again starts that handover, in `subscribeHandler`). The card can arrive
+before the task the daemon gives the woken role (`WakeTask`,
 `packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but the inbox is the memory
 of the running process, so in a new pod it starts empty and holds only what that process received.
 To check one message, read the session's transcript for the card with that event id and `kept_at`.

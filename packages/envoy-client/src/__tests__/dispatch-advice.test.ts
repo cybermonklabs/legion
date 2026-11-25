@@ -538,7 +538,9 @@ describe("Dispatch write advice", () => {
     expect(result.text).toBe(
       `Replied on ask ${ownAsk} (comment comment-1; ask now waiting on human). ` +
         "You follow this ask: its answer and replies reach you directly. " +
-        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>"
+        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.> " +
+        "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, " +
+        "which an Oh My Pi host holds for your next turn)"
     );
     expect(result.details.advice).toEqual(rawAdvice);
   });
@@ -604,7 +606,9 @@ describe("Dispatch write advice", () => {
       "Asked ask-new on DSP-42 (urgency med): What should we do?\n" +
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'What should'\n" +
         "You follow this ask: its answer and replies reach you directly. " +
-        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>",
+        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.> " +
+        "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, " +
+        "which an Oh My Pi host holds for your next turn)",
       { issue: "DSP-42", ask: "ask-new", follows: { ask: "ask-new" } },
     ],
     [
@@ -636,7 +640,9 @@ const createdLine = `Created DSP-42: Created issue → http://dispatch.test/issu
 const askedLine = "Asked ask-new on DSP-42 (urgency med): Should the billing service retry?";
 const followsLine =
   "You follow this ask: its answer and replies reach you directly. " +
-  "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>";
+  "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.> " +
+  "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, " +
+  "which an Oh My Pi host holds for your next turn)";
 
 function issueItem(key: string, title: string, status = "backlog"): WriteSuggestion {
   return {

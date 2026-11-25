@@ -7,6 +7,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // leakCheckPushedAnnotation records on an issue Sandbox's own metadata, never on its pod
@@ -75,13 +78,15 @@ func (r *Runtime) recordLeakCheckPushed(ctx context.Context, s *sandbox, podUID,
 
 // leakCheckDrift is why a pod was built under, or was served, another leak check than the runtime
 // runs now: held is the manifest digest it records (recordedLeakChecker), and the reason names it
-// and the setting's, "none" where the runtime runs no check now. A pod that records none says
-// nothing, as a template with no shape compares by image alone (podShapeDrift): a pod built under
-// no setting, or by a daemon before the record, that no daemon has served a check into is no drift
-// for it. An update round opens over a pod that has drifted so, and its workers are told the
-// digest the pod records while they push (keptPod.checker), so a corrected digest, or a moved
-// repository, reaches every pod.
-func (r *Runtime) leakCheckDrift(held string, recorded bool) []string {
+// and the setting's, "none" where the runtime runs no check now. The item names the setting by the
+// variable its roles are handed the digest in (leakguard.CheckerVar) alone, never by the digest,
+// as every drift item names a setting by its key. A pod that records none says nothing, as a
+// template with no shape compares by image alone (podShapeDrift): a pod built under no setting, or
+// by a daemon before the record, that no daemon has served a check into is no drift for it. An
+// update round opens over a pod that has drifted so, and its workers are told the digest the pod
+// records while they push (keptPod.checker), so a corrected digest, or a moved repository,
+// reaches every pod.
+func (r *Runtime) leakCheckDrift(held string, recorded bool) []runtime.Drift {
 	if !recorded || held == r.leakCheck.ManifestSHA256 {
 		return nil
 	}
@@ -89,5 +94,5 @@ func (r *Runtime) leakCheckDrift(held string, recorded bool) []string {
 	if now == "" {
 		now = "none"
 	}
-	return []string{"leak check manifest " + held + ", now " + now}
+	return []runtime.Drift{movedSetting(leakguard.CheckerVar, "leak check manifest "+held+", now "+now)}
 }

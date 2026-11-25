@@ -583,7 +583,7 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 	ctx, cancel := context.WithDeadline(context.Background(), arrived.Add(publishDeliveryWindow))
 	defer cancel()
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-in-process")
-	sendToRole(ctx, recorder, scope, record, rig.deps, item, senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), nil, role, false, arrived, nil)
+	sendToRole(ctx, recorder, scope, record, rig.deps, item, senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), item.SourceSession, nil, role, false, arrived, nil)
 	body := strings.TrimSpace(recorder.Body.String())
 	t.Logf("the send to %s after %d forwards answered %d, Retry-After %q: %s", role, forwards.Load(), recorder.Code, recorder.Header().Get("Retry-After"), body)
 	var answer listenerwire.APIError

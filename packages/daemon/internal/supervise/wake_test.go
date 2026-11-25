@@ -1013,12 +1013,12 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	// The stale process left no report the daemon took (a stale plugin's report is refused), so
 	// its let-go at the launch's turn recorded its background work as unknown, and the task
-	// carries that sentence in front of it (dispatch://INFRA-3276 R3).
+	// carries that note in front of it (dispatch://INFRA-3276 R3).
 	ended := h.claim().EndedWork
 	if ended.Cause != endStalePlugin || !ended.Tells() {
 		t.Fatalf("the launch's turn recorded %+v, want an untold end of the stale plugin's process", ended)
 	}
-	if got, want := h.wantPrompts(sent + 1)[sent], relaunchSentence(ended, true)+"\n\n"+next; got.Message != want {
+	if got, want := h.wantPrompts(sent + 1)[sent], h.relaunchNote(ended, true)+"\n\n"+next; got.Message != want {
 		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, want)
 	}
 }

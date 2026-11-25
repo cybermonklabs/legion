@@ -8,7 +8,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -330,8 +330,9 @@ func childNotices(rows []effect) []record.Notice {
 // daemon's is queued for it. A done closes each of its claims, and any other status suspends each
 // of them and releases its Dispatch claim. Either way its pod goes (record.IssueSuspend), and the
 // architect above it hears child-closed for a done and child-status for the other three. The
-// notice's reason starts with "<key> is <status>". This holds only that first sentence, because
-// the notice can name more after it, such as an issue under key that is still in the workflow.
+// notice names key (issue), and a child-status names the change left and status. This holds only
+// those fields, because the notice can name more beside them, such as an issue under key that is
+// still in the workflow (under_not_done).
 func (r *ownerRig) assertLeft(key, status string) {
 	r.t.Helper()
 	got, root := issue(r.t, r.pool, key), issue(r.t, r.pool, ownerRoot)
@@ -361,8 +362,13 @@ func (r *ownerRig) assertLeft(key, status string) {
 		r.t.Fatalf("Dispatch claim releases of %s after the move to %s = %d, want %d", key, status, got, releases)
 	}
 	notices := childNotices(rows)
-	if len(notices) != 1 || notices[0].Kind != kind || notices[0].Role != claim.RoleArchitect || !strings.HasPrefix(notices[0].Reason, fmt.Sprintf("%s is %s", key, status)) {
-		r.t.Fatalf("notices of %s after the move to %s = %+v, want one %s to the architect whose reason starts with %q", key, status, notices, kind, fmt.Sprintf("%s is %s", key, status))
+	wantStatus, wantChange := "", ""
+	if kind == "child-status" {
+		wantStatus, wantChange = status, texts.ChangeLeft
+	}
+	if len(notices) != 1 || notices[0].Kind != kind || notices[0].Issue != key ||
+		notices[0].Status != wantStatus || notices[0].Change != wantChange || notices[0].Reason != "" {
+		r.t.Fatalf("notices of %s after the move to %s = %+v, want one %s naming %s (change %q, status %q)", key, status, notices, kind, key, wantChange, wantStatus)
 	}
 }
 
@@ -560,7 +566,7 @@ func TestAnOlderEventOfTheChildAfterTheOwningArchitectsMoveChangesNothing(t *tes
 // is safe to repeat: a close of each claim, which retires a suspended claim, and a second pod
 // suspension, which finds no Sandbox, beside the architect's child-closed. It opens no production
 // check, since the child has no merged pull request. No issue stands under the child, so the
-// child-closed names nothing after its first sentence and is compared whole.
+// child-closed names nothing beside the child and is compared whole.
 func TestTheOwningArchitectsBacklogThenDoneEndsAtDone(t *testing.T) {
 	rig := seedOwnerTree(t, func(issues map[string]*record.Issue) { delete(issues, ownerGrandchild) })
 	rig.write(ownerChild, "backlog", rootArchitect)
@@ -582,7 +588,7 @@ func TestTheOwningArchitectsBacklogThenDoneEndsAtDone(t *testing.T) {
 	}
 	want = append(want,
 		effect{kind: record.OutboxKindIssueSuspend, issue: ownerChild, payload: record.IssueSuspend{Tree: ownerRoot, Generation: 1, TreeGeneration: 1}},
-		effect{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: reason}})
+		effect{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Issue: ownerChild}})
 	if added := rows[len(first):]; !reflect.DeepEqual(added, want) {
 		t.Fatalf("the rows the done added = %#v, want %#v", added, want)
 	}
@@ -694,9 +700,9 @@ func TestAnIssueUnderTheChildRunsOnAfterTheOwningArchitectsDone(t *testing.T) {
 	rig.write(ownerChild, record.DoneStatus, rootArchitect)
 	rig.assertLeft(ownerChild, record.DoneStatus)
 	rows := effects(t, rig.pool)
-	want := ownerChild + " is done. Under it, not done: " + ownerGrandchild + " (in_progress), " + atBacklog + " (backlog)"
-	if notices := childNotices(rowsFor(rows, ownerChild)); len(notices) != 1 || notices[0].Reason != want {
-		t.Fatalf("the notices of the done of %s = %+v, want one reading %q", ownerChild, notices, want)
+	want := []texts.NotDoneIssue{{Key: ownerGrandchild, Status: "in_progress"}, {Key: atBacklog, Status: "backlog"}}
+	if notices := childNotices(rowsFor(rows, ownerChild)); len(notices) != 1 || !slices.Equal(notices[0].UnderNotDone, want) {
+		t.Fatalf("the notices of the done of %s = %+v, want one naming the issues not done under it %+v", ownerChild, notices, want)
 	}
 	for _, key := range under {
 		if got := withoutMovement(issue(t, rig.pool, key)); !reflect.DeepEqual(got, before[key]) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
-	"strings"
 	"testing"
 	"time"
 
@@ -310,9 +309,9 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 }
 
 // The hook a deployment that writes no `hooks:` key runs fires at the fifth move back of a task in
-// another order, and its message lists each count under its own pair, the move back that is a
-// forward pair of phase.Order among them: `testing-reviewing=4`. The fifth move is the tester's
-// move back to reviewing, which the prompt names.
+// another order, and its record counts each move under its own pair (the counts field of its
+// facts), the move back that is a forward pair of phase.Order among them: `testing-reviewing: 4`.
+// The fifth move is the tester's move back to reviewing, which the prompt names.
 func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -340,8 +339,12 @@ func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 		if prompt.Hook != "work-back" || prompt.Count != 5 || prompt.From != phase.Testing || prompt.To != phase.Reviewing {
 			t.Fatalf("the %s's prompt = %+v, want work-back fired at the fifth move back, testing to reviewing", prompt.Role, prompt)
 		}
-		if message := prompt.Message(root.Key); !strings.Contains(message, "Counts by move: testing-implementing=1, testing-reviewing=4.") {
-			t.Fatalf("the %s's message lists other counts than testing-implementing=1, testing-reviewing=4:\n%s", prompt.Role, message)
+		counted := map[string]int{}
+		for _, count := range prompt.Record(root.Key).Counts {
+			counted[count.Move] = count.Count
+		}
+		if want := map[string]int{"testing-implementing": 1, "testing-reviewing": 4}; !maps.Equal(counted, want) {
+			t.Fatalf("the %s's hook prompt counts %v, want %v", prompt.Role, counted, want)
 		}
 	}
 }

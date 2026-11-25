@@ -1,6 +1,8 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { LISTENER_CALL_ATTEMPTS, LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
@@ -16,8 +18,11 @@ import {
   ompNatsGuard,
   ompRoot,
   type Request,
+  type Rpc,
+  STANDIN_STREAM_ID,
   sendRelayFrame,
   serveStandin,
+  spawnInteractive,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
@@ -25,7 +30,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { settled, timeLeft, until as waitUntil } from "@legion/test-fixtures/wait";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
-import { readCardLines } from "../test/card-entries";
+import { cardLines, readCardLines } from "../test/card-entries";
 
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
 // and src/card-wake.ts's delivery choice and its wake for a card the host folds): both come over a
@@ -44,8 +49,8 @@ const { skip, setup } = ompNatsGuard();
 /** The Dispatch token the session is handed. */
 const DISPATCH_TOKEN = fixtureSecret("dsp");
 
-/** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
-const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
+/** The kind line of the wake (src/card-wake.ts, `CardWake`), whatever count it states. */
+const WAKE_TEXT = /notice: unread messages/;
 
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
@@ -94,16 +99,134 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
 }
 
 /**
+ * A notice or role message the daemon published, as the listener forwards it to the role holder's
+ * agent subject: `agent` its source, as the listener writes for a publish that names none, no
+ * sender session, and `urgency` when one is named (a daemon before INFRA-3686 names none).
+ */
+function daemonEnvelope(summary: string, label: string, urgency?: string): string {
+  const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_event_id: `source-${label}`,
+    topic: "notifications.role.card-delivery",
+    dedupe_key: `envoy.role.forward.publish.${minted}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    ...(urgency === undefined ? {} : { urgency }),
+  });
+}
+
+/** Another session's message to session `sid` through Envoy, its envelope at `urgency`. */
+function peerEnvelope(sid: string, summary: string, label: string, urgency: string): string {
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_session: "ses_card_delivery_peer",
+    source_event_id: `agent.ses_card_delivery_peer.${label}`,
+    topic: `notifications.agent.${sid}`,
+    dedupe_key: `agent.${sid}.${label}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    urgency,
+  });
+}
+
+/** The session the Legion daemon writes to Dispatch as, the actor of every event it writes. */
+const DAEMON_ACTOR = { kind: "session", id: "legion-daemon:CARD" };
+
+/**
+ * A Dispatch event on issue CARD-1 of `type`, by `actor`, carrying `payload`, as Dispatch's outbox
+ * publishes it to a session that follows the issue, its envelope at `urgency`: no delivery, so it
+ * is a card of the event and no message Dispatch delivers to the session.
+ */
+function dispatchEventEnvelope(
+  type: string,
+  actor: { readonly kind: string; readonly id: string },
+  payload: Record<string, unknown>,
+  summary: string,
+  label: string,
+  urgency: string
+): string {
+  return JSON.stringify({
+    event_id: `dispatch-${label}`,
+    source: "dispatch",
+    source_event_id: "1",
+    topic: `notifications.dispatch.issue.CARD-1.${type}`,
+    dedupe_key: `dispatch-event-${label}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    payload: JSON.stringify({
+      id: 1,
+      issue_key: "CARD-1",
+      seq: 1,
+      type,
+      actor,
+      notify: false,
+      quiet: false,
+      created_at: new Date().toISOString(),
+      payload,
+    }),
+    trace_id: `trace-${label}`,
+    urgency,
+  });
+}
+
+/** A comment the daemon wrote on CARD-1, whose body is `body`: the Dispatch event R5 sends `low`. */
+function daemonCommentEnvelope(body: string, label: string, urgency: string): string {
+  return dispatchEventEnvelope(
+    "comment.created",
+    DAEMON_ACTOR,
+    {
+      id: `comment-${label}`,
+      issue_key: "CARD-1",
+      author: DAEMON_ACTOR,
+      body,
+      reply_to: null,
+      resolved: false,
+      created_at: new Date().toISOString(),
+    },
+    body,
+    label,
+    urgency
+  );
+}
+
+/** A person's answer to an ask on CARD-1 that the daemon opened, whose text is `answer`. */
+function askAnsweredEnvelope(answer: string, label: string, urgency: string): string {
+  const person = { kind: "user", id: "sami" };
+  return dispatchEventEnvelope(
+    "ask.answered",
+    person,
+    {
+      id: `ask-${label}`,
+      issue_key: "CARD-1",
+      author: DAEMON_ACTOR,
+      question: "Which way should the change go?",
+      options: [{ label: "North" }, { label: "South" }],
+      state: "answered",
+      answer: { user: person, selected: ["North"], text: answer, at: new Date().toISOString() },
+    },
+    "Which way should the change go?",
+    label,
+    urgency
+  );
+}
+
+/**
  * A person's direct Send to session `sid` from Dispatch's Agents page, as the listener hands the
  * session its delivery frame (envoy.test.ts's `directDispatchEnvelope`): no issue, the person as
- * the event's actor, attempt 1 in `mode`.
+ * the event's actor, attempt 1 in `mode`, its envelope at `urgency` when one is named.
  */
 function directDispatchEnvelope(
   sid: string,
   messageID: string,
   body: string,
   label: string,
-  mode: "btw" | "steer"
+  mode: "btw" | "steer",
+  urgency?: string
 ): string {
   const actor = { id: "alice", kind: "user" };
   return JSON.stringify({
@@ -133,6 +256,7 @@ function directDispatchEnvelope(
     source_event_id: "1",
     topic: `notifications.agent.${sid}`,
     trace_id: `send-${label}`,
+    ...(urgency === undefined ? {} : { urgency }),
   });
 }
 
@@ -155,6 +279,8 @@ const RpcStateSchema = z.object({
 /** A running session with pi-envoy, a real NATS connection to it, and what it sent the stand-in. */
 interface CardSession {
   readonly root: string;
+  /** The session's id, which its registration named. */
+  readonly sid: string;
   /** Every Messages request so far, in arrival order. */
   readonly turns: readonly Turn[];
   /** Every RPC frame so far, in order. */
@@ -163,8 +289,16 @@ interface CardSession {
   nextTurn(what: string): Promise<Turn>;
   /** Publishes a card and resolves once the session's subscription has taken its frame. */
   card(label: string): Promise<string>;
-  /** Publishes a person's Send and resolves once the session asked Dispatch to accept it. */
-  send(label: string): Promise<string>;
+  /** Relays `envelope` as the listener relays a frame of the session's consumer, and resolves
+   *  once the session's subscription has taken it. */
+  relay(what: string, envelope: string): Promise<void>;
+  /** Relays `envelope` as `relay` does, on a reply subject of its own, and resolves once the
+   *  session has answered the frame `received`, with every word the session answers on it, the
+   *  later ones added as they come (`done` once the card is in the session's store). */
+  relayWatched(what: string, envelope: string): Promise<readonly string[]>;
+  /** Publishes a person's Send, its envelope at `urgency` when named, and resolves once the
+   *  session asked Dispatch to accept it. */
+  send(label: string, urgency?: string): Promise<string>;
   /**
    * Relays one late BTW to the session as the listener relays a session's consumer, and resolves
    * with the body it carries once the session has answered the frame `done`: the card is written.
@@ -175,8 +309,9 @@ interface CardSession {
   state(): Promise<z.infer<typeof RpcStateSchema>>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
-  /** The session file's `envoy-message` custom messages, as raw JSON lines, read once that file
-   * ends on a finished line, so an exact count of them is not one short (`readCardLines`). */
+  /** The `envoy-message` custom messages the session's store holds, as raw JSON lines: off the
+   * session file, read once that file ends on a finished line, so an exact count of them is not
+   * one short (`readCardLines`), or off the session's rows under SQL storage (`sqlSessionText`). */
   cardEntries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
@@ -191,6 +326,12 @@ interface CardSession {
   setupHeld(): Promise<void>;
   /** Answers the open-asks read a session started with `holdSetup` holds; a no-op otherwise. */
   releaseSetup(): void;
+  /** Stops the process and starts it again on the same session (`--resume`), against the same
+   *  stand-in and NATS connection, and resolves once it registered that session again. */
+  restart(): Promise<void>;
+  /** Types `text` at an interactive session's terminal and presses Enter once the composer holds
+   *  it; an RPC session has no terminal. */
+  type(text: string): Promise<void>;
 }
 
 /** Polls `probe` until it returns a value, failing on `what` at the row's deadline or as soon as
@@ -209,6 +350,39 @@ async function until<T>(
   return value;
 }
 
+/** Where Oh My Pi keeps a session: the session file (its default), or rows of a SQL database
+ *  (`OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs:
+ *  packages/daemon/internal/podsafety/podsafety.go), where that file is never on disk. */
+type SessionStorage = "file" | "sql";
+
+/**
+ * The text Oh My Pi's SQL store in the SQLite database `database` holds for the session it keys
+ * by `key`, the path the host names as its session file; undefined while it holds none. It is read
+ * as the store reads it (`sql-session-storage.ts` `readFull`, at the pinned build): the session
+ * row's own content, then its parts in the order of their offsets. One statement reads both, so
+ * the read sees one committed write, and a write is whole lines.
+ */
+function sqlSessionText(database: string, key: string): string | undefined {
+  const store = new Database(database, { readonly: true });
+  try {
+    store.exec("PRAGMA busy_timeout = 5000");
+    const rows = store
+      .query<{ kind: number; start_offset: number; content: string }, [string]>(
+        "SELECT 0 AS kind, 0 AS start_offset, content FROM omp_session_files WHERE path = ?1 " +
+          "UNION ALL SELECT 1, start_offset, content FROM omp_session_files_parts WHERE path = ?1"
+      )
+      .all(key);
+    const head = rows.find((row) => row.kind === 0);
+    if (head === undefined) return undefined;
+    const parts = rows
+      .filter((row) => row.kind === 1)
+      .sort((first, second) => first.start_offset - second.start_offset);
+    return head.content + parts.map((part) => part.content).join("");
+  } finally {
+    store.close();
+  }
+}
+
 /**
  * Starts the real Oh My Pi in RPC mode with only envoy.ts loaded, against one stand-in that is the
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
@@ -224,17 +398,42 @@ async function until<T>(
  * whichever comes first, or less where the host's 30 s session_start cap comes first
  * (`startupEnded` names which). The pass's own deadline is set to the row's time left, so it is
  * never the bound. With `holdSetup` it holds
+ * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
+ * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
+ * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
+ * busy with no run, until the read is answered or `OPEN_ASKS_TIMEOUT_MS` (3 s) runs out.
+ * `extensions` are loaded ahead of envoy.ts (a stand-in for another plugin's hooks), and `env` is
+ * spread into the process's environment last. With `interactive` the session is the terminal
+ * Oh My Pi under a pseudo-terminal (`spawnInteractive`), which reads no RPC command, rather than
+ * RPC mode: it resolves once the session has registered and the terminal shows its editor.
+ * `storage` is where Oh My Pi keeps the session: its file by default, or, with `sql`, rows of a
+ * SQLite database in the case's root, which the host takes as it takes a Legion pod's database.
  */
 async function startSession(
   options: {
     readonly config?: readonly string[];
     readonly holdStartup?: boolean;
     readonly holdSetup?: boolean;
+    readonly extensions?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+    readonly interactive?: boolean;
+    readonly storage?: SessionStorage;
   } = {}
 ): Promise<CardSession> {
-  const { config = [], holdStartup = false, holdSetup = false } = options;
+  const {
+    config = [],
+    holdStartup = false,
+    holdSetup = false,
+    extensions = [],
+    env = {},
+    interactive = false,
+    storage = "file",
+  } = options;
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(binary, "card-delivery-omp-", cleanup);
+  const database = path.join(root, "sessions.db");
+  const dsnFile = path.join(root, "sessions.dsn");
+  if (storage === "sql") await writeFile(dsnFile, `sqlite://${database}`);
 
   const startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
   let startupEnd: string | undefined;
@@ -349,52 +548,90 @@ async function startSession(
 
   const frames: object[] = [];
   const responses = new Map<string, HeldAnswer<Record<string, unknown>>>();
+  // What ended the process the session runs in now, if anything did: a restart's own stop of the
+  // process before it is no failure.
   const closed: { error?: unknown } = {};
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions: [path.join(import.meta.dir, "envoy.ts")],
-      home,
-      workspace,
-      sessions,
-      env: {
-        ENVOY_URL: base,
-        ENVOY_NATS_URL: nats,
-        DISPATCH_URL: base,
-        DISPATCH_TOKEN,
-        // A held startup's registration pass gets the row's time left as its deadline, so the
-        // pass never ends the hold, only the bounds `startupEnded` names.
-        ...(holdStartup ? { ENVOY_PASS_DEADLINE_MS: String(Math.floor(timeLeft())) } : {}),
-      },
-      onFrame: (frame) => {
-        frames.push(frame);
-        if ("type" in frame && frame.type === "response" && "id" in frame) {
-          const waiting = responses.get(String(frame.id));
-          waiting?.resolve(frame as Record<string, unknown>);
-        }
-      },
+  const launch = {
+    extensions: [...extensions, path.join(import.meta.dir, "envoy.ts")],
+    home,
+    workspace,
+    sessions,
+    env: {
+      ENVOY_URL: base,
+      ENVOY_NATS_URL: nats,
+      DISPATCH_URL: base,
+      DISPATCH_TOKEN,
+      // A held startup's registration pass gets the row's time left as its deadline, so the
+      // pass never ends the hold, only the bounds `startupEnded` names.
+      ...(holdStartup ? { ENVOY_PASS_DEADLINE_MS: String(Math.floor(timeLeft())) } : {}),
+      ...(storage === "sql" && { OMP_SESSION_STORAGE: "sql", OMP_SESSION_SQL_DSN_FILE: dsnFile }),
+      ...env,
     },
-    cleanup
-  );
-  rpc.closed.catch((error: unknown) => {
-    closed.error = error;
-  });
+  };
   // Whether the pane may still be appending to its session file, which decides whether a read of
   // that file withholds a last line with no newline yet (`cardEntries`).
   let running = true;
-  void rpc.exited.then(() => {
-    running = false;
-  });
+  let rpc: Rpc | undefined;
+  const spawn = (args: readonly string[]): void => {
+    const started = spawnRpc(
+      binary,
+      {
+        ...launch,
+        args,
+        onFrame: (frame) => {
+          frames.push(frame);
+          if ("type" in frame && frame.type === "response" && "id" in frame) {
+            const waiting = responses.get(String(frame.id));
+            waiting?.resolve(frame as Record<string, unknown>);
+          }
+        },
+      },
+      cleanup
+    );
+    rpc = started;
+    running = true;
+    started.closed.catch((error: unknown) => {
+      if (rpc === started) closed.error = error;
+    });
+    void started.exited.then(() => {
+      if (rpc === started) running = false;
+    });
+  };
+  const terminal = interactive
+    ? spawnInteractive(binary, { ...launch, args: [] }, cleanup)
+    : undefined;
+  if (terminal === undefined) spawn([]);
+  else {
+    void terminal.exited.then((code) => {
+      closed.error = new Error(`omp exited (${code}); its screen:\n${terminal.screen()}`);
+      running = false;
+    });
+  }
 
+  /** The registrations the listener took that name a session, `id` alone when it is given. */
+  const registrations = (id?: string): Request[] =>
+    requests.filter(
+      (request) =>
+        request.path === "/v1/interests/subscribe" &&
+        typeof request.body.session_id === "string" &&
+        request.body.session_id !== "" &&
+        (id === undefined || request.body.session_id === id)
+    );
+  // Oh My Pi's startup, its extensions' first load included, ends at the row's deadline as every
+  // other wait of the row does.
   const sid = await until(
     "the session's registration with the listener",
-    () => {
-      const subscribe = requests.find((request) => request.path === "/v1/interests/subscribe");
-      const id = subscribe?.body.session_id;
-      return typeof id === "string" && id !== "" ? id : undefined;
-    },
+    () => registrations()[0]?.body.session_id as string | undefined,
     closed
   );
+  if (terminal !== undefined) {
+    // The profile's model on the status line under the editor: the terminal's startup is over.
+    await until(
+      "the terminal's editor",
+      () => (terminal.screen().includes("Stand-in standin-model") ? true : undefined),
+      closed
+    );
+  }
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   // No stream another suite left on this server may answer the frames
@@ -435,9 +672,38 @@ async function startSession(
     }
   };
 
+  const relayWatched = async (what: string, envelope: string): Promise<readonly string[]> => {
+    streamSeq += 1;
+    const inbox = createInbox();
+    const answers = connection.subscribe(inbox);
+    cleanup.push(async () => answers.unsubscribe());
+    const words: string[] = [];
+    void (async () => {
+      for await (const word of answers) words.push(codec.decode(word.data));
+    })();
+    const frame = headers();
+    frame.set(RelayHeader.subject, stored);
+    frame.set(RelayHeader.streamSeq, String(streamSeq));
+    frame.set(RelayHeader.streamID, STANDIN_STREAM_ID);
+    frame.set(RelayHeader.delivered, "1");
+    frame.set(RelayHeader.storedAt, new Date().toISOString());
+    // Published once: the relay subject is subscribed before the session's first registration,
+    // which `startSession` and `restart` wait for (envoy.ts's `subscribeRelay`).
+    connection.publish(deliverSubject(sid), codec.encode(envelope), {
+      headers: frame,
+      reply: inbox,
+    });
+    await until(what, () => (words.length > 0 ? true : undefined), closed);
+    if (words[0] !== "received") {
+      throw new Error(`${what}: the session answered ${JSON.stringify(words)}, not received`);
+    }
+    return words;
+  };
+
   let taken = 0;
   const session: CardSession = {
     root,
+    sid,
     turns,
     frames,
     async nextTurn(what) {
@@ -453,13 +719,15 @@ async function startSession(
       );
       return summary;
     },
-    async send(label) {
+    relay: relayFrame,
+    relayWatched,
+    async send(label, urgency) {
       const body = `SEND-${label}-${randomUUID().slice(0, 8)}`;
       const messageID = randomUUID();
       sends.set(messageID, body);
       await relayFrame(
         `the session to take Send ${label}`,
-        directDispatchEnvelope(sid, messageID, body, label, "steer")
+        directDispatchEnvelope(sid, messageID, body, label, "steer", urgency)
       );
       await until(
         `Dispatch's accept of Send ${label}`,
@@ -521,13 +789,15 @@ async function startSession(
       return body;
     },
     async command(command) {
+      const current = rpc;
+      if (current === undefined) throw new Error("an interactive session reads no RPC command");
       const id = randomUUID();
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
-      rpc.send({ ...command, id });
+      current.send({ ...command, id });
       const response = await settled(
         `omp's answer to ${String(command.type)}`,
-        Promise.race([waiting.promise, rpc.closed])
+        Promise.race([waiting.promise, current.closed])
       );
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
@@ -552,7 +822,9 @@ async function startSession(
       const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return readCardLines(file, writer);
+      if (storage === "file") return readCardLines(file, writer);
+      // The host keys the session's rows by the path it names; none before it stores the session.
+      return cardLines(sqlSessionText(database, file) ?? "", writer);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
@@ -565,6 +837,31 @@ async function startSession(
       );
     },
     releaseSetup,
+    async restart() {
+      const stopping = rpc;
+      if (stopping === undefined) throw new Error("an interactive session is not restarted");
+      const before = registrations(sid).length;
+      // The stop is this case's own: the process it ends reports nothing as a failure.
+      rpc = undefined;
+      await stopping.end();
+      spawn(["--resume", sid]);
+      await until(
+        "the restarted session's registration of the same session",
+        () => (registrations(sid).length > before ? true : undefined),
+        closed
+      );
+    },
+    async type(typed) {
+      if (terminal === undefined) throw new Error("an RPC session has no terminal");
+      terminal.write(typed);
+      // Enter only once the composer holds the text, so the keystrokes reach the editor as typing.
+      await until(
+        "the typed text in the composer",
+        () => (terminal.screen().includes(typed) ? true : undefined),
+        closed
+      );
+      terminal.write("\r");
+    },
   };
   return session;
 }
@@ -980,3 +1277,524 @@ test.skipIf(skip)("a card that arrives while the session starts holds no RPC inp
   woken.reply([text("Read the startup cards.")]);
   await probe(session, woken.index + 1);
 });
+
+// A `low` card of the daemon or of a Dispatch event (src/card-wake.ts, `lowCard`) goes into the
+// session's stored context with no turn: as `nextTurn` with no `triggerTurn`, which the host
+// appends to the context and to the session's store at once, and only to a settled host, since a
+// busy one keeps such a card in memory only (src/unwritten-frames.ts, the `stored` hand-over). The
+// first turn after that reads it, whatever starts that turn. Its frame is answered `done` once the
+// session records the card in its transcript, held or handed, and that record holds the card across
+// a stop until the session's store holds it. Every other card is delivered as before. `a low card
+// is read at the next turn` and `a low card stored on a branch with no reply` run on SQL storage,
+// the storage of every Legion workflow session, since what they check hangs on how the store
+// answers a stored card. The other cases run on file storage, which covers the file witness: the
+// pi-envoy CI job has fifteen minutes for all of its steps (ci-job-pi-envoy.yaml), and these cases
+// take about four.
+
+/** How long a case watches a session that holds a `low` card for a turn that must not come. */
+const QUIET_MS = 30_000;
+
+/** The profile line that keeps a long `bash` call in the foreground: by default the host moves it
+ *  to the background when a message is queued, and its result starts a run of its own. */
+const FOREGROUND_BASH = ["bash:", "  autoBackground:", "    enabled: false"];
+
+/** A fresh label, and the text of a card that carries it. */
+function marked(prefix: string): { readonly label: string; readonly text: string } {
+  const id = randomUUID();
+  return { label: `${prefix}-${id}`, text: `${prefix.toUpperCase()}-${id.slice(0, 8)}` };
+}
+
+/** What of a persisted `low` card's entry the cases read: the host keeps its `details`. */
+const StoredEntrySchema = z.object({
+  type: z.literal("custom_message"),
+  customType: z.literal("envoy-message"),
+  details: z.object({ handOver: z.string(), urgency: z.string() }),
+});
+
+/**
+ * Fails if the session makes a Messages request past the `expected` ones within `ms`, or omp
+ * exits. A real clock, deliberately: a host that starts no turn emits nothing to await, and only
+ * elapsed time shows the absence.
+ */
+async function noRequestFor(session: CardSession, ms: number, expected: number): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Throws at once when omp has exited.
+    await session.until("omp to be running", () => true);
+    const extra = session.turns[expected];
+    if (extra !== undefined) {
+      throw new Error(`Messages request ${expected} came, on ${newestMessage(extra.request.body)}`);
+    }
+    await Bun.sleep(200);
+  }
+  expect(session.turns.length).toBe(expected);
+}
+
+/** That `request`'s conversation holds `first`, and holds it before `second`. */
+function expectBefore(request: Request, first: string, second: string): void {
+  const messages = conversation(request);
+  expect(messages).toContain(first);
+  expect(messages).toContain(second);
+  expect(messages.indexOf(first)).toBeLessThan(messages.indexOf(second));
+}
+
+/** Writes an extension of `source` to a scratch file the case removes, and returns its path. */
+async function fixtureExtension(name: string, source: string): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "card-delivery-fixture-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, name);
+  await writeFile(file, source);
+  return file;
+}
+
+/** Waits until the session's store holds the card that carries `card`, and returns that line. The
+ *  host stores no session before the session's first assistant message, so a store that does not
+ *  hold the session yet holds no card. */
+async function storedLine(session: CardSession, card: string): Promise<string> {
+  return session.until(`the card ${card} in the session's store`, async () => {
+    const entries = await session.cardEntries().catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    });
+    return entries.find((entry) => entry.includes(card));
+  });
+}
+
+/** Waits until the session answers `done` to the frame of `card`, whose words are `words`: the
+ *  session recorded the card, so the stream's copy and the resume point below it go. */
+async function answeredDone(
+  session: CardSession,
+  card: string,
+  words: readonly string[]
+): Promise<void> {
+  await session
+    .until(`the done of the card ${card}`, () => (words.includes("done") ? true : undefined))
+    .catch((error: unknown) => {
+      throw new Error(`${String(error)}; the session answered ${JSON.stringify(words)}`);
+    });
+}
+
+test.skipIf(skip)("a low card is read at the next turn", async () => {
+  const session = await startSession({ storage: "sql" });
+  await session.settled();
+
+  // A daemon notice, sent low, to an idle session: no turn, and the task's turn reads it.
+  const notice = marked("low-notice");
+  const noticeWords = await session.relayWatched(
+    "the session to take the low notice",
+    daemonEnvelope(notice.text, notice.label, "low")
+  );
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done, and holds no place in the relay until the store holds the card.
+  await answeredDone(session, notice.text, noticeWords);
+  const task = `TASK-${randomUUID().slice(0, 8)}`;
+  await session.command({ type: "prompt", message: task });
+  const first = await session.nextTurn("the task's first model request");
+  expect(newestMessage(first.request.body)).toContain(task);
+  expectBefore(first.request, notice.text, task);
+  first.reply([text("Did the task.")]);
+  await session.settled();
+  // The task's reply put the session in its store, and the notice with it.
+  await storedLine(session, notice.text);
+
+  // A Dispatch event the daemon wrote, sent low: no turn, and a med card's turn reads it.
+  const comment = marked("low-comment");
+  const commentWords = await session.relayWatched(
+    "the session to take the low Dispatch event",
+    daemonCommentEnvelope(comment.text, comment.label, "low")
+  );
+  await noRequestFor(session, 10_000, 1);
+  // The store holds the session now: the stored card is done, and waits for no later card.
+  await answeredDone(session, comment.text, commentWords);
+  const card = marked("med-card");
+  await session.relay("the session to take the med card", daemonEnvelope(card.text, card.label));
+  const second = await session.nextTurn("the turn the med card started");
+  expectBefore(second.request, comment.text, card.text);
+  // The stored card reaches the model once: the med card's turn did not hand it again.
+  expect(conversation(second.request).split(comment.text).length - 1).toBe(1);
+  second.reply([text("Read the cards.")]);
+  await probe(session, second.index + 1);
+
+  for (const low of [notice.text, comment.text]) {
+    const { details } = StoredEntrySchema.parse(JSON.parse(await storedLine(session, low)));
+    expect(details).toEqual({ handOver: "inert", urgency: "low" });
+  }
+});
+
+// A session's run takes a card handed while it streams at its next step, so a `low` card that
+// comes then is held until the session is idle and stored then, and the turn after reads it.
+test.skipIf(skip)("a low card that comes during a turn is read at the turn after it", async () => {
+  // A tool call of 20 seconds, during which a low card and then a med card come.
+  const session = await startSession({ config: FOREGROUND_BASH });
+  await session.command({ type: "prompt", message: "Start the long tool call." });
+  const first = await session.nextTurn("the first model request");
+  const started = path.join(session.root, "tool-started");
+  first.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
+  await session.until("the 20 s tool call to start", async () =>
+    (await Bun.file(started).exists()) ? true : undefined
+  );
+  const low = marked("low-during");
+  const lowWords = await session.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  // Held while the tool call runs, and recorded: its frame is done during the turn, so a later
+  // card waits on no place in the relay.
+  await answeredDone(session, low.text, lowWords);
+  const med = marked("med-during");
+  await session.relay(
+    "the session to take the med card",
+    daemonEnvelope(med.text, med.label, "med")
+  );
+  const next = await session.nextTurn("the run's model request after the tool call");
+  expect(conversation(next.request)).toContain(med.text);
+  expect(conversation(next.request)).not.toContain(low.text);
+  next.reply([text("Read the med card.")]);
+  // The run made no model call for the low card after its last one: the card is stored.
+  await storedLine(session, low.text);
+  await session.settled();
+  await answeredDone(session, low.text, lowWords);
+  await noRequestFor(session, 5_000, next.index + 1);
+  const waking = marked("med-after");
+  await session.relay(
+    "the session to take the med card after the run",
+    daemonEnvelope(waking.text, waking.label, "med")
+  );
+  const after = await session.nextTurn("the turn the med card started");
+  expectBefore(after.request, low.text, waking.text);
+  after.reply([text("Read both cards.")]);
+  await session.settled();
+
+  // A turn that ends with a continuation, which starts the next turn at once, as the phase
+  // reminder's does: the low card that came during the turn waits through it, and is stored
+  // once the session is idle.
+  const reminder = `CONTINUE-${randomUUID().slice(0, 8)}`;
+  const continuation = await fixtureExtension(
+    "stop-continuation.ts",
+    `export default function stopContinuation(pi) {
+  let continued = false;
+  pi.on("session_stop", async (event) => {
+    if (continued || event.signal?.aborted) return undefined;
+    continued = true;
+    return { continue: true, additionalContext: process.env.CARD_DELIVERY_CONTINUATION };
+  });
+}
+`
+  );
+  const continued = await startSession({
+    extensions: [continuation],
+    env: { CARD_DELIVERY_CONTINUATION: reminder },
+  });
+  await continued.command({ type: "prompt", message: "Start the continued turn." });
+  const held = await continued.nextTurn("the first model request");
+  const lowBeforeEnd = marked("low-continued");
+  const lowBeforeEndWords = await continued.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(lowBeforeEnd.text, lowBeforeEnd.label, "low")
+  );
+  held.reply([text("Done for now.")]);
+  const resumed = await continued.nextTurn("the continuation's model request");
+  expect(conversation(resumed.request)).toContain(reminder);
+  expect(conversation(resumed.request)).not.toContain(lowBeforeEnd.text);
+  resumed.reply([text("Still done.")]);
+  await storedLine(continued, lowBeforeEnd.text);
+  await continued.settled();
+  await answeredDone(continued, lowBeforeEnd.text, lowBeforeEndWords);
+  const wakingAgain = marked("med-continued");
+  await continued.relay(
+    "the session to take the med card",
+    daemonEnvelope(wakingAgain.text, wakingAgain.label, "med")
+  );
+  const later = await continued.nextTurn("the turn the med card started");
+  expect(later.index).toBe(resumed.index + 1);
+  expectBefore(later.request, lowBeforeEnd.text, wakingAgain.text);
+  later.reply([text("Read both cards.")]);
+  await continued.settled();
+});
+
+test.skipIf(skip)("a low card survives a stop of the session", async () => {
+  const session = await startSession({ config: FOREGROUND_BASH });
+  await session.command({ type: "prompt", message: "Start the turn before the stop." });
+  const held = await session.nextTurn("the first model request");
+  const low = marked("low-stop");
+  const lowWords = await session.relayWatched(
+    "the session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  held.reply([text("Done before the stop.")]);
+  // Once the turn is over the card is in the session's store, which is what a stop keeps: a
+  // card handed while the turn ran would stay in Oh My Pi's memory and go with the process.
+  await storedLine(session, low.text);
+  await session.settled();
+  // Answered done before the stop: the listener sends the frame to no later process.
+  await answeredDone(session, low.text, lowWords);
+
+  await session.restart();
+  const card = marked("med-restart");
+  await session.relay(
+    "the restarted session to take the med card",
+    daemonEnvelope(card.text, card.label, "med")
+  );
+  const turn = await session.nextTurn("the first model request after the restart");
+  expectBefore(turn.request, low.text, card.text);
+  turn.reply([text("Read both cards.")]);
+  await session.settled();
+
+  // A low card held when the session stops: the tool call keeps the turn going, so the card is
+  // held, not stored, when the process ends. Its frame was answered done once the session
+  // recorded the card, so the listener sends it to no later process: the record keeps it, and
+  // the restarted session stores it, where the next turn reads it.
+  await session.command({ type: "prompt", message: "Start the long tool call." });
+  const busy = await session.nextTurn("the long tool call's model request");
+  const started = path.join(session.root, "stop-tool-started");
+  busy.reply([call("bash", { command: `touch '${started}'; sleep 20; echo slept` })]);
+  await session.until("the 20 s tool call to start", async () =>
+    (await Bun.file(started).exists()) ? true : undefined
+  );
+  const heldLow = marked("low-held-stop");
+  const heldWords = await session.relayWatched(
+    "the session to take the low card during the tool call",
+    daemonEnvelope(heldLow.text, heldLow.label, "low")
+  );
+  await answeredDone(session, heldLow.text, heldWords);
+  await session.restart();
+  const waking = marked("med-held-restart");
+  await session.relay(
+    "the restarted session to take the med card",
+    daemonEnvelope(waking.text, waking.label, "med")
+  );
+  const after = await session.nextTurn("the first model request after the stop in the tool call");
+  expectBefore(after.request, heldLow.text, waking.text);
+  after.reply([text("Read both cards.")]);
+  await session.settled();
+});
+
+test.skipIf(skip)("a low card at startup is owed no wake", async () => {
+  // No start-turn mark: the card comes while Oh My Pi starts, held inside its startup.
+  const session = await startSession({ holdStartup: true });
+  const low = marked("low-startup");
+  const lowWords = await session.relayWatched(
+    "the starting session to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  session.releaseStartup();
+  await session.state();
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done.
+  await answeredDone(session, low.text, lowWords);
+  const card = marked("med-startup");
+  await session.relay(
+    "the session to take the med card",
+    daemonEnvelope(card.text, card.label, "med")
+  );
+  const turn = await session.nextTurn("the turn the med card started");
+  expectBefore(turn.request, low.text, card.text);
+  turn.reply([text("Read both cards.")]);
+  await session.settled();
+  await storedLine(session, low.text);
+
+  // A start-turn mark, as the Legion entry keeps it for its controller's start: unsent from
+  // `session_start`, sent with the start prompt (its `input`), cleared at its `agent_start`.
+  const startupTurn = path.resolve(import.meta.dir, "../../pi-shared/src/startup-turn.ts");
+  const mark = await fixtureExtension(
+    "start-turn-mark.ts",
+    `import { clearStartupTurn, markStartupTurnPending, markStartupTurnSent } from ${JSON.stringify(startupTurn)};
+export default function startTurnMark(pi) {
+  let session = "";
+  let sent = false;
+  pi.on("session_start", async (_event, context) => {
+    session = context.sessionManager.getSessionId();
+    markStartupTurnPending(session);
+  });
+  pi.on("input", async () => {
+    if (!sent) {
+      sent = true;
+      markStartupTurnSent(session);
+    }
+    return undefined;
+  });
+  pi.on("agent_start", async () => {
+    clearStartupTurn(session);
+  });
+}
+`
+  );
+  const withMark = await startSession({ holdStartup: true, extensions: [mark] });
+  const lowMarked = marked("low-marked");
+  const lowMarkedWords = await withMark.relayWatched(
+    "the starting session to take the low card",
+    daemonEnvelope(lowMarked.text, lowMarked.label, "low")
+  );
+  withMark.releaseStartup();
+  await withMark.state();
+  const start = `START-${randomUUID().slice(0, 8)}`;
+  await withMark.command({ type: "prompt", message: start });
+  const startTurn = await withMark.nextTurn("the start turn's model request");
+  expect(newestMessage(startTurn.request.body)).toContain(start);
+  startTurn.reply([text("Started.")]);
+  await withMark.settled();
+  await noRequestFor(withMark, QUIET_MS, startTurn.index + 1);
+  await answeredDone(withMark, lowMarked.text, lowMarkedWords);
+  const markedCard = marked("med-marked");
+  await withMark.relay(
+    "the session to take the med card",
+    daemonEnvelope(markedCard.text, markedCard.label, "med")
+  );
+  const later = await withMark.nextTurn("the turn the med card started");
+  expectBefore(later.request, lowMarked.text, markedCard.text);
+  later.reply([text("Read both cards.")]);
+  await withMark.settled();
+});
+
+test.skipIf(skip)("a low card spares an interactive session", async () => {
+  const session = await startSession({ interactive: true });
+  const low = marked("low-terminal");
+  const lowWords = await session.relayWatched(
+    "the terminal to take the low card",
+    daemonEnvelope(low.text, low.label, "low")
+  );
+  await noRequestFor(session, QUIET_MS, 0);
+  // The session has had no reply, so its store holds nothing yet, but the session recorded the
+  // card: the frame is done.
+  await answeredDone(session, low.text, lowWords);
+  const typed = `TYPED-${randomUUID().slice(0, 8)}`;
+  await session.type(typed);
+  const turn = await session.nextTurn("the typed message's model request");
+  expect(newestMessage(turn.request.body)).toContain(typed);
+  expectBefore(turn.request, low.text, typed);
+  turn.reply([text("Read the card and the message.")]);
+});
+
+// The cards that stay as they were: a daemon card of any other urgency or none, a card from
+// another session, a message Dispatch delivers to the session, and an ask's card from Dispatch,
+// each of them at `low` where it can say so. Each starts its own turn.
+test.skipIf(skip)("every other card starts a turn as today", async () => {
+  const session = await startSession();
+  await session.settled();
+  const kinds: readonly (readonly [
+    string,
+    (card: { label: string; text: string }) => Promise<string>,
+  ])[] = [
+    ...(["med", "high", "blocking"] as const).map(
+      (urgency) =>
+        [
+          `a daemon card at ${urgency}`,
+          async (card: { label: string; text: string }) => {
+            await session.relay(urgency, daemonEnvelope(card.text, card.label, urgency));
+            return card.text;
+          },
+        ] as const
+    ),
+    [
+      "a daemon card with no urgency",
+      async (card) => {
+        await session.relay("no urgency", daemonEnvelope(card.text, card.label));
+        return card.text;
+      },
+    ],
+    [
+      "another session's card at low",
+      async (card) => {
+        await session.relay("a peer", peerEnvelope(session.sid, card.text, card.label, "low"));
+        return card.text;
+      },
+    ],
+    ["a message Dispatch delivers at low", (card) => session.send(card.label, "low")],
+    [
+      "an ask's card from Dispatch at low",
+      async (card) => {
+        await session.relay("an answer", askAnsweredEnvelope(card.text, card.label, "low"));
+        return card.text;
+      },
+    ],
+  ];
+  for (const [index, [name, deliver]] of kinds.entries()) {
+    const shown = await deliver(marked(`other-${index}`));
+    const turn = await session.nextTurn(`the turn ${name} started`);
+    expect(turn.index).toBe(index);
+    expect(conversation(turn.request)).toContain(shown);
+    turn.reply([text(`Read ${name}.`)]);
+    await session.settled();
+  }
+  await probe(session, kinds.length);
+});
+
+/** The entries Oh My Pi's SQL store holds for the session `file` names, each line parsed. */
+function storeEntries(database: string, file: string): Record<string, unknown>[] {
+  return (sqlSessionText(database, file) ?? "")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** The role of a message entry, or undefined for any other entry. */
+function entryRole(entry: Record<string, unknown>): unknown {
+  const { message } = entry;
+  return entry.type === "message" && typeof message === "object" && message !== null
+    ? (message as Record<string, unknown>).role
+    : undefined;
+}
+
+// Oh My Pi stores every entry of a session once any entry of it is an assistant message, on any
+// branch of its tree, and appends a stored card at the leaf it has then. A person's edit of the
+// first prompt moves the leaf to before it, a branch with no reply, where a low card is stored, and
+// a move back to the reply leaves that card on a branch the session is no longer on. The store
+// holds it all the same, and the stored-card check reads every branch (`storedEntries`,
+// `storeHoldsSession`), so the ledger records the frame shown. A check that read only the branch
+// the session is on never found the card, and its frame held a place of the session consumer's
+// ack-pending and its resume point for the life of the process (dispatch://INFRA-3686/spec R5).
+// The frame is answered `done` once the session records the card; the ledger's record of it is the
+// store's witness.
+test.skipIf(skip)(
+  "a low card stored on a branch with no reply, then left for one with a reply, is answered done",
+  async () => {
+    const session = await startSession({ storage: "sql" });
+    await session.command({ type: "prompt", message: "First task." });
+    const first = await session.nextTurn("the first model request");
+    first.reply([text("Done.")]);
+    await session.settled();
+    const file = (await session.state()).sessionFile;
+    if (file === undefined) throw new Error("get_state named no session file");
+    const database = path.join(session.root, "sessions.db");
+    const entries = await session.until("the first reply in the store", () => {
+      const held = storeEntries(database, file);
+      return held.some((entry) => entryRole(entry) === "assistant") ? held : undefined;
+    });
+    const prompt = entries.find((entry) => entryRole(entry) === "user");
+    const reply = entries.find((entry) => entryRole(entry) === "assistant");
+    if (typeof prompt?.id !== "string" || typeof reply?.id !== "string") {
+      throw new Error("the store holds no prompt and reply with ids");
+    }
+    // The person edits the first prompt: the leaf moves to before it.
+    await session.command({ type: "navigate_tree", entryId: prompt.id });
+    const low = marked("low-tree");
+    const words = await session.relayWatched(
+      "the session to take the low card",
+      daemonEnvelope(low.text, low.label, "low")
+    );
+    await session.until("the low card in the store", () =>
+      storeEntries(database, file).some(
+        (entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(low.text)
+      )
+        ? true
+        : undefined
+    );
+    await noRequestFor(session, 12_000, 1);
+    // The person goes back to the first reply without sending the edit.
+    await session.command({ type: "navigate_tree", entryId: reply.id });
+    await noRequestFor(session, 12_000, 1);
+    expect(words).toContain("done");
+    await session.until("the ledger's record of the low card in the store", () =>
+      storeEntries(database, file).some(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === "envoy-replay-delivered" &&
+          JSON.stringify(entry.data).includes(`evt-${low.label}`)
+      )
+        ? true
+        : undefined
+    );
+  }
+);

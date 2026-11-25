@@ -399,7 +399,7 @@ func aLookAdoptsNothing(r *adoptionRig) {
 	r.admitClaims(r.suspended(root.Key, root.Key, claim.RoleImplementer))
 	r.restoreClaims()
 
-	r.apply("check-wake", intake.CheckWakeDue{Issue: root.Key, Look: 1, OpenedAt: check.OpenedAt, Reason: "the deploy has not carried the merge"})
+	r.apply("check-wake", intake.CheckWakeDue{Issue: root.Key, Look: 1, OpenedAt: check.OpenedAt, Reason: "the deploy has not carried the merge", Pending: true})
 	r.run()
 	r.boot(root.Key, claim.RoleImplementer)
 

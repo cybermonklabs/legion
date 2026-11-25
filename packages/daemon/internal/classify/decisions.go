@@ -694,7 +694,7 @@ func ChecksConcludedOnHead(pr record.PullRequest) bool {
 // ChecksConcludedOnHead is this list being non-empty, the state build counts it for the number
 // the issue's view carries (projection's mergeWaitView, api.MergeWaitView.CheckRuns), and the
 // notice of a head GitHub will not merge names each of its runs with its conclusion (workflow's
-// headChecks).
+// headRuns and notPassed).
 func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 	var runs []record.AttemptRun
 	for _, run := range pr.CheckRuns {
@@ -1530,15 +1530,19 @@ func ApplyDesignGateEvent(gate record.DesignGate, kind DesignGateEventKind, vers
 		}
 		approved := version
 		gate.ApprovedVersion, gate.ApprovedMark = &approved, mark
-		gate = clearChangesTold(gate)
+		gate = ClearChangesTold(gate)
 	case DesignGateChangesRequested:
 		gate.ApprovedVersion, gate.ApprovedMark = nil, record.EventMark{}
 	}
 	return gate
 }
 
-func clearChangesTold(gate record.DesignGate) record.DesignGate {
-	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = nil, "", record.EventMark{}
+// ClearChangesTold is gate with no changes request recorded as told: the version, the reason, who
+// made it and the mark of its event, all four cleared together, as an approval clears them
+// (ApplyDesignGateEvent) and a root that left before its resume ran does (workflow's
+// untellUnresumedChanges).
+func ClearChangesTold(gate record.DesignGate) record.DesignGate {
+	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = nil, "", "", record.EventMark{}
 	return gate
 }
 
@@ -1589,17 +1593,21 @@ func DesignGateChangesTold(gate record.DesignGate, version int, reason string, m
 }
 
 // RecordChangesTold records on the gate the changes request the architect is being told of, or has
-// been, so a later read of the same review (a registration's or the gate seed's) tells it nothing
-// again. A review the gate already records keeps its record, completed with what this read adds of
-// its mark (record.EventMark.Merged), so the review's live event and a read that showed only its
-// time are one review, recorded with both.
-func RecordChangesTold(gate record.DesignGate, version int, reason string, mark record.EventMark) record.DesignGate {
+// been, with who made it (by, Dispatch's name of the review's actor), so a later read of the same
+// review (a registration's or the gate seed's) tells it nothing again. A review the gate already
+// records keeps its record, completed with what this read adds of its mark
+// (record.EventMark.Merged) and of its author, so the review's live event and a read that showed
+// only its time are one review, recorded with both.
+func RecordChangesTold(gate record.DesignGate, version int, reason, by string, mark record.EventMark) record.DesignGate {
 	if DesignGateChangesTold(gate, version, reason, mark) {
 		gate.ToldChangesMark = gate.ToldChangesMark.Merged(mark)
+		if by != "" {
+			gate.ToldChangesBy = by
+		}
 		return gate
 	}
 	told := version
-	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = &told, reason, mark
+	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = &told, reason, by, mark
 	return gate
 }
 

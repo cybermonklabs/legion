@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -88,7 +87,7 @@ func theReopeningIsToldByTheTaskSentAgain(t *testing.T, r *newsPathRig, machine 
 		t.Fatalf("the reviewer holds %+v after its turn's end, want the task sent again and acknowledged under its id", sent)
 	}
 	reached := shim.sentToTheAgent()[before:]
-	if len(reached) != 1 || reached[0].DeliveryID != sent.ID || !strings.Contains(reached[0].Message, carriedOpened) {
+	if len(reached) != 1 || reached[0].DeliveryID != sent.ID || !newsTells(t, reached[0].Message, carriedOpened) {
 		t.Fatalf("the prompts that reached the agent at the turn's end = %+v, want the task under %s leading with the opening", reached, sent.ID)
 	}
 	r.startTurn(machine)
@@ -113,7 +112,7 @@ func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRea
 	r.conns.Register(token, shim)
 	r.queueNewsTask(pathRoot)
 	first := r.delivered(reviewer)
-	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || strings.Contains(reached[0].Message, carriedOpened) {
+	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || newsTells(t, reached[0].Message, carriedOpened) {
 		t.Fatalf("the prompts that reached the agent = %+v, want the news task %s, without an opening", reached, first.ID)
 	}
 
@@ -157,7 +156,7 @@ func TestAResendAfterALostAnswerTheShimAnswersFromItsRecordRecordsNoNewsTheAgent
 	if first == nil || !first.ConfirmedAt.IsZero() || !first.DeliveredAt.IsZero() {
 		t.Fatalf("the reviewer holds %+v after the lost answer, want its news task waiting, unread", first)
 	}
-	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || strings.Contains(reached[0].Message, carriedOpened) {
+	if reached := shim.sentToTheAgent(); len(reached) != 1 || reached[0].DeliveryID != first.ID || newsTells(t, reached[0].Message, carriedOpened) {
 		t.Fatalf("the prompts that reached the agent = %+v, want the news task %s, without an opening", reached, first.ID)
 	}
 

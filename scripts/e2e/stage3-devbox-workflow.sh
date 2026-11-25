@@ -998,6 +998,9 @@ primary_issue() {
   # instructions, so the issue stands there until the proof's prompt.
   until_true 600 "$root_issue to leave reviewing for accepting" issue_phase "$root_issue" accepting
   state_file accepting
+  # The card prints the notice's head, `summary: <kind> on <KEY>`, and then its record under
+  # `message:`, in the payload's key order: `kind`, `role` and `phase` come first there
+  # (record.Notice's order), so the needle reads them on consecutive lines.
   until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$root_issue" architect \
     "$(notice_needle phase-finished "$root_issue")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
   # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task

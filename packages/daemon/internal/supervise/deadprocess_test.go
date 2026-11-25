@@ -367,9 +367,9 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 					t.Errorf("the claim records the let-go's end as %+v, want the read's death %q, with the dead turn and its task, untold",
 						ended, endDied(cause))
 				}
-				want := relaunchSentence(ended, true) + "\n\n" + held.Task
+				want := h.relaunchNote(ended, true) + "\n\n" + held.Task
 				if verdict.outOfMemory {
-					want = relaunchSentence(ended, true) + "\n\n" + outOfMemoryTask + held.Task
+					want = h.relaunchNote(ended, true) + "\n\n" + h.outOfMemoryNote() + "\n\n" + held.Task
 				}
 				if got, _ := p.message(h.claim()); got != want {
 					t.Errorf("the task taken back is sent as %q, want %q", got, want)

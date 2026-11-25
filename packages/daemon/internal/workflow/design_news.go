@@ -1,13 +1,13 @@
 package workflow
 
 import (
-	"fmt"
-	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // News is everything one delivery's news of the approved design is rendered from (RenderNews):
@@ -22,12 +22,20 @@ import (
 //
 // Tree is the tree root, whose documents the gate holds and on which every pointer reads them.
 // Steps are the deployment's gated steps and Gates the tree root's gate rows by step, as the
-// transaction reads them (record.Store.GatesOf): the gate sentence is said of them, so a news task
+// transaction reads them (record.Store.GatesOf): the gate's record is said of them, so a news task
 // composed while the gate stood open and sent after a later version closed it says closed. Each
 // row carries its own Step, as the store writes it.
 //
+// Documents is the document each row of Gates is bound to, by step, by the rule the
+// architect-start task and the catch-up name it by (GateDocuments): a dispatch:// link on the
+// issue the row records, or that the store's rows on its artifact name, else on the issue Dispatch
+// names where the daemon sends the task (NameNewsDocuments, outside the transaction), else the
+// bare artifact reference. So a carried root's news names the old root's document, or the bare
+// reference where nothing says whose it is, and never the carried root's own. It holds a document
+// for every row of Gates.
+//
 // OpeningOwed is the audience's told row's own flag (record.DesignTold.OpeningOwed): the gate
-// opened while the audience was owed news, so the news leads with the gate sentence in place of
+// opened while the audience was owed news, so the news leads with the gate's record in place of
 // the opening's role message.
 //
 // Items is what the audience is told, each with its recorded change set, or with the review
@@ -42,6 +50,7 @@ type News struct {
 	Phase       phase.Phase
 	Steps       []record.DesignStep
 	Gates       map[record.DesignStep]record.DesignGate
+	Documents   map[record.DesignStep]string
 	OpeningOwed bool
 	Items       []NewsChange
 	// Members is every member of the tree, the root among them, in the order the architect's
@@ -94,16 +103,21 @@ func (c NewsChange) to() int {
 }
 
 // NewsMember is one member of a tree as the root architect's summary names it: its key, its phase,
-// what its news is (State), and, for a member owed news, the items its holder is owed. Architect
-// is the key of the issue whose architect holds the member in accepting, where that is an
-// architect other than the tree root's: the member's own, or one between it and the root (the
-// owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none.
+// what its news is (State), and, for a member owed news, the items its holder is owed whose change
+// sets are recorded (Items), whether the task that tells it gives it the gate's opening (Opening:
+// its holder row owes the opening, which record.OwedNews owes only while the standing gate is
+// open), and how many items it is owed that the record cannot tell yet (Unnamed), which no item
+// names. A member owed news is owed at least one of the three. Architect is the key of the issue
+// whose architect holds the member in accepting, where that is an architect other than the tree
+// root's: the member's own, or one between it and the root (the owner walk, record.OwningIssue).
+// The summary names that architect as the one told. Every other member has none.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
 	State     NewsState
 	Items     []NewsChange
+	Opening   bool
+	Unnamed   int
 	Architect string
 }
 
@@ -171,63 +185,95 @@ const (
 	NewsGateClosed NewsState = "gate-closed"
 )
 
-// RenderNews is the one place the text of news of an approved design is written, in the form its
-// Audience takes. It is pure: the daemon's send reads the record in one transaction, drops what
-// no longer stands, and hands it the rest (News).
-//
-// Both forms lead with the gate sentence when the opening is owed to the audience, said of the
-// gate as it stands at send: the opened sentence while the standing gate is open, naming the step
-// approved last, and the closed sentence, naming the version that closed it, once a later version
-// has (gateOpenedSentence, gateClosedSentence, which tellGateMoved also writes). So a merger's
-// release reads the words its prompt quotes, and news sent after the gate closed again says so.
-//
-// To a holder it then names, for each step, the version pair as the version its phase last took,
-// the sections and the typed blocks that changed (requirements and the other non-check blocks for
-// spec and decisions, checks for criteria), or the reason the change list could not be read, and
-// the `dispatch doc-read` command that prints the new version. A section is a `##` section, named
-// by its heading, or a run of the text outside every section, named by where it stands
-// (sectionName). A step whose earlier version Dispatch's review history could not give is named
-// as the new version since a version the daemon could not read, with the reason that history
-// could not be read, and the same command. One closing sentence names the rule the role's prompt
-// carries for answering it. A holder whose every item changed nothing of the work
-// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) is told only that
-// nothing its issue holds changed, and why, with no list and no rule, since there is nothing to
-// answer: that is the one news task of such a version, sent where the opening is owed to it.
-//
-// To the root architect it names each pair of versions this news tells of with its change list,
-// or why a pair changed nothing any issue holds, then every member of the tree with its phase and
-// what it is told: owed news sent now, owed news that waits until its holder takes the task it
-// holds, owed news its next start carries, owed news the architect answers itself in accepting, or
-// told nothing with the reason. A merged member carries the architect's duty: its pull request can
-// take no new work, so the work goes to an issue of the tree whose pull request is still open, or
-// to a person.
+// RenderNews is the one place the text of news of an approved design is written: the
+// design-news record of its Audience (NewsRecord), rendered. It is pure: the daemon's send reads
+// the record in one transaction, drops what no longer stands, and hands it the rest (News).
 //
 // It names no notice kind: a phase worker's session holds no notice, and the end-to-end proof
-// fails a run where one reads as if it did (scripts/e2e/lib/workflow.sh, worker_notices).
+// fails a run where one reads as if it did (scripts/e2e/lib/workflow.sh, worker_notices). So a
+// member's state is said in the record's own words (texts.NewsTold, texts.NewsWhy), never as a
+// NewsState, one of which is spelled as a controller notice kind.
 func RenderNews(news News) string {
-	var paragraphs []string
-	if news.OpeningOwed {
-		if sentence := gateAtSend(news.Tree, news.Steps, news.Gates); sentence != "" {
-			paragraphs = append(paragraphs, sentence)
-		}
-	}
-	if news.Audience == record.AudienceArchitect {
-		paragraphs = append(paragraphs, architectNews(news)...)
-	} else {
-		paragraphs = append(paragraphs, holderNews(news)...)
-	}
-	return strings.Join(paragraphs, "\n\n")
+	return taskText(NewsRecord(news))
 }
 
-// gateAtSend is the gate sentence of tree as gates stand now. The standing gate is closed when a
-// step the tree is gated on holds a row that is not open (classify.StandingGate, the predicate the
-// merger's hold reads too), and the sentence names that row's latest version, the one with its
-// reviewer. Otherwise it is open, and the sentence names the approval that opened it: the row
-// whose approval Dispatch recorded last (record.EventMark.After), the later step in the tree's
-// order where the marks cannot tell. It is "" when no row holds an approval, which says nothing.
-func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
+// NewsRecord is the design-news record of news (texts.DesignNewsRecord), in the form its Audience
+// takes. The steps the readers' prompts give with it are none of its fields: how to answer each
+// form, reading a version whole, and the command that prints a version.
+//
+// Both forms carry the gate's fields when the opening is owed to the audience, said of the gate as
+// it stands at send (gateAtSend): `gate: open` while the standing gate is open, naming the step
+// approved last, and `gate: closed`, naming the version that closed it, once a later version has.
+// They are the fields of the gate-moved message (gateMovedOn, which tellGateMoved also sends), so
+// a merger's release reads the fields its prompt names, and news sent after the gate closed again
+// says so.
+//
+// To a holder it names the issue, the phase the holder holds it in, and each of its items (Items),
+// the version its phase took as the item's taken. To the root architect it names each pair of
+// versions this news tells of once (distinctPairs), the architect's own marked as yours, then every
+// member of the tree with its phase and how it is told, and each item a member is owed by its
+// index. Each item says what changed (newsItems.add): the sections and the typed blocks of its
+// change set as rows of their own, or why none are named.
+func NewsRecord(news News) texts.DesignNewsRecord {
+	rec := texts.DesignNewsRecord{TaskHead: texts.TaskHead{Kind: texts.DesignNews, Issue: news.Issue}, Tree: news.Tree,
+		Audience: texts.NewsToHolder}
+	if news.OpeningOwed {
+		if gate, said := gateAtSend(news); said {
+			rec.Gate, rec.GateStep, rec.GateDocument, rec.GateArtifact, rec.GateVersion, rec.Merge =
+				gate.Gate, gate.Step, gate.Document, gate.Artifact, gate.Version, gate.Merge
+		}
+	}
+	items := newsItems{news: news, rec: &rec}
+	if news.Audience != record.AudienceArchitect {
+		rec.Phase = string(news.Phase)
+		for _, item := range news.Items {
+			items.add(item, nil)
+		}
+		return rec
+	}
+	rec.Issue, rec.Audience = news.Tree, texts.NewsToRootArchitect
+	own := make(map[newsKey]bool, len(news.Items))
+	for _, item := range news.Items {
+		own[item.key()] = true
+	}
+	index := map[newsKey]int{}
+	for _, item := range distinctPairs(news) {
+		yours := own[item.key()]
+		index[item.key()] = len(rec.Items)
+		items.add(item, &yours)
+	}
+	for _, member := range news.Members {
+		told, why := memberTold(member.State)
+		row := texts.DesignNewsMember{Issue: member.Issue, Phase: string(member.Phase), Told: told, Why: why, Opening: member.Opening,
+			Unnamed: member.Unnamed, ArchitectOf: member.Architect}
+		// The role that holds the member's phase is named where a task tells it, by its holder or by
+		// the root architect, as the summary named the holder only beside news it is owed: a member
+		// told nothing is told by nobody, and one at admitted, whose phase RoleFor names the
+		// architect's, is never owed news (record.OwedNews), so no row names a holder for it.
+		if told != texts.NewsToldNothing && told != texts.NewsToldNothingYet {
+			row.Holder = string(phase.RoleFor(member.Phase))
+		}
+		rec.Members = append(rec.Members, row)
+		for _, item := range member.Items {
+			rec.Owed = append(rec.Owed, texts.DesignNewsOwed{Issue: member.Issue, Item: index[item.key()]})
+		}
+	}
+	return rec
+}
+
+// gateAtSend is the gate-moved record of news's tree as its gates stand now. The standing gate is
+// closed when a step the tree is gated on holds a row that is not open (classify.StandingGate, the
+// predicate the merger's hold reads too), and the record names that row's latest version, the one
+// with its reviewer. Otherwise it is open, and the record names the approval that opened it: the
+// row whose approval Dispatch recorded last (record.EventMark.After), the later step in the tree's
+// order where the marks cannot tell. Each names its row's document as the send names it
+// (News.Documents): the old root's for a carried row, or the bare artifact reference where nothing
+// says whose it is. It says nothing (false) when no row holds an approval.
+func gateAtSend(news News) (texts.GateMovedRecord, bool) {
+	tree, steps, gates := news.Tree, news.Steps, news.Gates
 	if held, closed := classify.StandingGate(steps, gates); closed {
-		return gateClosedSentence(tree, held.Step.OrSpec(), held.ArtifactID, held.LatestVersion)
+		step := held.Step.OrSpec()
+		return gateMovedOn(tree, news.Documents[step], step, held.ArtifactID, held.LatestVersion, false), true
 	}
 	var opened record.DesignGate
 	var openedStep record.DesignStep
@@ -241,123 +287,15 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 		}
 	}
 	if openedStep == "" {
-		return ""
+		return texts.GateMovedRecord{}, false
 	}
-	return gateOpenedSentence(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion)
-}
-
-// holderNews is the holder's form after its gate sentence: what changed for its issue, then the
-// rule its prompt carries. An issue whose every item changed nothing of the work is told that
-// nothing it holds changed, and why, and nothing more.
-func holderNews(news News) []string {
-	if len(news.Items) == 0 {
-		return nil
-	}
-	if workUnchanged(news.Items) {
-		sentences := make([]string, len(news.Items))
-		for i, item := range news.Items {
-			sentences[i] = nothingChanged(item)
-		}
-		return []string{strings.Join(sentences, " ")}
-	}
-	list := []string{fmt.Sprintf("The approved design of %s changed for %s, which you hold in %s:", news.Tree, news.Issue, news.Phase)}
-	for _, item := range news.Items {
-		if item.Changes.WorkUnchanged() {
-			list = append(list, "- "+nothingChanged(item))
-			continue
-		}
-		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, "your phase")))
-		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
-	}
-	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
-}
-
-// nothingChanged is the words that tell a holder an item's new version changed nothing its issue
-// holds (record.DesignChanges.WorkUnchanged), and why: the new version holds the same text as the
-// version its phase took, or differs from it in decision blocks alone. It names no change list:
-// such an item has none.
-func nothingChanged(item NewsChange) string {
-	changes := item.Changes
-	why := "differs from it only in decision blocks"
-	if changes.Unchanged {
-		why = fmt.Sprintf("holds the same text as version %d", changes.From)
-	}
-	return fmt.Sprintf("%s Version %d of its %s document (%s) %s.", nothingChangedSince(changes.From), changes.To, item.Step, changes.ArtifactID, why)
-}
-
-// holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
-// answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
-// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
-// other phase worker moves back when its work is stale, and comments when it is current.
-func holderRule(issue string, p phase.Phase) string {
-	switch p {
-	case phase.Accepting:
-		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
-			", with a reason that names the version and the change."
-	case phase.Planning:
-		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
-			"wherever your task places your step, so it does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
-			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
-	}
-	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
-		"call `request_backward_move` with a reason that names the version and the change; if it is current, write a `dispatch comment` "+
-		"on %s that names the version and why; an issue whose pull request has merged never moves back.", issue)
-}
-
-// acceptingAnswer is the answer an architect gives the news of an issue it holds in accepting,
-// named as subject: its sign-off, or a move back. It is written once for its two readers: the
-// closing rule of the holder form (holderRule) and the root architect's line for a member it
-// answers itself (memberWords).
-func acceptingAnswer(subject string) string {
-	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to planning, implementing or testing", subject)
-}
-
-// architectNews is the root architect's summary after its gate sentence: each pair of versions
-// the news tells of with its change list, or with why it changed nothing any issue holds, once
-// each, then every member of the tree with its phase and what it is told. An item whose review
-// history could not be read is an entry of its own, named by the question that history did not
-// answer (newsKey), never folded into a pair.
-func architectNews(news News) []string {
-	var paragraphs []string
-	own := make(map[newsKey]bool, len(news.Items))
-	for _, item := range news.Items {
-		own[item.key()] = true
-	}
-	if pairs := distinctPairs(news); len(pairs) > 0 {
-		list := []string{fmt.Sprintf("A person approved a new version of the design of %s. What changed, for each pair of versions this news names:", news.Tree)}
-		for _, item := range pairs {
-			taker := ""
-			if own[item.key()] {
-				taker = "you"
-			}
-			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, taker))
-			if item.Changes.WorkUnchanged() {
-				why := "Only its decision blocks changed"
-				if item.Changes.Unchanged {
-					why = fmt.Sprintf("It holds the same text as version %d", item.Changes.From)
-				}
-				list = append(list, line+" "+why+", so nothing any issue holds changed.")
-				continue
-			}
-			list = append(list, line)
-			list = append(list, indented(changeLines(news.Tree, item, taker))...)
-		}
-		paragraphs = append(paragraphs, strings.Join(list, "\n"))
-	}
-	if len(news.Members) > 0 {
-		list := []string{fmt.Sprintf("Each issue of the tree of %s, with its phase and what it is told:", news.Tree)}
-		for _, member := range news.Members {
-			list = append(list, fmt.Sprintf("- %s, in %s: %s", member.Issue, member.Phase, memberWords(member)))
-		}
-		paragraphs = append(paragraphs, strings.Join(list, "\n"))
-	}
-	return paragraphs
+	return gateMovedOn(tree, news.Documents[openedStep], openedStep, opened.ArtifactID, *opened.ApprovedVersion, true), true
 }
 
 // distinctPairs is each step's pair of versions the architect's summary tells of, and each
 // question of a review history it could not read, once each (newsKey): the architect's own items
-// first, then each member's in the order the members are named.
+// first, then each member's in the order the members are named. An item whose review history could
+// not be read is an entry of its own, never folded into a pair.
 func distinctPairs(news News) []NewsChange {
 	var pairs []NewsChange
 	seen := map[newsKey]bool{}
@@ -376,256 +314,179 @@ func distinctPairs(news News) []NewsChange {
 	return pairs
 }
 
-// memberWords is what the architect's summary says of one member: what it is owed, and who tells
-// it, or that it is told nothing and why. The holder of a member in accepting that another
-// architect than the tree root's owns is that architect (NewsMember.Architect): the member's own,
-// or the architect of the issue above it that the summary names.
-func memberWords(member NewsMember) string {
-	owes := "owed news of the approved design"
-	if len(member.Items) > 0 {
-		owed := make([]string, len(member.Items))
-		for i, item := range member.Items {
-			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase"))
-		}
-		owes = "owed " + strings.Join(owed, ", and ")
-	}
-	holder := "the holder of its phase"
-	switch role := phase.RoleFor(member.Phase); {
-	case member.Architect == member.Issue:
-		holder = "its own architect"
-	case member.Architect != "":
-		holder = "the architect of " + member.Architect
-	case role != "":
-		holder = "its " + string(role)
-	}
-	switch member.State {
+// memberTold is how the root architect's summary says a member of a state is told (a texts.NewsTold
+// word), and, for a member told nothing or nothing yet, why (a texts.NewsWhy word).
+func memberTold(state NewsState) (told, why string) {
+	switch state {
 	case NewsSentNow:
-		return fmt.Sprintf("%s; a task tells %s now.", owes, holder)
+		return texts.NewsToldNow, ""
 	case NewsWaitsForTask:
-		return fmt.Sprintf("%s; %s holds a task it has not taken yet, and the news waits until it takes that task.", owes, holder)
+		return texts.NewsToldWhenTaskTaken, ""
 	case NewsAtNextStart:
-		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
+		return texts.NewsToldAtNextStart, ""
 	case NewsYouAnswer:
-		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
-	case NewsWorkUnchanged:
-		return "told nothing: the approved version holds the same text as the one it took, apart from decision blocks."
-	case NewsNotConcerned:
-		return "told nothing: only the root's checks changed, and they are the root's alone to prove."
-	case NewsAlreadyTaken:
-		return "told nothing: its phase already took the approved version."
-	case NewsAdmitted:
-		return "told nothing: it has not started, and its first phase starts from the approved version."
-	case NewsAwaitingPerson:
-		return "told nothing while it waits on a person: no phase holder works it."
-	case NewsStopped:
-		return "told nothing while it is held: the release that moves it back into a phase carries what it is owed then."
-	case NewsDone:
-		return "told nothing: its work is done."
-	case NewsOutOfWorkflow:
-		return "told nothing: its status takes it out of the workflow."
-	case NewsMerged:
-		return "told nothing: its pull request has merged, and merged work never moves back. Give the new work to an issue of this tree " +
-			"whose pull request is still open, or `dispatch ask` the person."
+		return texts.NewsToldByYou, ""
 	case NewsGateClosed:
-		return "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves the version " +
-			"now with its reviewer."
+		return texts.NewsToldNothingYet, texts.NewsWhyGateClosed
 	}
-	return "told nothing."
+	return texts.NewsToldNothing, map[NewsState]string{
+		NewsWorkUnchanged:  texts.NewsWhyWorkUnchanged,
+		NewsNotConcerned:   texts.NewsWhyRootChecksOnly,
+		NewsAlreadyTaken:   texts.NewsWhyAlreadyTaken,
+		NewsAdmitted:       texts.NewsWhyNotStarted,
+		NewsAwaitingPerson: texts.NewsWhyWaitsOnPerson,
+		NewsStopped:        texts.NewsWhyStopped,
+		NewsDone:           texts.NewsWhyDone,
+		NewsOutOfWorkflow:  texts.NewsWhyOutOfWorkflow,
+		NewsMerged:         texts.NewsWhyMerged,
+	}[state]
 }
 
-// pairWords is the version an item tells as news says it: the new version, then what taker took
-// before it (sinceWords).
-func pairWords(item NewsChange, taker string) string {
-	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker))
+// newsItems adds the items of news to its record, each with the rows of what changed in it.
+type newsItems struct {
+	news News
+	rec  *texts.DesignNewsRecord
 }
 
-// sinceWords is the version taker last took as news says it: the change set's From, or that no
-// version was approved before the new one (From 0). From 0 is only ever a version the told row
-// held or the review history read and found none before: a history that could not be read names
-// no pair (NewsChange.HistoryUnread), and is said as a version the daemon could not read, never as
-// a first approval. An empty taker names nobody's taking.
-func sinceWords(item NewsChange, taker string) string {
-	if item.HistoryUnread != nil {
-		return "since a version the daemon could not read"
-	}
-	from := item.Changes.From
-	switch {
-	case from == 0 && taker == "":
-		return "the first version a person approved"
-	case from == 0:
-		return fmt.Sprintf("the first version a person approved; %s took none before it", taker)
-	case taker == "":
-		return fmt.Sprintf("since version %d", from)
-	}
-	return fmt.Sprintf("since version %d, which %s last took", from, taker)
+// add adds item to the record, yours being whether the version it names as taken is the root
+// architect's own (nil in the holder's form): its step, its document, the version approved now, the
+// version taken, and what changed, said once.
+//
+// An item whose review history could not be read names no version taken, since the history could
+// not say which, and no pair (texts.NewsChangesNoPair), with the reason, never as a first approval.
+// A pair Dispatch could not answer for names its reason (texts.NewsChangesUnavailable). A pair that
+// changed nothing of the work (record.DesignChanges.WorkUnchanged) says which of the two it is: the
+// same text, or decision blocks alone. Every other pair names each changed section and block as a
+// row naming the item (texts.NewsChangesListed): every block of the spec and the decisions document
+// but its checks, and only the checks of the Verification document (criteria), which are the
+// root's to prove. A pair that names none is a first approval (from version 0, which the reconcile
+// records read with nothing named and never asks Dispatch about), with no earlier version to
+// compare with, or one Dispatch read and named nothing of (texts.NewsChangesNoneNamed).
+func (n newsItems) add(item NewsChange, yours *bool) {
+	row := texts.DesignNewsItem{Step: string(item.Step), Document: n.document(item), Artifact: item.artifact(), Version: item.to(),
+		Yours: yours}
+	row.Taken, row.Changes, row.Reason = n.changed(len(n.rec.Items), item)
+	n.rec.Items = append(n.rec.Items, row)
 }
 
-// changeLines is what one item says, line by line: the sections and the blocks of its change set
-// that changed, or why the list could not be read, or, for an item whose review history could not
-// be read, why the version taker last took could not be read; then the command that prints the new
-// version. An empty taker, in the architect's summary, names each issue the item is owed to. An
-// item that changed nothing of the work (record.DesignChanges.WorkUnchanged) never reaches it: its
-// callers say why nothing changed in place of a list (nothingChanged, architectNews). So a read set
-// that names nothing here is a first approval (from version 0, which the reconcile records read with
-// nothing named and never asks Dispatch about, handled by the From 0 case below), or one from a
-// Dispatch that predates its unchanged answer, which says neither, and the line says only what that
-// Dispatch said.
-func changeLines(tree string, item NewsChange, taker string) []string {
+// changed is what the item at index at says changed (add): the version taken, nil where its review
+// history could not be read; the texts.NewsChanges word; and Dispatch's reason, nil for none. It
+// adds the rows of the sections and the blocks it names.
+func (n newsItems) changed(at int, item NewsChange) (*int, string, *texts.Words) {
+	if unread := item.HistoryUnread; unread != nil {
+		return nil, texts.NewsChangesNoPair, dispatchReason(unread.Reason, unread.ReadAt)
+	}
 	changes := item.Changes
-	var lines []string
+	taken := new(changes.From)
 	switch {
-	case item.HistoryUnread != nil:
-		if taker == "" {
-			taker = "each issue owed it"
-		}
-		lines = append(lines, couldNotRead(fmt.Sprintf("The version %s last took", taker), item.HistoryUnread.Reason))
 	case changes.State == record.DesignChangesUnavailable:
-		lines = append(lines, couldNotRead("The change list", changes.Reason))
-	default:
-		if len(changes.Sections) > 0 {
-			lines = append(lines, sectionsLine(changes.Sections))
-		}
-		lines = append(lines, blockLines(item.Step, changes.Blocks)...)
-		switch {
-		case len(lines) > 0:
-		case changes.From == 0:
-			lines = append(lines, "No approved version came before it, so read it whole.")
-		default:
-			lines = append(lines, "Dispatch named no changed section or block of it.")
-		}
+		return taken, texts.NewsChangesUnavailable, dispatchReason(changes.Reason, changes.ReadAt)
+	case changes.Unchanged:
+		return taken, texts.NewsChangesSameText, nil
+	case changes.DecisionOnly:
+		return taken, texts.NewsChangesDecisionBlocksOnly, nil
 	}
-	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, item.artifact(), item.to()))
-}
-
-// couldNotRead is the sentence that says subject could not be read, and why where reason says. The
-// reason is Dispatch's own error text, or the reconcile's record of it, so it is quoted as a Go
-// string (%q), as a heading is (headingName): the quotes mark where text from outside the daemon
-// begins and ends, and a newline or a quote inside it is escaped rather than read as words of the
-// daemon's own. Its own closing stop and spaces are trimmed first, so the quoted reason ends where
-// its words do.
-func couldNotRead(subject, reason string) string {
-	reason = strings.TrimRight(reason, ". ")
-	if reason == "" {
-		return subject + " could not be read."
+	named := len(n.rec.Sections) + len(n.rec.Blocks)
+	for _, section := range changes.Sections {
+		n.rec.Sections = append(n.rec.Sections, sectionRow(at, section))
 	}
-	return fmt.Sprintf("%s could not be read: %q.", subject, reason)
-}
-
-// sectionsLine names each top-level unit that changed (sectionName), and how, in Dispatch's own
-// word for it: changed, added, removed, or moved for a unit that kept its text and changed its
-// place (record.SectionChange).
-func sectionsLine(sections []record.SectionChange) string {
-	named := make([]string, len(sections))
-	for i, section := range sections {
-		named[i] = sectionName(section) + " " + section.Change
-	}
-	return "Sections: " + strings.Join(named, "; ") + "."
-}
-
-// sectionName is how a top-level unit is named. A `##` section is named by its heading
-// (headingName). A run of the text outside every section, the heading "" with occurrence 0, is
-// named by the place Dispatch names it at: before the first section, or after the `##` section
-// directly before it. A run with no place, as a Dispatch from before the place names one, is the
-// text outside every section, which places it nowhere: such a run can follow any `#` heading, and
-// calling it the text before the first section would send the reader to the top of the document
-// for a change that stands lower down.
-func sectionName(section record.SectionChange) string {
-	if section.Heading != "" || section.Occurrence != 0 {
-		return headingName(section.Heading, section.Occurrence)
-	}
-	switch section.Place {
-	case dispatch.PlaceBeforeFirstSection:
-		return "the text before the first section"
-	case dispatch.PlaceAfterSection:
-		return "the text after " + headingName(section.AfterHeading, section.AfterOccurrence)
-	}
-	return "the text outside every section"
-}
-
-// headingName is how the `##` section of heading and occurrence is named: its heading quoted, with
-// its place among the sections of that heading when an earlier one carries it too. A heading with
-// no words, which Dispatch counts from occurrence 1, is named by its place among such headings.
-func headingName(heading string, occurrence int) string {
-	switch {
-	case heading == "":
-		return fmt.Sprintf("the %s section with an empty heading", ordinal(occurrence))
-	case occurrence > 0:
-		return fmt.Sprintf("the %s section headed %q", ordinal(occurrence+1), heading)
-	}
-	return fmt.Sprintf("%q", heading)
-}
-
-// ordinal is n as an ordinal number: 1st, 2nd, 3rd, 4th, 11th, 21st.
-func ordinal(n int) string {
-	suffix := "th"
-	if n%100 < 11 || n%100 > 13 {
-		switch n % 10 {
-		case 1:
-			suffix = "st"
-		case 2:
-			suffix = "nd"
-		case 3:
-			suffix = "rd"
-		}
-	}
-	return fmt.Sprintf("%d%s", n, suffix)
-}
-
-// blockLines names the typed blocks of step's document that changed, one line for each type in
-// the order the types first appear: the checks of the Verification document (criteria), and
-// every other block of the spec and the decisions document. A block's id is the document's own
-// text, so it is quoted (%q), as a heading is (headingName).
-func blockLines(step record.DesignStep, blocks []record.BlockChange) []string {
-	var types []string
-	byType := map[string][]string{}
-	for _, block := range blocks {
-		if (block.Type == "check") != (step == record.DesignStepCriteria) {
+	for _, block := range changes.Blocks {
+		if (block.Type == "check") != (item.Step == record.DesignStepCriteria) {
 			continue
 		}
-		if _, seen := byType[block.Type]; !seen {
-			types = append(types, block.Type)
-		}
-		byType[block.Type] = append(byType[block.Type], fmt.Sprintf("%q %s", block.ID, block.Change))
+		n.rec.Blocks = append(n.rec.Blocks, blockRow(at, block))
 	}
-	lines := make([]string, len(types))
-	for i, blockType := range types {
-		lines[i] = blockKind(blockType) + ": " + strings.Join(byType[blockType], "; ") + "."
+	switch {
+	case len(n.rec.Sections)+len(n.rec.Blocks) > named:
+		return taken, texts.NewsChangesListed, nil
+	case changes.From == 0:
+		return taken, texts.NewsChangesNoPair, nil
 	}
-	return lines
+	return taken, texts.NewsChangesNoneNamed, nil
 }
 
-// blockKind is the words a line of changed blocks of one type opens with. A type the daemon does
-// not name is the document's own text, so it is quoted (%q).
-func blockKind(blockType string) string {
-	switch blockType {
-	case "requirement":
-		return "Requirements"
-	case "check":
-		return "Checks"
-	case "plan_task":
-		return "Plan tasks"
-	case "callout":
-		return "Callouts"
+// document is the document item names: the document of its step's gate row as the send names it
+// (News.Documents: a dispatch:// link, the old root's for a carried row, or the bare artifact
+// reference where nothing says whose it is), where that row holds the item's artifact, and
+// otherwise the bare artifact reference (texts.ArtifactReference), since no record then says
+// which issue holds it.
+func (n newsItems) document(item NewsChange) string {
+	if row, ok := n.news.Gates[item.Step]; ok && row.ArtifactID == item.artifact() {
+		return n.news.Documents[item.Step]
 	}
-	return fmt.Sprintf("Blocks of type %q", blockType)
+	return texts.ArtifactReference(item.artifact())
 }
 
-// workUnchanged says whether no item changed anything of the work
-// (record.DesignChanges.WorkUnchanged): each changed decision blocks alone, or nothing at all.
-func workUnchanged(items []NewsChange) bool {
-	for _, item := range items {
-		if !item.Changes.WorkUnchanged() {
-			return false
-		}
+// dispatchReason is the reason Dispatch could not answer, as the reconcile recorded it read at at
+// (the daemon's giveUpReason): the daemon's sentence of the read it gave up on, that Dispatch holds
+// no such document or that Dispatch failed so many reads of it, with Dispatch's own error text
+// after it, in a block of its own, bounded at texts.OneAct. The sentence is the daemon's, so the
+// block names the daemon as its author (texts.ByDaemon), and Dispatch's words are those it quotes.
+func dispatchReason(reason string, at time.Time) *texts.Words {
+	if reason == "" {
+		return nil
 	}
-	return true
+	words := texts.Carry(reason, texts.OneAct, false)
+	words.By, words.At = texts.ByDaemon, at
+	return &words
 }
 
-// indented is lines under a list item.
-func indented(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, line := range lines {
-		out[i] = "  " + line
+// sectionRow is the row of one top-level unit that changed in the item at index item, as Dispatch
+// names it (record.SectionChange). A `##` section is a section, its place among the sections of its
+// heading counted from 1: Dispatch counts the sections of a heading with words from 0, and those
+// of an empty heading from 1. A run of the text outside every section, the heading "" with
+// occurrence 0, is named by the place Dispatch names it at: before the first section, or after the
+// `##` section directly before it, whose heading and place it names too. A run with no place, as a
+// Dispatch from before the place names one, is the text outside every section, which places it
+// nowhere: such a run can follow any `#` heading, and calling it the text before the first section
+// would send the reader to the top of the document for a change that stands lower down.
+func sectionRow(item int, section record.SectionChange) texts.DesignNewsSection {
+	row := texts.DesignNewsSection{Item: item, Change: section.Change}
+	switch {
+	case section.Heading != "" || section.Occurrence != 0:
+		row.Unit, row.Nth, row.Heading = texts.NewsUnitSection, sectionNth(section.Heading, section.Occurrence), documentWords(section.Heading)
+	case section.Place == dispatch.PlaceBeforeFirstSection:
+		row.Unit = texts.NewsUnitBeforeFirstSection
+	case section.Place == dispatch.PlaceAfterSection:
+		row.Unit, row.AfterNth = texts.NewsUnitAfterSection, sectionNth(section.AfterHeading, section.AfterOccurrence)
+		row.AfterHeading = documentWords(section.AfterHeading)
+	default:
+		row.Unit = texts.NewsUnitOutsideSections
 	}
-	return out
+	return row
+}
+
+// sectionNth is the place of the `##` section of heading and occurrence among the sections of that
+// heading, counted from 1: Dispatch counts a heading with words from 0, and an empty heading,
+// which has no words to tell it, from 1.
+func sectionNth(heading string, occurrence int) int {
+	if heading == "" {
+		return occurrence
+	}
+	return occurrence + 1
+}
+
+// blockRow is the row of one typed block that changed in the item at index item: its type, where
+// the daemon names it (requirement, check, plan_task, callout), or texts.NewsBlockOther with the
+// type as the document gives it, and Dispatch's word for how it changed. Its id is the document's
+// own text, and so is a type the daemon does not name.
+func blockRow(item int, block record.BlockChange) texts.DesignNewsBlock {
+	row := texts.DesignNewsBlock{Item: item, Type: block.Type, Change: block.Change, ID: documentWords(block.ID)}
+	switch block.Type {
+	case "requirement", "check", "plan_task", "callout":
+	default:
+		row.Type, row.OtherType = texts.NewsBlockOther, documentWords(block.Type)
+	}
+	return row
+}
+
+// documentWords is text of a document, a heading, a block's id or a block's type, as the words of
+// another author in a block of their own, bounded at texts.EachOfSeveral: nil for no text, which
+// draws no block.
+func documentWords(text string) *texts.Words {
+	if text == "" {
+		return nil
+	}
+	words := texts.Carry(text, texts.EachOfSeveral, false)
+	return &words
 }

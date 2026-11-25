@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -101,19 +100,79 @@ func versionNewsFirstLine(task string) string {
 	return line
 }
 
-// versionNewsNamesVersion says whether text names version n as a word of its own: "version 2",
-// never the "2" of "version 21".
-func versionNewsNamesVersion(text string, n int) bool {
-	return regexp.MustCompile(`\bversion ` + strconv.Itoa(n) + `\b`).MatchString(text)
+// versionNewsRecords is each design-news record of text (parseNewsRecords), none where text holds a
+// record that cannot be read.
+func versionNewsRecords(text string) []newsRecord {
+	records, err := parseNewsRecords(text)
+	if err != nil {
+		return nil
+	}
+	return records
 }
 
-// versionNewsNamesCheck says whether text names check where the news names a changed check, at the
-// head of its `Checks:` line (`Checks: "c-a7" changed.`), the one check of each tree's Verification
-// document, quoted as the news quotes a block id, which is the document's own text. A bare check id
-// is no proof: `c-a7` can stand inside a UUID the news prints, and the quotes are what keep
-// `Checks: "c-a7"` from matching `Checks: "c-a7-open"`.
+// versionNewsNamesVersion says whether the news of text names version n of a document: as the
+// version an item tells (`version`) or as the version its reader took (`taken`), a whole value of
+// its column, never the "2" of "21".
+func versionNewsNamesVersion(text string, n int) bool {
+	for _, rec := range versionNewsRecords(text) {
+		for _, item := range rec.rows["items"] {
+			if item["version"] == strconv.Itoa(n) || item["taken"] == strconv.Itoa(n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// versionNewsNamesCheck says whether the news of text names check as a changed check: a block row of
+// type check whose id block is check, the one check of each tree's Verification document, the
+// document's own text. A bare check id is no proof: `c-a7` can stand inside a UUID the news prints,
+// and the whole id block is what keeps `c-a7` from matching `c-a7-open`.
 func versionNewsNamesCheck(text, check string) bool {
-	return strings.Contains(text, "Checks: "+strconv.Quote(check)+" ")
+	for _, rec := range versionNewsRecords(text) {
+		for i, block := range rec.rows["blocks"] {
+			if block["type"] == "check" && rec.words[fmt.Sprintf("blocks[%d].id", i)] == check {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// versionNewsNamesSection says whether the news of text names the `##` section headed heading as
+// changed: a section row whose heading block is heading.
+func versionNewsNamesSection(text, heading string) bool {
+	for _, rec := range versionNewsRecords(text) {
+		for i, section := range rec.rows["sections"] {
+			if section["unit"] == "section" && rec.words[fmt.Sprintf("sections[%d].heading", i)] == heading {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// versionNewsHolds says whether the news of text is a holder's news of issue in phase p.
+func versionNewsHolds(text, issue string, p phase.Phase) bool {
+	for _, rec := range versionNewsRecords(text) {
+		if rec.fields["audience"] == "holder" && rec.fields["issue"] == issue && rec.fields["phase"] == string(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// versionNewsNamesChange says whether the news of text names a change of the work: an item whose
+// changes says that something changed, rather than the same text or decision blocks alone.
+func versionNewsNamesChange(text string) bool {
+	for _, rec := range versionNewsRecords(text) {
+		for _, item := range rec.rows["items"] {
+			if item["changes"] != "same_text" && item["changes"] != "decision_blocks_only" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Step A2. A tree registers its spec alone, and its gate opens on the setup approval of version 1.
@@ -158,7 +217,7 @@ func (r *versionNewsLive) a2() {
 	if task.delivery != queued.ID {
 		r.fail("%s's first task after its turn is delivery %q, want %s, the one queued behind the turn", reviewer.name(), task.delivery, queued.ID)
 	}
-	if !strings.Contains(task.message, `"Design"`) || strings.Contains(task.message, `"Summary"`) ||
+	if !versionNewsNamesSection(task.message, "Design") || versionNewsNamesSection(task.message, "Summary") ||
 		!versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed section \"Design\", not the unchanged \"Summary\", and versions 2 and 1: %q",
 			reviewer.name(), versionNewsFirstLine(task.message), task.message)
@@ -259,7 +318,7 @@ func (r *versionNewsLive) a3() {
 	task := owner.awaitPrompt("the news of the accepting root's checks", mark)
 	r.note("%s was prompted:\n%s", owner.name(), task.message)
 	if !versionNewsNamesCheck(task.message, accepting.check) || !strings.Contains(task.message, accepting.root().key) ||
-		!strings.Contains(task.message, "which you hold in accepting") || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+		!versionNewsHolds(task.message, accepting.root().key, phase.Accepting) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed check %s of %s, which it holds in accepting, and versions 2 and 1: %q",
 			owner.name(), versionNewsFirstLine(task.message), accepting.check, accepting.root().key, task.message)
 	}
@@ -275,7 +334,7 @@ func (r *versionNewsLive) a3() {
 	r.approve(implementing.verification, 2)
 	task = implementer.awaitPrompt("the news of the implementing root's checks", mark)
 	r.note("%s was prompted:\n%s", implementer.name(), task.message)
-	if !versionNewsNamesCheck(task.message, implementing.check) || strings.Contains(task.message, `"Design"`) ||
+	if !versionNewsNamesCheck(task.message, implementing.check) || versionNewsNamesSection(task.message, "Design") ||
 		!versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the changed check %s and versions 2 and 1, and no spec section: %q",
 			implementer.name(), versionNewsFirstLine(task.message), implementing.check, task.message)
@@ -333,10 +392,10 @@ func (r *versionNewsLive) a5() {
 	childReviewer := r.connect(child, claim.RoleReviewer, before)
 	start := childReviewer.awaitPrompt("the child reviewer's start task", mark)
 	r.note("%s was prompted:\n%s", childReviewer.name(), start.message)
-	// A change list shows as a "Checks:" line or as the news's own opening words. A bare check id
-	// is not read: it can stand inside a UUID the task prints.
+	// A change shows as an item of a news record whose changes names one (versionNewsNamesChange). A
+	// bare check id is not read: it can stand inside a UUID the task prints.
 	names := func(message string) bool {
-		return strings.Contains(message, "Checks:") || strings.Contains(message, "The approved design of")
+		return versionNewsNamesChange(message)
 	}
 	if names(start.message) {
 		r.fail("%s's start task names a change; want none, since version 2 changed nothing %s holds: %q", childReviewer.name(), child.key, start.message)
@@ -390,7 +449,7 @@ func (r *versionNewsLive) a6() {
 	r.approve(tree.spec, 2)
 	task := reviewer.awaitPrompt("the news of the spec", mark)
 	r.note("%s was prompted:\n%s", reviewer.name(), task.message)
-	if !strings.Contains(task.message, `"Design"`) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+	if !versionNewsNamesSection(task.message, "Design") || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
 		r.fail("%s's task names %s, want the section \"Design\" and versions 2 and 1: %q", reviewer.name(), versionNewsFirstLine(task.message), task.message)
 	}
 	r.held("%s, unmerged in reviewing, was sent the task naming \"Design\" and versions 1 and 2", reviewer.name())
@@ -482,11 +541,16 @@ func (r *versionNewsLive) a7() {
 	merger := r.connect(closed.root(), claim.RoleMerger, before)
 	task := merger.awaitPrompt("the merger's start task", mark)
 	r.note("%s was prompted:\n%s", merger.name(), task.message)
-	opening := "The design gate of " + closed.root().key + " opened"
-	if strings.Index(task.message, "\n\n"+opening) <= 0 || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
-		r.fail("%s's start task names %s, want the start's own text, a blank line, then %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
+	opening := "gate: open"
+	opened := false
+	for _, rec := range versionNewsRecords(task.message) {
+		opened = opened || (rec.fields["issue"] == closed.root().key && rec.fields["gate"] == "open")
 	}
-	r.held("the approval launched %s, whose start task holds its own text, a blank line, then %q, and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
+	if strings.Index(task.message, "\n\n"+newsKindLine+"\n") <= 0 || !opened || !versionNewsNamesCheck(task.message, closed.check) ||
+		!versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+		r.fail("%s's start task names %s, want the start's own text, then a news record with %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
+	}
+	r.held("the approval launched %s, whose start task holds its own text, then a news record with %q, and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
 }
 
 // Step R6. In a tree with children, an approved checks-only version of the root's Verification

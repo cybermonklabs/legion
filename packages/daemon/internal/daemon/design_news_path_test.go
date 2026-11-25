@@ -614,15 +614,13 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 	if !named || !strings.HasSuffix(prompted[0].Message, round) {
 		t.Fatalf("the reviewer's prompt = %q, want it to end with the two sentences of its round its start names", prompted[0].Message)
 	}
-	for _, want := range []string{
-		own,
-		"The design gate of LEGION-800 opened: a person approved version 5 of its spec document (artifact-800)",
-		"The approved design of LEGION-800 changed for LEGION-800, which you hold in reviewing:",
-		"version 5, since version 4, which your phase last took",
-		`"Design" changed`,
-	} {
-		if !strings.Contains(prompted[0].Message, want) {
-			t.Fatalf("the reviewer's prompt = %q, want it to say %q", prompted[0].Message, want)
+	if !strings.HasPrefix(prompted[0].Message, own+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("the reviewer's prompt = %q, want its start's own text, then the news record", prompted[0].Message)
+	}
+	rec := newsRecordOf(t, prompted[0].Message, "holder", pathRoot)
+	for _, want := range []string{"open spec artifact-800 5 merge=released", "spec artifact-800 5 taken=4 listed", "0 Design changed"} {
+		if !newsTells(t, prompted[0].Message, want) || rec.fields["phase"] != "reviewing" {
+			t.Fatalf("the reviewer's prompt = %q, want its news in reviewing to say %q", prompted[0].Message, want)
 		}
 	}
 	r.wantTold("after the reviewer's task was sent, before its turn took it", pathRoot, record.AudienceHolder, 4, true)
@@ -660,7 +658,7 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 		t.Fatalf("the reviewer's news-only starts = %d, want the one the reconcile queued", len(got))
 	}
 	composed := reviewer.Claim().Pending
-	if composed == nil || !composed.DeliveredAt.IsZero() || !strings.Contains(composed.Task, "The design gate of LEGION-800 opened: a person approved version 5") {
+	if composed == nil || !composed.DeliveredAt.IsZero() || !newsTells(t, composed.Task, "open spec artifact-800 5 merge=released") {
 		t.Fatalf("the reviewer's news task as composed = %+v, want it held behind the turn, saying the gate opened at version 5", composed)
 	}
 
@@ -672,11 +670,11 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the reviewer's prompts after its turn = %+v, want the news task, once", prompted)
 	}
-	const closed = "The design gate of LEGION-800 closed: version 6 of its spec document (artifact-800) is with its reviewer"
-	if !strings.Contains(prompted[0].Message, closed) || strings.Contains(prompted[0].Message, "opened") {
-		t.Fatalf("the news task sent = %q, want it to say %q and nothing of an opening", prompted[0].Message, closed)
+	const closed = "closed spec artifact-800 6 merge=held"
+	if !newsTells(t, prompted[0].Message, closed) || newsTells(t, prompted[0].Message, "open ") {
+		t.Fatalf("the news task sent = %q, want its gate to be %q and nothing of an opening", prompted[0].Message, closed)
 	}
-	if !strings.Contains(prompted[0].Message, "version 5, since version 4, which your phase last took") {
+	if !newsTells(t, prompted[0].Message, "spec artifact-800 5 taken=4 listed") {
 		t.Fatalf("the news task sent = %q, want the approval of version 5, which still stands, told", prompted[0].Message)
 	}
 	r.startTurn(reviewer)
@@ -758,14 +756,10 @@ func TestAnOwedMemberMovedIntoAcceptingIsToldByATaskToItsOwningArchitect(t *test
 			if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 				t.Fatalf("the owning architect's prompts = %+v, want the news task, once", prompted)
 			}
-			for _, want := range []string{
-				fmt.Sprintf("changed for %s, which you hold in accepting:", tc.accepting),
-				fmt.Sprintf("sign %s off with `sign_off`", tc.accepting),
-				"version 5, since version 4, which your phase last took",
-			} {
-				if !strings.Contains(prompted[0].Message, want) {
-					t.Fatalf("the owning architect's task = %q, want it to say %q", prompted[0].Message, want)
-				}
+			if rec := newsRecordOf(t, prompted[0].Message, "holder", tc.accepting); rec.fields["phase"] != "accepting" ||
+				strings.Join(rec.items(), "\n") != "spec artifact-800 5 taken=4 listed" {
+				t.Fatalf("the owning architect's task = %q, want the holder form of %s in accepting, telling version 5 since version 4",
+					prompted[0].Message, tc.accepting)
 			}
 			if tc.owner != pathRoot {
 				if got := architects[pathRoot].Prompts(); len(got) != 0 {
@@ -796,12 +790,13 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 		state    record.DesignChangesState
 		says     []string
 	}{
-		{name: "recorded read", attempts: 1, state: record.DesignChangesRead, says: []string{`"Design" changed`, `"r2" changed`}},
+		{name: "recorded read", attempts: 1, state: record.DesignChangesRead,
+			says: []string{"spec artifact-800 5 taken=4 listed", "0 Design changed", "0 requirement r2 changed"}},
 		{name: "recorded unavailable by a Dispatch without the route", attempts: designChangesAttempts, state: record.DesignChangesUnavailable,
 			answer: func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 				return dispatch.ArtifactChanges{}, fmt.Errorf("%w: GET /api/v1/artifacts/%s/changes: 404 NOT_FOUND", dispatch.ErrNoChangesRoute, pair.ArtifactID)
 			},
-			says: []string{`The change list could not be read: "Dispatch failed`, "dispatch has no changes route"}},
+			says: []string{`spec artifact-800 5 taken=4 unavailable reason="Dispatch failed`, "dispatch has no changes route"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Retro})
@@ -855,9 +850,12 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 			if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 				t.Fatalf("the merger's prompts = %+v, want its task, once", prompted)
 			}
-			for _, want := range append([]string{starts[0].payload.(record.SuperviseRequest).Task, "version 5, since version 4, which your phase last took"}, tc.says...) {
-				if !strings.Contains(prompted[0].Message, want) {
-					t.Fatalf("the merger's task = %q, want it to say %q", prompted[0].Message, want)
+			if own := starts[0].payload.(record.SuperviseRequest).Task; !strings.HasPrefix(prompted[0].Message, own+"\n\n"+newsKindLine+"\n") {
+				t.Fatalf("the merger's task = %q, want its own text %q, then the news record", prompted[0].Message, own)
+			}
+			for _, want := range tc.says {
+				if !newsTells(t, prompted[0].Message, want) {
+					t.Fatalf("the merger's task = %q, want its news to say %q", prompted[0].Message, want)
 				}
 			}
 			r.wantTold("before the merger's turn took its task", pathRoot, record.AudienceHolder, 4, false)
@@ -870,12 +868,14 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 // oneDeliveryOfTheOpening is the condition of one delivery of the opening (workflow's
 // openingDelivery), for the holder of role on the rig's root, which is between turns on its
 // phase's task: a version that changes nothing of the work closed the gate, so the holder was told
-// "closed" by the role message, and a person then approved it. The version changes decision blocks
-// alone, or, where unchanged, holds the same text as the one before it. The holder is owed the
-// opening and, of the work, nothing: so it gets exactly one delivery of the opening, the news task
-// leading with the opening sentence and saying that nothing its issue holds changed, and why, with
-// no change list, and no role message beside it. Every outbox row and every delivery addressed to
-// the holder's claim or its role from the approval to the end of the case is counted.
+// so by its gate-moved role message (gate closed, merge held), and a person then approved it. The
+// version changes decision blocks alone, or, where unchanged, holds the same text as the one before
+// it. The holder is owed the opening and, of the work, nothing: so it gets exactly one delivery of
+// the opening, the news task, whose one design-news record gives the gate open with the merge
+// released and one item whose changes field says why nothing its issue holds changed
+// (decision_blocks_only or same_text), with no section or block row, and no role message beside
+// it. Every outbox row and every delivery addressed to the holder's claim or its role from the
+// approval to the end of the case is counted.
 func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role, unchanged bool) {
 	t.Helper()
 	token := mustClaimToken(t, pathRoot, role)
@@ -894,8 +894,8 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role, unch
 	// closes: the holder is told so by its role message.
 	r.dispatchEvent(intake.DispatchArtifactVersion, 5)
 	r.run(ofKind(record.OutboxKindRoleMessage))
-	closed := r.publishedTo(token)
-	if len(closed) != 1 || !strings.HasPrefix(closed[0], "The design gate of LEGION-800 closed: version 5 of its spec document (artifact-800)") {
+	closed := r.publishedGates(t, token)
+	if len(closed) != 1 || closed[0] != "closed spec artifact-800 5 merge=held" {
 		t.Fatalf("the %s's role messages after version 5 = %q, want the one closed message", role, closed)
 	}
 
@@ -926,22 +926,17 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role, unch
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the %s's prompts after the approval = %+v, want the news task, once", role, prompted)
 	}
-	why := "Version 5 of its spec document (artifact-800) differs from it only in decision blocks."
+	changes := "decision_blocks_only"
 	if unchanged {
-		why = "Version 5 of its spec document (artifact-800) holds the same text as version 4."
+		changes = "same_text"
 	}
-	for _, want := range []string{
-		"The design gate of LEGION-800 opened: a person approved version 5 of its spec document (artifact-800)",
-		"Nothing your issue holds changed since version 4, which your phase took. " + why,
-	} {
-		if !strings.Contains(prompted[0].Message, want) {
-			t.Fatalf("the %s's news task = %q, want it to say %q", role, prompted[0].Message, want)
-		}
+	rec := oneNewsRecord(t, prompted[0].Message)
+	if got, want := rec.gate(), "open spec artifact-800 5 merge=released"; got != want {
+		t.Fatalf("the %s's news task = %q, want its gate %q", role, prompted[0].Message, want)
 	}
-	for _, list := range []string{"Sections:", "which you hold in", "Dispatch named no"} {
-		if strings.Contains(prompted[0].Message, list) {
-			t.Fatalf("the %s's news task = %q, want no change list", role, prompted[0].Message)
-		}
+	wantNewsLines(t, "items", rec.items(), []string{"spec artifact-800 5 taken=4 " + changes})
+	if len(rec.named()) != 0 {
+		t.Fatalf("the %s's news task = %q, want no change row", role, prompted[0].Message)
 	}
 	r.wantTold("after the news task's confirmation", pathRoot, record.AudienceHolder, 5, false)
 }

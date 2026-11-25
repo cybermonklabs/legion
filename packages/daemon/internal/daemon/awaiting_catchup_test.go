@@ -786,8 +786,9 @@ func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
 		return nil
 	})
 	tasks := captureArchitectTasks(t, pool)
-	if len(tasks) != 1 || !strings.Contains(tasks[0], "approved at version 4") || strings.Contains(tasks[0], "Hand") || strings.Contains(tasks[0], "revise") {
-		t.Fatalf("architect starts = %q, want one, saying the spec is approved at version 4 and asking for no revision", tasks)
+	if len(tasks) != 1 || !hasTaskLines(tasks[0], "document_version: 4", "gate_open: true", "gate_armed: true") ||
+		strings.Contains(tasks[0], "later_changes_version: ") {
+		t.Fatalf("architect starts = %q, want one, saying the spec's gate is open at version 4, with no changes request to revise for", tasks)
 	}
 }
 

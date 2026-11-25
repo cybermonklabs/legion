@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -136,14 +137,14 @@ type gatedPublisher struct {
 	gate *gate
 }
 
-func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	g.gate.enter()
-	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
+	return g.holderPublisher.Publish(ctx, topic, message, payload, urgency, key)
 }
 
-func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
 	g.gate.enter()
-	return g.holderPublisher.PublishKept(ctx, topic, message, payload, key)
+	return g.holderPublisher.PublishKept(ctx, topic, message, payload, urgency, key)
 }
 
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no

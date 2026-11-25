@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -445,15 +446,15 @@ func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePh
 	wantsAbandonment(t, prompts[1].Message, "`legion claims forget-session`")
 }
 
-// wantsAbandonment is the check both retries make of the fresh session's first prompt: it names
-// the session that was abandoned and why, in the words the claim recorded, and the two things that
-// outlived that session, the issue's branch and the handoff records its phases wrote on the
-// Dispatch issue.
+// wantsAbandonment is the check both retries make of the fresh session's first prompt: its
+// abandoned-session note names the session that was abandoned and why, in the words the claim
+// recorded, and the issue's branch, which outlived that session. The handoff records on the
+// Dispatch issue outlive it too, and the role's prompt says how to read them.
 func wantsAbandonment(t *testing.T, prompt, why string) {
 	t.Helper()
 	for _, want := range []string{
-		oldSession, "abandoned", why,
-		"legion/" + "LEGION-208", "dispatch handoff-read --issue LEGION-208 --phase", "(plan, implement, test, review)",
+		"kind: " + string(texts.AbandonedSessionNote), "session: " + oldSession, why,
+		"branch: legion/" + "LEGION-208",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the fresh session's first prompt does not name %q:\n%s", want, prompt)

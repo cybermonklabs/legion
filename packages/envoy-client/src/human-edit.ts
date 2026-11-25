@@ -1,3 +1,5 @@
+import { oneLine } from "./line-text";
+
 /** The fields of an `artifact.human_edited` payload its one-line head names. */
 export interface HumanEditHeadFields {
   readonly name?: string | undefined;
@@ -9,12 +11,14 @@ export interface HumanEditHeadFields {
 /**
  * How a person's edit of a document reads as one line, in the Envoy card and in an issue's event
  * log alike: `spec.md v4 to v7, edited by person@example.com`, each editor named, in the order the
- * payload lists them.
+ * payload lists them. The document's name and each editor are made one line (`oneLine`): the card
+ * writes the head as one TOON value (`edit:`), and TOON writes U+0085, U+2028 and U+2029 in a value
+ * as they are, so a name holding one would break the card's line where a model reads a break.
  */
 export function humanEditHead(edit: HumanEditHeadFields): string {
-  const editors = edit.editors ?? [];
+  const editors = (edit.editors ?? []).map(oneLine);
   const by = editors.length === 0 ? "" : `, edited by ${editors.join(", ")}`;
-  return `${edit.name ?? "document"} v${edit.from_version ?? "?"} to v${edit.to_version ?? "?"}${by}`;
+  return `${oneLine(edit.name ?? "document")} v${edit.from_version ?? "?"} to v${edit.to_version ?? "?"}${by}`;
 }
 
 /** The note a card carries after a diff that Dispatch cut at its limit. */

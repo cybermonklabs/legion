@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -714,7 +716,10 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 // "lost" in other senses), and the reason the claim keeps with the session it abandoned. Each names
 // the session, the pod's launcher and Oh My Pi's resume of the session by its id, and none says
 // the session was lost or that no store holds it: the session was not looked up, and a store may
-// hold it still (state-table row 7).
+// hold it still (state-table row 7). The notice states its facts as fields and no sentence: its
+// kind, session-forgotten, is why, its session field names the session, and no field of it says
+// lost. What the kind means, the launcher and Oh My Pi's resume by the id among it, is the sentence
+// of each reader's prompt that tells it what a session-forgotten notice says (forgottenPassage).
 func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) {
 	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
@@ -737,9 +742,9 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	}
 	texts = append(texts, text{"the message posted on the issue", posted[0]})
 	architect := mustClaimToken(t, olderLauncherIssue, claim.RoleArchitect)
-	for _, to := range []struct{ who, topic string }{
-		{"its architect", notify.RoleTopicPrefix + string(architect)},
-		{"the controller", notify.ControllerTopic(olderLauncherProject)},
+	for _, to := range []struct{ who, topic, prompt string }{
+		{"its architect", notify.RoleTopicPrefix + string(architect), goPrompts + "architect-common.md"},
+		{"the controller", notify.ControllerTopic(olderLauncherProject), rolePrompts + "controller-root.md"},
 	} {
 		published := r.publishedOn(to.topic)
 		if len(published) != 1 {
@@ -763,7 +768,25 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 		for _, fault := range forbiddenIn(string(notice.Kind)) {
 			t.Errorf("the kind of the notice to %s, %q, %s", to.who, notice.Kind, fault)
 		}
-		texts = append(texts, text{"the reason of the notice to " + to.who, notice.Reason})
+		if notice.Session != olderLauncherSession || notice.Reason != "" || notice.Detail != "" {
+			t.Errorf("the notice to %s names the session %q, with the reason %q and the detail %q; want %s as its session field and no sentence of the daemon's",
+				to.who, notice.Session, notice.Reason, notice.Detail, olderLauncherSession)
+		}
+		payload, err := json.Marshal(notice)
+		if err != nil {
+			t.Fatalf("encode the notice to %s: %v", to.who, err)
+		}
+		for _, fault := range forbiddenIn(string(payload)) {
+			t.Errorf("the notice to %s, %s, %s", to.who, payload, fault)
+		}
+		passage := forgottenPassage(t, to.prompt)
+		if !strings.Contains(passage, "launcher") || !ohMyPisResumeByID.MatchString(passage) {
+			t.Errorf("%s tells %s that a %s notice says %q; want it to name the pod's launcher and Oh My Pi's resume of the session by its id",
+				to.prompt, to.who, sessionForgottenKind, passage)
+		}
+		for _, fault := range forbiddenIn(passage) {
+			t.Errorf("%s tells %s that a %s notice says %q, which %s", to.prompt, to.who, sessionForgottenKind, passage, fault)
+		}
 	}
 	texts = append(texts,
 		text{"the fresh agent's addressing", starts[1].Spec.Prompt.Addressing},
@@ -774,6 +797,25 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 			t.Errorf("%s, %q, %s", each.what, each.says, fault)
 		}
 	}
+}
+
+// forgottenPassage is the sentence of the prompt file at path, from the repository's root, that
+// tells its reader what a session-forgotten notice says: the notice states its facts as fields,
+// and its reader's prompt gives the rest (texts_steps_test.go's goldenSteps).
+func forgottenPassage(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(goldenRepositoryRoot, filepath.FromSlash(path)))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	opening := "A `" + sessionForgottenKind + "` notice"
+	_, rest, found := strings.Cut(string(body), opening)
+	if !found {
+		t.Fatalf("%s tells its reader nothing of a %s notice", path, sessionForgottenKind)
+	}
+	rest, _, _ = strings.Cut(rest, "\n")
+	sentence, _, _ := strings.Cut(rest, ". ")
+	return opening + sentence
 }
 
 // A forget of a session is told once, however many launches forget it. The machine tells the

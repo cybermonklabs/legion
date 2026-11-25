@@ -58,7 +58,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_death_cause, c.last_death_at, c.last_death_digest,
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
 	c.turn_outcomes, c.abandoned_session, c.ended_work,
-	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
+	c.update_round, c.update_reasons, c.update_drift, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
@@ -392,7 +392,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		outcomes = encoded
 	}
 	// Null is a claim that has abandoned no session; one that has records the session, why and
-	// when, for the fresh agent's first task to name (supervise's abandonedTask).
+	// when, for the fresh agent's first task to name (supervise's AbandonedSessionNote).
 	var abandoned []byte
 	if c.Abandoned.Session != "" {
 		encoded, err := json.Marshal(c.Abandoned)
@@ -411,6 +411,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
+	updateDrift, err := encodeUpdateDrift(c)
+	if err != nil {
+		return err
+	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -424,7 +428,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err = tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -435,12 +439,12 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
-		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at, update_drift,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -475,6 +479,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
+		update_drift = excluded.update_drift,
 		update_opened_at = excluded.update_opened_at, update_tasked_at = excluded.update_tasked_at,
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
 		update_told_at = excluded.update_told_at,
@@ -530,7 +535,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
-		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt), updateDrift,
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt),
 	)
@@ -911,6 +916,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
+		updateDrift                 []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept, news, carried         []byte
@@ -935,7 +941,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
 		&outcomes, &abandoned, &endedWork,
-		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
+		&c.UpdateRound, &c.UpdateReasons, &updateDrift, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
@@ -988,6 +994,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
 		}
+	}
+	if c.UpdateDrift, err = decodeUpdateDrift(updateDrift, c.UpdateRound); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	// A cause's time is read only beside a cause whose digest is the one stored with the time
@@ -1076,6 +1085,46 @@ func keptDecisions(kept []byte) []byte {
 		return nil
 	}
 	return kept
+}
+
+// updateDriftRecord is what claims.update_drift holds (migration 20261118101218): the items of an
+// update round's drift (supervise.Claim.UpdateDrift) and the round they were recorded for.
+type updateDriftRecord struct {
+	Round string              `json:"round"`
+	Items []runtime.DriftItem `json:"items"`
+}
+
+// encodeUpdateDrift is c's round drift as the column holds it: null for a claim whose round
+// recorded no items, which is every claim in no round and one in a round an older daemon opened,
+// and otherwise the items under the round the claim is in.
+func encodeUpdateDrift(c supervise.Claim) ([]byte, error) {
+	if len(c.UpdateDrift) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(updateDriftRecord{Round: c.UpdateRound, Items: c.UpdateDrift})
+	if err != nil {
+		return nil, fmt.Errorf("put claim %s: encode its update round's drift: %w", c.Token, err)
+	}
+	return encoded, nil
+}
+
+// decodeUpdateDrift is the items the column holds for round, the round the claim is in, and nil
+// for items of any other round. An older daemon's write of a claim leaves the column as it stands
+// (the migration's comment), so items of a round it ended, or of one before a round it opened,
+// can still be there; read as the items of the round the claim is in now, they would name drift
+// that round was not opened for.
+func decodeUpdateDrift(column []byte, round string) ([]runtime.DriftItem, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var held updateDriftRecord
+	if err := json.Unmarshal(column, &held); err != nil {
+		return nil, fmt.Errorf("decode its update round's drift: %w", err)
+	}
+	if held.Round != round || len(held.Items) == 0 {
+		return nil, nil
+	}
+	return held.Items, nil
 }
 
 // orFalse is a nullable boolean column read as false when null: the left join's delivery columns

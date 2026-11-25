@@ -55,6 +55,7 @@
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.
 
+import { oneLine } from "./line-text";
 import { refusedDirective, runOf, typedOpenerAt } from "./typed-block-opener";
 
 /** A new ask a call opens for a person. */
@@ -157,9 +158,10 @@ function questionAsk(input: Readonly<Record<string, unknown>>): NewAsk {
   };
 }
 
-/** The first `OPENING_CODE_POINTS` code points of `text` with its whitespace runs made one space. */
+/** The first `OPENING_CODE_POINTS` code points of `text` on one line (`oneLine`), as
+ *  `dispatch doc-read --blocks` shows a block's opening words. */
 export function openingOf(text: string): string {
-  return Array.from(text.replace(/\s+/g, " ").trim()).slice(0, OPENING_CODE_POINTS).join("");
+  return Array.from(oneLine(text).trim()).slice(0, OPENING_CODE_POINTS).join("");
 }
 
 /** A line that opens or closes a document's front matter. */

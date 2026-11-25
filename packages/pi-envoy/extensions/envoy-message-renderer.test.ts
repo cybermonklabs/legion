@@ -100,12 +100,25 @@ function dispatchMessage(body: string): string {
   });
 }
 
-/** An agent's message whose sender holds a role, so the card carries both reply hints. */
+/** The fields of an agent's message that a listener kept for the session, with a reply asked for
+ *  and a message it replies to and one it replaces, so the card's fields run to the fold. */
+const KEPT = {
+  kept_at: Date.parse("2026-11-22T13:00:00Z"),
+  expires_at: Date.parse("2026-11-22T14:30:50Z"),
+  urgency: "low",
+  expects_reply: "required",
+  in_reply_to: "agent.event-0",
+  supersedes: "agent.event-00",
+};
+
+/** An agent's message whose sender holds a role, kept as `KEPT` says, so the card's fields run
+ *  past the fold and the block of its words opens below it. */
 function roleHolderMessage(payload: string): string {
   return card({
     source_session: PEER,
     sender: { session_id: PEER, title: "Reviewer", roles: ["legion-reviewer"] },
     payload,
+    ...KEPT,
   });
 }
 
@@ -113,39 +126,49 @@ describe("a collapsed envoy-message card", () => {
   test("shows the text of a message sent through Dispatch's message route", () => {
     const body = "Reply with the single word fromweb and nothing else.";
     const lines = dispatchMessage(body).split("\n");
-    const at = lines.indexOf(`      body: ${body}`);
+    const at = lines.indexOf(body);
     // The header of such a card is longer than the fold, which is how the body was folded away.
     expect(at).toBeGreaterThan(12);
+    expect(lines[at - 1]).toBe("<body>");
 
     expect(textRows(lines.join("\n"), false)).toEqual([
       ...trimmed(lines.slice(0, 12)),
       "…",
-      `body: ${body}`,
+      body,
       ...(at < lines.length - 1 ? ["…"] : []),
     ]);
   });
 
-  test("shows the text of an agent's message whose sender holds a role", () => {
+  test("shows the text of an agent's message whose fields run past the fold", () => {
     const lines = roleHolderMessage("The review is done: two findings.").split("\n");
-    const at = lines.indexOf('  message: "The review is done: two findings."');
+    const at = lines.indexOf("The review is done: two findings.");
     expect(at).toBeGreaterThan(12);
+    expect(lines[at - 1]).toBe("<message>");
 
     expect(textRows(lines.join("\n"), false)).toEqual([
       ...trimmed(lines.slice(0, 12)),
       "…",
-      'message: "The review is done: two findings."',
+      "The review is done: two findings.",
       ...(at < lines.length - 1 ? ["…"] : []),
     ]);
   });
 
-  // An agent's message whose summary is not its head writes the message on line 12, right after
-  // the twelve lines above the fold: no line is left out before it, so no `…` stands there.
+  // An agent's message whose summary is its head, from a sender that holds no role, opens its
+  // block on line 11 and writes the message on line 12, right after the twelve lines above the
+  // fold: no line is left out before it, so no `…` stands there, and one stands for its closing
+  // tag.
   test("shows the words with no fold before them when they are the line right after the fold", () => {
-    const lines = card({ source_session: PEER, payload: "Both findings are fixed." }).split("\n");
-    expect(lines.indexOf("  message: Both findings are fixed.")).toBe(12);
-    expect(lines).toHaveLength(13);
+    const words = "Both findings are fixed.";
+    const lines = card({
+      source_session: PEER,
+      payload: words,
+      payload_summary: words,
+      ...KEPT,
+    }).split("\n");
+    expect(lines.indexOf(words)).toBe(12);
+    expect(lines).toHaveLength(14);
 
-    expect(textRows(lines.join("\n"), false)).toEqual(trimmed(lines));
+    expect(textRows(lines.join("\n"), false)).toEqual([...trimmed(lines.slice(0, 13)), "…"]);
   });
 
   test("folds a long card that carries no words of a sender at the fold alone", () => {
@@ -153,6 +176,40 @@ describe("a collapsed envoy-message card", () => {
     expect(lines.length).toBeGreaterThan(12);
 
     expect(textRows(lines.join("\n"), false)).toEqual([...trimmed(lines.slice(0, 12)), "…"]);
+  });
+
+  // A block holds the words line by line, where a field held them all on its one line, so the
+  // collapsed card shows each line of them that is past the fold.
+  test("shows every line of a message's words that is past the fold", () => {
+    const body = "First, the plan.\n\nThen the checks:\n- one\n- two";
+    const lines = dispatchMessage(body).split("\n");
+    const at = lines.indexOf("First, the plan.");
+    expect(at).toBeGreaterThan(12);
+    expect(lines[at + 5]).toBe("</body>");
+
+    expect(textRows(lines.join("\n"), false)).toEqual([
+      ...trimmed(lines.slice(0, 12)),
+      "…",
+      ...body.split("\n"),
+      "…",
+    ]);
+  });
+
+  test("shows the rest of a message's words that start above the fold and run past it", () => {
+    const words = ["one", "two", "three", "four", "five", "six", "seven"];
+    const lines = card({
+      source_session: PEER,
+      sender: { session_id: PEER, title: "Reviewer", roles: ["legion-reviewer"] },
+      payload: words.join("\n"),
+    }).split("\n");
+    const at = lines.indexOf("one");
+    expect(at).toBeLessThan(12);
+    expect(at + words.length).toBeGreaterThan(12);
+
+    expect(textRows(lines.join("\n"), false)).toEqual([
+      ...trimmed(lines.slice(0, at + words.length)),
+      "…",
+    ]);
   });
 
   test("shows a short card whole, and an expanded card whole", () => {

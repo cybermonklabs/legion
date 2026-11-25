@@ -88,7 +88,7 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // It is the daemon's whole classification of what became of a worker, so a state a replacement
 // can leave a worker in is a value here and never a hole between two values: the owner's notice
 // is written from this type alone, and three things are total over it rather than over the paths
-// anyone remembered — the telling (TellsOwner), the sentence the notice carries (the daemon's
+// anyone remembered — the telling (TellsOwner), the stop word the notice carries (the daemon's
 // stallBackstopEnds) and the case that drives each end (the walk in stallbackstop_test.go).
 // Every value is listed in ProcessEnds, which those walks read.
 type ProcessEnd string
@@ -165,9 +165,9 @@ func ProcessEnds() []ProcessEnd {
 //
 // It is written as "everything but" rather than as a list of the ends that tell, because the
 // failure this rule exists against is silence: a value added to the type tells its owner before
-// anyone remembers to enumerate it, and the worst it can then say is that the daemon has no
-// sentence for what it did (the daemon's stallBackstopEnd), which is a notice somebody reads
-// rather than a worker that stopped with nobody told.
+// anyone remembers to enumerate it, and the worst it can then say is the end's own value with no
+// stop word (the daemon's stallStop), which is a notice somebody reads rather than a worker that
+// stopped with nobody told.
 func (e ProcessEnd) TellsOwner() bool { return e != EndNotMade }
 
 // replaceProcess is the recovery a process ended or found stale through no fault of its own

@@ -1,0 +1,36 @@
+-- 20261118101218_update_drift_items.up.sql — an update round records its drift as items beside
+-- its text, so the texts about the round name each part that drifted by its key (INFRA-3686).
+--
+-- The daemon opens an update round over a pod that no longer matches the configuration a pod is
+-- built from now. The round records what it was opened for on every claim of the pod:
+-- claims.update_reasons is that drift as one text, which the agent surfaces serve
+-- (updateReasons) and the message on the issue names when the pod goes before the round is over.
+-- The round's ask to each role and the controller's update-stalled notice name the same drift as
+-- fields: each changed image by a short digest and each changed setting by its key, never by its
+-- value. A text cannot be cut back into those parts, so the round keeps them too.
+--
+-- claims.update_drift is those parts (supervise.Claim.UpdateDrift), as a JSON object with the
+-- keys round and items. round is the round the items were recorded for (claims.update_round when
+-- they were written). items is an array of objects with the keys key and image
+-- (runtime.DriftItem): key is `image` or the key of a setting, such as `resources`, `disk` or
+-- `account`; image is, for the image, the image a pod is built from now, whole, and it is cut to
+-- its short digest when a text is written. The column is written with the round's text, at the
+-- post that opens the round, and set to null with every other column of the round when the round
+-- ends.
+--
+-- Every claim recorded before this migration takes null, which is what an open round an older
+-- daemon opened records: its text alone. Its ask and its notice name that text as one field
+-- (record.UpdateAsk.Reasons, record.UpdateStalled.Reasons), as the release before this one named
+-- it in a sentence. A claim in no round holds null as well.
+--
+-- What an older daemon binary reads on this schema. Its claim reads name the columns it knows and
+-- its writes leave this one out, so it reads every claim and ignores the items, and a claim it
+-- writes keeps the items it held. The store reads the items only where their round is the round
+-- the claim is in (update_round), so items an older daemon left behind are never read as those of
+-- a round it opened after them. A row this release writes into the outbox with the new fields
+-- cannot be read by that binary, so a rollback past this release is a roll forward, as
+-- docs/kubernetes.md ("Rolling back the release that carries a person's words in the daemon's
+-- texts") says of this release.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column update_drift jsonb;

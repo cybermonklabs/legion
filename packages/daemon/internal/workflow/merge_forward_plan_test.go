@@ -22,11 +22,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
-
-// approvalWait is the words that hold the merger's merge to the reviewer's approval of the head a
-// merge forward left, in the landed message (record.MergeForwardMessage) and in its task (task).
-const approvalWait = "only once the reviewer's approval of"
 
 // plannedConflictIssue is seedConflictIssue on a run with plan rows: the owner's plan whose steps
 // are steps, with task a running at the place of at (the step whose role runs as at, its retro or
@@ -103,11 +100,14 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				if !reflect.DeepEqual(toldWho(got), want) {
 					t.Fatalf("the landing queued %v, want %v", toldWho(got), want)
 				}
-				// The text is composed as the outbox composes it at delivery: from the pull request
-				// as the record holds it (the daemon's mergeForwardMessage).
+				// The record is built as the outbox builds it at delivery: from the pull request as
+				// the record holds it (the daemon's mergeForwardMessage). The merger's wait for the
+				// reviewer's approval of the new head is its approval_owed field, in the landed
+				// message as in the task below; main's texts said "only once the reviewer's approval of".
 				recorded := recordedPR(t, pool, "LEGION-208")
-				if told := got[0].Message("LEGION-208", recorded); strings.Contains(told, approvalWait) != tc.review {
-					t.Fatalf("the merger was told %q; want a wait for the reviewer's approval: %t", told, tc.review)
+				if landed, ok := got[0].Record("LEGION-208", recorded).(texts.MergeForwardLandedRecord); !ok || (landed.ApprovalOwed == forwardHead) != tc.review ||
+					(!tc.review && landed.ApprovalOwed != "") {
+					t.Fatalf("the merger was told %+v; want the wait for the reviewer's approval of %s (approval_owed): %t", got[0].Record("LEGION-208", recorded), forwardHead, tc.review)
 				}
 				if mf := recorded.MergeForward; mf == nil || mf.Landed != forwardHead || mf.ReviewAsked != tc.review {
 					t.Fatalf("the record's merge forward = %+v, want it landed at %s with the review asked: %t", mf, forwardHead, tc.review)
@@ -142,8 +142,9 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				if got := issuePhase(t, pool); got != phase.Merging {
 					t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 				}
-				if task := startTask(t, pool, claim.RoleMerger); task == "" || strings.Contains(task, approvalWait) != tc.review {
-					t.Fatalf("the merger's task reads %q; want a wait for the reviewer's approval: %t", task, tc.review)
+				task := startTask(t, pool, claim.RoleMerger)
+				if owed := readTaskOf(t, task).fields["approval_owed"]; task == "" || (owed == forwardHead) != tc.review || (!tc.review && owed != "") {
+					t.Fatalf("the merger's task reads %q; want the wait for the reviewer's approval of %s (approval_owed): %t", task, forwardHead, tc.review)
 				}
 			})
 		})
@@ -412,8 +413,8 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 			if told := capNotices(t, pool, "checks-red"); told != 1 {
 				t.Fatalf("the architect has %d checks-red notices, want one", told)
 			}
-			if reason, named := checksRedNotice(t, pool); named != phase.Merging || !strings.Contains(reason, "the merger is asked to merge main forward") {
-				t.Fatalf("the checks-red notice names phase %q with reason %q, want merging and the merger asked", named, reason)
+			if red := checksRedNotice(t, pool); red.Phase != phase.Merging || red.Asked != claim.RoleMerger || red.ConflictsWith != "main" {
+				t.Fatalf("the checks-red notice names phase %q, asked %q and base %q, want merging, the merger asked and main", red.Phase, red.Asked, red.ConflictsWith)
 			}
 		})
 	}
@@ -464,7 +465,7 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Fatalf("merge-forward messages %+v, want %+v: the planning after the implementer asks again", got, want)
 		}
-		if _, stays := checksRedNotice(t, pool); stays != phase.Planning {
+		if stays := checksRedNotice(t, pool).Phase; stays != phase.Planning {
 			t.Fatalf("the checks-red notice names %s, want planning, the phase the issue stays in", stays)
 		}
 	})

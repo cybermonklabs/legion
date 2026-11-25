@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // An admitted root's architect is launched with the start admission queues, which carries its
@@ -49,8 +52,7 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 				gates = "spec(gated=false,unregistered=true)"
 			}
 			told := func(generation, launch int) string {
-				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 reason=the tree of LEGION-1 at generation %d as the daemon records it now; start or resume it as your role says",
-					generation, launch, gates, generation)
+				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 done= accepting=", generation, launch, gates)
 			}
 
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
@@ -135,19 +137,19 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("keep a decision: %v", err)
 	}
-	want := "While nobody in LEGION-1's tree could hear it, a person decided on the tree: dispatch://LEGION-1/spec (design-approved by user:alice). Read each before you continue."
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
 	first := lastCatchUp(t, pool)
-	if first.Decided != want {
-		t.Fatalf("the relaunch's catch-up names %q, want %q", first.Decided, want)
+	if first.Decided != "" {
+		t.Fatalf("the relaunch's catch-up writes the decisions as text %q, want them as fields alone", first.Decided)
 	}
 	if first.Kept == nil || len(first.Kept.Decisions) != 1 || first.Kept.Decisions[0].Ref != "dispatch://LEGION-1/spec" ||
-		!first.Kept.Decisions[0].At.Equal(at) {
+		!first.Kept.Decisions[0].At.Equal(at) || first.Kept.Decisions[0].Decision != record.DecisionDesignApproved ||
+		first.Kept.Decisions[0].Actor != "user:alice" {
 		t.Fatalf("the catch-up's kept record %#v, want the decision it named, at %s", first.Kept, at)
 	}
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 2)
-	if got := lastCatchUp(t, pool); got.Decided != want || len(catchUps(t, pool)) != 1 {
-		t.Fatalf("after a relaunch dropped that catch-up undelivered, catch-ups %v naming %q; want one naming %q", catchUps(t, pool), got.Decided, want)
+	if got := lastCatchUp(t, pool); got.Kept == nil || len(got.Kept.Decisions) != 1 || len(catchUps(t, pool)) != 1 {
+		t.Fatalf("after a relaunch dropped that catch-up undelivered, catch-ups %v naming %#v; want one naming the decision again", catchUps(t, pool), got.Kept)
 	}
 	// The delivery of a catch-up forgets exactly what it named and its row claims, and nothing else
 	// does.
@@ -161,8 +163,8 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 		t.Fatalf("forget what the delivered catch-up named: %v", err)
 	}
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 3)
-	if got := lastCatchUp(t, pool); got.Decided != "" || got.Kept != nil {
-		t.Fatalf("the launch after a delivered catch-up is told %q (kept %#v), want nothing", got.Decided, got.Kept)
+	if got := lastCatchUp(t, pool); got.Kept != nil {
+		t.Fatalf("the launch after a delivered catch-up is told kept %#v, want nothing", got.Kept)
 	}
 }
 
@@ -180,6 +182,25 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	return *got
 }
 
+// A catch-up names a kept approval's step as the kept-decisions task does: an approval an older
+// daemon kept recorded no step, and it is the spec's, the step every deployment requires
+// (record.DesignStep.OrSpec). A catch-up that keeps no approval names no step.
+func TestACatchUpNamesTheStepOfAnApprovalKeptWithNone(t *testing.T) {
+	kept := record.KeptDecisions{KeptApproval: record.KeptApproval{Approved: 3, Latest: 5}}
+	facts, _ := keptFacts(kept)
+	if want := (texts.KeptApproval{Step: "spec", Approved: 3, Latest: 5}); facts.KeptApproval != want {
+		t.Errorf("the catch-up names the approval %+v, want %+v", facts.KeptApproval, want)
+	}
+	if task := KeptDecisionsOf("LEGION-208", kept); task.ApprovalStep != facts.Step {
+		t.Errorf("the catch-up names the step %q and the kept-decisions task %q, want one step", facts.Step, task.ApprovalStep)
+	}
+	none, _ := keptFacts(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/ask/1",
+		Decision: record.DecisionAskAnswered}}})
+	if none.KeptApproval != (texts.KeptApproval{}) {
+		t.Errorf("a catch-up that keeps no approval names %+v, want no approval", none.KeptApproval)
+	}
+}
+
 // An issue in accepting waits for the architect that owns it alone: no worker runs there, and the
 // one phase-finished notice that moved it there reaches no architect whose claim has failed: it
 // passes a child's failed architect for the one above, and ends undelivered when a root's has
@@ -189,23 +210,21 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
 // decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
-	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
-	awaiting := func(keys string) string {
-		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
-	}
 	for _, tc := range []struct {
 		name                    string
 		root, child             phase.Phase
 		rootStatus, childStatus string
-		want                    string
+		// issues are the issues named with their fields, done the done ones by key, accepting
+		// the ones waiting for the architect's acceptance.
+		issues, done, accepting string
 	}{
-		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
-		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
-		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
-		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},
-		{"the root merging", phase.Merging, phase.Done, "retro", "done", base},
-		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", base},
+		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", "LEGION-1", "LEGION-2", "LEGION-1"},
+		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", "LEGION-1,LEGION-2", "", "LEGION-1"},
+		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", "LEGION-1,LEGION-2", "", "LEGION-1"},
+		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", "LEGION-1,LEGION-2", "", "LEGION-2"},
+		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", "LEGION-1,LEGION-2", "", "LEGION-1,LEGION-2"},
+		{"the root merging", phase.Merging, phase.Done, "retro", "done", "LEGION-1", "LEGION-2", ""},
+		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", "LEGION-1,LEGION-2", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -217,7 +236,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 				Phase: tc.child, Generation: 1, Status: tc.childStatus, Rank: "V"})
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
 			got := catchUps(t, pool)
-			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2 reason=%s", tc.want)
+			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=%s done=%s accepting=%s", tc.issues, tc.done, tc.accepting)
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("catch-ups %v; want [%s]", got, want)
 			}
@@ -227,16 +246,19 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 
 // A Verification document its architect registered as criteria beside a deployment of spec alone
 // holds the tree as the spec does, so the catch-up states it as a step of its own, after the
-// spec and gated as the spec is. A root that registered none is told the spec alone, as before.
+// spec and gated as the spec is, each naming its document by its dispatch:// link. A root that
+// registered none is told the spec alone, as before.
 func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
-	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
+	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Document: "dispatch://LEGION-1/spec", Artifact: "artifact-1",
+		Version: 4, Approved: 4, Open: true}
 	for _, tc := range []struct {
 		name     string
 		criteria bool
 		want     []record.CatchUpGate
 	}{
 		{name: "a criteria row registered", criteria: true, want: []record.CatchUpGate{spec,
-			{Step: record.DesignStepCriteria, Gated: true, Artifact: "artifact-1-verification", Version: 2}}},
+			{Step: record.DesignStepCriteria, Gated: true, Document: "dispatch://LEGION-1/artifact/" + dispatch.VerificationSlug,
+				Artifact: "artifact-1-verification", Version: 2}}},
 		{name: "no criteria row", want: []record.CatchUpGate{spec}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,7 +298,7 @@ func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
 		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
 		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
-			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},
+			"gen=1 launch=1 gates= issues=LEGION-2 done= accepting="}},
 		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -320,8 +342,9 @@ func claimReady(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue string, 
 }
 
 // catchUps is every catch-up notice the outbox holds, in order: the generation it names, the
-// launch it was written for, the design-gate steps it states, the tree's issue keys it lists, and
-// its reason.
+// launch it was written for, the design-gate steps it states, the keys of the issues it names
+// that are not done, the done ones, and the ones waiting for the architect's acceptance. No
+// catch-up carries a reason.
 func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	got := []string{}
@@ -329,6 +352,9 @@ func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 		notice, ok := payload.(record.Notice)
 		if !ok || notice.Kind != "catch-up" {
 			continue
+		}
+		if notice.Reason != "" {
+			t.Fatalf("a catch-up carries the reason %q, want none", notice.Reason)
 		}
 		keys := []string{}
 		for _, issue := range notice.CatchUp.Issues {
@@ -338,7 +364,8 @@ func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 		for _, gate := range notice.CatchUp.Gates {
 			steps = append(steps, fmt.Sprintf("%s(gated=%t,unregistered=%t)", gate.Step, gate.Gated, gate.Unregistered))
 		}
-		got = append(got, fmt.Sprintf("gen=%d launch=%d gates=%s issues=%s reason=%s", notice.CatchUp.Generation, notice.CatchUp.Launch, strings.Join(steps, ","), strings.Join(keys, ","), notice.Reason))
+		got = append(got, fmt.Sprintf("gen=%d launch=%d gates=%s issues=%s done=%s accepting=%s", notice.CatchUp.Generation, notice.CatchUp.Launch,
+			strings.Join(steps, ","), strings.Join(keys, ","), strings.Join(notice.CatchUp.Done, ","), strings.Join(notice.CatchUp.Accepting, ",")))
 	}
 	return got
 }
@@ -414,5 +441,246 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
 			}
 		})
+	}
+}
+
+// keptAnswers keeps two answers a person gives on LEGION-208 while its tree waits for its slot, so
+// nobody in it hears them (record.RelayParkedDecision keeps them for its architect's start): one
+// of 300 characters on ask-one and one of 1,500 on ask-two. It returns the two answers' words.
+func keptAnswers(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) (short, long string) {
+	t.Helper()
+	queued := askRoot()
+	queued.HandedOver, queued.Status = true, "todo"
+	seedIssue(t, pool, queued)
+	seedQuestion(t, pool, "ask-one", 4)
+	seedQuestion(t, pool, "ask-two", 5)
+	short, long = strings.Repeat("s", 300), strings.Repeat("l", 1500)
+	for i, answer := range []struct{ ask, words string }{{"ask-one", short}, {"ask-two", long}} {
+		apply(answer.ask, intake.DispatchAskClosed{Key: "LEGION-208", Ask: answer.ask, Kind: record.AskQuestion, State: "answered", Actor: askPerson,
+			Mark: askSeq(int64(8 + i)), Words: &record.ActWords{Text: answer.words, By: askPerson.Name(), At: resumeWordsAt.Add(time.Duration(i) * time.Minute)}})
+	}
+	return short, long
+}
+
+// promoted is LEGION-208 as admission leaves it once it takes its slot: in the workflow, so its
+// architect's ready writes a catch-up.
+func promoted(t *testing.T, pool *pgxpool.Pool) record.Issue {
+	t.Helper()
+	root := askRoot()
+	seedIssue(t, pool, root)
+	return root
+}
+
+// startArchitect queues root's architect start as admission's promotion does (Engine.StartArchitect)
+// and returns the task it carries.
+func startArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue) string {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return engine.StartArchitect(t.Context(), tx, root)
+	})
+	starts := superviseRowsOf(t, pool, root.Key, "start")
+	if len(starts) == 0 || starts[len(starts)-1].Role != claim.RoleArchitect {
+		t.Fatalf("the start rows %+v, want the architect's start", starts)
+	}
+	return starts[len(starts)-1].Task
+}
+
+// R1: a person's answers on a tree nobody heard reach its architect with their words. The start
+// task that names them carries each answer's words beside its reference, each in a block of its
+// own, cut to 1,000 UTF-16 units each since it carries two, with the count of the rest; a later
+// launch's catch-up names them the same way where no start did. Each decision is told once:
+// whichever names it first claims it, and the other names it no more.
+func TestAKeptDecisionCarriesThePersonsWords(t *testing.T) {
+	t.Run("in the tree's next architect start", func(t *testing.T) {
+		pool, apply := askRig(t)
+		short, long := keptAnswers(t, pool, apply)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		task := startArchitect(t, pool, engine, promoted(t, pool))
+		decided, _, ok := strings.Cut(task, "\n\nkind: "+string(texts.ArchitectStart))
+		if !ok {
+			t.Fatalf("the start task %q holds no architect-start after the kept decisions", task)
+		}
+		read := readTaskOf(t, decided)
+		if read.fields["kind"] != string(texts.KeptDecisions) || len(read.blocks) != 2 {
+			t.Fatalf("the kept-decisions task names %v with the blocks %+v, want the two answers", read.fields, read.blocks)
+		}
+		var rows []string
+		for _, line := range read.lines {
+			if strings.HasPrefix(line, "  ") {
+				rows = append(rows, line)
+			}
+		}
+		for _, block := range read.blocks {
+			var row int
+			if _, err := fmt.Sscanf(block.attrs["field"], "kept[%d].answer", &row); err != nil || row >= len(rows) {
+				t.Fatalf("the block %+v names no row of %q", block.attrs, rows)
+			}
+			switch {
+			case strings.Contains(rows[row], "dispatch://LEGION-208/ask/ask-one"):
+				if block.text != short || block.attrs["rest"] != "" {
+					t.Fatalf("ask-one's block holds %d bytes with %v, want the 300 whole", len(block.text), block.attrs)
+				}
+			case strings.Contains(rows[row], "dispatch://LEGION-208/ask/ask-two"):
+				if block.text != long[:1000] || block.attrs["rest"] != "500" {
+					t.Fatalf("ask-two's block holds %d bytes with %v, want the first 1000 and rest 500", len(block.text), block.attrs)
+				}
+			default:
+				t.Fatalf("the block %s's row %q names neither ask", block.attrs["field"], rows[row])
+			}
+		}
+		claimReady(t, pool, engine, "LEGION-208", claim.RoleArchitect, 1)
+		if kept := lastCatchUp(t, pool).Kept; kept != nil {
+			t.Fatalf("the catch-up after the start names %+v again, want each decision told once", kept)
+		}
+	})
+	t.Run("in a later launch's catch-up", func(t *testing.T) {
+		pool, apply := askRig(t)
+		short, long := keptAnswers(t, pool, apply)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		root := promoted(t, pool)
+		claimReady(t, pool, engine, "LEGION-208", claim.RoleArchitect, 1)
+		var catchUp *record.Notice
+		for _, payload := range noticeRows(t, pool) {
+			if notice := asNotice(payload); notice.Kind == texts.CatchUp {
+				catchUp = &notice
+			}
+		}
+		if catchUp == nil || catchUp.CatchUp.Kept == nil || len(catchUp.CatchUp.Kept.Decisions) != 2 {
+			t.Fatalf("the catch-up %+v, want it to name the two answers", catchUp)
+		}
+		t.Logf("catch-up kept: %+v, words %+v", catchUp.CatchUp.Kept.Decisions, catchUp.Words)
+		for i, mark := range catchUp.CatchUp.Kept.Decisions {
+			words := catchUp.Words[fmt.Sprintf("catch_up.kept.decisions[%d].answer", i)]
+			switch mark.Ref {
+			case "dispatch://LEGION-208/ask/ask-one":
+				if mark.Answer != short || words.Rest != 0 || words.By != askPerson.Name() {
+					t.Fatalf("ask-one in the catch-up holds %d bytes with %+v, want the 300 whole by the person", len(mark.Answer), words)
+				}
+			case "dispatch://LEGION-208/ask/ask-two":
+				if mark.Answer != long[:1000] || words.Rest != 500 || words.By != askPerson.Name() {
+					t.Fatalf("ask-two in the catch-up holds %d bytes with %+v, want the first 1000 and rest 500 by the person", len(mark.Answer), words)
+				}
+			default:
+				t.Fatalf("the catch-up names %s, want ask-one and ask-two", mark.Ref)
+			}
+		}
+		if task := startArchitect(t, pool, engine, root); !strings.HasPrefix(task, "kind: "+string(texts.ArchitectStart)) {
+			t.Fatalf("the start after the catch-up = %q, want the architect-start alone: each decision told once", task)
+		}
+	})
+}
+
+// R1: the controller's parked-decision notice of a person's answer on a parked tree carries the
+// first 4,000 UTF-16 units of an answer of 5,000, the count of the rest and the ask's reference.
+func TestAParkedDecisionCarriesThePersonsWords(t *testing.T) {
+	pool, apply := askRig(t)
+	parked := askRoot()
+	until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
+	parked.Phase, parked.Status, parked.LingerUntil = phase.Done, "backlog", &until
+	seedIssue(t, pool, parked)
+	seedQuestion(t, pool, "ask-q", 4)
+	answer := strings.Repeat("a", 5000)
+	apply("answered", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "answered", Actor: askPerson,
+		Mark: askSeq(8), Words: &record.ActWords{Text: answer, By: askPerson.Name(), At: resumeWordsAt}})
+	var relayed []record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice := asNotice(payload); notice.Kind == texts.ParkedDecision {
+			relayed = append(relayed, notice)
+		}
+	}
+	if len(relayed) != 1 {
+		t.Fatalf("parked-decision notices %+v, want one", relayed)
+	}
+	notice := relayed[0]
+	t.Logf("notice: ref %s, answer of %d bytes, words %+v", notice.Ref, len(notice.Answer), notice.Words)
+	if notice.Answer != answer[:4000] || notice.Words["answer"].Rest != 1000 || notice.Ref != "dispatch://LEGION-208/ask/ask-q" {
+		t.Fatalf("the notice carries %d bytes of the answer with %+v at %s, want the first 4000, rest 1000 and the ask's reference",
+			len(notice.Answer), notice.Words["answer"], notice.Ref)
+	}
+}
+
+// A catch-up that names one kept decision carries one act: R1 lets it carry up to 4,000 UTF-16
+// units of it ("up to 4,000 characters of one act, or up to 1,000 characters of each act where it
+// carries several", dispatch://INFRA-3686/spec). The kept-decisions task of the same one decision
+// carries it whole (KeptDecisionsOf); the catch-up cuts an answer of 1,500 to its first 1,000.
+func TestACatchUpWithOneKeptDecisionCarriesItUpToFourThousand(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	answer := strings.Repeat("w", 1500)
+	kept := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/ask/ask-q", At: at, Issue: "LEGION-208",
+		Decision: record.DecisionAskAnswered, Actor: "user:alice", Answer: answer, AnswerAt: at}}}
+
+	facts, words := keptFacts(kept)
+	if got := facts.Decisions[0].Answer; got != answer {
+		t.Errorf("the catch-up carries %d units of the one kept answer with rest %d, want all 1500: it carries one act",
+			len(got), words["catch_up.kept.decisions[0].answer"].Rest)
+	}
+	if task := KeptDecisionsOf("LEGION-208", kept); task.Kept[0].Answer.Text != answer {
+		t.Errorf("the kept-decisions task carries %d units of the one kept answer, want all 1500", len(task.Kept[0].Answer.Text))
+	}
+}
+
+// R1 bounds "up to 1,000 characters of each act where it carries several", and only an act whose
+// words the text carries counts (the architect's answer for dispatch://INFRA-3686): an approval
+// carries none. A person approves the spec of a parked tree and answers one of its asks with 3,000
+// characters, so the kept-decisions task and the catch-up that name both decisions carry the
+// words of one act, and carry that answer whole, up to 4,000 (keptBound).
+func TestKeptDecisionsOfOneWordedActCarryItUpToFourThousand(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	answer := strings.Repeat("w", 3000)
+	kept := record.KeptDecisions{Decisions: []record.DecisionMark{
+		{Ref: "dispatch://LEGION-208/spec", At: at, Issue: "LEGION-208", Decision: record.DecisionDesignApproved, Actor: "user:alice"},
+		{Ref: "dispatch://LEGION-208/ask/ask-q", At: at, Issue: "LEGION-208", Decision: record.DecisionAskAnswered, Actor: "user:alice",
+			Answer: answer, AnswerAt: at},
+	}}
+
+	got := KeptDecisionsOf("LEGION-208", kept).Kept[1].Answer
+	if got == nil {
+		t.Fatal("the kept-decisions task carries no block of the answer")
+	}
+	if got.Text != answer || got.Rest != 0 {
+		t.Errorf("the kept-decisions task carries %d units of the answer with rest %d, want all 3000: it carries the words of one act",
+			len(got.Text), got.Rest)
+	}
+	facts, words := keptFacts(kept)
+	if carried := facts.Decisions[1].Answer; carried != answer {
+		t.Errorf("the catch-up carries %d units of the answer with rest %d, want all 3000: it carries the words of one act",
+			len(carried), words["catch_up.kept.decisions[1].answer"].Rest)
+	}
+}
+
+// R2 has a daemon text name each Dispatch item by its dispatch:// link. A root's catch-up states
+// each design-gate step it holds, and names the step's document by the bare artifact id alone
+// (catch_up.gates[0].artifact), where the root architect's start task names the same document as
+// dispatch://KEY/spec (gateSteps).
+func TestACatchUpNamesItsGateDocumentByALink(t *testing.T) {
+	const artifact = "0b8f1c2e-5d6a-4f7b-9c3d-2e1f0a9b8c7d"
+	pool := migratedPool(t)
+	root := askRoot()
+	seedIssue(t, pool, root)
+	seedGate(t, pool, record.DesignGate{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: artifact, LatestVersion: 2})
+
+	var facts texts.CatchUpFacts
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		facts, err = treeCatchUp(context.Background(), tx, record.NewStore(), []record.DesignStep{record.DesignStepSpec}, root)
+		return err
+	})
+	payload, err := json.Marshal(texts.CatchUpRecord{NoticeHead: texts.NoticeHead{Kind: texts.CatchUp, Issue: root.Key}, CatchUp: &facts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), "dispatch://"+root.Key+"/spec") {
+		t.Errorf("the catch-up names the spec step's document by no dispatch:// link: %s", payload)
+	}
+}
+
+// R2 has a daemon text name each Dispatch item by its dispatch:// link. A kept approval names the
+// step whose document a person approved, the version approved and the version reached since, and
+// names that document by its step word alone (approval_step: spec in the kept-decisions task,
+// kept.step in the catch-up), where the catch-up's gates name the same document by its link.
+func TestAKeptApprovalNamesItsDocumentByALink(t *testing.T) {
+	kept := record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3}}
+	if text := KeptDecisionsTask("LEGION-208", kept); !strings.Contains(text, "dispatch://LEGION-208/spec") {
+		t.Errorf("the kept-decisions task names the approved document by its step alone, and by no dispatch:// link:\n%s", text)
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T) {
@@ -177,10 +178,9 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, issue) || !strings.Contains(notice.Reason, "CAP_EXCEEDED") ||
-		!strings.Contains(notice.Reason, "READY #42 at head for "+issue) {
-		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, the message's first line and Dispatch's refusal", notice, issue)
+	if notice.Kind != texts.MessageRefused || notice.Issue != issue || notice.Refused != texts.RefusedMessage ||
+		!strings.Contains(notice.DispatchAnswer, "CAP_EXCEEDED") || notice.Begins != "READY #42 at head for "+issue {
+		t.Fatalf("the notice = %+v, want message-refused on %s naming the message's first line and Dispatch's refusal", notice, issue)
 	}
 }
 
@@ -239,10 +239,9 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, issue) || !strings.Contains(notice.Reason, "CAP_EXCEEDED") ||
-		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") {
-		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, Dispatch's refusal and the status it set", notice, issue)
+	if notice.Kind != texts.MessageRefused || notice.Issue != issue || notice.Refused != texts.RefusedStatus ||
+		!strings.Contains(notice.DispatchAnswer, "CAP_EXCEEDED") || notice.Status != "done" || notice.StatusSet == nil || !*notice.StatusSet {
+		t.Fatalf("the notice = %+v, want message-refused on %s naming Dispatch's refusal and the status done it set", notice, issue)
 	}
 }
 

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // gatesStep says whether a person must approve step's document before the tree works: a step the
@@ -133,7 +135,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// never opened and is written as never opened, and holds that answer until a person approves
 	// it. Any other row's mark is the one it already holds, which the write keeps
 	// (record.Store.PutGate).
-	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version,
+	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version, DocumentIssue: fact.Issue,
 		EverOpened: record.TreeGate{Steps: e.cfg.Steps, Rows: gates}.EverOpened()}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
@@ -165,7 +167,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// whatever version it was told at: it rebuilds the gate from Dispatch, and the gate seed or a
 	// late live event that follows may carry the same review again.
 	if !classify.DesignGateOpen(gate) && sameDocument && stored.ToldChangesVersion != nil {
-		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesMark)
+		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesBy, stored.ToldChangesMark)
 	}
 	// The changes request the read shows is the review its live event carries, so it meets a root
 	// waiting on a person by the same rules (applyArtifact): unplaceable, it is neither told nor
@@ -180,7 +182,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
-		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
+		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ReviewedBy.Name(), fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
@@ -228,7 +230,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
 	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step)}); err != nil {
+		if err := e.notice(ctx, tx, fact.Issue, DesignApprovedNotice(fact.Issue, step, gate.LatestVersion, reviewer, gate.ApprovedMark.At)); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -284,7 +286,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if !notify {
 		return nil
 	}
-	if err := e.notice(ctx, tx, key, record.Notice{Kind: "design-changes-requested", Version: version, Reason: reason, Actor: reviewer, Ref: stepRef(key, step)}); err != nil {
+	if err := e.notice(ctx, tx, key, ChangesRequestedNotice(key, step, version, reason, reviewer, mark.At)); err != nil {
 		return err
 	}
 	if issue.Phase != phase.Admitted || !claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -294,6 +296,46 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 		return e.store.TakeInThrough(ctx, tx, issue.Key, mark.Seq)
 	}
 	return e.store.StartHandout(ctx, tx, issue.Key)
+}
+
+// ChangesRequestedNotice is the design-changes-requested notice of key: the person's decision on
+// the document step reviews at version (gateDecision), and the reason the person gave, cut to
+// texts.OneAct, named in the words object as the reviewer's at at with the count of the rest. The
+// decision's reference is where the rest is read.
+func ChangesRequestedNotice(key string, step record.DesignStep, version int, reason, reviewer string, at time.Time) texts.DesignChangesRequestedRecord {
+	notice := texts.DesignChangesRequestedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignChangesRequested, Issue: key},
+		GateDecision: gateDecision(key, step, version, reviewer, at)}
+	if reason != "" {
+		head, rest := texts.Bound(reason, texts.OneAct)
+		notice.Reason = head
+		notice.Words = map[string]texts.WordsMeta{"reason": {By: reviewer, At: at.UTC(), Rest: rest}}
+	}
+	return notice
+}
+
+// DesignApprovedNotice is the design-approved notice of key: the person's decision that opened the
+// document step reviews at version (gateDecision).
+func DesignApprovedNotice(key string, step record.DesignStep, version int, actor string, at time.Time) texts.DesignApprovedRecord {
+	return texts.DesignApprovedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignApproved, Issue: key},
+		GateDecision: gateDecision(key, step, version, actor, at)}
+}
+
+// CarriedGateOpenedNotice is the carried-gate-opened notice of key: the person's decision that
+// opened the gate key's root carried, whose reference names approved, the issue whose document
+// step reviews the person approved at version (gateDecision).
+func CarriedGateOpenedNotice(key, approved string, step record.DesignStep, version int, actor string, at time.Time) texts.CarriedGateOpenedRecord {
+	return texts.CarriedGateOpenedRecord{NoticeHead: texts.NoticeHead{Kind: texts.CarriedGateOpened, Issue: key},
+		GateDecision: gateDecision(approved, step, version, actor, at)}
+}
+
+// gateDecision is a person's decision on the document step reviews on key at version: who made
+// it (actor, empty where nobody decided), the document's reference (stepRef) and when (at, zero
+// where the daemon holds no time of it).
+func gateDecision(key string, step record.DesignStep, version int, actor string, at time.Time) texts.GateDecision {
+	if !at.IsZero() {
+		at = at.UTC()
+	}
+	return texts.GateDecision{Version: version, Actor: actor, Ref: stepRef(key, step), At: at}
 }
 
 // unplaceable says whether an act or review at mark cannot be placed against root's wait: the root
@@ -497,7 +539,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 		}
 		e.logOnCommit(ctx, "workflow: a changes request whose resume never ran is no longer recorded as told", "issue", root.Key,
 			"step", gate.Step, "version", *gate.ToldChangesVersion)
-		gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = nil, "", record.EventMark{}
+		gate = classify.ClearChangesTold(gate)
 		if err := e.store.PutGate(ctx, tx, gate); err != nil {
 			return err
 		}
@@ -560,7 +602,8 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	e.logOnCommit(ctx, "workflow: a gate above the version Dispatch holds is reset to it", "issue", issue.Key,
 		"artifact", gate.ArtifactID, "step", gate.Step, "gate_version", gate.LatestVersion, "dispatch_version", fact.Read.Version)
-	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version}
+	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version,
+		DocumentIssue: gate.DocumentIssue}
 	ungated := !e.gatesStep(gate.Step)
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
@@ -714,24 +757,23 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 // change of its parked root's status kept from queuing the root (fact.StatusChangedSeq). It logs
 // a warning once the fact commits, naming the approval's sequence and the sequence of the Dispatch
 // event that changed the root's status after it, and hands the approval to the one rule for a
-// decision nobody in its tree hears (record.RelayParkedDecision): the controller is sent the
+// decision nobody in its tree hears (record.RelayRefusedHandover): the controller is sent the
 // parked-decision a person's approval on a parked tree takes, under the reference of the
-// document's step (stepRef), whose reason says the approval came before a change of the root's
-// status and that todo on the root brings it back, and the approval is kept for the root's next
-// architect start. It is kept at Dispatch's time of the approval (decidedAt), so it replaces no
-// newer decision kept under the same reference. A root the daemon does not record has no tree to
-// relay for, as the rule's other callers find, so it is told by the warning alone. The writes are
-// the event's own transaction's, which ApplyFact keys by the Dispatch event's id, so a replay
-// writes neither again.
+// document's step (stepRef), which names as fields the approval's Dispatch event, the event that
+// changed the root's status after it and the status the root stands at, that the approval queued
+// nothing, and the root as the issue whose todo brings it back (record.RefusedHandoverNoticeOf),
+// and the approval is kept for the root's next architect start. It is kept at Dispatch's time of
+// the approval (decidedAt), so it replaces no newer decision kept under the same reference. A root
+// the daemon does not record has no tree to relay for, as the rule's other callers find, so it is
+// told by the warning alone. The writes are the event's own transaction's, which ApplyFact keys by
+// the Dispatch event's id, so a replay writes neither again.
 func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact, handover handoverDecision, step record.DesignStep) error {
 	outcome := record.RelayNone
 	if handover.root != nil {
-		reason := fmt.Sprintf("the approval, at Dispatch event %d, came before a change of %s's status: its status changed after the approval, by event %d, "+
-			"so Legion did not queue %s as the person's handover; set %s to todo to bring it back", fact.Mark.Seq, fact.Key, fact.StatusChangedSeq, fact.Key, fact.Key)
 		var err error
-		outcome, err = record.RelayParkedDecision(ctx, tx, e.store, fact.Key, *handover.root, true,
+		outcome, err = record.RelayRefusedHandover(ctx, tx, e.store, fact.Key, *handover.root,
 			record.ParkedDecision{Ref: stepRef(fact.Key, step), Decision: record.DecisionDesignApproved, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)},
-			fact.Version, reason, e.cfg.Steps)
+			fact.Version, record.HandoverRefusal{ApprovalSeq: fact.Mark.Seq, StatusChangedSeq: fact.StatusChangedSeq, Status: fact.Issue.Status}, e.cfg.Steps)
 		if err != nil {
 			return err
 		}
@@ -989,7 +1031,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
 		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark)
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
-		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
+		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Actor.Name(), fact.Mark)
 	}
 	// The pairs as the event found them: it moves a version, a review mark or the opened mark and
 	// leaves every step on the document it named, so the comparison queues nothing, which is what
@@ -997,6 +1039,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	before, err := e.store.GatesOf(ctx, tx, key)
 	if err != nil {
 		return err
+	}
+	// A carried row an older daemon wrote records no issue of its document (record.DesignGate's
+	// DocumentIssue). The event is of that issue, by whose key Dispatch sends it, so the row takes
+	// it here, and the gate-moved message this write may send names that issue's document.
+	if carried && updated.DocumentIssue == "" {
+		updated.DocumentIssue = fact.Key
 	}
 	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
@@ -1028,21 +1076,19 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
 		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
-		// decision then goes to the controller instead (the outbox's parkDecision).
+		// decision then goes to the controller instead (the outbox's parkDecision). A carried
+		// gate's notice names, by its reference, the issue whose document the person approved.
 		reviewer := fact.Actor.Name()
-		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step)}
+		var opened any = DesignApprovedNotice(key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		switch {
 		case carried:
-			opened = &record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
-				"a human approved %s's spec document at version %d, which opens the gate %s carried; any child waiting on it starts", fact.Key, fact.Version, key)}
+			opened = CarriedGateOpenedNotice(key, fact.Key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		case issue.AwaitingPerson():
 			opened = nil
 			e.logOnCommit(ctx, "workflow: a root waiting on a person is told its gate's opening by its resume", "issue", key, "version", fact.Version)
 		}
-		if opened != nil {
-			if err := e.notice(ctx, tx, key, *opened); err != nil {
-				return err
-			}
+		if err := e.notice(ctx, tx, key, opened); err != nil {
+			return err
 		}
 		// The members the opening releases take their first phase from admission's pass over this
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
@@ -1074,9 +1120,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // openingDelivery, over what the tree owes of its approved design as this transaction leaves the
 // record (record.OwedNews): a holder owed news is sent no message, and its told row records the
 // opening as owed, so the task that carries its news leads with the opening; every other holder is
-// sent the opened message, which says as well that nothing its issue holds changed since the
-// version its phase took. So each holder is told the opening once. A member in accepting that a
-// child's architect holds is told the opening by its news alone (settleChildArchitectOpenings).
+// sent the opened message, which names as well, where the record shows it, the version its phase
+// took, since which nothing its issue holds changed (unchanged_since). So each holder is told the
+// opening once. A member in accepting that a child's architect holds is told the opening by its
+// news alone (settleChildArchitectOpenings).
 //
 // Each of those deliveries settles the told row's owed opening here, in the transaction that moves
 // the gate, through the one rule every writer of the owed opening calls (the SQL function
@@ -1094,7 +1141,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open bool) error {
+	owner, document string, version int, open bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1125,13 +1172,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The step and its own document, never "spec version": under more than one gated step the
-	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
 	if !open {
-		body := gateClosedSentence(root.Tree, step, document, version)
+		moved := gateMovedOn(root.Tree, stepRef(owner, step), step, document, version, false)
 		for _, to := range addressed {
-			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			if err := e.roleMessage(ctx, tx, to.issue, to.token, moved, texts.UrgencyOf(texts.GateMoved, to.role, texts.Variant{})); err != nil {
 				return err
 			}
 		}
@@ -1144,7 +1188,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		return err
 	}
 	owed := record.OwedNews(facts)
-	opened := gateOpenedSentence(root.Tree, step, document, version)
+	opened := gateMovedOn(root.Tree, stepRef(owner, step), step, document, version, true)
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
@@ -1159,7 +1203,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			byNews++
 			continue
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: way.message}); err != nil {
+		if err := e.roleMessage(ctx, tx, to.issue, to.token, way.message, texts.UrgencyOf(texts.GateMoved, to.role, texts.Variant{})); err != nil {
 			return err
 		}
 		messages++
@@ -1185,6 +1229,34 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			"issue", key, "tree", root.Tree, "step", string(step), "version", version, "holders", byNews)
 	}
 	return nil
+}
+
+// GateMovedMessage is the gate-moved message of tree's design gate whose step's document is the
+// tree's root's own (gateMovedOn).
+func GateMovedMessage(tree string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
+	return gateMovedOn(tree, stepRef(tree, step), step, artifact, version, open)
+}
+
+// gateMovedOn is the gate-moved message of tree's design gate, whose step's document is document:
+// whether the gate opened or closed (a texts.Gate word), the step and the
+// document it reviews, with the artifact id, never "spec version" (under more than one gated step
+// the version the event carries is that step's document's, and a message naming the spec would
+// send a reader to the wrong one, INFRA-1272), the version, and what the move does to a merge the
+// gate holds: released at the opening, held while it is closed. At the move (tellGateMoved) the
+// document is the step's document of the tree itself, or, for a gate the tree's root carried from
+// a closed tree, of the old root whose document the copy is bound to and a person approves
+// (putGateTold, record.DesignGate.DocumentOf), the document the carried-gate-opened notice of the
+// same approval names. The news task that carries the opening in its place, or says the gate
+// closed again before its send (RenderNews's gateAtSend), names the document as the send names it
+// (News.Documents), which can be the bare artifact reference where nothing says whose it is. It is
+// the one record of a gate's move, which both give.
+func gateMovedOn(tree, document string, step record.DesignStep, artifact string, version int, open bool) texts.GateMovedRecord {
+	gate, merge := texts.GateClosed, texts.MergeHeld
+	if open {
+		gate, merge = texts.GateOpened, texts.MergeReleased
+	}
+	return texts.GateMovedRecord{RoleHead: texts.RoleHead{Kind: texts.GateMoved, Issue: tree}, Gate: gate, Step: string(step.OrSpec()),
+		Document: document, Artifact: artifact, Version: version, Merge: merge}
 }
 
 // settleChildArchitectOpenings settles the gate's opening as owed on the holder row of each member
@@ -1227,11 +1299,11 @@ func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, ro
 }
 
 // openingWay is how the opening of a tree's design gate reaches one holder (openingDelivery): by
-// the task that carries the news the holder is owed (byNews), or as the opened role message, whose
-// whole text is message.
+// the task that carries the news the holder is owed (byNews), or as the opened gate-moved message,
+// whose record is message.
 type openingWay struct {
 	byNews  bool
-	message string
+	message texts.GateMovedRecord
 }
 
 // openingDelivery is the one place the opening of a tree's design gate is decided for each holder
@@ -1243,27 +1315,28 @@ type openingWay struct {
 //
 // A holder owed news (owed, record.OwedNews over the record the opening leaves: a member's holder
 // row, or the root architect's own row) is told the opening by the task that carries that news,
-// which leads with the opened sentence (RenderNews), so it is sent no role message beside it: for a
+// which leads with the opened record (RenderNews), so it is sent no role message beside it: for a
 // merger owed news, that task is its one delivery of the opening, and nothing else of the opening
-// reaches it. Every other holder is sent the opened role message (opened, gateOpenedSentence) with
-// one clause more: that nothing its issue holds changed since the version of step's document its
-// phase took (nothingChangedSince), or, for the architect, that nothing the tree holds changed
-// since the version it took. The clause is said only where the record shows it. For a member, that
-// is the reason OwedNews gives for owing it nothing (owed.Untold): its holder took every approved
-// version that concerns it (record.UntoldTaken), or every one it has not taken is of criteria,
-// whose checks are the root's alone (record.UntoldNotConcerned), and its told row knows a version
-// of step to name. For the architect, its row knows a version of step at or above the one approved
-// now (version). A holder the record shows no such thing of — its pull request merged, its status
-// out of the workflow, the version it took unknown to the record — is sent the opened message alone.
+// reaches it. Every other holder is sent the opened gate-moved message (opened, gateMovedOn) with
+// one field more: the version of step's document its phase took, since which nothing its issue
+// holds changed (texts.GateMovedRecord.UnchangedSince), or, for the architect, the version it took,
+// since which nothing the tree holds changed. The field is given only where the record shows it.
+// For a member, that is the reason OwedNews gives for owing it nothing (owed.Untold): its holder
+// took every approved version that concerns it (record.UntoldTaken), or every one it has not taken
+// is of criteria, whose checks are the root's alone (record.UntoldNotConcerned), and its told row
+// knows a version of step to name. For the architect, its row knows a version of step at or above
+// the one approved now (version). A holder the record shows no such thing of — its pull request
+// merged, its status out of the workflow, the version it took unknown to the record — is sent the
+// opened message alone.
 func openingDelivery(owed record.TreeNews, told []record.DesignTold, issue string, audience record.DesignAudience,
-	opened string, step record.DesignStep, version int) openingWay {
+	opened texts.GateMovedRecord, step record.DesignStep, version int) openingWay {
 	took, known := record.ToldRow(told, issue, audience).Took(step)
 	if audience == record.AudienceArchitect {
 		switch {
 		case owed.ArchitectOwed():
 			return openingWay{byNews: true}
 		case known && took >= version:
-			return openingWay{message: fmt.Sprintf("%s Nothing the tree holds changed since version %d, which you took.", opened, took)}
+			opened.UnchangedSince = took
 		}
 		return openingWay{message: opened}
 	}
@@ -1271,40 +1344,9 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, issue strin
 		return openingWay{byNews: true}
 	}
 	if reason := owed.Untold[issue]; known && (reason == record.UntoldTaken || reason == record.UntoldNotConcerned) {
-		return openingWay{message: opened + " " + nothingChangedSince(took)}
+		opened.UnchangedSince = took
 	}
 	return openingWay{message: opened}
-}
-
-// nothingChangedSince is the sentence that tells a phase holder that nothing its issue holds
-// changed since version took, the version of the step's document its phase took. It is written
-// once, here, for its two senders: the opened role message to a holder owed nothing
-// (openingDelivery), and the news of a version that changes nothing of the work, its decision
-// blocks alone or nothing at all (RenderNews).
-func nothingChangedSince(took int) string {
-	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took.", took)
-}
-
-// gateOpenedSentence is the sentence that tells a phase holder the design gate of tree opened at
-// the approval of version of step's document. It is written once, here, for the two senders of
-// it: the role message at the opening (tellGateMoved) and the news task that carries the opening
-// in its place (RenderNews). The merger's prompt quotes its opening words as what releases a
-// merge (prompts/roles/merger.md), so both must say them the same way.
-func gateOpenedSentence(tree string, step record.DesignStep, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-		"A merge the closed gate held is released.", tree, version, step, document)
-}
-
-// gateClosedSentence is the sentence that tells a phase holder the design gate of tree closed at
-// version of step's document, now with its reviewer. Its two senders are gateOpenedSentence's: the
-// role message at the close, and a news task composed while the gate stood open and sent after a
-// later version closed it (RenderNews), which says closed rather than an opening that no longer
-// stands. The merger's prompt quotes its opening words as what holds a merge.
-func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-		"stands open again.", tree, version, step, document)
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
@@ -1327,7 +1369,8 @@ func gateClosedSentence(tree string, step record.DesignStep, document string, ve
 // that record is no part of whether a gate is open.
 //
 // version and the row's own document are what the message names, so a reader is sent to the
-// document that moved rather than to the spec.
+// document that moved rather than to the spec: the document of the issue the row records it of
+// (record.DesignGate.DocumentOf), the old root's for a row a hand-over carried.
 //
 // The write that opens the tree's gate for the first time — every step the tree is gated on
 // approved (record.TreeGate.Open), where no step had held the tree's first release before it
@@ -1370,7 +1413,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.DocumentOf(), gate.ArtifactID, version, stands)
 }
 
 // raisesApproval says whether writing after over before — the row the issue held for the step,

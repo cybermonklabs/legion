@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A pull request that finishes before the issue reaches merging — merged early, or closed without
@@ -23,15 +25,12 @@ import (
 // the architect to decide. A redelivered observation tells it nothing new.
 func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		fact   intake.Fact
-		kind   record.NoticeKind
-		reason string
+		name string
+		fact intake.Fact
+		kind record.NoticeKind
 	}{
-		{name: "merged early", fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, kind: "pr-merged",
-			reason: "pull request #42 merged while LEGION-208 was in reviewing"},
-		{name: "closed without merging", fact: intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42}, kind: "pr-closed-unmerged",
-			reason: "pull request #42 closed without merging while LEGION-208 was in reviewing"},
+		{name: "merged early", fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, kind: "pr-merged"},
+		{name: "closed without merging", fact: intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42}, kind: "pr-closed-unmerged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -45,8 +44,9 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 			}
 			assertPhase(t, pool, phase.Reviewing)
 			got := architectNotices(t, pool)
-			if len(got) != 1 || got[0].Kind != tc.kind || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, tc.reason) {
-				t.Fatalf("notices = %+v, want one %s to the architect beginning %q", got, tc.kind, tc.reason)
+			if len(got) != 1 || got[0].Kind != tc.kind || got[0].Issue != "LEGION-208" || got[0].PullRequest != "sjawhar/legion#42" ||
+				got[0].Phase != phase.Reviewing || got[0].Role != "" || got[0].Reason != "" {
+				t.Fatalf("notices = %+v, want one %s of LEGION-208 naming sjawhar/legion#42 and reviewing, with no role and no reason", got, tc.kind)
 			}
 		})
 	}
@@ -138,7 +138,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			want: phase.Accepting, notices: []record.NoticeKind{"pr-merged", "phase-finished"}},
 		{name: "a merge at a head the record does not hold", state: record.PullRequestOpen, mergeState: record.MergeStateBlocked,
 			reviewer: approvedAndCompleted, facts: []intake.Fact{mergeOfAnotherHead},
-			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged", "review-stuck"}, head: headTwo, stuckBy: byMerge},
+			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged", "review-stuck"}, head: headTwo, stuckBy: texts.StuckByMerge},
 		{name: "a merged record holding the deletion push stored before the guard", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
 			pushes: storedDeletion(headOne), reviewer: reviewer, facts: []intake.Fact{approval},
 			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}, held: storedDeletion(headOne), head: headOne},
@@ -150,7 +150,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			want: phase.Accepting, notices: []record.NoticeKind{"phase-finished"}, head: headOne},
 		{name: "an approval of another head on a merged record that holds a push", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
 			at: headTwo, pushes: storedDeletion(headTwo), reviewer: approved, facts: []intake.Fact{completion},
-			want: phase.Reviewing, notices: []record.NoticeKind{"review-stuck"}, held: storedDeletion(headTwo), head: headTwo, stuckBy: byCompletion},
+			want: phase.Reviewing, notices: []record.NoticeKind{"review-stuck"}, held: storedDeletion(headTwo), head: headTwo, stuckBy: texts.StuckByCompletion},
 		{name: "a merged record at a head its merge did not name, holding a push from it", state: record.PullRequestMerged, mergeState: record.MergeStateBlocked,
 			pushes: heldPush, reviewer: reviewer, facts: []intake.Fact{approval},
 			want: phase.Reviewing, notices: []record.NoticeKind{}, held: heldPush, head: headOne},
@@ -367,21 +367,29 @@ func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
 	}
 }
 
-// architectNotices is every notice the outbox holds for the architect, in order.
+// architectNotices is every notice the outbox holds of a kind that is the architect's own, in
+// order: a kind whose record names no role, since its reader is the architect (a pr-merged, a
+// child-closed), where a phase-finished or a held names the worker.
 func architectNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select payload->>'kind', coalesce(payload->>'role', ''), coalesce(payload->>'reason', '') from outbox where kind = 'notice' and payload->>'role' = 'architect' order by id")
+	rows, err := pool.Query(t.Context(), "select payload from outbox where kind = 'notice' order by id")
 	if err != nil {
 		t.Fatalf("read notices: %v", err)
 	}
 	defer rows.Close()
 	notices := []record.Notice{}
 	for rows.Next() {
-		var notice record.Notice
-		if err := rows.Scan(&notice.Kind, &notice.Role, &notice.Reason); err != nil {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatalf("scan notice: %v", err)
 		}
-		notices = append(notices, notice)
+		var notice record.Notice
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("decode notice %s: %v", payload, err)
+		}
+		if !slices.Contains(record.NoticeKeys(notice.Kind), "role") {
+			notices = append(notices, notice)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate notices: %v", err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A prompt's recorded news is computed from the text it sends, by the function that renders it
@@ -118,8 +120,10 @@ func TestEveryBuilderRecordsExactlyTheNewsItsTextNames(t *testing.T) {
 }
 
 // wantTextNamesExactly fails the test unless text carries news and names exactly that news: the
-// start's own text first, each item told by its pair, the opened gate where an opening it carries
-// says the gate opened, and no item told that the news does not carry.
+// start's own text first, each item told by its pair in an item row of a news record, the gate open
+// where an opening it carries says the gate opened, and no item of the reader's own told that the
+// news does not carry. A root architect's summary also rows the version a member took (yours
+// false), which is the member's and no item of the architect's news.
 func wantTextNamesExactly(t *testing.T, text string, encoded []byte) {
 	t.Helper()
 	if len(encoded) == 0 {
@@ -134,24 +138,30 @@ func wantTextNamesExactly(t *testing.T, text string, encoded []byte) {
 	}
 	told := text[len(news.Task):]
 	var pairs []string
+	items := newsItemsIn(t, told)
 	for _, item := range news.Items {
 		if item.From == nil {
 			t.Fatalf("the news %s carries an item with no earlier version, which this case never owes", encoded)
 		}
-		pair := fmt.Sprintf("version %d, since version %d, which", item.To, *item.From)
-		if !strings.Contains(told, pair) {
+		pair := fmt.Sprintf("%s %s %d taken=%d ", item.Step, item.Artifact, item.To, *item.From)
+		if !slices.ContainsFunc(items, func(row string) bool { return strings.HasPrefix(row, pair) }) {
 			t.Fatalf("the task %q does not tell %+v, which the news it carries names", text, item)
 		}
 		pairs = append(pairs, pair)
 	}
-	if got, want := strings.Count(told, ", which you last took")+strings.Count(told, ", which your phase last took"), len(pairs); got != want {
-		t.Fatalf("the task %q tells %d items by their pair, want the %d the news carries", text, got, want)
+	own := slices.DeleteFunc(slices.Clone(items), func(row string) bool { return strings.Contains(row, " yours=false ") })
+	if got, want := len(own), len(pairs); got != want {
+		t.Fatalf("the task %q tells %d items of the reader's own by their pair, want the %d the news carries", text, got, want)
 	}
 	opened := false
 	for _, opening := range news.Openings {
 		opened = opened || !opening.Closed
 	}
-	if saysOpened := strings.Contains(told, "opened:"); saysOpened != opened {
+	saysOpened := false
+	for _, rec := range newsRecords(t, told) {
+		saysOpened = saysOpened || rec.fields["gate"] == texts.GateOpened
+	}
+	if saysOpened != opened {
 		t.Fatalf("the task %q says the gate opened: %t, want %t, as the openings it carries say (%+v)",
 			text, saysOpened, opened, news.Openings)
 	}

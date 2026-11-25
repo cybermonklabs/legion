@@ -1,6 +1,6 @@
-# A copy of DesignApprovedWake (awaiting_reconcile.go), the phrase a resume task carries when the
-# root's design gate is open at the resume, committed beside this package so that the text check
-# holding the architect's instructions to that phrase imports no product package.
+# A copy of texts.DesignApprovedWake (internal/texts/records_task.go), the phrase a resume task
+# carries when the root's design gate is open at the resume, committed beside this package so that
+# the text check holding the architect's instructions to that phrase imports no product package.
 #
 # The check is in two halves. internal/workflow's TestTheDesignApprovedWakeExtractIsTheConstant
 # holds this copy equal to the constant, and internal/textcheck's

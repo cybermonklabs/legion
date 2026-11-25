@@ -82,18 +82,20 @@ describe("readInboundCard", () => {
     expect(lineOf(text, read?.words?.line)).toStartWith("  message: ");
   });
 
-  // `renderInbound` writes a payload that says no more than its summary once, as the summary.
+  // `renderInbound` writes a session's payload that says no more than its summary once, in the
+  // block of its message.
   test("reads a short message from its summary", () => {
     const text = card({ source_session: sender, payload_summary: "Status only." });
 
     const read = readInboundCard(text);
 
     expect(read).toMatchObject({ from: sender, words: { text: "Status only." } });
-    expect(lineOf(text, read?.words?.line)).toBe("  summary: Status only.");
+    expect(lineOf(text, read?.words?.line)).toBe("Status only.");
   });
 
-  // A sender that holds a role gets both reply hints, so its words sit past the twelfth line.
-  test("finds the words below the reply hints of a sender that holds a role", () => {
+  // A sender that holds a role is named with its title and its role, and its words follow the
+  // card's fields in a block of their own.
+  test("finds the words below the fields of a sender that holds a role", () => {
     const text = card({
       source_session: sender,
       sender: { session_id: sender, title: "Reviewer", roles: ["legion-reviewer"] },
@@ -104,8 +106,8 @@ describe("readInboundCard", () => {
 
     expect(read?.from).toBe(`${sender} (Reviewer)`);
     expect(read?.words?.text).toBe("The review is done: two findings.");
-    expect(read?.words?.line).toBeGreaterThan(12);
-    expect(lineOf(text, read?.words?.line)).toBe('  message: "The review is done: two findings."');
+    expect(lineOf(text, (read?.words?.line ?? 0) - 1)).toBe("<message>");
+    expect(lineOf(text, read?.words?.line)).toBe("The review is done: two findings.");
   });
 
   test("reads no words from a structured message", () => {
@@ -125,7 +127,7 @@ describe("readInboundCard", () => {
   // An empty `message` is no words: a host that drew it would draw a message with nothing in it.
   test("reads no words from an empty message", () => {
     const text = card({ source_session: sender, payload: "", payload_summary: "Nothing here." });
-    expect(text).toContain('  message: ""');
+    expect(text).toContain("<message>\n\n</message>");
 
     expect(readInboundCard(text)?.words).toBeUndefined();
   });
@@ -139,7 +141,7 @@ describe("readInboundCard", () => {
 
     expect(read?.bodyNote).toBeUndefined();
     expect(read).toMatchObject({
-      note: `body names session ${named}; the sender is ${sender}`,
+      note: `body names session ${named}`,
       words: { text: `Ask ${named} about it.` },
     });
   });
@@ -156,8 +158,41 @@ describe("readInboundCard", () => {
     });
     expect(read?.words?.line).toBeGreaterThan(12);
     expect(lineOf(text, read?.words?.line)).toBe(
-      "      body: Reply with the single word fromweb and nothing else."
+      "Reply with the single word fromweb and nothing else."
     );
+  });
+
+  // The card holds a message's words in a block of their own, line by line, so the words take each
+  // of the block's lines, and the host that shows them shows each line.
+  test("reads each line of a message that runs over several lines of its block", () => {
+    const body = "First, the plan.\n\nThen the checks:\n- one\n- two";
+    const text = dispatchMessage(body);
+
+    const read = readInboundCard(text);
+
+    expect(read?.words).toMatchObject({ text: body, lines: 5 });
+    const line = read?.words?.line ?? 0;
+    expect(
+      text
+        .split("\n")
+        .slice(line, line + 5)
+        .join("\n")
+    ).toBe(body);
+    expect(lineOf(text, line + 5)).toBe("</body>");
+  });
+
+  test("reads a field's words as one line of the card", () => {
+    const read = readInboundCard(
+      card({
+        source: "envoy",
+        source_event_id: "envoy.brief",
+        topic: "notifications.role.alice-acme-1",
+        payload: BRIEF,
+        payload_summary: `${BRIEF.slice(0, 40)}…`,
+      })
+    );
+
+    expect(read?.words).toMatchObject({ text: BRIEF, lines: 1 });
   });
 
   test("reads the body of the contract's targeted delivery fixture", () => {

@@ -306,6 +306,22 @@ func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 	}
 }
 
+// A failure that recorded no cause — a fact an older daemon recorded — has no failure for the
+// look's worker-died notice to carry, and the notice still says why the claim failed: the sentence
+// the failing site wrote, as its detail.
+func TestATesterFailureWithNoCauseStillTellsWhyItsLookEnded(t *testing.T) {
+	rig := childCheckRig(t)
+	const reason = "the agent never registered"
+	rig.apply("tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester, Reason: reason})
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check.LookOpen {
+		t.Fatalf("the check after the tester's claim failed = %+v, want its look ended", check)
+	}
+	died := noticesOfKind(t, rig.pool, "LEGION-209", "worker-died")
+	if len(died) != 1 || died[0].Look != 1 || died[0].Failure != nil || died[0].Detail != reason {
+		t.Fatalf("worker-died notices = %+v, want one of look 1 with no failure and the detail %q", died, reason)
+	}
+}
+
 // A check recorded with the implementer — the shape every check open before the upgrade has, when
 // the implementer worked each of them — stays the implementer's for as long as it is open, under
 // an engine whose own checks are the tester's: the look its bound starts is handed to the
@@ -486,8 +502,7 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 				t.Fatalf("the check at its bound = %+v, want its last look 2 open, woken by the bound", check)
 			}
 			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-			if len(starts) != 2 || starts[1].CheckLook != 2 || !strings.Contains(starts[1].Task, "This is the last look: no look follows.") ||
-				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") || !strings.Contains(starts[1].Task, "did not run") {
+			if len(starts) != 2 || starts[1].CheckLook != 2 || !hasLines(starts[1].Task, "last: true", "woken_by: bound", "bound_days: 2") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
 			rig.apply("end", tc.end)
@@ -527,7 +542,7 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 		t.Fatalf("the check at its bound under a rebuilt 3-day bound = %+v, want its last look 2 open, woken by its own 2-day bound", check)
 	}
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") {
+	if len(starts) != 2 || !hasLines(starts[1].Task, "woken_by: bound", "bound_days: 2") {
 		t.Fatalf("start rows = %+v, want the last look's task naming the check's own 2-day bound", starts)
 	}
 }
@@ -648,8 +663,8 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 		if check := productionCheck(t, rig.pool, key); check == nil || !check.Open() || check.Looks != 1 || check.MergeSHA != "" {
 			t.Fatalf("%s's check after the boot = %+v, want it open at look 1 with no merge commit yet", key, check)
 		}
-		if starts := superviseRowsOf(t, rig.pool, key, "start"); len(starts) != 1 || starts[0].CheckLook != 1 || !strings.Contains(starts[0].Task, "merge commit unknown, read it from the pull request on GitHub") {
-			t.Fatalf("%s's starts = %+v, want its check's look 1 telling the agent to read the merge commit from GitHub", key, starts)
+		if starts := superviseRowsOf(t, rig.pool, key, "start"); len(starts) != 1 || starts[0].CheckLook != 1 || strings.Contains(starts[0].Task, "merge_commit") {
+			t.Fatalf("%s's starts = %+v, want its check's look 1 naming no merge commit, which its reader reads from GitHub", key, starts)
 		}
 	}
 	var held *string
@@ -687,29 +702,6 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	}
 	if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-303/implementer"] != 1 || got["LEGION-302/implementer"] != 0 {
 		t.Fatalf("issue_close rows = %v, want the child's every claim closed and the parent's none", got)
-	}
-}
-
-// The check task is held to the retired phrases the composed prompts are held to
-// (internal/prompts' TestNoComposedPromptTeachesAnE2ELineOrAProofArray): what a look proves is a
-// result recorded against the issue's after_merge check, so each of the three verdicts asks for
-// `dispatch result` at the merge commit and none asks for the retired Production: line. The task
-// is prose for a pane, so it carries the phrases without their backticks.
-func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
-	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
-	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", OpenedAt: checkOpened, Looks: 1}
-	for _, last := range []bool{false, true} {
-		task := checkTask(issue, check, wakeMerge, "", last)
-		for _, retired := range []string{"Production: line", "pending deploy of", "proof array"} {
-			if strings.Contains(task, retired) {
-				t.Errorf("the check task (last %t) still says %q", last, retired)
-			}
-		}
-		for _, want := range []string{"merge commit merge-43", "dispatch result"} {
-			if !strings.Contains(task, want) {
-				t.Errorf("the check task (last %t) omits %q", last, want)
-			}
-		}
 	}
 }
 

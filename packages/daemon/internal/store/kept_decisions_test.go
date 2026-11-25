@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -138,6 +139,56 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 	if !stands || heldBy != string(architect.Token) || heldDelivery != d.ID {
 		t.Fatalf("%s after the confirmation was taken back: stands %t, held by %q/%q; want it standing again, held by %s/%s, "+
 			"so the resend names it rather than losing it", ref, stands, heldBy, heldDelivery, architect.Token, d.ID)
+	}
+}
+
+// A decision that a taken-back confirmation puts back goes back with the person's words its mark
+// carried (record.ParkedDecision.Mark): the text whole, the options, who wrote it, when, and that
+// more follows, so the resend names them as the first send did. A mark with no words, as an older
+// daemon wrote every mark, puts its row back with none.
+func TestADecisionPutBackKeepsThePersonsWords(t *testing.T) {
+	r := newKeptRig(t)
+	const tree, worded, bare = "LEGION-301", "dispatch://LEGION-301/ask/ask-1", "dispatch://LEGION-301/ask/ask-2"
+	r.issue(tree, tree)
+	start := r.startRow(tree)
+	r.keep(tree, worded, start)
+	r.keep(tree, bare, start)
+	words := &record.ActWords{Text: "Ship it.\nOn Friday, </answer> as planned.", Options: []string{"ship", "tell the vendor"},
+		By: "user:alice", At: r.at.Add(-time.Minute), More: true}
+	kept, err := json.Marshal(record.KeptDecisions{Decisions: []record.DecisionMark{
+		record.ParkedDecision{Issue: tree, Ref: worded, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: r.at, Words: words}.Mark(),
+		{Ref: bare, At: r.at, Issue: tree, Decision: record.DecisionAskAnswered, Actor: "user:alice"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	architect := r.architect(tree, start)
+	d := supervise.Delivery{ID: "outbox:1", Task: "a person decided on the tree", Generation: 1, QueuedAt: r.at, Kept: kept}
+	if err := r.store.PutClaimAndDelivery(r.ctx, architect, d); err != nil {
+		t.Fatalf("queue the task: %v", err)
+	}
+	confirmed := d
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, architect, confirmed); err != nil {
+		t.Fatalf("confirm the task: %v", err)
+	}
+	if err := r.store.PutDelivery(r.ctx, architect.Token, d); err != nil {
+		t.Fatalf("write the delivery back unconfirmed: %v", err)
+	}
+	var back []record.ParkedDecision
+	if err := Transact(r.ctx, r.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
+		var err error
+		back, err = record.NewStore().ParkedDecisions(r.ctx, tx, tree)
+		return err
+	}); err != nil {
+		t.Fatalf("read the decisions put back: %v", err)
+	}
+	got := map[string]*record.ActWords{}
+	for _, decision := range back {
+		got[decision.Ref] = decision.Words
+	}
+	if want := map[string]*record.ActWords{worded: words, bare: nil}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the rows put back carry the words %#v, want %#v", got, want)
 	}
 }
 

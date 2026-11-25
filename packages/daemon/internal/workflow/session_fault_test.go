@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
@@ -30,33 +31,40 @@ func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
 
 // A forgotten session is posted on the issue and told to its architect and to the controller: the
 // worker is running, so nothing is held, and the report is the whole point. Its cause decides the
-// words and the notice kind. A session no store holds is told as lost, as it always was. One the
-// pod's launcher could not look up by its id, and Oh My Pi did not resume by that id, is told as
-// forgotten, with that reason, and nothing says it was lost (dispatch://INFRA-4108 R3): the
-// notice's kind is part of what the architect and the controller hear, since the outbox publishes
-// each notice as `<kind> on <issue>`.
+// words of the message and the notice's kind and fields. A session no store holds is told as lost,
+// as it always was: a session-lost notice of the role and the phase with the runtime's account
+// (detail). One the pod's launcher could not look up by its id, and Oh My Pi did not resume by that
+// id, is told as forgotten, with that reason in the message, and nothing says it was lost
+// (dispatch://INFRA-4108 R3): the notice's kind is part of what the architect and the controller
+// hear, since the outbox publishes each notice as `<kind> on <issue>`, so it is a session-forgotten
+// notice of the role and the phase that names the session forgotten and carries no detail, and no
+// notice row says lost. What each kind means, the fresh agent among it, is its readers' prompts'.
 func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing.T) {
 	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
 	for _, row := range []struct {
 		name   string
 		fact   intake.SessionLost
-		kind   string
+		kind   texts.Kind
 		says   []string
 		denies []string
+		// session is the session the notice names as a field of its own, and detail what its
+		// detail holds; "" is a notice with none.
+		session, detail string
 	}{
 		{
 			name: "gone",
 			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "gone", Session: "ses-abc",
 				Detail: "the session ses-abc this claim recorded is in no session store the runtime could resume it from"},
-			kind: "session-lost",
-			says: []string{"ses-abc", "lost the session it recorded", "fresh agent"},
+			kind:   texts.SessionLost,
+			says:   []string{"ses-abc", "lost the session it recorded", "fresh agent"},
+			detail: "ses-abc",
 		},
 		{
 			name: "not-resumed-by-id",
 			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "not-resumed-by-id", Session: session,
 				Detail: "the pod's launcher, which is older than this release, could not look the session " + session +
 					" up by its id, and Oh My Pi did not resume it by that id, so this claim forgot it and runs a fresh agent"},
-			kind: "session-forgotten",
+			kind: texts.SessionForgotten,
 			says: []string{
 				session,
 				"The tester of LEGION-209 forgot the session it recorded",
@@ -65,7 +73,8 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 				"The daemon deleted nothing of that session",
 				"The tester is running a fresh agent",
 			},
-			denies: []string{"lost", "no session store"},
+			denies:  []string{"lost", "no session store"},
+			session: session,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -86,16 +95,26 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 					t.Errorf("the issue was told %q, want it to say %q", posted[0], want)
 				}
 			}
+			payloads := outboxStrings(t, pool, "select payload::text from outbox where kind in ('notice', 'controller_notice') and issue = $1 order by id", "LEGION-209")
 			for _, banned := range row.denies {
 				if strings.Contains(posted[0], banned) {
 					t.Errorf("the issue was told %q, which says %q: the session was not lost and a store may still hold it", posted[0], banned)
 				}
+				for _, payload := range payloads {
+					if strings.Contains(payload, banned) {
+						t.Errorf("a notice of the forget is %s, which says %q: the session was not lost and a store may still hold it", payload, banned)
+					}
+				}
 			}
-			notices := noticeKindReasons(t, pool, "LEGION-209")
-			if reason, told := notices[row.kind]; len(notices) != 1 || !told || !strings.Contains(reason, "fresh agent") {
-				t.Errorf("the architect was told %v, want one %s notice saying a fresh agent runs", notices, row.kind)
+			if kinds := outboxStrings(t, pool, "select payload->>'kind' from outbox where kind = 'notice' and issue = $1 order by id", "LEGION-209"); len(kinds) != 1 || kinds[0] != string(row.kind) {
+				t.Errorf("the architect was told %v, want one %s notice", kinds, row.kind)
 			}
-			if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != row.kind {
+			told := noticesOfKind(t, pool, "LEGION-209", row.kind)
+			if len(told) != 1 || told[0].Role != claim.RoleTester || told[0].Phase != phase.Testing || told[0].Reason != "" ||
+				told[0].Session != row.session || (told[0].Detail == "") != (row.detail == "") || !strings.Contains(told[0].Detail, row.detail) {
+				t.Errorf("the architect was told %+v, want one %s of the tester in testing naming the session %q and a detail holding %q", told, row.kind, row.session, row.detail)
+			}
+			if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != string(row.kind) {
 				t.Errorf("the controller was told %v, want one %s notice", got, row.kind)
 			}
 		})

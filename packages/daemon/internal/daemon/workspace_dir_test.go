@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -8,10 +9,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// The engine names, in each task's working copy line, the directory the runtime the daemon runs
+// The engine names, in each task's working copy fields, the directory the runtime the daemon runs
 // starts the issue's agents in: the pod's WorkspaceDir under Kubernetes, the pane's under tmux, for
 // the repository the issue's record names (TestTheWorkspaceDirIsTheAgentContainersWorkingDirectory
 // and TestTheWorkspaceDirIsThePanesStartDirectory hold each runtime's own process to that
@@ -41,13 +43,13 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			if got := dir(issue); got != tc.want || got == "" {
 				t.Fatalf("the engine's workspace of %s = %q, want the runtime's %q", issue.Key, got, tc.want)
 			}
-			if got, want := workflow.WorkingCopy(issue, dir).String(), " Working copy: branch legion/LEGION-208, directory "+tc.want+"."; got != want {
-				t.Fatalf("the working copy line = %q, want %q", got, want)
+			if got, want := workflow.WorkingCopy(issue, dir).Facts(), (texts.Standing{Branch: "legion/LEGION-208", Directory: tc.want}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("the working copy fields = %+v, want %+v", got, want)
 			}
 			unparsed := issue
 			unparsed.Repo = "not a repository"
-			if got, want := workflow.WorkingCopy(unparsed, dir).String(), " Working copy: branch legion/LEGION-208."; got != want {
-				t.Fatalf("the working copy line of a repository that does not parse = %q, want %q", got, want)
+			if got, want := workflow.WorkingCopy(unparsed, dir).Facts(), (texts.Standing{Branch: "legion/LEGION-208"}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("the working copy fields of a repository that does not parse = %+v, want %+v", got, want)
 			}
 		})
 	}

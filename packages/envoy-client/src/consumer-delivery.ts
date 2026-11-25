@@ -1,4 +1,4 @@
-import { legacyAgentSubject, topicForms } from "@legion/contracts";
+import { DELIVERY_DUPLICATE_WINDOW_HOURS, legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -6,8 +6,9 @@ import {
   type InboundEnvelope,
   renderInbound,
 } from "./delivery";
-import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
+import type { DeliveryLedger } from "./delivery-ledger";
 import { messageFor } from "./errors";
+import { noticeKind, noticeText } from "./notice-text";
 import { subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
@@ -185,19 +186,34 @@ export interface ConsumerEpoch {
 }
 
 /**
- * A notice the session is told once: messages may be missing. The relay is the one place that
- * learns of a gap, from the registration answer or a frame's `Envoy-Gap` header, so this is the
- * one place a gap notice is worded; the host renders it as it renders a failure notice
- * (`envoyNoticeText`, `gapNoticeFields`).
+ * A notice the session is told once: messages published to it may be missing. The relay is the
+ * one place that learns of a gap, from the registration answer or a frame's `Envoy-Gap` header, so
+ * this is the one place a gap notice is built; every host renders it with `gapNoticeText`. `kind`
+ * is the gap's cause, and the other fields are what the relay knows of it. `message` is the one
+ * sentence a host writes to its own log, which reaches no session.
  */
-export interface ConsumerGapNotice {
-  readonly kind: "retention_gap" | "stream_recreated";
-  readonly message: string;
-}
+export type ConsumerGapNotice =
+  | {
+      /** The consumer started below the stream's first message: the stream dropped some. */
+      readonly kind: "retention_gap";
+      /** The stream the gap is in, where the listener named one. */
+      readonly stream: string | undefined;
+      /** How long the stream keeps a message (`DELIVERY_DUPLICATE_WINDOW_HOURS`). */
+      readonly retentionHours: number;
+      readonly message: string;
+    }
+  | {
+      /** The stream the session's resume point named was replaced, and what it held is gone. */
+      readonly kind: "stream_recreated";
+      /** The stream the listener relays now. */
+      readonly stream: string;
+      /** The stream that was replaced. */
+      readonly previousStream: string;
+      readonly message: string;
+    };
 
 const GAP_MESSAGES: Record<ConsumerGapNotice["kind"], string> = {
-  retention_gap:
-    "The notification stream no longer holds some messages published to this session while it was away: messages older than 72 hours may be missing.",
+  retention_gap: `The notification stream no longer holds some messages published to this session while it was away: messages older than ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours may be missing.`,
   stream_recreated:
     "Envoy's notification stream was recreated, so messages published to this session before that may be lost.",
 };
@@ -441,8 +457,24 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     safely("log", () => host.log(`consumer delivery: ${message}`, error));
   const send = (reply: string, body: RelayReply) =>
     safely(`reply ${body}`, () => options.publish(reply, body));
-  const tellGap = (kind: ConsumerGapNotice["kind"]) =>
-    safely("gap notice", () => host.gap({ kind, message: GAP_MESSAGES[kind] }));
+  const tellRetentionGap = (stream: string | undefined) =>
+    safely("gap notice", () =>
+      host.gap({
+        kind: "retention_gap",
+        stream,
+        retentionHours: DELIVERY_DUPLICATE_WINDOW_HOURS,
+        message: GAP_MESSAGES.retention_gap,
+      })
+    );
+  const tellStreamRecreated = (previousStream: string, stream: string) =>
+    safely("gap notice", () =>
+      host.gap({
+        kind: "stream_recreated",
+        stream,
+        previousStream,
+        message: GAP_MESSAGES.stream_recreated,
+      })
+    );
 
   const switchStream = (id: string) => {
     if (streamID === id) return;
@@ -461,7 +493,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     const asked = resumePoint() ?? registeredResume;
     if (asked === undefined || asked.stream_id === id) return;
     registeredResume = undefined;
-    tellGap("stream_recreated");
+    tellStreamRecreated(asked.stream_id, id);
   };
 
   const followedAt = (subject: string): number | undefined => {
@@ -654,14 +686,14 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     }
     send(frame.reply, "received");
 
-    if (frame.gap && !gapTold) tellGap("retention_gap");
+    if (frame.gap && !gapTold) tellRetentionGap(frame.streamID);
     gapTold = false;
     if (frame.streamID !== streamID) {
       // `written` is the floor a registration answer left as well as what the session wrote
       // (`answered`), so this fires for a session that received nothing too: the stream behind
       // that floor was replaced, so what it asked to resume from is gone.
       if (streamID !== undefined && (written !== undefined || held.size > 0)) {
-        tellGap("stream_recreated");
+        tellStreamRecreated(streamID, frame.streamID);
       } else if (streamID === undefined) {
         tellReplacedResume(frame.streamID);
       }
@@ -774,7 +806,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       const floor = (answer.consumer_start ?? 0) - 1;
       if (answer.stream_id === streamID && floor > (written ?? -1)) written = floor;
       if (answer.gap) {
-        tellGap("retention_gap");
+        tellRetentionGap(answer.stream_id === "" ? undefined : answer.stream_id);
         gapTold = true;
       }
       persist();
@@ -821,53 +853,74 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 }
 
-/** The `notice:` value of a gap notice whose kind has a name of its own. */
-const GAP_NOTICE_NAMES: Record<ConsumerGapNotice["kind"], string> = {
-  retention_gap: "messages may be missing",
-  stream_recreated: "stream recreated",
-};
-
-/** What a gap notice says, field by field. */
-function gapNoticeFields(notice: ConsumerGapNotice): Readonly<Record<string, string>> {
-  return { notice: GAP_NOTICE_NAMES[notice.kind], detail: notice.message };
-}
+/**
+ * The gap notice: messages published to this session may be missing. No field names the gap's
+ * cause, since its fields tell it: a `retention_gap` always states `retention_hours`, how long the
+ * stream keeps a message, and never `previous_stream`, with the stream it is in where the
+ * listener named one; a `stream_recreated` always states `previous_stream`, the stream that was
+ * replaced, with `stream`, the one that replaced it, and never `retention_hours`. So a reader
+ * tells the two apart by which of `retention_hours` and `previous_stream` the notice states. The
+ * step its reader takes is in `envoy_inbox`'s description (`tool-contract.ts`), which its kind
+ * names (`notice-text.ts`).
+ */
+export const GAP_NOTICE = noticeKind("envoy", "messages may be missing (envoy_inbox)", [
+  "stream",
+  "previous_stream",
+  "retention_hours",
+]);
 
 /**
- * A gap notice as every host shows it: a card, rendered as every notice is (`envoyNoticeText`).
- * It is a card and not a warning because it is about the messages the session was shown, which
- * the session itself must know of, not about how this process is set up.
+ * A gap notice as every host shows it: a card, rendered as every notice is (`noticeText`). It is a
+ * card and not a warning because it is about the messages the session was shown, which the
+ * session itself must know of, not about how this process is set up.
  */
 export function gapNoticeText(notice: ConsumerGapNotice): string {
-  return envoyNoticeText(gapNoticeFields(notice));
+  const recreated = notice.kind === "stream_recreated";
+  return noticeText(GAP_NOTICE, {
+    stream: notice.stream,
+    previous_stream: recreated ? notice.previousStream : undefined,
+    retention_hours: recreated ? undefined : notice.retentionHours,
+  });
 }
 
 /**
- * What a session is told when the listener can give it no consumer, worded once for every host:
- * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
- * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
- * `why` is the listener's own message, which carries its machine-readable reason. Each host
- * shows it where it shows a gap notice and says once per outage.
+ * The notice a session gets when the listener can give it no consumer: its registration was
+ * refused, by one of the reasons `ErrorWireSchema.reason` lists (`transport.ts`), or it failed, so
+ * nothing reaches it until a later registration is accepted. `error` is the listener's own
+ * message, which carries its machine-readable reason. The step its reader takes is in
+ * `envoy_inbox`'s description (`tool-contract.ts`), which its kind names.
+ */
+export const INBOUND_UNAVAILABLE_NOTICE = noticeKind(
+  "envoy",
+  "Envoy inbound unavailable (envoy_inbox)",
+  ["error"]
+);
+
+/**
+ * The inbound-unavailable notice for `why`, the listener's own message, built once for every host.
+ * Each host shows it where it shows a gap notice, once per outage.
  */
 export function inboundUnavailableNoticeText(why: string): string {
-  return envoyNoticeText({
-    notice: "Envoy inbound unavailable",
-    error: why,
-    detail:
-      "The listener gave this session no durable consumer, which is the only path an Envoy message reaches it by, so it receives none. Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.",
-  });
+  return noticeText(INBOUND_UNAVAILABLE_NOTICE, { error: why });
 }
 
 /**
- * What a session that was told its inbound is unavailable is told once a registration is
- * accepted again, worded once for every host: without it the outage notice is the last word the
- * session has, and a session that recovered a few seconds later reads itself as deaf for its life.
+ * The notice a session that was told its inbound is unavailable gets once a registration is
+ * accepted again: without it the outage notice is the last word the session has, and a session
+ * that recovered a few seconds later reads itself as deaf for its life. The event has no fact
+ * beyond its kind, so the notice states only its kind. The step its reader takes is in
+ * `envoy_inbox`'s description (`tool-contract.ts`), which its kind names.
  */
+export const INBOUND_RESTORED_NOTICE = noticeKind(
+  "envoy",
+  "Envoy inbound restored (envoy_inbox)",
+  []
+);
+
+/** The inbound-restored notice, built once for every host. Each host shows it where it shows a
+ *  gap notice. */
 export function inboundRestoredNoticeText(): string {
-  return envoyNoticeText({
-    notice: "Envoy inbound restored",
-    detail:
-      "The listener accepted this session's registration and gave it its durable consumer, so Envoy messages reach it again, the ones the stream stored during the outage first.",
-  });
+  return noticeText(INBOUND_RESTORED_NOTICE, {});
 }
 
 /** One session's outage report (`inboundUnavailable`). */

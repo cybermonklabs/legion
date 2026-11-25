@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // drawnInto records key as drawn into variant of experiment, an experiment of unit issue whose
@@ -29,10 +29,19 @@ func drawnInto(t *testing.T, pool *pgxpool.Pool, key, experiment, variant, plan 
 	})
 }
 
-// inPlanningB is how a notice names the group of key in the variant b of the experiment planning,
+// inPlanningB is how a refusal names the group of key in the variant b of the experiment planning,
 // whose issues run the project's default steps.
 func inPlanningB(key string) string {
 	return key + " is in the variant b of the experiment planning, whose issues run the project's default steps."
+}
+
+// notTakenInPlanningB is the plan-not-taken notice of key, an issue in the variant b of the
+// experiment planning, whose first step passed over each version of passed: the group's meaning
+// (texts.PlanNotTakenGroup), each version once, the default steps it runs, and the experiment and
+// the variant that name the group.
+func notTakenInPlanningB(key string, passed ...texts.PlanVersionFacts) record.Notice {
+	return record.Notice{Kind: texts.PlanNotTaken, Issue: key, Why: texts.PlanNotTakenGroup, NotTaken: passed, Runs: texts.PlanRunsDefault,
+		Experiment: "planning", Variant: "b"}
 }
 
 // The first step of an issue whose group runs the project's default steps takes the default steps
@@ -67,9 +76,8 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 		if got := planRowsOf(t, pool, child); got != [3]int{1, 1, len(todaysDefaultSteps)} {
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the plan of generation 0 deleted", child, got)
 		}
-		told := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + child +
-			" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
-			". " + inPlanningB(child)}}
+		told := []record.Notice{notTakenInPlanningB(child,
+			texts.PlanVersionFacts{Version: 1, Artifact: planArtifact, GivenBy: treeRoleToken(t, "LEGION-208", claim.RoleArchitect)})}
 		if got := noticesOf(t, pool, child, "plan-not-taken"); !reflect.DeepEqual(got, told) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, told)
 		}
@@ -129,9 +137,8 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 
 	assertDefaultPlan(t, planStandingOf(t, pool, engine, issue, 1).plan, issue, 1, todaysStoredSteps)
 	told := noticesOf(t, pool, issue, "plan-not-taken")
-	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + issue +
-		" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
-		". " + inPlanningB(issue)}}
+	want := []record.Notice{notTakenInPlanningB(issue,
+		texts.PlanVersionFacts{Version: 1, Artifact: planArtifact, GivenBy: treeRoleToken(t, "LEGION-208", claim.RoleArchitect)})}
 	if !reflect.DeepEqual(told, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v", told, want)
 	}
@@ -160,9 +167,8 @@ func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing
 		if got := planRowsOf(t, pool, root.Key); got != [3]int{1, 1, len(todaysDefaultSteps)} {
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the owner's plan deleted", root.Key, got)
 		}
-		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + root.Key +
-			" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
-			". " + inPlanningB(root.Key)}}
+		want := []record.Notice{notTakenInPlanningB(root.Key,
+			texts.PlanVersionFacts{Version: 1, Artifact: planArtifact, GivenBy: treeRoleToken(t, "LEGION-208", claim.RoleArchitect)})}
 		if got := noticesOf(t, pool, root.Key, "plan-not-taken"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
 		}
@@ -211,9 +217,8 @@ func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
 	execSQL(t, pool, `update issues set generation = generation + 1, phase = 'admitted' where key = $1`, root.Key)
 	firstStep(t, pool, engine, root.Key)
 
-	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + root.Key +
-		" took no plan: version 2 of document plan-artifact, given by " + treeRoleToken(t, root.Key, claim.RoleArchitect) +
-		". " + inPlanningB(root.Key)}}
+	want := []record.Notice{notTakenInPlanningB(root.Key,
+		texts.PlanVersionFacts{Version: 2, Artifact: "plan-artifact", GivenBy: treeRoleToken(t, root.Key, claim.RoleArchitect)})}
 	if got := noticesOf(t, pool, root.Key, "plan-not-taken"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan-not-taken notices of two runs = %+v, want the one notice of the first run, naming the version once", got)
 	}
@@ -391,8 +396,7 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 
 			assertWalksAt(t, pool, engine, child, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 			told := noticesOf(t, pool, child, "plan-not-taken")
-			if len(told) != 1 || !strings.Contains(told[0].Reason, "took no plan of an earlier owner") ||
-				!strings.Contains(told[0].Reason, "give it again with register_plan as your own.") {
+			if len(told) != 1 || told[0].Why != texts.PlanNotTakenEarlierOwner || told[0].Experiment != "" || told[0].Variant != "" {
 				t.Fatalf("the plan-not-taken notices = %+v, want the one notice of an earlier owner's plan, as built", told)
 			}
 			stop := intake.TaskStopped{Issue: child, Task: "a", By: owner, Generation: 1}

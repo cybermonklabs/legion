@@ -1,7 +1,8 @@
+import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Block,
@@ -182,7 +183,8 @@ interface SurfaceSession {
   command(command: Record<string, unknown>): Promise<Record<string, unknown>>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
-  /** The session file's lines, as raw JSON. */
+  /** The session's stored lines, as raw JSON: its file's, or its rows' under SQL storage, where
+   *  none is there before the host stores the session. */
   entries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
@@ -206,6 +208,39 @@ async function until<T>(
   }
 }
 
+/** Where Oh My Pi keeps a session: the session file (its default), or rows of a SQL database
+ *  (`OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs:
+ *  packages/daemon/internal/podsafety/podsafety.go), where that file is never on disk. */
+type SessionStorage = "file" | "sql";
+
+/**
+ * The text Oh My Pi's SQL store in the SQLite database `database` holds for the session it keys
+ * by `key`, the path the host names as its session file; undefined while it holds none. It is read
+ * as card-delivery-omp.test.ts reads it, as the store does (`sql-session-storage.ts` `readFull`,
+ * at the pinned build): the session row's own content, then its parts in the order of their
+ * offsets, in one statement, so the read sees one committed write.
+ */
+function sqlSessionText(database: string, key: string): string | undefined {
+  const store = new Database(database, { readonly: true });
+  try {
+    store.exec("PRAGMA busy_timeout = 5000");
+    const rows = store
+      .query<{ kind: number; start_offset: number; content: string }, [string]>(
+        "SELECT 0 AS kind, 0 AS start_offset, content FROM omp_session_files WHERE path = ?1 " +
+          "UNION ALL SELECT 1, start_offset, content FROM omp_session_files_parts WHERE path = ?1"
+      )
+      .all(key);
+    const head = rows.find((row) => row.kind === 0);
+    if (head === undefined) return undefined;
+    const parts = rows
+      .filter((row) => row.kind === 1)
+      .sort((first, second) => first.start_offset - second.start_offset);
+    return head.content + parts.map((part) => part.content).join("");
+  } finally {
+    store.close();
+  }
+}
+
 /**
  * Starts the real Oh My Pi in RPC mode with only envoy.ts loaded, against one stand-in that is the
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
@@ -213,7 +248,9 @@ async function until<T>(
  * handed the two directories before the binary starts, for a case whose point is a file the
  * binary must read at its launch. `noWindowModel` loads test/no-window-provider.ts beside
  * envoy.ts and enables its provider, so `set_model` can switch the session to `NO_WINDOW_MODEL`,
- * whose context window is zero. Resolves once the session has registered its id with the
+ * whose context window is zero. `storage` is where Oh My Pi keeps the session: its file by
+ * default, or, with `sql`, rows of a SQLite database in the case's root, which the host takes as
+ * it takes a Legion pod's database. Resolves once the session has registered its id with the
  * listener, the test holds a NATS connection, and this test's subscription to the session's
  * stream is live.
  */
@@ -226,11 +263,19 @@ async function startSession(
       readonly home: string;
       readonly workspace: string;
     }) => Promise<void>;
+    readonly storage?: SessionStorage;
   } = {}
 ): Promise<SurfaceSession> {
-  const { config = [], env = {}, noWindowModel = false, prepare } = options;
+  const { config = [], env = {}, noWindowModel = false, prepare, storage = "file" } = options;
   const { binary, nats } = setup();
-  const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
+  const { root, home, workspace, sessions } = await ompRoot(
+    binary,
+    "session-surface-omp-",
+    cleanup
+  );
+  const database = path.join(root, "sessions.db");
+  const dsnFile = path.join(root, "sessions.dsn");
+  if (storage === "sql") await writeFile(dsnFile, `sqlite://${database}`);
   await prepare?.({ home, workspace });
 
   const turns: Turn[] = [];
@@ -320,6 +365,7 @@ async function startSession(
         DISPATCH_URL: base,
         DISPATCH_TOKEN,
         ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
+        ...(storage === "sql" && { OMP_SESSION_STORAGE: "sql", OMP_SESSION_SQL_DSN_FILE: dsnFile }),
         ...env,
       },
       onFrame: (frame) => {
@@ -551,7 +597,9 @@ async function startSession(
       const response = await session.command({ type: "get_state" });
       const file = RpcStateSchema.parse(response.data).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return (await readFile(file, "utf8")).split("\n");
+      if (storage === "file") return (await readFile(file, "utf8")).split("\n");
+      // The host keys the session's rows by the path it names; none before it stores the session.
+      return (sqlSessionText(database, file) ?? "").split("\n");
     },
     until: (what, probe) => until(what, probe, closed),
   };
@@ -1465,6 +1513,126 @@ test.skipIf(skip)(
     expect(frameText(messages[card] ?? {})).toBe(`Envoy message from envoy:\n\n${brief}`);
     const reply = messages.findIndex((message) => frameText(message) === "ready");
     expect(reply).toBeGreaterThan(card);
+  },
+  120_000
+);
+
+/** A notice the Legion daemon published, as the listener forwards it to the role holder's agent
+ *  subject: `agent` its source, no sender session, at `urgency` (card-delivery-omp.test.ts's
+ *  `daemonEnvelope`). */
+function daemonNotice(summary: string, urgency: string): string {
+  const label = randomUUID();
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_event_id: `source-${label}`,
+    topic: "notifications.role.legion-acme-acme-1-architect",
+    dedupe_key: `envoy.role.forward.publish.${label.replaceAll("-", "")}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    urgency,
+  });
+}
+
+// A `low` card of the daemon (`lowCard`) goes to an idle host as `nextTurn` with no turn: the host
+// stores it and the terminal shows it, with no `message_end` (README, "A card whose envelope says
+// `low`"). Every card the session displays reaches the live view (README, the collapsed card's
+// paragraph; dispatch://INFRA-5271 R1), so the live view shows the notice the next turn reads,
+// before that turn, as it shows a `med` one.
+test.skipIf(skip)(
+  "a low card the session stores is in the live view's replay, before the turn that reads it",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "Start." });
+    const first = await session.nextTurn("the first turn");
+    first.reply([text("Started.")]);
+    await session.settled();
+
+    const low = `phase-finished on ACME-1 ${randomUUID()}`;
+    await session.relay(daemonNotice(low, "low"), "the low notice");
+    // The host stores the low card with no turn: its entry is in the session file, not only the
+    // record the session keeps of the card while it waits for the store.
+    await session.until("the low card in the session file", async () =>
+      (await session.entries()).some(
+        (line) => line.includes('"custom_message"') && line.includes(low)
+      )
+        ? true
+        : undefined
+    );
+    const med = `checks-red on ACME-1 ${randomUUID()}`;
+    await session.relay(daemonNotice(med, "med"), "the med notice");
+    const turn = await session.nextTurn("the turn the med notice started");
+    expect(conversation(turn.request)).toContain(low);
+    turn.reply([text("Read both.")]);
+    await session.settled();
+
+    const replayed = await session.replay();
+    const texts = replayed.frames
+      .filter((frame) => frame.kind === "message")
+      .map((frame) => frameText(frame.message as Record<string, unknown>));
+    const medShown = texts.indexOf(`Envoy message from agent:\n\n${med}`);
+    expect(medShown).toBeGreaterThan(-1);
+    const lowShown = texts.indexOf(`Envoy message from agent:\n\n${low}`);
+    expect(lowShown).toBeGreaterThan(-1);
+    expect(lowShown).toBeLessThan(medShown);
+  },
+  120_000
+);
+
+// The same under `OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs
+// (packages/daemon/internal/podsafety/podsafety.go), where no session file is ever on disk. The
+// agent stream is no part of the session's store: the session records the low card on it as it
+// hands the card over, so the case waits for the card on the live stream, which shows too that the
+// view had it before any turn read it, and then for its entry in the store.
+test.skipIf(skip)(
+  "a low card the session stores under SQL session storage is in the live view before the turn that reads it",
+  async () => {
+    const session = await startSession({ storage: "sql" });
+    await session.arm();
+    // The first reply puts the session in its store, which holds every entry from then on.
+    await session.command({ type: "prompt", message: "Start." });
+    const first = await session.nextTurn("the first turn");
+    first.reply([text("Started.")]);
+    await session.settled();
+
+    const low = `phase-finished on ACME-1 ${randomUUID()}`;
+    const lowText = `Envoy message from agent:\n\n${low}`;
+    await session.relay(daemonNotice(low, "low"), "the low notice");
+    const shown = await session.until("the low card on the live stream", () =>
+      session.frames
+        .map(({ frame }) => frame.message as Record<string, unknown> | undefined)
+        .find((message) => message !== undefined && frameText(message) === lowText)
+    );
+    // No turn has read it: the first turn's is the only request the session sent.
+    expect(session.turns).toHaveLength(1);
+    expect(shown).toMatchObject({ role: "user", streaming: false });
+    expect(String(shown.id)).toStartWith("c");
+    await session.until("the low card in the session's store", async () =>
+      (await session.entries()).some(
+        (line) => line.includes('"custom_message"') && line.includes(low)
+      )
+        ? true
+        : undefined
+    );
+
+    const med = `checks-red on ACME-1 ${randomUUID()}`;
+    await session.relay(daemonNotice(med, "med"), "the med notice");
+    const turn = await session.nextTurn("the turn the med notice started");
+    expect(conversation(turn.request)).toContain(low);
+    turn.reply([text("Read both.")]);
+    await session.settled();
+
+    const replayed = await session.replay();
+    const texts = replayed.frames
+      .filter((frame) => frame.kind === "message")
+      .map((frame) => frameText(frame.message as Record<string, unknown>));
+    const medShown = texts.indexOf(`Envoy message from agent:\n\n${med}`);
+    expect(medShown).toBeGreaterThan(-1);
+    const lowShown = texts.indexOf(lowText);
+    expect(lowShown).toBeGreaterThan(-1);
+    expect(lowShown).toBeLessThan(medShown);
   },
   120_000
 );

@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import type { DispatchEvent } from "@legion/contracts";
+import { decode } from "@toon-format/toon";
 
 import { bearerCredential } from "../bearer";
-import { type CarriedItem, renderInbound, wholeCarriedBody } from "../delivery";
+import {
+  type CarriedItem,
+  type DispatchDelivery,
+  renderInbound,
+  wholeCarriedBody,
+} from "../delivery";
 import { DispatchClient } from "../dispatch-http";
 import { eventTextsWhole } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
+import { splitWordsBlocks } from "../words-block";
 
 const SERVER = "https://dispatch.example";
 const COMMENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -172,7 +179,23 @@ describe("pictures of a body an event carried only in part", () => {
 
 // A host that prompts its agent with the frame reads the whole body into the card first:
 // `renderInbound` names the item whose body the event carried in part, or not at all, the host
-// reads that item, and a second render is given the body it answered.
+// reads that item, and a second render is given the body it answered. The body is its author's
+// words, so the card holds it in a block of its own after its fields.
+function bodyBlocks(content: string): string[] {
+  return splitWordsBlocks(content)
+    .blocks.filter((block) => block.name === "body")
+    .map((block) => block.text);
+}
+
+/** The payload fields of a Dispatch card's event, as TOON's `decode` reads the card's fields once
+ *  its blocks are split off. */
+function cardPayload(content: string): Record<string, unknown> {
+  const card = decode(splitWordsBlocks(content).head) as {
+    readonly envoy: { readonly dispatch: { readonly payload: Record<string, unknown> } };
+  };
+  return card.envoy.dispatch.payload;
+}
+
 describe("renderInbound and a body an event did not carry whole", () => {
   const SESSION = "ses_reader";
   const ITEM: CarriedItem = { resource: "comment", id: COMMENT_ID, issueKey: "DSP-1" };
@@ -187,9 +210,9 @@ describe("renderInbound and a body an event did not carry whole", () => {
     const body = await wholeCarriedBody(client, ITEM, SESSION);
     const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
 
-    expect(body).toBe(STORED_BODY);
+    expect(body).toEqual({ body: STORED_BODY });
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
-    expect(whole.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
+    expect(bodyBlocks(whole.content)).toEqual([STORED_BODY]);
     expect(whole.content).not.toContain("first part only");
     expect(whole.cutItem).toBeUndefined();
   });
@@ -207,7 +230,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
     const whole = renderInbound(envelopeOf(omittedEvent), SESSION, undefined, body);
 
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
-    expect(whole.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
+    expect(bodyBlocks(whole.content)).toEqual([STORED_BODY]);
     expect(whole.content).not.toContain("too large for the bus");
     expect(whole.cutItem).toBeUndefined();
   });
@@ -217,9 +240,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
 
     expect(await wholeCarriedBody(failing, ITEM, SESSION)).toBeUndefined();
     const kept = renderInbound(envelopeOf(cutEvent), SESSION, undefined, undefined);
-    // A text holding no blank line is written as a plain scalar, where the whole body above,
-    // which holds one, is written quoted.
-    expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
+    expect(bodyBlocks(kept.content)).toEqual([CARRIED_BODY]);
     expect(kept.content).toContain(
       `the body is its first part only; read it whole with GET /api/v1/comments/${COMMENT_ID}`
     );
@@ -229,15 +250,17 @@ describe("renderInbound and a body an event did not carry whole", () => {
     expect(rode.content).not.toContain("first part only");
   });
 
-  test("an item deleted since the event reads as the deleted line", async () => {
+  // An item deleted since the event has no body: the card names the delete in fields of its own
+  // (`deleted_at`, `deleted_by`), where the body the delete cleared would stand, and draws no
+  // block for words that are gone.
+  test("an item deleted since the event reads as the delete's fields and no body", async () => {
     const deletion = {
       deleted_at: "2026-09-10T00:00:00Z",
       deleted_by: { kind: "user", id: "alice" },
     };
-    const mark = "Deleted by user alice at 2026-09-10T00:00:00Z";
     const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion }).client;
     // The event's carried part embeds the picture, so the card lists it until the body read whole
-    // replaces that part: the deleted line is the only body the card may draw from.
+    // replaces that part: the deleted post has no body the card may draw from.
     const cutWithPicture = {
       ...cutEvent,
       payload: { ...comment, body: STORED_BODY, body_truncated: true, artifact_name: "" },
@@ -246,9 +269,12 @@ describe("renderInbound and a body an event did not carry whole", () => {
 
     // The delete cleared the body, which the card would otherwise print empty.
     const body = await wholeCarriedBody(deleted, ITEM, SESSION);
-    expect(body).toBe(mark);
+    expect(body).toEqual({ body: "", ...deletion });
     const whole = renderInbound(envelopeOf(cutWithPicture), SESSION, undefined, body);
-    expect(whole.content).toContain(mark);
+    const payload = cardPayload(whole.content);
+    expect(payload).toMatchObject(deletion);
+    expect(payload["body"]).toBeUndefined();
+    expect(bodyBlocks(whole.content)).toEqual([]);
     expect(whole.content).not.toContain(CARRIED_BODY);
     expect(whole.content).not.toContain("first part only");
     expect(whole.pictures).toBeUndefined();
@@ -258,22 +284,132 @@ describe("renderInbound and a body an event did not carry whole", () => {
         { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
         SESSION
       )
-    ).toBe(mark);
+    ).toEqual({ body: "", ...deletion });
   });
 
-  // A card that re-reads the post prints the mark. The re-read gives the words the post holds
-  // now, which an edit since the event replaced, so the card says it was edited and when, beside
-  // those words, as every line that prints an edited post does.
-  test("a card that re-reads an item edited since carries the edited mark beside its words", async () => {
+  // A targeted frame names the delivery it asks of the session: the message or the comment, the
+  // attempt and its mode, where the answer goes, and the broadcast a message is one copy of. The
+  // render given the body whole names that same delivery, its `body` the one the read answered.
+  // A post deleted since has no body left in the payload, which the frame's schema requires, so
+  // the delivery is read from the frame as that schema checked it, never from the payload the read
+  // rewrote: a host still holds the frame to the session it names and knows its mode.
+  describe("the delivery a targeted frame names, read again", () => {
+    const MENTION_ID = "44444444-4444-4444-8444-444444444444";
+    const BROADCAST_ID = "55555555-5555-4555-8555-555555555555";
+    const target = `session:${SESSION}`;
+    const deletion = {
+      deleted_at: "2026-09-10T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    };
+    const messageItem: CarriedItem = { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" };
+    const messageFrame = (mode: DispatchDelivery["mode"], payload: object = {}) => ({
+      event: {
+        ...cutEvent,
+        type: "message.created",
+        payload: { ...message, body_truncated: true, target, ...payload },
+      },
+      delivery: { attempt: 3, mode },
+    });
+    /** The delivery a frame names, but for its body, which is what the read changes. */
+    type Named = Omit<DispatchDelivery, "body" | "bodyTruncated">;
+    const messageDelivery = (mode: DispatchDelivery["mode"]): Named => ({
+      resource: "message",
+      id: MESSAGE_ID,
+      attempt: 3,
+      mode,
+      replyPath: `/api/v1/messages/${MESSAGE_ID}/reply`,
+      replyFields: {},
+      issueKey: "DSP-1",
+    });
+    const rows: readonly {
+      readonly name: string;
+      readonly frame: object;
+      readonly item: CarriedItem;
+      readonly delivery: Named;
+    }[] = [
+      ...(["steer", "aside", "btw"] as const).map((mode) => ({
+        name: `a message sent as ${mode}`,
+        frame: messageFrame(mode),
+        item: messageItem,
+        delivery: messageDelivery(mode),
+      })),
+      {
+        name: "one recipient's copy of a broadcast",
+        frame: messageFrame("aside", { broadcast_id: BROADCAST_ID }),
+        item: messageItem,
+        delivery: { ...messageDelivery("aside"), broadcastId: BROADCAST_ID },
+      },
+      {
+        name: "a comment mention",
+        frame: {
+          event: cutEvent,
+          delivery: { attempt: 2, mode: "steer", comment_id: MENTION_ID, target },
+        },
+        item: ITEM,
+        delivery: {
+          resource: "comment",
+          id: MENTION_ID,
+          attempt: 2,
+          mode: "steer",
+          replyPath: `/api/v1/comments/${MENTION_ID}/reply`,
+          replyFields: { target },
+          issueKey: "DSP-1",
+        },
+      },
+    ];
+    /** The frame addressed to the session's own subject, as the outbox publishes a delivery. */
+    const addressed = (frame: object) =>
+      JSON.stringify({
+        event_id: "dispatch-targeted-7",
+        source: "dispatch",
+        source_event_id: "7",
+        topic: `notifications.agent.${SESSION}`,
+        dedupe_key: "dispatch-targeted-7",
+        issued_at: 1_788_756_072_000,
+        payload_summary: "DSP-1 delivery",
+        payload: JSON.stringify(frame),
+        trace_id: "dispatch-targeted-7",
+      });
+
+    for (const row of rows) {
+      test(`${row.name} names the delivery its frame names whether the read finds the post whole or deleted`, async () => {
+        const raw = addressed(row.frame);
+        const cut = renderInbound(raw, SESSION);
+        expect(cut.cutItem).toEqual(row.item);
+        expect(cut.delivery).toEqual({ ...row.delivery, body: CARRIED_BODY, bodyTruncated: true });
+
+        const stored = await wholeCarriedBody(dispatch().client, row.item, SESSION);
+        const whole = renderInbound(raw, SESSION, undefined, stored);
+        expect(whole.delivery).toEqual({ ...row.delivery, body: STORED_BODY });
+
+        const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion });
+        const gone = await wholeCarriedBody(deleted.client, row.item, SESSION);
+        expect(gone).toEqual({ body: "", ...deletion });
+        const card = renderInbound(raw, SESSION, undefined, gone);
+        expect(card.delivery).toEqual({ ...row.delivery, body: "" });
+        expect(card.cutItem).toBeUndefined();
+        // The card names the delete and holds nothing of the post, the part the event carried
+        // included.
+        expect(cardPayload(card.content)).toMatchObject(deletion);
+        expect(bodyBlocks(card.content)).toEqual([]);
+        expect(card.content).not.toContain(CARRIED_BODY);
+      });
+    }
+  });
+
+  // A card that re-reads the post holds the words the post holds now, which an edit since the
+  // event replaced, so it says when they were written: `edited_at`, a field of the card's own,
+  // with the words alone in their block.
+  test("a card that re-reads an item edited since carries the edit's time beside its words", async () => {
     const edit = { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" };
-    const marked = `${STORED_BODY} · edited 2026-09-10T00:00:00Z`;
     const { client, requests } = dispatch(false, edit, edit);
 
     const body = await wholeCarriedBody(client, ITEM, SESSION);
-    expect(body).toBe(marked);
+    expect(body).toEqual(edit);
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
     const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
-    expect(whole.content).toContain(`body: ${JSON.stringify(marked)}`);
+    expect(cardPayload(whole.content)["edited_at"]).toBe("2026-09-10T00:00:00Z");
+    expect(bodyBlocks(whole.content)).toEqual([STORED_BODY]);
     expect(whole.content).not.toContain("first part only");
     expect(
       await wholeCarriedBody(
@@ -281,7 +417,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
         { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
         SESSION
       )
-    ).toBe(marked);
+    ).toEqual(edit);
   });
 
   // A card that prints only what its delivery frame carried is a delivery Dispatch already sent,
@@ -297,7 +433,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
       }),
       SESSION
     );
-    expect(rode.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
+    expect(bodyBlocks(rode.content)).toEqual([STORED_BODY]);
     expect(rode.content).not.toContain("· edited");
 
     const kept = renderInbound(
@@ -309,7 +445,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
       undefined,
       undefined
     );
-    expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
+    expect(bodyBlocks(kept.content)).toEqual([CARRIED_BODY]);
     expect(kept.content).not.toContain("· edited");
   });
 });

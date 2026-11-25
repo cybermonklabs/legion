@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -1371,6 +1372,30 @@ func TestAZeroRetryingWaitsTheRetryItIsGiven(t *testing.T) {
 	}
 }
 
+// recoveredUnrecorded says whether payload, a notice as JSON text, is the child-release-stalled
+// notice of a recovery that names exactly the children want, each with its parent, and no reason.
+func recoveredUnrecorded(t *testing.T, payload string, want []texts.UnrecordedChild) bool {
+	t.Helper()
+	var notice record.Notice
+	if err := json.Unmarshal([]byte(payload), &notice); err != nil {
+		t.Fatalf("decode the notice %s: %v", payload, err)
+	}
+	return notice.Kind == "child-release-stalled" && notice.Stall == texts.StallRecoveredUnrecorded &&
+		slices.Equal(notice.Unrecorded, want) && notice.Reason == ""
+}
+
+// letGoTold is payload, a notice as JSON text, read back, and whether it is the child-release-stalled
+// notice of a letting go for stall (texts.StallLetGoNoTodo, texts.StallLetGoAnswered), with no
+// reason.
+func letGoTold(t *testing.T, payload, stall string) (record.Notice, bool) {
+	t.Helper()
+	var notice record.Notice
+	if err := json.Unmarshal([]byte(payload), &notice); err != nil {
+		t.Fatalf("decode the notice %s: %v", payload, err)
+	}
+	return notice, notice.Kind == "child-release-stalled" && notice.Stall == stall && notice.Reason == ""
+}
+
 // treeNotices is the payload, as JSON text, of every notice queued on tree, in queue order.
 func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 	t.Helper()
@@ -1545,9 +1570,8 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 		t.Fatalf("%s recorded as %+v under backlog %s", c, got, p)
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
-		!strings.Contains(notices[0], c+" (its parent "+p+" is not recorded: release "+p+" first, then "+c+")") || strings.Contains(notices[0], e) {
-		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s and %s, not %s", tree, notices, c, p, e)
+	if len(notices) != 1 || !recoveredUnrecorded(t, notices[0], []texts.UnrecordedChild{{Child: c, Parent: p}}) {
+		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s under %s, not recorded, and not %s", tree, notices, c, p, e)
 	}
 	time.Sleep(10 * w.reads().retry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
@@ -1614,8 +1638,8 @@ func TestARecoveryHeldPastItsBoundTellsItsReleaseWaitsOnce(t *testing.T) {
 	testwait.Eventually(t, "the recovery's listing held", func() bool { return recordsOn(h.w, "zeta/tools") && h.admission.Held() })
 	testwait.Eventually(t, "the release wait told past the bound", func() bool { return h.notices(t) > before })
 	notices := treeNotices(t, h.w, heldTree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], heldChild+" (its parent "+heldParent+" is not recorded: release "+heldParent+" first, then "+heldChild+")") {
-		t.Fatalf("notices once the hold outlasted its bound = %q, want one naming %s and %s", notices, heldChild, heldParent)
+	if len(notices) != 1 || !recoveredUnrecorded(t, notices[0], []texts.UnrecordedChild{{Child: heldChild, Parent: heldParent}}) {
+		t.Fatalf("notices once the hold outlasted its bound = %q, want one naming %s under %s, not recorded", notices, heldChild, heldParent)
 	}
 	time.Sleep(4 * h.w.reads().holdBound)
 	if n := h.notices(t) - before; n != 1 || !h.admission.Held() {
@@ -1664,10 +1688,10 @@ func TestALetGoHeldPastItsBoundTellsItsReleaseWaits(t *testing.T) {
 	started := time.Now()
 	wake(h.w.recoverWake)
 
-	letGo := func() []string {
-		var told []string
-		for _, notice := range treeNotices(t, h.w, heldTree)[before:] {
-			if strings.Contains(notice, "the daemon no longer waits for GitHub to answer for "+stranger) {
+	letGo := func() []record.Notice {
+		var told []record.Notice
+		for _, payload := range treeNotices(t, h.w, heldTree)[before:] {
+			if notice, ok := letGoTold(t, payload, texts.StallLetGoNoTodo); ok && slices.Equal(notice.Repos, []string{stranger}) {
 				told = append(told, notice)
 			}
 		}
@@ -1684,8 +1708,9 @@ func TestALetGoHeldPastItsBoundTellsItsReleaseWaits(t *testing.T) {
 	if waited < h.w.reads().holdBound {
 		t.Fatalf("the let-go was told after %s, want it put back while the hold lasted less than %s", waited, h.w.reads().holdBound)
 	}
-	if notices := letGo(); len(notices) != 1 || !strings.Contains(notices[0], let+" (backlog in Dispatch now: release it again once it is todo)") {
-		t.Fatalf("let-go notices = %q, want one naming %s", notices, let)
+	want := []texts.LetGoChild{{Child: let, Parent: heldTree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: stranger}}
+	if notices := letGo(); len(notices) != 1 || !slices.Equal(notices[0].LetGo, want) {
+		t.Fatalf("let-go notices = %+v, want one naming %+v", notices, want)
 	}
 	h.w.recoveringMu.Lock()
 	left := len(h.w.releaseWaits[stranger])

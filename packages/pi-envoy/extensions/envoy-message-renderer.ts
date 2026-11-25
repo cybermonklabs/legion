@@ -14,22 +14,25 @@ import { Box, Spacer, Text } from "@oh-my-pi/pi-tui";
 const ENVOY_MESSAGE_COLLAPSED_LINES = 12;
 
 /**
- * A card longer than the fold, as a collapsed card shows it: its first lines, then the line that
- * holds the words its sender wrote when that line is past them (`readInboundCard`), with a "…"
- * for each run of lines left out. A Dispatch message's card writes its `body` after a header
- * longer than the fold, and so does an agent's message whose sender holds a role, under its
- * `reply_role`: folded at the fold alone, either showed none of the words it brings until
- * Ctrl+O (dispatch://INFRA-5271).
+ * A card longer than the fold, as a collapsed card shows it: its first lines, then the lines of
+ * the words its sender wrote that are past them (`readInboundCard`), with a "…" for each run of
+ * lines left out. A Dispatch message's card writes its `body` block after a header longer than the
+ * fold, and an agent's message whose card carries many fields (a kept message, a reply asked for,
+ * the message it answers) opens its `message` block below it too: folded at the fold alone, either
+ * showed none of the words it brings until Ctrl+O (dispatch://INFRA-5271). A block holds the words
+ * line by line, so each of their lines is shown, as a field shows all of them on its one line.
  */
 function collapsed(text: string): string {
   const lines = text.split("\n");
   if (lines.length <= ENVOY_MESSAGE_COLLAPSED_LINES) return text;
   const head = lines.slice(0, ENVOY_MESSAGE_COLLAPSED_LINES);
-  const words = readInboundCard(text)?.words?.line;
-  if (words === undefined || words < ENVOY_MESSAGE_COLLAPSED_LINES) return `${head.join("\n")}\n…`;
-  const skipped = words > ENVOY_MESSAGE_COLLAPSED_LINES ? ["…"] : [];
-  const after = words < lines.length - 1 ? ["…"] : [];
-  return [...head, ...skipped, ...lines.slice(words, words + 1), ...after].join("\n");
+  const words = readInboundCard(text)?.words;
+  const end = words === undefined ? 0 : words.line + words.lines;
+  if (words === undefined || end <= ENVOY_MESSAGE_COLLAPSED_LINES) return `${head.join("\n")}\n…`;
+  const from = Math.max(words.line, ENVOY_MESSAGE_COLLAPSED_LINES);
+  const skipped = from > ENVOY_MESSAGE_COLLAPSED_LINES ? ["…"] : [];
+  const after = end < lines.length ? ["…"] : [];
+  return [...head, ...skipped, ...lines.slice(from, end), ...after].join("\n");
 }
 
 /**

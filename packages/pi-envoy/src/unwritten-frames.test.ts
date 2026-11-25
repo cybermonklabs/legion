@@ -5,6 +5,14 @@ import {
   type DeliveryClaim,
   type DeliveryDedupe,
 } from "@legion/envoy-client/delivery";
+import {
+  type HeldStoredCard,
+  heldStoredCards,
+  REPLAY_DELIVERED_ENTRY,
+  replaySnapshot,
+  STORED_CARD_ENTRY,
+  storedCardRecord,
+} from "./missed-messages";
 import { type CardDelivery, UnwrittenFrames, unwrittenCardKeys } from "./unwritten-frames";
 
 /** A Dispatch frame: its dedupe key names its event, so the ledger knows it by both. */
@@ -19,6 +27,12 @@ const writtenCard = (details: Record<string, string>) => ({
   customType: "envoy-message",
   content: "card",
   details,
+});
+
+/** The entry the host writes for a card that names `details`, as the branch holds it. */
+const storedEntry = (details: Record<string, string>) => ({
+  type: "custom_message",
+  ...writtenCard(details),
 });
 
 interface Handed {
@@ -58,6 +72,9 @@ function harness() {
     refuseHand: false,
     refuseRecord: false,
     matched: undefined as string | undefined,
+    // The entries of the session's branch once the session's store holds it; undefined before
+    // that, as before the session's first assistant message.
+    stored: undefined as unknown[] | undefined,
   };
   // Each frame the host was asked to record, with the session whose ledger it names. The real
   // host binds the write to that session (`DeliveryLedger.recordDeliveredFor`) and records nothing
@@ -73,10 +90,14 @@ function harness() {
   // The notice records the transcript of the session they were made on got, in order.
   const noticeRecords: { session: string; id: string; content?: string; handed?: true }[] = [];
   const recordFailures: string[] = [];
+  // The stored cards recorded in the transcript of the session each names, in order.
+  const storedRecords: { session: string; card: HeldStoredCard }[] = [];
+  const storedRecordFailures: string[] = [];
   const frames = new UnwrittenFrames({
     sessionID: () => state.session,
     hostIsOn: (id) => id === (state.hostSession ?? state.session),
     settled: () => state.settled,
+    storedEntries: () => state.stored,
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });
     },
@@ -108,6 +129,12 @@ function harness() {
       noticeRecords.push({ session: state.session, id, handed: true });
     },
     recordNoticeFailed: (error) => recordFailures.push((error as Error).message),
+    recordStored: (session, card) => {
+      if (state.refuseRecord) throw new Error("the session file refused the record");
+      storedRecords.push({ session, card });
+    },
+    recordStoredFailed: (identity, error) =>
+      storedRecordFailures.push(`${identity.event_id}: ${(error as Error).message}`),
   });
   /** A claim of `identity`, as the live path takes one before it hands a frame on. */
   const claim = (identity: DedupeIdentity) => {
@@ -135,6 +162,8 @@ function harness() {
     noticeFailures,
     noticeRecords,
     recordFailures,
+    storedRecords,
+    storedRecordFailures,
     claim,
     claimState,
   };
@@ -318,16 +347,35 @@ describe("a card the host withdrew unwritten", () => {
   });
 });
 
+// An inert card goes as a steer that starts no turn, so a busy host would steer it into the turn
+// it runs: it is handed only to a settled host. While it is held, its record in the transcript
+// holds it across a restart once the session's store holds the record, so its claim settles once
+// that record is written, as a held stored card's does.
 describe("an inert card", () => {
-  test("sent while the host is not settled is held, and handed once at the first settled moment", () => {
-    const { frames, state, handed, claim, claimState } = harness();
+  test("sent while the host is not settled is held and recorded, its claim settles, and it is handed once at the first settled moment", async () => {
+    const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     state.settled = false;
 
     expect(frames.sendCard("s1", "card", "inert", frame, claim(frame))).toBe("queued");
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(true);
-    expect(claimState(frame)).toBe("pending");
+    expect(storedRecords).toEqual([
+      {
+        session: "s1",
+        card: {
+          identity: frame,
+          content: "card",
+          dispatchMessageId: undefined,
+          deliverAs: "inert",
+        },
+      },
+    ]);
+    expect(claimState(frame)).toBe("settled");
+    // Recorded, not shown: the ledger records the frame once the host writes the card.
+    expect(recorded).toEqual([]);
+    // An inert card waits for no store: no stored check runs for it.
+    expect(frames.waitsOnStored()).toBe(false);
 
     frames.handBackWithdrawn();
     expect(handed).toEqual([]);
@@ -335,20 +383,27 @@ describe("an inert card", () => {
     state.settled = true;
     frames.handBackWithdrawn();
     expect(handed).toEqual([{ content: "card", deliverAs: "inert", identity: frame }]);
-    expect(claimState(frame)).toBe("pending");
 
     // Just handed, so the next settled moment leaves it alone.
     frames.handBackWithdrawn();
     expect(handed).toHaveLength(1);
+
+    await frames.written(writtenCard({ event_id: "event-1" }));
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(frames.waitsOnCard(frame)).toBe(false);
+    expect(storedRecords).toHaveLength(1);
   });
 
-  test("sent while the host is settled is handed at once", () => {
-    const { frames, handed, claim } = harness();
+  test("sent while the host is settled is handed at once, and not recorded", () => {
+    const { frames, handed, storedRecords, claim, claimState } = harness();
     const frame = dispatchFrame(1);
 
     expect(frames.sendCard("s1", "card", "inert", frame, claim(frame))).toBe("queued");
 
     expect(handed).toEqual([{ content: "card", deliverAs: "inert", identity: frame }]);
+    // An idle host writes it at once, and its claim waits for that write.
+    expect(storedRecords).toEqual([]);
+    expect(claimState(frame)).toBe("pending");
   });
 
   test("held, that cannot be handed at a settled moment, is reported and handed at the next", () => {
@@ -363,29 +418,109 @@ describe("an inert card", () => {
     expect(handBackFailures).toEqual(["event-1: the host refused the card"]);
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(true);
-    expect(claimState(frame)).toBe("pending");
+    expect(claimState(frame)).toBe("settled");
 
     state.refuseHand = false;
     frames.handBackWithdrawn();
     expect(handed).toEqual([{ content: "card", deliverAs: "inert", identity: frame }]);
   });
 
-  test("held when the host moves to another session is dropped, its claim released", () => {
-    const { frames, state, handed, claim, claimState } = harness();
+  // A record that cannot be written holds nothing across a restart, so the relay's copy is all
+  // that does: the claim waits for the host's write, as an inert card's did before it was recorded.
+  test("held, whose record cannot be written, keeps its claim until the host writes it", async () => {
+    const { frames, state, handed, recorded, storedRecordFailures, claim, claimState } = harness();
     const frame = dispatchFrame(1);
     state.settled = false;
-    frames.sendCard("s1", "card", "inert", frame, claim(frame));
+    state.refuseRecord = true;
+
+    expect(frames.sendCard("s1", "card", "inert", frame, claim(frame))).toBe("queued");
+    expect(storedRecordFailures).toEqual(["event-1: the session file refused the record"]);
+    expect(claimState(frame)).toBe("pending");
+
+    state.settled = true;
+    frames.handBackWithdrawn();
+    expect(handed).toEqual([{ content: "card", deliverAs: "inert", identity: frame }]);
+    expect(claimState(frame)).toBe("pending");
+
+    await frames.written(writtenCard({ event_id: "event-1" }));
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
+  });
+
+  test("held when the host moves to another session is dropped: a recorded one keeps its settled claim, an unrecorded one's claim is released", () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const [kept, unkept] = [dispatchFrame(1), dispatchFrame(2)];
+    state.settled = false;
+    frames.sendCard("s1", "kept", "inert", kept, claim(kept));
+    state.refuseRecord = true;
+    frames.sendCard("s1", "unkept", "inert", unkept, claim(unkept));
 
     state.session = "s2";
     frames.releaseOtherSessions("s2");
-    expect(frames.waitsOnCard(frame)).toBe(false);
-    expect(claimState(frame)).toBe("released");
+    expect(frames.waitsOnCard(kept)).toBe(false);
+    expect(frames.waitsOnCard(unkept)).toBe(false);
+    // The record of the first holds it for the restore once the host is back on its session.
+    expect(claimState(kept)).toBe("settled");
+    expect(claimState(unkept)).toBe("released");
 
     state.settled = true;
     frames.handBackWithdrawn();
     state.session = "s1";
     frames.handBackWithdrawn();
     expect(handed).toEqual([]);
+  });
+
+  // The frame of a recorded card is answered `done`, so the stream keeps no copy of it: a restart
+  // holds the card again from its record, and hands it as the record says, a steer that starts no
+  // turn, never as a stored card.
+  test("recorded, is held again by a restore and handed inert at the first settled moment", async () => {
+    const first = harness();
+    const [late, written] = [dispatchFrame(1), dispatchFrame(2)];
+    first.state.settled = false;
+    first.frames.sendCard("s1", "late BTW", "inert", late, first.claim(late), "message-1");
+    first.frames.sendCard("s1", "written", "inert", written, first.claim(written));
+    const transcript = [
+      ...first.storedRecords.map(({ card }) => ({
+        type: "custom",
+        customType: STORED_CARD_ENTRY,
+        data: storedCardRecord(card),
+      })),
+      // The host wrote the second card before the stop.
+      storedEntry({ event_id: "event-2" }),
+    ];
+    const held = heldStoredCards(transcript, replaySnapshot(transcript).ledger);
+    expect(held).toEqual([
+      { identity: late, content: "late BTW", dispatchMessageId: "message-1", deliverAs: "inert" },
+    ]);
+
+    const second = harness();
+    second.state.settled = false;
+    // A restore that reads the same transcript twice holds the card once.
+    second.frames.requeueStored(held);
+    second.frames.requeueStored(held);
+    expect(second.frames.waitsOnCard(late)).toBe(true);
+    // No stored check hands it: it is an inert card.
+    expect(second.frames.waitsOnStored()).toBe(false);
+    second.state.settled = true;
+    expect(await second.frames.storedCheck()).toBe(false);
+    expect(second.handed).toEqual([]);
+
+    second.frames.handBackWithdrawn();
+    expect(second.handed).toEqual([
+      { content: "late BTW", deliverAs: "inert", identity: late, dispatchMessageId: "message-1" },
+    ]);
+    // The relay sends the frame again: the card handed is that frame's, so nothing more is
+    // handed or recorded, and the copy settles.
+    expect(second.frames.sendCard("s1", "late BTW", "inert", late, second.claim(late))).toBe(
+      "queued"
+    );
+    expect(second.handed).toHaveLength(1);
+    expect(second.storedRecords).toEqual([]);
+    expect(second.claimState(late)).toBe("settled");
+
+    await second.frames.written(writtenCard({ event_id: "event-1" }));
+    expect(second.recorded).toEqual([{ session: "s1", identity: late }]);
+    expect(second.frames.waitsOnCard(late)).toBe(false);
   });
 
   test("whose frame the ledger keeps nothing of, sent while the host is busy, is not handed and its claim is released", () => {
@@ -421,6 +556,242 @@ describe("an inert card", () => {
       { content: "late BTW", deliverAs: "inert", identity: held, dispatchMessageId: "message-1" },
       { content: "card", deliverAs: "card", identity: atOnce, dispatchMessageId: "message-2" },
     ]);
+  });
+});
+
+// A `low` card goes as `nextTurn` with no turn: an idle host stores it in the context and the
+// session file at once, with no `message_end`, and a busy host keeps it in memory only. So it is
+// handed only to a settled host, and the session file is the witness that it was written. While it
+// waits, held or handed, its record in the transcript holds it across a restart once the session's
+// store holds the record, so its claim settles once that record is written.
+describe("a stored card", () => {
+  test("sent while the host is not settled is held and recorded, its claim settles, and the first settled check hands it", async () => {
+    const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+    state.settled = false;
+
+    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame), "message-1")).toBe(
+      "queued"
+    );
+    expect(handed).toEqual([]);
+    expect(storedRecords).toEqual([
+      {
+        session: "s1",
+        card: {
+          identity: frame,
+          content: "card",
+          dispatchMessageId: "message-1",
+          deliverAs: "stored",
+        },
+      },
+    ]);
+    expect(claimState(frame)).toBe("settled");
+    // Recorded, not shown: the ledger records the frame once the session's store holds the card.
+    expect(recorded).toEqual([]);
+    expect(await frames.storedCheck()).toBe(true);
+    expect(handed).toEqual([]);
+
+    state.settled = true;
+    expect(await frames.storedCheck()).toBe(true);
+    expect(handed).toEqual([
+      { content: "card", deliverAs: "stored", identity: frame, dispatchMessageId: "message-1" },
+    ]);
+    expect(storedRecords).toHaveLength(1);
+  });
+
+  test("is written once the session's store holds its entry, and never handed again before that", async () => {
+    const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+
+    expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
+    expect(handed).toHaveLength(1);
+    // Handed and recorded: the record holds the card from here on, so its claim settles.
+    expect(storedRecords).toHaveLength(1);
+    expect(claimState(frame)).toBe("settled");
+    // Not stored yet: the host stores no session before its first assistant message.
+    expect(await frames.storedCheck()).toBe(true);
+    state.stored = [storedEntry({ event_id: "event-2" })];
+    expect(await frames.storedCheck()).toBe(true);
+    for (const _moment of [1, 2, 3]) frames.handBackWithdrawn();
+    expect(handed).toHaveLength(1);
+    expect(recorded).toEqual([]);
+
+    state.stored = [
+      storedEntry({ event_id: "event-2" }),
+      storedEntry({ dedupe_key: "dispatch-1" }),
+    ];
+    expect(await frames.storedCheck()).toBe(false);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(frames.waitsOnStored()).toBe(false);
+  });
+
+  test("held is handed before a card that starts a turn, in the order it came", () => {
+    const { frames, state, handed, claim } = harness();
+    const [first, second, card] = [dispatchFrame(1), dispatchFrame(2), dispatchFrame(3)];
+    state.settled = false;
+    frames.sendCard("s1", "first", "stored", first, claim(first));
+    frames.sendCard("s1", "second", "stored", second, claim(second));
+
+    state.settled = true;
+    frames.sendCard("s1", "card", "card", card, claim(card));
+
+    expect(handed.map(({ content, deliverAs }) => [content, deliverAs])).toEqual([
+      ["first", "stored"],
+      ["second", "stored"],
+      ["card", "card"],
+    ]);
+  });
+
+  test("held holds back no later card", () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const [low, card] = [dispatchFrame(1), dispatchFrame(2)];
+    state.settled = false;
+    frames.sendCard("s1", "low", "stored", low, claim(low));
+    frames.sendCard("s1", "card", "card", card, claim(card));
+
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+    expect(claimState(low)).toBe("settled");
+  });
+
+  // An edge listener's relay holds at most 16 frames of a session in flight (`relayEdgeInFlight`
+  // in packages/envoy/cmd/listener/session_relay.go): a held card whose claim waited for the
+  // session's store would take one of those places until the turn ends.
+  test("held, more than an edge listener's relay holds in flight, leaves no claim open", () => {
+    const { frames, state, handed, storedRecords, claim, claimState } = harness();
+    const lows = Array.from({ length: 17 }, (_, n) => dispatchFrame(n + 1));
+    const card = dispatchFrame(18);
+    state.settled = false;
+    for (const low of lows) frames.sendCard("s1", `low ${low.event_id}`, "stored", low, claim(low));
+
+    expect(storedRecords).toHaveLength(17);
+    expect(lows.map(claimState)).toEqual(lows.map(() => "settled"));
+    expect(frames.sendCard("s1", "card", "card", card, claim(card))).toBe("queued");
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+    expect(frames.waitsOnStored()).toBe(true);
+  });
+
+  // The architect's ruling on test handoff v20's class search (the class of
+  // PRRT_kwDORFy7ds67LAM9): a late BTW goes to the host as an inert card with its relay claim
+  // (extensions/envoy.ts, `relayed.late`), and an inert card sent while the host is busy waits for
+  // the first settled heartbeat. Its claim must not hold one of the edge listener's 16 in-flight
+  // places of the session while it waits, or 16 late BTWs held through one long turn stop every
+  // later card (the spec's Design: a held card keeps no later card from its reader).
+  test("an inert card held while the host is busy, more than an edge listener's relay holds in flight, leaves no claim open", () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const lates = Array.from({ length: 17 }, (_, n) => dispatchFrame(n + 1));
+    const card = dispatchFrame(18);
+    state.settled = false;
+    for (const late of lates)
+      frames.sendCard("s1", `late ${late.event_id}`, "inert", late, claim(late));
+
+    expect(lates.map(claimState)).toEqual(lates.map(() => "settled"));
+    expect(frames.sendCard("s1", "card", "card", card, claim(card))).toBe("queued");
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+  });
+
+  test("whose record cannot be written keeps its claim until the session's store holds it", async () => {
+    const { frames, state, recorded, storedRecordFailures, claim, claimState } = harness();
+    const frame = dispatchFrame(1);
+    state.refuseRecord = true;
+
+    frames.sendCard("s1", "card", "stored", frame, claim(frame));
+    expect(storedRecordFailures).toEqual(["event-1: the session file refused the record"]);
+    expect(claimState(frame)).toBe("pending");
+
+    state.stored = [storedEntry({ event_id: "event-1" })];
+    expect(await frames.storedCheck()).toBe(false);
+    expect(recorded).toEqual([{ session: "s1", identity: frame }]);
+    expect(claimState(frame)).toBe("settled");
+  });
+
+  // The frame of a recorded card is answered `done`, so the stream keeps no copy of it: a restart
+  // holds the card again from its record, until the transcript shows the card written.
+  test("recorded, is held again by a restore until the transcript shows it written", async () => {
+    const first = harness();
+    const [low, written, shown] = [dispatchFrame(1), dispatchFrame(2), dispatchFrame(3)];
+    first.state.settled = false;
+    first.frames.sendCard("s1", "low", "stored", low, first.claim(low), "message-1");
+    first.frames.sendCard(
+      "s1",
+      [{ type: "text", text: "written" }],
+      "stored",
+      written,
+      first.claim(written)
+    );
+    first.frames.sendCard("s1", "shown", "stored", shown, first.claim(shown));
+    const transcript = [
+      ...first.storedRecords.map(({ card }) => ({
+        type: "custom",
+        customType: STORED_CARD_ENTRY,
+        data: storedCardRecord(card),
+      })),
+      // The host stored the second card, and the ledger recorded the third, before the stop.
+      storedEntry({ event_id: "event-2" }),
+      { type: "custom", customType: REPLAY_DELIVERED_ENTRY, data: { event_id: "event-3", at: 1 } },
+    ];
+    const held = heldStoredCards(transcript, replaySnapshot(transcript).ledger);
+    expect(held).toEqual([
+      { identity: low, content: "low", dispatchMessageId: "message-1", deliverAs: "stored" },
+    ]);
+
+    const second = harness();
+    // A restore that reads the same transcript twice holds the card once.
+    second.frames.requeueStored(held);
+    second.frames.requeueStored(held);
+    expect(await second.frames.storedCheck()).toBe(true);
+    expect(second.handed).toEqual([
+      { content: "low", deliverAs: "stored", identity: low, dispatchMessageId: "message-1" },
+    ]);
+    // The relay sends the frame again, a frame before it holding the resume point below it: the
+    // card handed is that frame's, so nothing more is handed or recorded, and the copy settles.
+    expect(second.frames.sendCard("s1", "low", "stored", low, second.claim(low))).toBe("queued");
+    expect(second.handed).toHaveLength(1);
+    expect(second.storedRecords).toEqual([]);
+    expect(second.claimState(low)).toBe("settled");
+
+    second.state.stored = [storedEntry({ dedupe_key: "dispatch-1" })];
+    expect(await second.frames.storedCheck()).toBe(false);
+    expect(second.recorded).toEqual([{ session: "s1", identity: low }]);
+  });
+
+  // The host reads idle until it starts the turn a card asked for, after its own awaits; a
+  // stored card handed in between would find it streaming and stay in its memory.
+  test("is held while a card handed to start a turn has not started it", async () => {
+    const { frames, handed, claim } = harness();
+    const card = dispatchFrame(1);
+    const low = dispatchFrame(2);
+    const later = dispatchFrame(3);
+    const last = dispatchFrame(4);
+    frames.sendCard("s1", "card", "card", card, claim(card));
+    frames.sendCard("s1", "low", "stored", low, claim(low));
+    await frames.storedCheck();
+    frames.handBackWithdrawn();
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+
+    // Once that turn has started, the stored card goes at the first settled check.
+    frames.runStarted();
+    await frames.storedCheck();
+    expect(handed.map(({ content }) => content)).toEqual(["card", "low"]);
+
+    // A card the host folds with no turn, which it writes with no run, ends the wait as well.
+    frames.sendCard("s1", "card", "card", later, claim(later));
+    frames.sendCard("s1", "later-low", "stored", last, claim(last));
+    await frames.written(writtenCard({ event_id: "event-3" }));
+    await frames.storedCheck();
+    expect(handed.map(({ content }) => content)).toEqual(["card", "low", "card", "later-low"]);
+  });
+
+  test("whose frame the ledger keeps nothing of, sent while the host is busy, is not handed and its claim is released", () => {
+    const { frames, state, handed } = harness();
+    const frame: DedupeIdentity = { dedupe_key: "content-hash", source: "mcp" };
+    const { claim, became } = notingClaim();
+    state.settled = false;
+
+    frames.sendCard("s1", "card", "stored", frame, claim);
+
+    expect(handed).toEqual([]);
+    expect(frames.waitsOnStored()).toBe(false);
+    expect(became).toEqual(["released"]);
   });
 });
 

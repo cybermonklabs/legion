@@ -10,7 +10,9 @@ import (
 // quotes the words, as a retry's reason can, is cut at its own end where the daemon's pair stands
 // there, and not at all where it does not. Words of the same shape that Sentences never writes (a
 // commit that is no head, an entry with a leading zero or of zero, text after the entry's period)
-// leave the task whole.
+// leave the task whole. The line of their own Ending writes comes off the same way, with the line
+// break before it, or whole where it is the task alone; that line glued to the text before it,
+// with neither a line break nor a space, leaves the task whole.
 func TestSplitReadsOnlyTheSentencesSentencesWritesAtTheVeryEnd(t *testing.T) {
 	const (
 		head = "0123456789abcdef0123456789abcdef01234567"
@@ -27,6 +29,9 @@ func TestSplitReadsOnlyTheSentencesSentencesWritesAtTheVeryEnd(t *testing.T) {
 		{name: "no commit and no entry", task: body + Sentences("", 0), body: body, sentences: Sentences("", 0)},
 		{name: "no commit and an entry", task: body + Sentences("", 12), body: body, sentences: Sentences("", 12)},
 		{name: "the two sentences alone", task: Sentences(head, 3), body: "", sentences: Sentences(head, 3)},
+		{name: "the line of their own Ending writes", task: Ending(body, head, 7), body: body, sentences: "\n" + strings.TrimPrefix(Sentences(head, 7), " ")},
+		{name: "the line of their own alone", task: Ending("", "", 4), body: "", sentences: strings.TrimPrefix(Sentences("", 4), " ")},
+		{name: "the line glued to the text before it", task: body + strings.TrimPrefix(Sentences(head, 7), " ")},
 		{name: "quoted words earlier and the daemon's pair at the end", task: quoted + Sentences("", 3), body: quoted,
 			sentences: Sentences("", 3)},
 		{name: "quoted words earlier and nothing at the end", task: quoted},

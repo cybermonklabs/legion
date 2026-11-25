@@ -1,13 +1,15 @@
 # The ticks a controller's Oh My Pi session received, read from the envoy-message custom messages of
 # its transcript: stage4b-sandbox-tree.sh's controller checkpoint, which holds each tick's
 # openCapabilities list to the two lists the proof's deployment can leave open. The tick's payload
-# is `{kind: "tick", openCapabilities: [...]}` (record.ControllerNotice; admit.Admission.wakeController
-# puts the deployment's Open() rows on a tick alone, and none on a tick with no gap). The pi-envoy
-# plugin renders a delivery into the session as TOON (envoy-client's renderInbound): the payload,
-# parsed, is the card's `message` block, where a list of one reads `openCapabilities[1]: secrets` and
-# a list of two `openCapabilities[2]: a,b`, on its own line. Loaded with `jq -L scripts/e2e/lib` and
-# `include "controller-ticks";`; includes nothing, and its defs call only each other (jq 1.8.2 aborts
-# at compile on a def chain reached through an include, see lib/omp-tool-calls.jq).
+# is `{kind: "tick", issue: "<project>", openCapabilities: [...]}` beside its blocked, held and
+# silent lists (texts.TickRecord; admit.Admission.wakeController puts the deployment's Open() rows
+# on a tick alone, and none on a tick with no gap). The pi-envoy plugin renders a delivery into the
+# session as TOON (envoy-client's renderInbound): the card's head is `summary: tick on <project>`,
+# and the payload, parsed, is the card's `message` block, where a list of one reads
+# `openCapabilities[1]: secrets` and a list of two `openCapabilities[2]: a,b`, on its own line.
+# Loaded with `jq -L scripts/e2e/lib` and `include "controller-ticks";`; includes nothing, and its
+# defs call only each other (jq 1.8.2 aborts at compile on a def chain reached through an include,
+# see lib/omp-tool-calls.jq).
 
 # tick_open_capabilities: the openCapabilities list a rendered tick delivery carries. pi-envoy renders
 # a delivery into the session as TOON: the payload's list of one reads `openCapabilities[1]: secrets`

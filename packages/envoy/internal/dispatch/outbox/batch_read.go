@@ -58,9 +58,16 @@ type pendingEvent struct {
 // about), and the session holding the issue's claim ("" when the issue is unclaimed or a person
 // holds it, since a person has no Envoy topic). Every batch reads them again (readBatchSQL), so a
 // retry after the route or the claim moved reaches the new destination.
+//
+// threadHeard is the thread rule's answer for the event (takesThreadRule): whether a session of
+// the thread a person's reply is in is live or unresponsive, as the batch read Envoy's registry
+// after its lookups (threadHearing.hear). It is false until then, and false for every event the
+// rule does not take. Every batch reads it again too, so a retry reaches the credits of its
+// documents where every session of the thread has gone since.
 type routing struct {
-	route    *string
-	claimant string
+	route       *string
+	claimant    string
+	threadHeard bool
 }
 
 // readBatchSQL chooses a batch and reads it, writing nothing. It chooses owners that have a due

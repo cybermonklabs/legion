@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1039,5 +1040,114 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			}
 		}
 		listener.Close()
+	}
+}
+
+// A read's answer is whole or it is no answer. The client's window covers a GET's body as well as
+// its headers (http.Client.Timeout), and every GET reads its body to the end before it decodes any
+// of it (get), so a body still coming when the window ends, and one cut short of its length, is a
+// listener that did not answer: ErrUnreachable, and ErrUnavailable too, whatever the status before
+// it. A body the listener finished that does not decode, a 500 and a 404 are its own answer, never
+// ErrUnreachable. Every GET of the client reads alike.
+func TestAReadWhoseAnswerNeverCameWholeIsUnreachable(t *testing.T) {
+	const window = 300 * time.Millisecond
+	reads := map[string]func(*Client) error{
+		"session": func(client *Client) error {
+			_, err := client.Session(context.Background(), "s1")
+			return err
+		},
+		"session including stopped": func(client *Client) error {
+			_, err := client.SessionIncludingStopped(context.Background(), "s1")
+			return err
+		},
+		"sessions": func(client *Client) error {
+			_, err := client.Sessions(context.Background())
+			return err
+		},
+		"interests": func(client *Client) error {
+			_, err := client.ListInterests(context.Background())
+			return err
+		},
+		"interest": func(client *Client) error {
+			_, err := client.Interest(context.Background(), "s1")
+			return err
+		},
+		"role": func(client *Client) error {
+			_, err := client.Role(context.Background(), "legion-planner")
+			return err
+		},
+		"agent": func(client *Client) error {
+			_, err := client.Agent(context.Background(), "s1")
+			return err
+		},
+		"role agents": func(client *Client) error {
+			_, err := client.RoleAgents(context.Background(), "legion-planner")
+			return err
+		},
+		"issue agents": func(client *Client) error {
+			_, err := client.IssueAgents(context.Background(), "T-1")
+			return err
+		},
+	}
+	// stalls sends its headers, promising 200 bytes, and the first of them, then nothing more
+	// until the client gives up the connection.
+	stalls := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "200")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_id":`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}
+	// cutShort sends status, promising 200 bytes, and closes the connection after the first of them.
+	cutShort := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			conn, buffered, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("take the connection over: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, _ = fmt.Fprintf(buffered, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"session_id\":",
+				status, http.StatusText(status))
+			_ = buffered.Flush()
+		}
+	}
+	answers := func(status int, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		listener    http.HandlerFunc
+		unreachable bool
+	}{
+		{name: "a 200 whose body stalls past the window", listener: stalls, unreachable: true},
+		{name: "a 200 whose body is cut short", listener: cutShort(http.StatusOK), unreachable: true},
+		{name: "a 404 whose body is cut short", listener: cutShort(http.StatusNotFound), unreachable: true},
+		{name: "a 200 whose finished body does not decode", listener: answers(http.StatusOK, `{"session_id":`)},
+		{name: "a 500", listener: answers(http.StatusInternalServerError, `{"error":"the interest record is unreadable"}`)},
+		{name: "a 404", listener: answers(http.StatusNotFound, `{"error":"no live session s1"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(tc.listener)
+			defer listener.Close()
+			for name, read := range reads {
+				started := time.Now()
+				err := read(New(listener.URL, WithTimeout(window)))
+				if took := time.Since(started); took > 10*window {
+					t.Errorf("%s took %s, want the client's window of %s to end it", name, took, window)
+				}
+				if err == nil || errors.Is(err, ErrUnreachable) != tc.unreachable {
+					t.Errorf("%s: err = %v, want ErrUnreachable %v", name, err, tc.unreachable)
+				}
+				if tc.unreachable && !errors.Is(err, ErrUnavailable) {
+					t.Errorf("%s: err = %v, want it ErrUnavailable too", name, err)
+				}
+			}
+		})
 	}
 }

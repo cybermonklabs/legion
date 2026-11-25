@@ -1,13 +1,16 @@
 package workflow
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // awaitRootView is an admitted root holding its admission slot whose architect handed a question
@@ -60,7 +63,7 @@ func TestDecideAwaitsTable(t *testing.T) {
 		{"a member out of the workflow", func(v *awaitView) {
 			v.Members = []record.Issue{{Key: "LEGION-209", Tree: "LEGION-208", Phase: phase.Implementing, Status: "done"}}
 		}, actEnter, "awaiting an answer"},
-		{"a root that could not resume", func(v *awaitView) { v.Unresumable = "its Dispatch claim is held by user:alice" }, actStay, "could not resume"},
+		{"a root that could not resume", func(v *awaitView) { v.Unresumable = "claimed by user:alice" }, actStay, "could not resume"},
 		{"an architect whose start is still queued", func(v *awaitView) {
 			v.Run = record.RoleRun{Queued: []record.QueuedSupervise{{Request: record.SuperviseRequest{Op: "start"}}},
 				Claim: &record.RoleClaim{State: supervise.StateWorking}}
@@ -198,9 +201,30 @@ func TestAnActAlreadyRecordedTellsTheArchitectInPlace(t *testing.T) {
 	}
 }
 
+// resumeHead is the head every resume task of LEGION-208 opens with.
+var resumeHead = texts.TaskHead{Kind: texts.RootResume, Issue: "LEGION-208"}
+
+// resumeRecordOf is the resume task of LEGION-208 as RootResume writes it, failing the test unless
+// it renders, and the text it renders to keeps the design-approved wake exactly where the gate is
+// open.
+func resumeRecordOf(t *testing.T, waiting record.Awaiting, step record.DesignStep, gate *record.DesignGate,
+	asks []record.RootAsk, armed bool,
+) texts.RootResumeRecord {
+	t.Helper()
+	got := RootResume("LEGION-208", waiting, step, gate, []string{gateArtifactOf(gate)}, asks, armed)
+	text := resumeTask("LEGION-208", waiting, step, gate, []string{gateArtifactOf(gate)}, asks, armed)
+	readTaskOf(t, text)
+	if open := got.GateOpen != nil && *got.GateOpen; strings.Contains(text, texts.DesignApprovedWake) != open {
+		t.Fatalf("the resume task %q carries the design-approved wake %t, want it exactly where the gate is open (%t)",
+			text, !open, open)
+	}
+	return got
+}
+
 // The task an answered root's architect resumes with names what answered the wait, how the
-// document of the step in question stands now, what waits on the architect and what is still with
-// the person.
+// document of the step in question stands now (that document whatever the act, as main named it in
+// each sentence of the gate), what waits on the architect and what is still with the person, each
+// as a field.
 func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	version := 3
@@ -209,33 +233,32 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 		{Issue: "LEGION-208", Ask: "ask-still", Kind: record.AskQuestion, Open: true, WaitingOn: "human", ByTree: true, Seq: 6},
 		{Issue: "LEGION-208", Ask: "ask-yours", Kind: record.AskQuestion, Open: true, WaitingOn: "agent", ByTree: true, Seq: 7},
 	}
+	still, yours := []string{"dispatch://LEGION-208/ask/ask-still"}, []string{"dispatch://LEGION-208/ask/ask-yours"}
 	for _, tc := range []struct {
 		name    string
 		waiting record.Awaiting
 		step    record.DesignStep
 		gate    *record.DesignGate
-		want    []string
-		not     []string
+		want    texts.RootResumeRecord
 	}{
 		{
 			name:    "a person's answer with the primary document approved",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
-			want: []string{"A person answered your ask ask-q", "Your primary document is approved at version 3", DesignApprovedWake,
-				"Waiting on you: ask ask-yours", "Still with the person: ask ask-still", "Continue."},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			// A deployment that gates the decisions step first stands on that step, not on the
-			// spec: the task names the decisions document, whose version it prints.
+			// spec: the task names the decisions document, whose version it gives.
 			name:    "an approval of the decisions document, the step the work stands on",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"},
 			step:    record.DesignStepDecisions,
 			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepDecisions, ArtifactID: "artifact-decisions",
 				LatestVersion: 3, ApprovedVersion: &version},
-			want: []string{"Your decisions document version 3 on LEGION-208 was approved.",
-				"Your decisions document is approved at version 3", DesignApprovedWake},
-			not: []string{"spec"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActApproved, Document: "dispatch://LEGION-208/artifact/" + dispatch.DecisionsSlug,
+				Version: 3, DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			// Round 2, adversarial P2-1 and outside-whole P2-1: no design-approved notice reaches
@@ -244,67 +267,64 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
-			want:    []string{"Your primary document version 3 on LEGION-208 was approved.", DesignApprovedWake},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActApproved, Document: "dispatch://LEGION-208/spec", Version: 3,
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			name:    "a changes request with the gate closed",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 4: \"say more\""},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4},
-			want: []string{"A person requested changes to your primary document on LEGION-208 at version 4: \"say more\"",
-				"revise the primary document as they ask", "Your primary document is not approved at version 4", "Hand each one back", "starts your next wait"},
-			not: []string{DesignApprovedWake},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 4,
+				DocumentVersion: 4, GateOpen: new(false), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "say more"}},
 		},
 		{
 			// Round 2, adversarial P3-2: the person approved the version after asking for changes,
-			// before the resume, so the resume asks for no revision of an approved document.
+			// before the resume, so the resume names the gate open on that approval.
 			name:    "a changes request a later approval superseded",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 3: \"split it\""},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
-			want:    []string{"asks for no revision now", "Your primary document is approved at version 3", DesignApprovedWake},
-			not:     []string{"revise the primary document as they ask"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 3,
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "split it"}},
 		},
 		{
+			// A question asked before any step of the gate was registered has no gate row
+			// (gateInQuestion), so the task names no gate state, as main's resume wrote no gate
+			// sentence for it.
 			name:    "a question nobody will answer any more",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByClosed, AnsweredDetail: "a session of your tree"},
 			step:    record.DesignStepSpec,
 			gate:    nil,
-			want:    []string{"was closed by a session of your tree", "if you still need the decision, ask again"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActClosed, Ask: "dispatch://LEGION-208/ask/ask-q",
+				ClosedBy: "a session of your tree", WithPerson: still, WaitingOnYou: yours},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := resumeTask("LEGION-208", tc.waiting, tc.step, tc.gate, asks, true)
-			for _, want := range tc.want {
-				if !strings.Contains(task, want) {
-					t.Fatalf("resume task %q, want it to name %q", task, want)
-				}
-			}
-			for _, not := range tc.not {
-				if strings.Contains(task, not) {
-					t.Fatalf("resume task %q, want no %q", task, not)
-				}
+			if got := resumeRecordOf(t, tc.waiting, tc.step, tc.gate, asks, true); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resume task\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
 	}
 }
 
-// With the design gate off, no approval is asked for, so the resume task never advises registering
-// one.
+// With the design gate off, no approval is asked for: the resume task says the gate is not armed,
+// which is what keeps its reader from advising a registration of an approval.
 func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
-	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, gate, nil, false)
-	if strings.Contains(task, "register_gate") {
-		t.Fatalf("resume task %q, want no approval advice with the design gate off", task)
+	got := resumeRecordOf(t, waiting, record.DesignStepSpec, gate, nil, false)
+	want := texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec", DocumentVersion: 2,
+		GateOpen: new(false), GateArmed: new(false)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume task\n%+v\nwant\n%+v: the gate is neither open nor armed", got, want)
 	}
 }
 
-// The task resuming a root that waited on its gate names a newer version that answered it, lists
-// the closed gate's approval request with the person or on the architect's turn, and advises a
-// hand-back — the request's own thread only while the request is open, re-requesting approval and
-// registering it otherwise.
+// The task resuming a root that waited on its gate names a newer version that answered it, the
+// closed gate's approval request with the person or on the architect's turn, and whether the
+// request's own thread is open.
 func TestTheResumeTaskOfAGateWait(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 5}
@@ -312,42 +332,34 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 		name    string
 		waiting record.Awaiting
 		asks    []record.RootAsk
-		want    []string
-		not     []string
+		want    texts.RootResumeRecord
 	}{
 		{
 			name:    "a newer version, the request on the architect's turn",
 			waiting: record.Awaiting{GateVersion: 5, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByVersion, AnsweredDetail: "version 5"},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "agent", Seq: 9}},
-			want: []string{"A newer version of your primary document on LEGION-208, version 5, handed the approval request back to you",
-				"Waiting on you: ask ask-approval", "register that version with register_gate", "or answer in the request's thread", "starts your next wait"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActVersion, Document: "dispatch://LEGION-208/spec", Version: 5,
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), WaitingOnYou: []string{"dispatch://LEGION-208/ask/ask-approval"}, RequestOpen: true},
 		},
 		{
 			name:    "a person's answer of a question, the request still with the person",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"},
 			asks: []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "human", Seq: 9},
 				{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, ByTree: true, Seq: 10}},
-			want: []string{"Still with the person: the approval request for primary document version 5", "or request approval again and register that version with register_gate"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), ApprovalRequest: 5, RequestOpen: true},
 		},
 		{
 			name:    "a changes request that closed the request",
 			waiting: record.Awaiting{Ask: "ask-approval", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 5: \"say more\""},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Seq: 11, ClosedSeq: 11, ClosedBy: record.ClosedByPerson}},
-			want:    []string{"requested changes", "request approval again and register that version with register_gate"},
-			not:     []string{"request's thread", "Still with the person"},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 5,
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), Reason: &texts.Words{Text: "say more"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := resumeTask("LEGION-208", tc.waiting, record.DesignStepSpec, gate, tc.asks, true)
-			for _, want := range tc.want {
-				if !strings.Contains(task, want) {
-					t.Fatalf("resume task %q, want it to name %q", task, want)
-				}
-			}
-			for _, not := range tc.not {
-				if strings.Contains(task, not) {
-					t.Fatalf("resume task %q, want no %q", task, not)
-				}
+			if got := resumeRecordOf(t, tc.waiting, record.DesignStepSpec, gate, tc.asks, true); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resume task\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
 	}

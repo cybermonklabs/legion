@@ -146,7 +146,7 @@ func TestANewerEntrysTaskTakesTheUntakenNewsOfARootArchitectAndTellsIt(t *testin
 				sent := r.delivered(machine)
 				prompts := conn.Prompts()[before:]
 				if len(prompts) != 1 || prompts[0].DeliveryID != sent.ID || !strings.Contains(prompts[0].Message, "Carry the tree on.") ||
-					!strings.Contains(prompts[0].Message, "version 5") {
+					!newsTells(t, prompts[0].Message, "spec artifact-800 5 ") {
 					t.Fatalf("the architect's prompts once it could take one = %+v, want the entry's task alone, carrying the news of version 5", prompts)
 				}
 				r.startTurn(machine)

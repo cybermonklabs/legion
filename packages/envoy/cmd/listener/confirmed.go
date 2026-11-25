@@ -322,11 +322,16 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 // keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
 // the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
 // report names the role and nothing else; which daemon owns it, and whether any claim of that
-// role is released, is for the daemons to decide.
+// role is released, is for the daemons to decide. A message at urgency low with no sender raises
+// no report (wakesItsRole): it is a text of the Legion daemon's that its reader acts on at its next
+// turn, so it brings no released pod back. The keep and the 404 are the same for it as for every
+// other message.
 func (s *roleSend) noHolder(result roles.Resolution) {
-	reportRoleWake(s.d, s.d.delivery.logger, s.role)
-	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
-	s.record.charge.woke()
+	if wakesItsRole(s.item) {
+		reportRoleWake(s.d, s.d.delivery.logger, s.role)
+		// The wake is what this message costs its sender, whether it is kept or answered 404 below.
+		s.record.charge.woke()
+	}
 	if s.keep && roleKeepable(result) {
 		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
@@ -585,14 +590,16 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // every other listener: an answer names only a holder it shows (edgeScope.holderConfirmed), and
 // the send forwards to the holder whatever it names. sender is who the request speaks for
 // (senderOf), which decides how much of a copy the stream or the kept lane already held an answer
-// carries. warnings is what its 200 and 202 name of the topic's old form.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+// carries. senderSession is the session that sends the message (messageSender), which the
+// envelope's sender stamp names. warnings is what its 200 and 202 name of the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, senderSession string, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
 	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, sender: sender, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
-	// reads the same stamp this send's own 202 names.
-	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+	// reads the same stamp this send's own 202 names. The sweep reads that stamp of the kept copy
+	// to tell a session's message from the daemon's (keptLaneWakesItsRole, wakesItsRole).
+	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, senderSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
 	resolvedAt := d.delivery.now()
 	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)

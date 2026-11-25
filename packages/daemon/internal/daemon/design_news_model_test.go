@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The news record against a plain model of what each holder was really told. One tree, its root in
@@ -457,37 +457,40 @@ func (r *newsModelRow) creditedPrompts() []*newsModelPrompt {
 	return r.readPrompts(func(a *newsModelAgent, id string) bool { return !a.superseded[id] && !a.lost[id] })
 }
 
-// newsModelHolderPair and newsModelHolderUnchanged are how a holder's news names a version pair
-// (workflow.RenderNews): one that changed the work, and one that changed decision blocks alone.
-// newsModelArchitectPair is how the root architect's summary names a pair of its own.
-var (
-	newsModelHolderPair      = regexp.MustCompile(`version (\d+), since version (\d+), which your phase last took`)
-	newsModelHolderUnchanged = regexp.MustCompile(`Nothing your issue holds changed since version (\d+), which your phase took\. Version (\d+) of its`)
-	newsModelArchitectPair   = regexp.MustCompile(`version (\d+), since version (\d+), which you last took`)
-)
-
-// named is what text tells r's holder of news: each version pair it names as the holder's own, and
-// whether it says the gate opened.
+// named is what text tells r's holder of news, as its design-news records name it
+// (workflow.RenderNews): each version pair it names as the holder's own, the version taken and the
+// version approved now of each item of a holder's record, or, for the root architect, each item of
+// its summary marked as its own (yours: true); and whether a record says the gate opened. A record
+// that cannot be read names nothing.
 func (r *newsModelRow) named(text string) ([]newsModelLink, bool) {
+	records, err := parseNewsRecords(text)
+	if err != nil {
+		return nil, false
+	}
 	var pairs []newsModelLink
-	add := func(from, to string) {
-		f, _ := strconv.Atoi(from)
-		t, _ := strconv.Atoi(to)
-		pairs = append(pairs, newsModelLink{from: f, to: t})
+	opened := false
+	for _, rec := range records {
+		opened = opened || rec.fields["gate"] == texts.GateOpened
+		wanted := texts.NewsToHolder
+		if r.audience == record.AudienceArchitect {
+			wanted = texts.NewsToRootArchitect
+		}
+		if rec.fields["audience"] != wanted {
+			continue
+		}
+		for _, item := range rec.rows["items"] {
+			if r.audience == record.AudienceArchitect && item["yours"] != "true" {
+				continue
+			}
+			from, err := strconv.Atoi(item["taken"])
+			if err != nil {
+				continue
+			}
+			to, _ := strconv.Atoi(item["version"])
+			pairs = append(pairs, newsModelLink{from: from, to: to})
+		}
 	}
-	if r.audience == record.AudienceArchitect {
-		for _, found := range newsModelArchitectPair.FindAllStringSubmatch(text, -1) {
-			add(found[2], found[1])
-		}
-	} else {
-		for _, found := range newsModelHolderPair.FindAllStringSubmatch(text, -1) {
-			add(found[2], found[1])
-		}
-		for _, found := range newsModelHolderUnchanged.FindAllStringSubmatch(text, -1) {
-			add(found[1], found[2])
-		}
-	}
-	return pairs, strings.Contains(text, "The design gate of "+pathRoot+" opened:")
+	return pairs, opened
 }
 
 // newsModelAmbiguity counts the steps after which the record could stand in either of two states

@@ -4,8 +4,10 @@ body: |-
   bookmark that no branch or tag on origin holds, or a working-copy change: its first act reads the
   workspace through a live role's shim (`workspace-work`) and declines when it finds such work or
   cannot read the workspace. The pod stays, the role whose shim made the read (the open phase's
-  worker where it is live) gets one message that the release waits for its push, and the daemon
-  pushes nothing. A commit that no working copy and no bookmark reaches, such as a side head left
+  worker where it is live) gets one `idle-release-declined` message, which names the working copy's
+  change (`changed`, `head`) and the commits origin does not hold (`commits`, `commit_ids`,
+  `more_commit_ids`), and whose reader's prompt says that the release waits for its push, and the
+  daemon pushes nothing. A commit that no working copy and no bookmark reaches, such as a side head left
   with `jj new`, is not counted, and a release can take it. The decline holds the pod under the new
   hold `unpushed_work` (or `workspace_unread`) with no new release mark, no outbox row and no shim
   call until a role of the issue starts a turn or a process again, or the runtime holds another pod
@@ -23,9 +25,9 @@ body: |-
   left pod's check holds that pod's close, a turn after that check holds the close's stop of its
   role and finishes its Sandbox suspension without acting, and a decline is stamped with the moment its read began. Before, every idle pass marked the release again, asked the
   shim and cancelled on the same refusal (`bundle_save_failed`, "the workspace's unpushed work is N
-  bytes"). The release records write `bundleBytes` 0, and the wake task of a release says what the
-  release keeps and that a side head is not kept, in the same words as the plugin's
-  recreated-workspace notice.
+  bytes"). The release records write `bundleBytes` 0, and the role prompts' passages on the wake
+  task of a release (`stopped_by: release`) and on the plugin's recreated-workspace notice say what
+  the release keeps and that a side head is not kept, in the same words.
 time: 2026-11-21T16:00:01Z
 custom:
   Issue: idle-release-keeps-no-workspace

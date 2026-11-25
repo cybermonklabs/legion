@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -10,43 +9,43 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Unresumable is the one rule for whether a root that waits on a person, holding the admission
 // slot it took when the daemon started it, may run again in its own architect session: it
-// returns why it may not, or "" when it may.
+// returns why it may not, as a word of the unslotted notice (texts.UnresumableLabelRemoved and
+// the others), with who holds its Dispatch claim where that is why, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one
-// the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim). ReconcileAwaiting
-// keeps a root it answers no for at admitted, where it holds its slot unless it waits on another
-// issue (blockers.waitsOf), and admission removes an awaiting root, and skips an answered one,
-// that it answers no for.
-func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (string, error) {
+// the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim), and the holder is
+// returned as that mirror names it, a holder it cannot read as `<kind>:<id>` among them.
+// ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
+// waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
+// answered one, that it answers no for.
+func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (why, claimedBy string, err error) {
 	switch {
 	case !issue.HandedOver:
-		return "the legion label was removed", nil
+		return texts.UnresumableLabelRemoved, "", nil
 	case issue.Lingers() || !record.InWorkflow(issue):
-		return "it left the workflow", nil
+		return texts.UnresumableLeftWorkflow, "", nil
 	}
-	claimedBy, err := store.DispatchClaim(ctx, tx, issue.Key)
+	claimedBy, err = store.DispatchClaim(ctx, tx, issue.Key)
 	if err != nil || claimedBy == "" {
-		return "", err
+		return "", "", err
 	}
 	kind, id, found := strings.Cut(claimedBy, ":")
-	if !found || kind == "" || id == "" {
-		return fmt.Sprintf("its Dispatch claim is held by %q", claimedBy), nil
+	if found && kind == "session" && id == dispatch.DaemonSession(issue.Key) {
+		return "", "", nil
 	}
-	if kind == "session" && id == dispatch.DaemonSession(issue.Key) {
-		return "", nil
-	}
-	if kind == "session" {
+	if found && kind == "session" && id != "" {
 		ownsTree, err := store.SessionClaimsTree(ctx, tx, issue.Tree, id)
 		if err != nil || ownsTree {
-			return "", err
+			return "", "", err
 		}
 	}
-	return fmt.Sprintf("its Dispatch claim is held by %s", claimedBy), nil
+	return texts.UnresumableClaimed, claimedBy, nil
 }
 
 // armed says whether the design gate is armed: the deployment gates at least one step. With no

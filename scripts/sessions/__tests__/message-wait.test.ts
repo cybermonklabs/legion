@@ -131,8 +131,9 @@ const UNSTAMPED: Fixture = {
 const INERT: Fixture = {
   id: "01a10000-0000-7000-8000-000000000006",
   role: "example-architect",
-  // The inert path stamps `inert` and carries no card id, since the wake tracks no inert card.
-  lines: [card(ARRIVED, { handOver: "inert" }), assistant(15 * MINUTE)],
+  // The inert path stamps `inert` and carries no card id, since the wake tracks no inert card. A
+  // low card the plugin stores for the session's next turn is one: it carries its urgency too.
+  lines: [card(ARRIVED, { handOver: "inert", urgency: "low" }), assistant(15 * MINUTE)],
 };
 
 const LOCAL_NOTICE: Fixture = {
@@ -254,8 +255,9 @@ const EXPECTED: string[] = [
   "each line below: the wait, the arrival, the calls open at the arrival (the calls the " +
     "verdict turns on), the call that took the longest part of the wait, the host state when " +
     "the plugin handed the card over, and the session; the plugin's own notices and its own " +
-    "wake are in no count and on no line, and a card written before the plugin stamped the " +
-    "state prints unstamped",
+    "wake are in no count and on no line, a card written before the plugin stamped the " +
+    "state prints unstamped, and a card handed with no turn, a stored low card among them, " +
+    "prints inert",
   "",
   // The group the verdict turns on, and the one wait in it: the bash call opened a minute before
   // the arrival and closed eighteen minutes after it, so it was open when the message arrived.

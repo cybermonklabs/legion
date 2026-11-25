@@ -1266,9 +1266,8 @@ every other generation gets `false`, whatever the container's environment says, 
 A record that is empty or not one RFC 3339 instant, which an init container killed mid-write can leave, decides only that notice:
 the launcher logs it, takes the workspace as not recreated, and resumes.
 At session start a Legion session's plugin reads the variable and saves one message to the session, ahead of the next turn whatever starts it (a task, an Envoy event):
-`Your workspace was recreated since your last turn: it holds what was pushed
-to legion/<KEY> (the repository's default branch if nothing was), and anything you had not pushed
-is gone. …` (`packages/pi-legion/src/workspace-recreated.ts`, a steer that starts no turn), with an id of its own process in the message's `details`.
+a `legion:` notice with the lines `notice: workspace recreated`, `issue: <KEY>` and `branch: legion/<KEY>` (`packages/pi-shared/src/workspace-recreated.ts`, sent by `packages/pi-legion/src/workspace-recreated.ts` as a steer that starts no turn), with an id of its own process in the message's `details`.
+What the agent does on it is in its role prompt.
 A prompt, the daemon's next task or a person's direct message that pi-envoy delivers as a user turn, first recovers a failed last turn, and Oh My Pi recovers an empty `length` stop by moving the branch back to that turn's parent, which takes the saved message off the branch with it.
 The plugin's `before_agent_start`, which runs after that recovery on either path, sends the message again when the branch no longer holds this process's copy, a notice an earlier recreation saved not counting, and the turn saves it after the prompt.
 The recovery leaves the first copy in the process's live context, so that process's requests keep its first copy alone, and an earlier recreation's notice stays where the history put it.
@@ -1827,8 +1826,9 @@ The release that reads the version cast to `bigint` goes out before any release 
 the release before it reads `max(version)` uncast, so a deployment that skips it costs the daemon it replaces one failed state read on each connection that prepared the uncast read, which pgx then drops.
 
 A daemon of a release before migration `0058_catch_up_cursor` that runs on a database a later release has migrated applies Dispatch's events without moving any issue's catch-up cursor (`issues.caught_up_seq`).
-Before a later release starts on that database again, set every cursor to null (`update issues set caught_up_seq = null`), or its boot catch-up replays the events the earlier daemon already applied;
+Before a later release starts on that database again, set the cursor of every issue of that daemon's project to null (`update issues set caught_up_seq = null where split_part(key, '-', 1) = '<PROJECT>'`, with the project's key in place of `<PROJECT>`), or its boot catch-up replays the events the earlier daemon already applied;
 a catch-up from a null cursor replays nothing and sets the cursor to the issue's latest event on Dispatch (the comment of `0058_catch_up_cursor.up.sql` says why).
+`issues` is shared by every project's daemon on the database, and an earlier daemon applies only its own project's events, so another project's cursors stand.
 
 ### Upgrading a deployment with running trees
 
@@ -2088,12 +2088,12 @@ A file that never set the member needs nothing.
 Each kill is a `controller_notice` outbox row whose payload's `kind` is `memory-guard-kill`.
 A sent notice leaves no row, so the rows that stand are the notices this release wrote and had not sent when its daemon stopped.
 An earlier release cannot send them: it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
-Stop this release's daemon, and run the block below once before the earlier release starts:
+Stop this release's daemon of the project, and run the block below once before the earlier release starts, with the project's key in place of `<PROJECT>`; the outbox is shared by every project's daemon on the database, and the statement takes that project's notices alone (`split_part(issue, '-', 1)` is a row's project, and a controller notice that names no issue carries the bare project key):
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
-delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill';
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill' and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 SQL
 ```
@@ -2308,7 +2308,8 @@ Re-pinning an image asks for part of that back, and which part follows the relea
 Pull request cybermonklabs/legion#2989 added `awaiting_slot_notice_at`, and the commit it merged as, `6c72aaee111c`, is release `legion-v19.45.0`: every release from `legion-v19.45.0` on carries the column.
 The newest, `legion-v19.47.0`, names it three times in `packages/daemon/internal/record/store.go` — in the `issueColumns` select list, in the `PutIssue` insert and its values, and in that insert's `on conflict ... do update set` — and scans it in `scanIssue`.
 So once this migration has dropped the column, pinning any release from `legion-v19.45.0` on fails every issue read and every `PutIssue` with `column "awaiting_slot_notice_at" does not exist`, which is every fact, tick and boot pass that daemon makes, until the column is back.
-Run this with the daemon stopped, before that image is pinned:
+Run this with the daemon stopped, before that image is pinned.
+`issues` is one table for every project that shares the database, so the column comes back on every project's rows; a daemon of another project that stays on this release names no such column and runs on as before, so only the projects that pin such a release need their daemons stopped:
 
 ```sql
 alter table issues add column if not exists awaiting_slot_notice_at timestamptz;
@@ -2323,13 +2324,13 @@ It reads the `slots` rows as it finds them, and this release leaves a row standi
 
 **A queued `waiting-for-slot` notice must go before this release is pinned, not after.**
 This release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind nor the `waiting_for_slot` field the earlier release wrote, so a row still queued at the upgrade fails for ever on its backoff and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
-Run this with the daemon stopped, before this release's image is pinned:
+Run this with the daemon of the project that upgrades stopped, before this release's image is pinned for it, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
-delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
-This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
+This release's own migration runs that delete too, over every project's rows rather than one project's (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
 No daemon of the earlier release can write such a row after the migration has run: every release from `legion-v19.45.0` on names `awaiting_slot_notice_at` among the columns it reads an issue with, so with the column dropped every issue read it makes fails, before it reaches the code that would queue the notice; and that queue and the issue write marking the root are one transaction, so neither is written without the other.
 The step costs an operator one statement with the daemon stopped, and it leaves the outbox clean whatever order the restart takes.
 
@@ -2338,7 +2339,8 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 #### Rolling back the release that keeps the commit a reviewer last read
 
 The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
-The last two sentences of each task a reviewer is sent are always the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.` or ` Review entry: none.`, in every phase and whatever queued the task.
+The last two sentences of each task a reviewer is sent are always the daemon's, `Last reviewed commit: <sha>.` or `Last reviewed commit: none.` and then `Review entry: <n>.` or `Review entry: none.`, in every phase and whatever queued the task.
+A task that the release which carries a person's words in the daemon's texts renders as a record carries the pair on a line of its own, after everything else (`reviewround.Ending`); a task stored as text before that release carries it after a space, as this migration appends it.
 A stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
 A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
 A task of the reviewer without that fact, which a start row or a pending delivery of the earlier release and an operator's own task are, is sent with ` Last reviewed commit: none. Review entry: none.` at its end, so its reviewer reads the whole change and keeps the entry of its round.
@@ -2350,6 +2352,7 @@ An earlier release does not clear `phases.reviewed_head` when it opens a new gen
 And it replaces a claim's delivery with an upsert that does not name `round_named`, so a column left in place would say of the task that release wrote that it holds the daemon's sentences.
 What the way back costs is the commit each reviewer's row held and the fact on each start row and delivery: the next round of each issue then in review reads the whole change, and each task this release queued is sent after the roll-forward ending with ` Last reviewed commit: none. Review entry: none.`.
 Each strip is anchored at the end of the task, so a sentence of the same words earlier in it, such as one a retry's reason quotes, stays, and each task then holds the text the earlier release would have written, which it sends as text.
+The strip reads the pair after a space only, so it does not take the pair off a task that a later release rendered as a record; a rollback past that later release is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
 The roll-forward appends one pair again to each task a reviewer's row stores, so each such task ends with exactly one pair of the daemon's sentences.
 
 #### Rolling back the release that tells the merger of a merge-queue removal
@@ -2364,11 +2367,11 @@ The migration changes no column.
 **The rows of the two new kinds must go before the earlier image is pinned.**
 An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs a row of either kind, and such a row holds back no other row.
 Left in place, the row waits through the rollback and runs at the roll forward, when the removal it tells of may be long over.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
--- The read of a pull request that left the merge queue, and the message to its merger.
-delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal');
+-- The read of a pull request that left the merge queue, and the message to its merger, of one project.
+delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal') and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 Each deleted row costs one thing: a merger is not told of one removal from the merge queue.
@@ -2386,17 +2389,20 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `retro`, or in `accepting` where the acceptance is the task's last step (cybermonklabs/legion#4979).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
 An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this before the earlier image is pinned, with the daemon of the project that rolls back stopped, and with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
 
 ```sql
 begin;
--- The merger's asks still queued, and the asks of the merger that have not landed.
-delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+-- The merger's asks still queued, and the asks of the merger that have not landed, of one project.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger'
+  and split_part(issue, '-', 1) = '<PROJECT>';
 update pull_requests set merge_forward = null
-  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = ''
+    and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 ```
 
+The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), and a project that stays on this release keeps its merger's asks.
 The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
 An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
 
@@ -2411,14 +2417,14 @@ A `merge_forward` row is one message to one role about a conflict the daemon act
 **The rows of the two new kinds, and the two columns, must be cleared before the earlier image is pinned.**
 An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never runs a row of either kind, and such a row would wait through the rollback and run at the roll forward, when the head it names has long moved.
 The earlier release never names the two columns either, so it neither reads nor clears them, and a first read or an ask it left standing would name a head its own moves have overtaken by the roll forward.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this before the earlier image is pinned, with the daemon of the project that rolls back stopped, and with `<PROJECT>` replaced by its key as above:
 
 ```sql
 begin;
--- The second reads of conflicting heads, and the merge-forward messages.
-delete from outbox where kind in ('conflict_confirm', 'merge_forward');
+-- The second reads of conflicting heads, and the merge-forward messages, of one project.
+delete from outbox where kind in ('conflict_confirm', 'merge_forward') and split_part(issue, '-', 1) = '<PROJECT>';
 update pull_requests set conflict_read = null, merge_forward = null
-  where conflict_read is not null or merge_forward is not null;
+  where (conflict_read is not null or merge_forward is not null) and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 ```
 
@@ -2427,12 +2433,16 @@ Each deleted `merge_forward` row is a message that nobody delivers.
 
 The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
 That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
-So run this once more with the earlier release stopped, before this release starts again:
+So run this once more with the earlier release of that project stopped, before this release starts again:
 
 ```sql
--- A phase-ended message the earlier release queued about a move this release no longer makes.
-delete from outbox where kind = 'phase_ended';
+-- A phase-ended message the earlier release queued about a move this release no longer makes, of one project.
+delete from outbox where kind = 'phase_ended' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
+
+The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives the way back and this roll-forward statement over every project's rows, for a database whose every daemon moves at once; the statements here take one project's.
+
+The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement of this section takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), and a project that stays on this release keeps its second reads and its merge-forward messages.
 
 #### Rolling back the release that gives up on intake messages
 
@@ -2523,11 +2533,11 @@ An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
 At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
 The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
-To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
+To leave no row behind, you can run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
--- The publication of an issue's role sessions to Dispatch.
-delete from outbox where kind = 'role_holders_publish';
+-- The publication of an issue's role sessions to Dispatch, of one project.
+delete from outbox where kind = 'role_holders_publish' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
@@ -2845,6 +2855,8 @@ The four statements leave the two keys that the project pause adds to a `start` 
 A rollback that also goes past the project pause, to a release before both, runs these four statements first.
 The first two steps of [Rolling back the project pause](#rolling-back-the-project-pause) come before them, while this release still runs, because this release resumes a paused project as that release does.
 Then stop this release's daemon, run these four statements, run that section's three statements, and pin the earlier image.
+This section moves every daemon of the database together, and the pause's two steps and three statements each act on one project: take the two steps for each project of the database, through that project's daemon and with its key, and run the three statements once for each project, with that project's key.
+A step or a statement taken for one project alone leaves the other projects' rows and held pods: the earlier release fails to decode those rows on every attempt, and it deletes a held pod in which no role is live, with its disk and the unpushed work on it.
 The two sets of statements touch no row in common.
 
 **Three costs of a rollback that no statement undoes.**
@@ -2933,10 +2945,10 @@ Deploy, roll back and roll forward every daemon of one database in the same chan
 
 This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project, and the project key of a controller notice that names no issue):
 
 ```sql
-update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
@@ -2980,6 +2992,229 @@ A daemon left on the earlier image records no movement of an issue it already ho
 Read against that time, its trees are quiet for the whole of the gap, and the first passes after it rolls can tell that project's controller a `tree-stalled` notice for each tree of it that is quiet past `stalled_tree_notice_hours`.
 The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
 Upgrade, and roll back, every daemon of one database in the same change.
+
+#### Rolling back the release that carries a person's words in the daemon's texts
+
+This release writes each daemon text from a record of facts.
+A text about a person's act carries the person's words, which the daemon takes from the Dispatch event of that act: the answer of an ask, a reply in its thread, the note of a decline, and the reason of a changes request.
+The daemon keeps these words whole and cuts them only when it writes a text.
+Its migration `20261118092930_person_words` adds four columns, three `jsonb` columns of words and one `text` column of an author:
+
+- `root_asks.person_answer_words`: the words of the person's answer of the ask.
+
+- `root_asks.person_words`: the words of the person's other act on the ask, a reply or a resolution.
+
+- `parked_decisions.words`: the words of a decision that the daemon keeps for the next start or catch-up of a tree.
+
+- `design_gates.told_changes_by`: the person who made the changes request that a gate records as told.
+  The resume of a root that waited on the person names that person beside the reason of the request.
+
+**The order with the release that merges a conflicting head forward.**
+This release's first two migrations, `20261118092930_person_words` and `20261118101218_update_drift_items`, come before `20261119003157_conflict_reads_and_merge_forward` of cybermonklabs/legion#4464, and its third and fourth, `20261122011615_production_check_reported_at` and `20261122040952_design_gate_document_issue`, come after it.
+`Migrate` applies every migration that a database has not recorded, in version order.
+So an upgrade of a database that neither release migrated applies the first two of this release, then that one, then the third and the fourth of this release.
+An upgrade of a database that release migrated finds that one recorded and applies the four of this release, although the versions of the first two are lower.
+None of the five touches what another adds: the four of this release add columns, and the fourth fills its column on some rows, and they touch no `outbox_kind_check`, and that one writes the kind check, which holds every kind this release queues.
+A rollback past this release is a roll forward (below).
+A rollback past that release alone, to a daemon that sends a conflicting head back, takes the steps of [its own section](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase), which touch none of this release's columns.
+
+**The earlier release ignores the new columns.**
+An earlier image names none of the four columns in its reads or its writes.
+So it reads every row, and the rollback needs no statement for the columns.
+Its writes also do not clear the columns.
+When it records a newer act on a `root_asks` row, or replaces a `parked_decisions` row with a newer decision, the row keeps the words of the older act.
+When it records a newer changes request as told on a `design_gates` row, it writes the version and the reason of that request, and the row keeps the author of the older request.
+After a roll forward, this release can then give those older words, or that older author, beside the newer act.
+To prevent this, run these statements before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The words that an earlier daemon's writes can leave on a row of a newer act, of one project.
+update root_asks set person_answer_words = null, person_words = null where split_part(issue, '-', 1) = '<PROJECT>';
+update parked_decisions set words = null where split_part(issue, '-', 1) = '<PROJECT>';
+-- The author that an earlier daemon's writes can leave beside a newer changes request, of one project.
+update design_gates set told_changes_by = null where split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+A row whose words are cleared costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
+The reader then reads the words in Dispatch.
+A gate row whose author is cleared costs the author of its changes request.
+The resume then takes the author from the person's answer of the gate's approval request where that answer holds the same reason, and otherwise it gives the reason with no author.
+
+**Each project clears its own rows.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `root_asks`, `parked_decisions`, `production_checks` and `design_gates` are one table each for all of them.
+Each statement of this section takes the rows of one project alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+An earlier daemon writes only the rows of its own project.
+So run the statements once for each project whose daemon ran the earlier image.
+A project whose daemon stayed on this release keeps its words, its authors and its times.
+
+**The update round's drift items need no statement.**
+The migration `20261118101218_update_drift_items` adds one `jsonb` column, `claims.update_drift`.
+It holds the drift that an update round was opened for as items: each image, and the key of each setting, with the round that the items are of.
+The ask of the round and its `update-stalled` notice name the image by a short digest and each setting by its key.
+The agent surfaces and the message about a pod that went before its round was over keep the text in `claims.update_reasons`, as before.
+An earlier image names the column in none of its reads or writes, so it reads every claim and ignores the items.
+A claim that the earlier image writes keeps the items it held.
+This release reads the items only when their round is the round that the claim is in (`claims.update_round`).
+So it never gives the items of one round as those of a round that the earlier image opened after it.
+A round that the earlier image opened has no items, and its ask and its notice give its text in one field.
+
+**The time of a production check's pending report needs one statement.**
+The migration `20261122011615_production_check_reported_at` adds one `timestamptz` column, `production_checks.reported_at`.
+It holds when the daemon recorded the latest pending report of the check.
+The look that the wake of that report starts carries the report's summary in a block of its own, and the block names that time.
+A look that nobody reported sets the column to null, because no report named the retry that the end of that look names.
+A check recorded before the migration holds null, and the look that its standing wake starts gives the summary and its author with no time, as the earlier release did.
+An earlier image names the column in none of its reads or writes, so it reads every check and ignores the time.
+Its writes also do not clear the column.
+When it records a pending report, or ends a look that nobody reported, the check keeps the time of the earlier report.
+After a roll forward, this release can then give that earlier time on the summary of a later report.
+To prevent this, run this statement before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced as above:
+
+```sql
+-- The time that an earlier daemon's writes can leave beside the summary of a later report, of one project.
+update production_checks set reported_at = null where split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+A check whose time is cleared costs one thing: the look that its standing wake starts gives the summary and its author with no time.
+This migration adds no key to an outbox payload.
+
+**The issue of a design gate row's document needs one statement.**
+The migration `20261122040952_design_gate_document_issue` adds one `text` column, `design_gates.document_issue`.
+It holds the issue whose document a gate row is bound to.
+A root's own registration writes the root itself.
+A hand-over that carries a gate onto a root of its own copies each row of the old root, and the copy names the issue of the old row's document: the issue that the old row names, or the issue that the store's rows on that document name.
+The store names that issue on the document's own registration: the row of an issue that is no root a hand-over created with its gate at the generation that the issue stands at, since `register_gate` refuses a document of another issue and only that hand-over writes a copy.
+A row that names the issue names it too.
+Where the store's rows on the document name no issue, or more than one, the copy names none.
+An approval of a carried row's document at or above the copy's version, of a step that the deployment gates, fills the column of a carried row that names no issue with the issue that sent the approval.
+No other event of the document reaches a carried row.
+The migration fills the column on every row of a document whose own registration the store holds with the issue of that registration, the copies of a chain of hand-overs among them.
+Every other row holds null: a row of a document whose registering root's rows a re-admission cleared, or whose registering root was itself carried in with its gate.
+The architect's `architect-start` task and `catch-up` (`gates[].document`) name the document of the issue that a row names, so a carried root's texts name the old root's document, which a person approves.
+For a row that names no issue, both read the store's rows on its document when they are built, by the rule of the migration.
+Where the store names no issue, the daemon asks Dispatch which issue holds the document when its outbox runs the text's row: the architect's start row, which queues the task on the architect's claim, and the catch-up's row, which publishes the catch-up.
+Where Dispatch does not answer then, the text gives the document's bare artifact reference, `/api/v1/artifacts/<artifact id>`.
+The daemon does not ask Dispatch again when the claim sends the task it queued, so the reference reaches the architect as it was queued.
+There are two exceptions, both a task that the claim writes again at its send: one where a decision that the task named has left the tree, and one where a newer decision replaced a decision that the task named.
+Each such rewrite names every step's document again from the store, asks Dispatch at the send only for a document that the store does not name the issue of, and gives the bare artifact reference again where Dispatch does not answer.
+The `design-news` record (`gate_document`, `items[].document`) names a row's document by the same rule, from the store when the claim sends the task, else from Dispatch at that send, else by the bare artifact reference, so a carried root's news names the old root's document and never the carried root's own.
+No text reads `issues.handed_over_from` for it.
+The `gate-moved` message (`document`) names the document of the issue that the row names, and each write of a carried row that can send that message names the issue first.
+An earlier image names the column in none of its reads or writes, so it reads every gate and ignores the column.
+Its writes also do not clear the column.
+When it registers a root's own document on a row that a carried copy held, the row keeps the old root.
+After a roll forward, this release can then name the old root's document for the root's own document.
+To prevent this, run this statement before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced as above:
+
+```sql
+-- The old root that an earlier daemon's registration can leave on a row of the root's own document:
+-- a row of one project whose named issue holds no row on the same document.
+update design_gates g set document_issue = null
+where split_part(g.issue, '-', 1) = '<PROJECT>'
+  and not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
+```
+
+The statement also clears a carried row whose named issue no longer holds a row on that document, and that costs one thing: until an approval of its document fills the column again, the daemon names such a row's document as it names that of every row that names no issue, from the store's rows on the document, else from Dispatch when the outbox runs the text's row, else by the bare artifact reference.
+This migration adds no key to an outbox payload.
+
+**The earlier release drops the new keys of a review decision.**
+This release adds five keys to the review decision of a `phases` row (`phases.decision`, `record.ReviewDecision`): `author`, `person`, `submittedAt`, `bodyCut` and `id`.
+They are the facts of the review that the next implementer's task names beside the review's body.
+The earlier release decodes that column with no refusal of a key that it does not know (`scanPhase` in `record/store.go`), so it reads every such row.
+But when it writes such a row again, it writes only the keys that it knows, so the row loses the five keys.
+After a roll forward, the task gives the body of that review whole and with no author, as it does for a decision that an earlier release wrote.
+The earlier release writes the whole decision each time, so no older key stays beside a newer review, and the rollback needs no statement for the column.
+
+**The earlier release refuses the outbox rows that this release writes.**
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+This release adds fields to the payloads that its outbox queues:
+
+- Each notice and controller notice carries new keys, such as `issue` and `words`.
+
+- A role message carries `kind`, `urgency` and `fields`.
+
+- A checks-red notice carries `why`, `asked`, the role asked to merge the base forward, and for a held issue `hold`, beside the notice keys above.
+
+- A gate-moved message of an opening carries `unchanged_since`, the version of the step's document its reader took, where nothing that reader holds changed since that version.
+
+- News of an approved design is a task of the kind `design-news`, with the keys `tree`, `audience`, `phase`, `gate`, `gate_step`, `gate_document`, `gate_artifact`, `gate_version`, `merge`, `items` (`step`, `document`, `artifact`, `version`, `taken`, `yours`, `changes`), `sections` (`item`, `unit`, `nth`, `change`, `after_nth`), `blocks` (`item`, `type`, `change`), `members` (`issue`, `phase`, `told`, `why`, `holder`, `opening`, `unnamed`, `architect_of`) and `owed` (`issue`, `item`), and the blocks `reason`, `heading`, `after_heading`, `id` and `other_type`.
+  It travels as the text of a task, which no release decodes, so it adds no key that an earlier release refuses.
+
+- A merge-forward ask carries `conflict_reads`, the count of GitHub's reads that found its head conflicting with its base, and a merge-forward hold carries `asked`, the role asked to merge the base forward.
+  The daemon writes both from the `merge_forward` row when its outbox runs the row, so neither adds a key to the row's payload, which an earlier release decodes.
+
+- A review-stuck notice of a head GitHub will not merge carries that head's checks, names each check GitHub skipped under `skipped`, and says once under `each_skipped_check` that a skipped check ran nothing on that head.
+
+- A message-refused notice carries `words`, which names its first line (`begins`) with that line's author, the time its write was queued and, where the words go on past that line's head, `rest`, and, where that line opened with the daemon's sentence of a backward move or of a close, `refused_move` or `refused_close`.
+  Where that first line is empty, the notice carries `first_line_empty` in place of `begins`.
+
+- A session-forgotten notice carries `launcher_lookup` and `resumed_by_id`, which say why the session was forgotten.
+
+- An architect-stalled notice that counted its bound from a moment later than the one its arm names carries `counted_from` and `counted_from_event`, with `pause_id` where a project's pause moved that moment, and a project-paused notice carries `words`, which names its pause's reason.
+
+- A phase-finished notice of a role's own move back carries `moved_back`.
+
+- A worker-died notice of a role that does not work its issue's phase carries `nothing_held`, which says that its failure holds nothing.
+
+- A tree-stalled notice carries `first`, which tells the controller to read the tree first (`read_tree`), and `decide`, the choices the controller decides among once it has read the tree.
+
+- A memory-guard-kill notice carries `cause`, `process`, `pid`, `size`, `pod_memory` and `limit`, the facts of the kill, and neither `role` nor `reason`.
+
+- A parked-decision notice of a person's approval that a later change of its root's status kept from queuing the root carries `approval_seq`, `status_change_seq`, `status`, `not_queued` and `set_todo`, the facts of that refusal, and no `reason`.
+
+- A catch-up notice whose `relaunch` names a turn cut off carries `relaunch.in_flight_tool_calls` and `relaunch.turn_background_work`, which say what that turn lost.
+  A catch-up notice whose `relaunch` names no report of the process's last turn carries `relaunch.process_background_work`, which says that every subagent and background job of that process is gone, where the process was in no turn or the turn cut off names no work that stopped.
+
+- A catch-up notice carries `catch_up.done`, the key of each issue that its architect owns and that is done, `catch_up.unreleased`, each child that the architect filed and did not release, and `catch_up.accepting`, the key of each issue that waits in accepting for the architect's acceptance.
+  Each step of its `catch_up.gates` carries `document`, the step's document as a `dispatch://` link, and its kept approval carries its document in `catch_up.kept.document`.
+
+- An update-stalled notice carries `holds`, a word for what holds the round past its bound, and `refusal`, the runtime's refusal to replace the round's pod.
+  It names the drift that the round was opened for as items: each changed image by its short digest in `update.images`, and the key of each changed setting in `update.settings`.
+
+- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim that a project's pause stopped, whether or not that pause still owes the claim a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
+  A claim that the pause stopped owing it no launch is named `pause` until the claim is ready again or a release of the pod suspends the claim's role (`pod_releases.roles` names it); a release that suspended other roles alone leaves it `pause`.
+
+- A `check_wake` row that this release queues carries one of two marks.
+  The retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).
+  The checking role's own wake, which its pending report named, carries `pending`, and the look it starts names that wake (`woken_by: named`) with the row's reason in its summary block, whatever words that reason opens with.
+  A `check_wake` row that an earlier release queued carries neither mark.
+  Where its reason is word for word that release's sentence of a retry (`the retry of a look nobody reported: ` and then `look bound`, `operator hold` or `claim failed`), the look that it starts names a retry, with `retry_of`, as that release's checking role read it.
+  Any other such row starts the checking role's own wake.
+  Where such a row waits again because its issue is back in the workflow, the daemon queues it again with the mark it was read by.
+
+- A pr-merged notice whose close waits carries `status_not_taken_yet` and `end_child_rule`, and a children-first notice carries `end_child_rule`: the sentence on a status the daemon has not taken yet and the rules for ending a child, word for word.
+
+- A child-release-stalled notice of a repository the daemon let go says of each child whether Dispatch's listing still holds it (`let_go[].listed`).
+
+- An unslotted notice of a root that waits on a person names why the root cannot resume by a word (`unresumable`) and, where a Dispatch claim is why, who holds that claim (`claimed_by`).
+
+- An update ask carries `images`, `settings`, `reasons` and `endsAt`.
+
+- Each kept decision that a start task or a catch-up names (`record.DecisionMark`) carries the person's words in `options`, `answer`, `answer_at` and `more`, and the count of what a notice cut off them in `rest`.
+
+This list is not complete.
+The payload types of this release declare more keys that the earlier release does not know: `record.Notice` and the other types in `record/outbox.go`, and the records in `texts/records_*.go`.
+
+The earlier release knows none of these fields.
+So each such row that is still queued at the rollback fails and is retried on its backoff for ever.
+A notice row also fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
+The earlier release's `releaseWaiting` (`daemon/notice_exceptions.go`) also decodes each notice row of the project that waits for a later attempt.
+So while such a row waits on its backoff, the ready of each architect of the project releases none of the notices that wait for that architect, and the daemon only logs the failure (`release the notices waiting for ready architects`).
+Those notices then wait out their own delay.
+A start row of a root's architect that names a kept decision with the person's words also fails every admission pass of the project, not only of its issue.
+The earlier release's `record.Postgres.RoleRuns` decodes the queued supervise rows of each role and generation that its caller reads, and each admission pass reads the architect of every root that holds a slot (`readSlotHolders` in `admit/admit.go`).
+So one such row of a root that holds a slot fails the whole pass.
+No statement removes all of these fields from all of these rows.
+
+**So a rollback past this release is a roll forward.**
+Do not pin an earlier image over a database that this release used.
+To undo a part of this release, release a later version that reverts that part, and deploy that version.
+This release departs from the rule of the sections above for a change that adds an outbox field.
+Each of those sections gives a statement that strips the new field, and then allows the rollback, for example [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts).
+This release adds fields to the payloads of many kinds of row, at the top of a payload and inside its nested objects and lists.
+Since no statement removes all of them from all of these rows (above), no statement makes these rows ones that the earlier release decodes.
+The migration acts on every project's rows of the database, and each project's daemon decodes only the outbox rows of its own project.
+So a daemon of another project that stays on the earlier image reads and writes its own rows, and it ignores the words.
 
 #### Rolling back the release that fences each value of the copy of Dispatch's issues
 
@@ -3029,11 +3264,12 @@ The same row breaks one more reader of that set: `releaseWaiting` (`daemon/notic
 Delivery itself is not held, since `earlierNoticeFor` passes over a row it cannot decode, and the delete below ends both effects.
 
 No migration of that earlier release deletes these rows, so unlike the `waiting-for-slot` row above this one is the operator's.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's notices alone (`split_part(issue, '-', 1)` is a row's project), and with them only the counts of those notices' pods:
 
 ```sql
 with dropped as (
   delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-full'
+    and split_part(issue, '-', 1) = '<PROJECT>'
   returning issue, payload->'volume'->>'podUid' as pod_uid
 )
 delete from pod_volume_notices where (issue, pod_uid) in (select issue, pod_uid from dropped);
@@ -3186,7 +3422,9 @@ In this order:
    The pushed branch is the only copy of an issue's workspace the rollback keeps;
    for an issue whose push you cannot confirm, carry its work out of the pod before step 4 ([Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod)).
 
-2. **Stop this release's daemon** (scale its Deployment to zero, or `legion stop`), so nothing launches into a Sandbox or writes a locator while both are rewritten.
+2. **Stop every daemon of the database** (scale each Deployment to zero, or `legion stop`), so nothing launches into a Sandbox or writes a locator while both are rewritten.
+   `claims` and `claim_capabilities` hold the rows of every project that shares the database, and step 3 gives every project's issue pod locators their role's container: a daemon of another project left on this release would then look for each role's own container in a pod that has only `roles`.
+   Every daemon sharing the database moves together in this rollback, with steps 1 and 4 taken for each project's issues.
 
 3. **Give every issue pod's locator back its role's container.**
    Before 0054 an issue pod's role ran in a container named for the claim's role, so the `role` column says what each locator named;
@@ -3283,7 +3521,9 @@ its workers' plugins report the record, so the daemon and the plugins move toget
 Store migration 20261101144900_handoff_records adds two columns to `phases`, `handoff_record` and `handoff_version`:
 the record a role's completion of its current phase named, and its version.
 
-To roll this release back to contract 44, stop the daemon and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67:
+To roll this release back to contract 44, stop every daemon of the database and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67.
+`phases` is one table for every project that shares the database, so the drop takes the columns from every project's rows, and a daemon left on this release fails each read of them: every daemon sharing the database moves together.
+The statements:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3323,11 +3563,13 @@ What the rollback costs is the draws it does not make:
 a tree the earlier release opens carries no group, and this release draws for no tree whose lifecycle row already exists, so every such tree runs without memory for its whole life.
 A child handed over out of such a tree is settled at the hand-over, with the answer that tree has, which is no group.
 A hand-over the earlier release makes while the rollback holds is settled by nothing: that release writes `handed_over_from` and knows no `memory_carried`, and 20261104153554's backfill ran before the rollback, so such a child is drawn at its first open after the upgrade back.
-To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again; the column is still there from the first upgrade, and the statement touches only rows with no draw:
+To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the column is still there from the first upgrade, the statement touches only rows with no draw, and `issues` is shared by every project's daemon on the database, so it takes that project's issues alone.
+Where several projects of the database roll back past contract 49, run it once for each of them, with that project's key:
 
 ```sql
 update issues set memory_carried = true
 where handed_over_from <> '' and memory_drawn_at is null
+  and split_part(issues.key, '-', 1) = '<PROJECT>'
   and exists (select 1 from tree_lifecycles l
               where l.project = regexp_replace(lower(issues.project), '[^a-z0-9]', '', 'g')
                 and l.tree = issues.handed_over_from);
@@ -3404,7 +3646,15 @@ Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`
 every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
-To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `phases`, `claims`, `pending_task_deliveries`, `outbox` and `schema_version` are one table each for all of them.
+The two blocks below drop columns of `phases`, `claims` and `pending_task_deliveries` and the table `architect_stalled_notices`, which every project's daemon of this release reads, delete version rows that every daemon's `Migrate` reads, and their row statements act on the rows of every project.
+So a daemon left on this release while another rolls back fails each read of a dropped column or table, and one that boots on the database again runs the deleted migrations under the daemons that rolled back (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+Stop every daemon of one database, run each block once, and pin the earlier image for all of them in the same change.
+Each step or statement of another section that this section sends you to and that takes `<PROJECT>` or `<KEY>` runs once for each project of the database, with that project's key, since a step or a statement taken for one project alone leaves the other projects' rows and held pods, which the earlier release then fails to decode on every attempt or deletes with their disks.
+Those are #4115's first two steps and its three statements, #4464's block and its `phase_ended` statement before a roll forward, #4573's statement, the two of [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), the `memory-guard-kill` delete of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), the block of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal) and the block of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages); the block of the owner's plan and the statements of [Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts) say so themselves.
+
+To roll a release at contract 146 back to contract 87, stop every daemon of the database and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
 cybermonklabs/legion#3995, the release that tells a holder of an approved new version, changes no contract number, so it carries the number of the release before it, and a rollback that crosses it runs its four statements before both blocks ("Rolling back the release that tells a holder of an approved new version" above).
 Those statements and the two blocks touch no row, column or version row in common.
@@ -3503,9 +3753,9 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 
-To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
+To roll a release at contract 94 back to contract 87, stop every daemon of the database and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
-On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with the daemon stopped and before the earlier image is pinned.
+On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with every daemon of the database stopped and before the earlier image is pinned.
 Those three touch no row in common, so any of them runs first.
 Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`): the earlier release's own version, 20261112180548, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and else the highest of the migrations the list after the block leaves standing that the store records, since neither block deletes a version row but its own and the way back of each later release deletes none but its own migration's, where it deletes one.
@@ -3573,6 +3823,8 @@ The migrations recorded above this one are these.
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
+20261118092930_person_words, of dispatch://INFRA-3686, adds `root_asks.person_answer_words`, `root_asks.person_words`, `parked_decisions.words` and `design_gates.told_changes_by` and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
+20261118101218_update_drift_items, of dispatch://INFRA-3686 too, adds `claims.update_drift` and touches none of the six either, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261119203047_design_news, of cybermonklabs/legion#3995, adds three tables, four columns of `pending_task_deliveries` and eight functions, and writes the outbox's kind check again with `design_changes` added to the list of 20261119003157, and touches none of the six, so the block holds over it and leaves all of them standing; its own four statements, which run before the contract 146 block, are its way back ("Rolling back the release that tells a holder of an approved new version" above).
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
@@ -3580,6 +3832,8 @@ The migrations recorded above this one are these.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
+20261122011615_production_check_reported_at, of dispatch://INFRA-3686 too, adds `production_checks.reported_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
+20261122040952_design_gate_document_issue, of dispatch://INFRA-3686 too, adds `design_gates.document_issue` and fills it on every row of a document whose own registration the store holds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
 20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
@@ -4986,26 +5240,22 @@ For a process of a role, the watch also gives a report to that role's part of th
   ```
 
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
-The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+The daemon tells the role in the same `memory-kill` message as for the guard's kill (`memoryGuardKill` and `MemoryKillMessage`, `packages/daemon/internal/workflow/engine.go`), with these differences:
 
-For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+- `cause` is `kernel` for `cause: kernel`, and `kernel-protected` for `cause: kernel-protected`.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
+- `pod_memory` is the report's `counter`, the cgroup's usage, where the guard's kill gives its `reading`.
 
-For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel` the daemon logs `workflow: the role whose process the pod's kernel stopped is told why`, and for `cause: kernel-protected` it logs `workflow: the role whose session's own process the pod's kernel stopped is told why`, each with the report's `cause`.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of your role. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
-
-That note does not say that the session goes on.
+The role's prompt says what each cause means (`packages/daemon/internal/prompts/roles/mechanics/headless.md` for a phase worker, `go/architect-common.md` for an architect).
+With `cause: kernel`, the pod's other processes and the role's session go on.
+With `cause: kernel-protected`, the process was one of the processes that run the role's session, and the prompt does not say that the session goes on.
 The end of a role's agent ends its shim and its `role-init`, and with them every process of the role, so the role's turn ends.
 The daemon reads that as the role's process gone (`died`, `packages/daemon/internal/supervise/machine.go`).
 It takes back the task that the turn was running, counts one failed launch, and starts the same session again.
 At the limit of failed launches it fails the claim instead.
-One of Oh My Pi's helpers can end alone, so the note says what follows only for the agent.
+One of Oh My Pi's helpers can end alone, so the prompt says what follows only for the agent.
 
 A note can be lost in each case in which the guard's note can, and in each of them the `ended` line stays in the container's log.
 The `kernel-protected` note of an agent's end may reach nobody.
@@ -5440,8 +5690,9 @@ The roles share the pod's network namespace, the workspace path and the Oh My Pi
 Each role is judged by its own launcher connection's state: one role's process exiting is that role's `gone` alone.
 The `roles` container ending — its PID 1 exiting, `OOMKilled`, an eviction
 — ends every role of the issue: each is `gone`, its detail naming the container's reason and exit code and quoting that role's own last 20 prefixed lines, then the container's last 20 unprefixed lines, which are no role's (`roleLog`, `observe.go`), and the supervisor relaunches each as it relaunches any `gone` role.
-When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind a note that its pod ran out of memory and a pointer to `skill://legion-worker/references/tools.md` (`Observation.OutOfMemory`, then `outOfMemoryTask` in `internal/supervise/delivery.go`, kept on the delivery across a daemon restart);
-a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
+When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind an `out-of-memory-note` with `reason: OOMKilled` (`Observation.OutOfMemory`, then `texts.NewOutOfMemoryNote`, which `Delivery.message` in `internal/supervise/delivery.go` puts in front of the task while the delivery's mark, kept across a daemon restart, holds);
+the step that points the role to `skill://legion-worker/references/tools.md` is in its prompt (`go/worker-common.md`).
+A role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
 the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default).
@@ -7135,12 +7386,25 @@ Up to 32 reports wait while the role has no connection, and a 33rd drops the old
 A process of no role has its `ended` line and no report.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
-It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
-The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
+It then queues one `memory-kill` message to that role's topic, `notifications.role.<role token>` (`memoryGuardKill` and `MemoryKillMessage`, `packages/daemon/internal/workflow/engine.go`).
+The message is a record of fields, which the role's card gives as lines:
 
-```text
-The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
+- `kind: memory-kill`, and `issue`, the issue's key.
+
+- `cause: guard`, for the guard's own kill.
+
+- `process` and `pid`: the process as the lines name it, by its executable's base name or its `comm`, escaped and cut.
+  The message names no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments.
+
+- `size`: the process's anonymous memory.
+
+- `pod_memory`: the pod's anonymous memory reading.
+
+- `limit`: the pod's limit.
+
+Each size is in binary units (`3.13 GiB`).
+The role's prompt says what the message means (`packages/daemon/internal/prompts/roles/mechanics/headless.md` for a phase worker, `go/architect-common.md` for an architect):
+the pod's other processes and the role's session go on, and the role reads `skill://legion-worker/references/tools.md` before it runs heavy work again, since heavy work runs where the deployment's instructions say, not in the pod.
 
 A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
 
@@ -7273,26 +7537,31 @@ For a claim that is not the project's controller, the workflow tells nobody and 
 For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
 The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
 Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
-The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
+The notice is a record of fields (`ControllerMemoryGuardKillNotice`), which the controller's card gives as lines:
 
-```text
-The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
-```
+- `kind: memory-guard-kill` and `issue`, the project key.
+  The notice names no `role`: the process is the controller's on every cause, and the controller, its one reader, reads no role of its own on its card.
 
-In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the daemon chooses the note by that cause, as it does for a role (`controllerMemoryGuardKill`).
-For `cause: kernel`, a command of the controller's, the daemon logs `workflow: the controller whose program the pod's kernel stopped is told why`, and the note is:
+- `cause: guard`, for the guard's own kill, and for a report with no cause.
+  In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the notice names that cause, as a role's message does:
+  `cause: kernel` for a command of the controller's, and `cause: kernel-protected` for one of the processes that run the controller's session.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
-```
+- `process` and `pid`: the process as the lines name it, by its executable's base name or its `comm`, escaped and cut.
+  The notice names no argument.
 
-For `cause: kernel-protected`, one of the processes that run the controller's session, the daemon logs `workflow: the controller is told why the pod's kernel stopped one of the processes that run its session`, and the note is:
+- `size`: how much the process held, its anonymous memory for the guard.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. The daemon then starts the same session again, as it does after any exit of your session's process. Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say.
-```
+- `pod_memory`: the pod's anonymous memory reading for the guard, and the pod's memory counter for the kernel.
 
-A report with no cause, the guard's, gets the guard's note above.
+- `limit`: the pod's limit.
+
+Each size is in binary units (`3.13 GiB`).
+The daemon logs one line for each cause:
+`workflow: the controller whose program the memory guard ended is told why` for `guard`, `workflow: the controller whose program the pod's kernel stopped is told why` for `kernel`, and `workflow: the controller is told why the pod's kernel stopped one of the processes that run its session` for `kernel-protected`.
+The controller's prompt says what the notice means (`packages/daemon/internal/prompts/roles/controller-root.md`):
+with `cause: guard` or `cause: kernel`, the controller's session and the pod's other processes go on, and the controller does not run the same program again unchanged, but bounds its output (a page, a limit, a stream) or sends heavy work where the deployment's instructions say;
+with `cause: kernel-protected`, the process was one of those that run its session: if it was its agent, its turn ended with it, and the daemon starts the same session again.
+A notice that an earlier release queued carries none of these fields and says all of it in its `reason`, and this release delivers it as it stands.
 
 An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the process stopped was the cell's kernel.
 A notice can be lost in the first three cases of "The report and the note" above, and for a claim that is not the controller's.
@@ -7581,7 +7850,7 @@ What the last sweep decided under the two limits is one line of `legion claims l
 
 A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
 an operator's suspension of a claim the round asks, a pod replacement the cluster refuses (`ReplacePod`, or `ReplaceIssuePod` below), a pod the runtime cannot read (`tellUnreadPod`), no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
-Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim of the issue with a session that has not failed, a claim the round passed over included, with that claim's state and whether it answered (`noticeClaims`, `skill://legion-controller/references/escalation.md`).
+Its `holds` names that hold in one word (`operator`, `runtime-refused`, `pod-unread`, `no-process`, `no-pod` or `two-pods`), with the runtime's `refusal` where it refused, and the notice names the issue, the round, the pod, the drift and every claim of the issue with a session that has not failed, a claim the round passed over included, with that claim's state and whether it answered (`noticeClaims`, `skill://legion-controller/references/escalation.md`).
 No process in the round's pod holds a round past its bound only where an operator's suspension holds a claim of the round, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement by issue below is refused or not offered.
 A pod the runtime cannot read decides nothing, so the round waits for a read that succeeds, and where an operator's suspension holds a claim of the same round, the notice names that suspension in place of the unread pod, since only that operator can end it.
 One round is told once, however many sweeps find it open.
@@ -7942,7 +8211,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
   A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`).
   Once the runtime's stop of a claim's process has returned, the daemon deletes that session's Envoy registration with the clean stop ([Liveness rules](#liveness-rules)), so the listener reads the session `gone` at once, and a message to the session or to its role raises the wake.
-  The exception is the daemon's own informational role message to a released role (`outbox.roleMessage`: the copy of a head's settled checks it sends to a role that settlement did not wake, a design gate's move, an approved round stuck on its merge state): the daemon does not publish it, so it raises no wake.
+  The exception is a `low` role message of the daemon to a released role (`outbox.roleMessage`), such as the copy of a head's settled checks it sends to a role that does not work the issue's phase: the daemon does not publish it, so it raises no wake.
+  Its `med` role messages, such as a design gate's move or an approved round stuck on its merge state, are published to a released role and raise the wake.
   A release that lands between the daemon's read of the claim and that publish is refused `holder_lapsed`, and the refusal wakes the role all the same.
   A role message that a project's pause held for a role that a pause stopped is not such an exception: the daemon publishes it after the resume, and that publish wakes the role ([Pausing a project](#pausing-a-project)).
   An Envoy direct message to the session raises the wake, and the listener stores it for the stopped session, which its known-session store holds for 30 days: the answer says `state: stopped`, and the woken session reads the message.
@@ -7986,8 +8256,8 @@ The wakes are these:
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
   The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
-  Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
-  Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
+  Its `low` role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume, `low` or `med`, wakes the role for, and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
+  Its other messages to a role (a `med` notice, a `low` notice that a project's pause held, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
   A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
@@ -7998,6 +8268,13 @@ The wakes are these:
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
+
+A `low` text of the daemon wakes no released pod: its reader can act on it at its next turn.
+A notice or a role message is `low` for the readers the daemon's list of kinds names (`packages/daemon/internal/texts`), and `med` for every other reader.
+A `low` notice to a released architect waits until that architect is ready again, and it is published then, whatever woke the pod.
+A `low` role message to a role whose claim is released is not published (`outbox.roleMessage`, above).
+To a role that no live session holds for another reason, it is published as any other, and the Envoy listener keeps it but reports no wake for it.
+The reader reads it at the first turn that something else starts.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
@@ -8038,13 +8315,14 @@ it is on GitHub, and the next pod's workspace fetch brings it back.
 So the heads of branches the remote deleted after their merge, which Legion's clones keep visible (`git.abandon-unreachable-commits = false`), and `main`'s commits newer than the issue's branch read as nothing unpushed.
 The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit;
 counting every visible head would count the deleted branches above.
-The wake task of a release and the plugin's recreated-workspace notice say so in the same words (`internal/workflow/workspace-after-release.txt`).
+The wake task of a release names `stopped_by: release`, and the passages of the role's prompt on that task and on the plugin's recreated-workspace notice say so in the same words (`internal/prompts/go/worker-common.md` and `architect-common.md`).
 The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits:
 the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
 A read that finds work declines the release:
 the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through
 — the worker of the issue's open phase where it is live, else the first live role
-— gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
+— gets one Envoy message on its role topic, an `idle-release-declined` record: `issue`, `changed: true` with the working-copy commit as `head` where the working copy holds a change, `commits`, the count of commits that origin does not hold, and `commit_ids`, their ids, with `more_commit_ids` counting the ones the read did not name.
+The role's prompt says that the release waits for its push, that the daemon does not push for it, and that it pushes the work it keeps to the issue's branch and abandons the rest.
 The daemon pushes nothing on a role's behalf and keeps no copy of the workspace.
 A read that fails declines the release too, since it cannot show the workspace holds nothing, and tells nobody.
 The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`, the work the read found and the pod it read.
@@ -8125,18 +8403,20 @@ An earlier daemon (`legion-v19.0.0`, or any release at daemon API contract 47 or
 A release since the workspace check (migration `20261123050533`) took only pods whose workspace held no commit on a working copy or a bookmark that origin does not hold and no working-copy change, so a pod it released holds no such work to lose.
 A pod an earlier release took may have left its work in a saved bundle; such a bundle is gone with `workspace_bundles` once this release has migrated ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace) says how to copy one out first).
 
-Then stop this release's daemon, and leave the claims in a state the earlier release acts on:
+Then stop this release's daemon of the project, and leave its claims in a state the earlier release acts on, with the project's key in place of `<PROJECT>`:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
-update claims set suspended_by = 'daemon' where state = 'suspended' and suspended_by = 'released';
+update claims set suspended_by = 'daemon' where state = 'suspended' and suspended_by = 'released'
+  and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 SQL
 ```
 
 It prints `UPDATE <n>`; a rerun prints `UPDATE 0`.
 The `update` hands each released claim to the earlier release's own resume by rule, which starts a claim that owns its issue's current phase at the next boot and leaves the rest suspended until their next start, each on its own session.
+`claims` is shared by every project's daemon on the database, so the statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen): another project that stays on this release keeps its released claims.
 A release before the workspace check had this block delete its saved bundles from `workspace_bundles` too; that table is gone since `20261123050533`, whose way back makes it again, empty.
 
 The database needs no restore for this step.
@@ -8153,12 +8433,12 @@ Its mark carries the rule that wrote it (`issue_releases.kind`) and no build bef
 it logs that the issue's roles resume in the same sessions although every claim of the issue is stopped, and it arms backstops, which deletes every wake mark and every open backstop of the issue and arms at most one again, for the open phase role alone.
 A claim an earlier idle release left `released` under any other role then loses its backstop and gets none in its place, so only a delivery, a start or an operator's resume brings that claim back.
 The window is the gap between the pass that marks such a release and its teardown row running, which is seconds, so leave no release of this kind in it:
-let the releases in flight finish before you stop this release's daemon, and then, with the daemon stopped, clear any mark still standing.
+let the releases in flight finish before you stop this release's daemon of the project, and then, with that daemon stopped, clear any mark of the project still standing, with the project's key in place of `<PROJECT>`; `issue_releases` is shared by every project's daemon on the database, and the statement takes that project's marks alone:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
-delete from issue_releases where kind = 'unowned';
+delete from issue_releases where kind = 'unowned' and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 SQL
 ```
@@ -8174,7 +8454,7 @@ Before the upgrade, drain the releases in flight, and copy out every saved bundl
 a release that the earlier daemon marked and whose save ran, but whose teardown had not run, would take its pod after the upgrade with its bundle dropped.
 With the earlier daemon still running, wait until `select issue from issue_releases` prints no row, then stop it.
 For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, check it with `git bundle list-heads <KEY>.bundle`, and fetch it into a clone of the repository; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
-Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
+Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task (`stopped_by: release`) and its plugin's notice, as its prompt reads them, say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
 A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
@@ -8346,14 +8626,15 @@ A stop that the claim decided before the flag was cleared, and that ends after t
 Each held row runs, and the first row to run for a role launches it with a token from the wake pacing (`worker_wakes_per_minute`, 8 by default, and `worker_wake_burst`, 1 by default).
 The role's other held rows find it launching or live and are delivered to it.
 A held role message launches nothing itself: its row publishes the message, and the Envoy listener's report of that publish is the role's wake (`wakeReleased`, `internal/workflow/wake.go`), whose `start` row launches the role through the same pacing.
-The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after the issue's newest pod release (`StoppedByAPause`, `internal/store/pause_stops.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
+The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after every release of the issue's pod that suspended the role, which `pod_releases.roles` names (`StoppedByAPause`, `internal/store/pause_stops.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
 Such a row waits until the role is back and its session holds the role's topic: at its launch's turn where the pacing holds that launch, and through the moment between the woken agent's ready and its plugin's claim of the role, when the listener still answers that the role has no live holder.
 Then it reaches the role's session, once.
 A second pause that begins before the role is back holds the row again, and the row still reaches the role once it is back.
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
-A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop.
+A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop that suspended the role.
 A role message that a pause held for a role that no pause stopped, such as one that an idle release had released before the pause, finishes undelivered and wakes nothing, as on main.
-A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a release of the issue's pod recorded after that stop that suspended the role, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A release that suspended the pod's other roles alone ends nothing, so the resume still launches the role for its held text, a low one included.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
@@ -8371,13 +8652,15 @@ Its took-nothing arm counts nothing while the architect's launch waits in the pa
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
-One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause_stops.go`).
+One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the role's last ready and every release of the issue's pod that suspended the role, which `pod_releases.roles` names (`StoppingPauseTx`, `internal/store/pause_stops.go`).
 The launch that a stop owes a role is a wake of the pause that made the stop, which the stop transaction takes with that pause (`pods.WakePause`).
 So a wake taken while the project is paused is the open pause's, the wake of a row that a lane took before the pause and ran while it stood among them.
 The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a hook's prompt, a merge-queue removal or a merge forward's message takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
 A listener's wake, a CI settlement's wake and a backstop's wake are taken for no row, so they read the open pause and the pause that stopped the role alone (`wakeReleased`, `internal/workflow/wake.go`).
 A role message takes no wake for its row: after the resume, the outbox publishes a role message that the pause held for a role that a pause stopped, and the listener's report of that publish wakes the role.
-After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held or of a message that another session sends included, until the role's agent is ready again or a release of its pod is recorded.
+After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held or of a message that another session sends included, until the role's agent is ready again or a release of its pod that suspends the role is recorded.
+A release that suspends the pod's other roles alone, such as the idle release of a role that ran in the pod after the resume, takes the pod and leaves the stopped role's wake the pause's: that wake brings the session back in a new pod, and its task still says that the pause stopped the session.
+The update-stalled notice reads the same statement (`StoppingPause`), so it names such a claim `suspended_by: pause`.
 The task of such a wake that a listener's report, a CI settlement or a backstop takes says that the pause stopped the session (`WakeTask`, `internal/workflow/wake.go`); a delivery's wake resumes the role with no task, as on main, and the delivery itself is what the role reads.
 A ready after the pause's stop is the agent of a launch since, so a wake that follows a later stop of the role, such as an idle release's, which suspends the role before its teardown records the release, is not the pause's.
 `read_release_records` counts a held wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
@@ -8468,18 +8751,18 @@ Resume a few claims a minute, because an operator's resume launches outside the 
 A pod with a live role is the idle release's to decide on the earlier release too, and that release saves the pod's unpushed work before it deletes the pod.
 
 **Take the rows that an earlier release cannot run out of the outbox.**
-Stop this release's daemon, and run these three statements before the earlier image is pinned:
+Stop this release's daemon of the project, and run these three statements before its earlier image is pinned, with the project's Dispatch key in place of `<KEY>`:
 
 ```sql
 -- The controller's notices of a pause and of a resume.
 delete from outbox where kind = 'controller_notice'
-  and payload->>'kind' in ('project-paused', 'project-resumed');
+  and payload->>'kind' in ('project-paused', 'project-resumed') and split_part(issue, '-', 1) = '<KEY>';
 -- A pause's stop of one role.
-delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
+delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop' and split_part(issue, '-', 1) = '<KEY>';
 -- A start keeps its work and loses the two keys this release added.
 update outbox set payload = payload - 'pause' - 'wakeKind'
   where kind = 'supervise' and payload->>'op' = 'start'
-  and (payload ? 'pause' or payload ? 'wakeKind');
+  and (payload ? 'pause' or payload ? 'wakeKind') and split_part(issue, '-', 1) = '<KEY>';
 ```
 
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and then checks its kind and its op, so a row that it cannot read fails and is retried on its backoff for ever.
@@ -8492,9 +8775,8 @@ The third statement strips `pause` and `wakeKind` from each queued start (`recor
 This release writes `wakeKind` on every wake's start, and `pause` on a wake that a pause held and on the start that a pause owes a role.
 The start keeps its role, its generation and its task, and the earlier release runs it as any other start.
 
-Each statement acts on the rows of every project of a shared database ([Daemon-launched controller](#daemon-launched-controller), step 3).
-Where one project's daemon goes back alone, add `and split_part(issue, '-', 1) = '<KEY>'` to each statement, which is how the outbox reads a row's project (`outboxPauseFree`, `internal/record/store.go`).
-A project that stays on this release needs its own rows as they are.
+The outbox is shared by every project's daemon on the database ([Daemon-launched controller](#daemon-launched-controller), step 3), and each statement takes the rows of the project that rolls back alone: `split_part(issue, '-', 1)` is a row's project, which is how the outbox reads it (`ControllerNoticePending` and the outbox reads of `internal/record/store.go`), and a project-level row such as a `pause_stop` carries the bare project key.
+A project that stays on this release keeps its own rows as they are.
 
 ### Liveness rules
 

@@ -344,7 +344,7 @@ func (r *podUpdateRig) driftingIssue(key, pod string) claim.Token {
 		r.t.Fatalf("restore the claim of %s: %v", key, err)
 	}
 	r.conns.Register(token, fake.NewConn())
-	r.rt.ScriptPodDrift(token, podUpdateDrift)
+	r.rt.ScriptPodDrift(token, driftOf(podUpdateDrift)...)
 	return token
 }
 

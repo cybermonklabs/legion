@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,10 +43,8 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	if pending == nil || pending.Task == "" {
 		t.Fatalf("the architect's pending task after its admission's start = %#v, want the start carrying the root's first task", pending)
 	}
-	for _, want := range []string{mainPathRoot, workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel} {
-		if !strings.Contains(pending.Task, want) {
-			t.Fatalf("the architect's start task = %q, want it naming %q: a fresh tree's architect is given the whole first act", pending.Task, want)
-		}
+	if want := []string{"issue: " + mainPathRoot, workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel}; !hasTaskLines(pending.Task, want...) {
+		t.Fatalf("the architect's start task = %q, want the lines %q: a fresh tree's architect is given the whole first act", pending.Task, want)
 	}
 	row := rolePhaseRow(t, r.pool, mainPathRoot, claim.RoleArchitect)
 	if row.Entry != 1 || row.EntryTask != pending.Task || row.EntryRaisedAt.IsZero() {
@@ -81,4 +80,17 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	if arms := architectStallArmsOf(t, r.pool, r.admission, mainPathRoot); len(arms) != 0 {
 		t.Fatalf("the architect-stalled arms of %s = %v, want none: the root was served its first task", mainPathRoot, arms)
 	}
+}
+
+// hasTaskLines reports whether text, a task the daemon rendered from its kind's record
+// (texts.Render) or a prompt that carries one, holds each of lines as a whole line of its own: a
+// field (`key: value`), a kept sentence, or a line of a block.
+func hasTaskLines(text string, lines ...string) bool {
+	held := strings.Split(text, "\n")
+	for _, line := range lines {
+		if !slices.Contains(held, line) {
+			return false
+		}
+	}
+	return true
 }

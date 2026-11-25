@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -57,13 +56,13 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 	sent := len(r.prompts())
 	r.bringUp()
 
-	resume := fmt.Sprintf("A person answered your ask %s on %s", mainPathAsk, r.key)
+	resume := []string{"kind: root-resume", "act: ask", `ask: "dispatch://` + r.key + "/ask/" + mainPathAsk + `"`}
 	prompts := r.prompts()[sent:]
 	if len(prompts) == 0 {
 		t.Fatalf("the relaunched architect was sent nothing; it holds %#v", r.machine().Claim().Pending)
 	}
-	if first := prompts[0]; !strings.Contains(first.Message, resume) || first.DeliveryID == held.ID {
-		t.Fatalf("the relaunched architect's first prompt is %s: %q, want the resume's task naming %q", first.DeliveryID, first.Message, resume)
+	if first := prompts[0]; !hasTaskLines(first.Message, resume...) || first.DeliveryID == held.ID {
+		t.Fatalf("the relaunched architect's first prompt is %s: %q, want the resume's task with the lines %q", first.DeliveryID, first.Message, resume)
 	}
 	if pending := r.machine().Claim().Pending; pending == nil || pending.Entry != 2 {
 		t.Fatalf("the architect holds %#v, want the resume's task of entry 2", pending)
@@ -130,7 +129,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	if err != nil {
 		t.Fatalf("decode the catch-up %d: %v", catchUp.ID, err)
 	}
-	if notice := payload.(record.Notice); notice.CatchUp == nil || !strings.Contains(notice.CatchUp.Decided, ref) {
+	if notice := payload.(record.Notice); notice.CatchUp == nil || !strings.Contains(catchUpKeptRefs(notice.CatchUp), ref) {
 		t.Fatalf("the catch-up of launch %d is %#v, want it naming %s", ready.Generation, payload, ref)
 	}
 	if kept := keptDecisions(t, r.pool, r.records, r.key); len(kept) != 1 || kept[0].ClaimedBy != catchUp.ID {
@@ -150,7 +149,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	publisher := r.runner.notices.(*outboxPublisher)
 	for _, published := range publisher.publishes() {
 		notice, ok := published.payload.(record.Notice)
-		told = told || (ok && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref) &&
+		told = told || (ok && notice.CatchUp != nil && strings.Contains(catchUpKeptRefs(notice.CatchUp), ref) &&
 			strings.HasSuffix(published.topic, strings.ToLower(string(r.token))))
 	}
 	if !told {

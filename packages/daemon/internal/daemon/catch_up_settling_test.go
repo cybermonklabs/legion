@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -31,12 +32,12 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
+	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 }
 
-func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
-	return false, p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	return false, p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency, keep: true})
 }
 
 func (p *hookPublisher) publish(published outboxPublish) error {
@@ -89,7 +90,7 @@ func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root stri
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, nil, now, time.Time{})
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -150,8 +151,21 @@ func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow
 	return held
 }
 
-// catchUpsNaming is, for each catch-up of root in the outbox other than row, whether its task
-// names ref, by row id.
+// catchUpKeptRefs is the reference of every decision catchUp keeps, space-separated: what a
+// catch-up names of what a person decided (record.CatchUp.Kept), and "" for none.
+func catchUpKeptRefs(catchUp *record.CatchUp) string {
+	if catchUp == nil || catchUp.Kept == nil {
+		return ""
+	}
+	refs := make([]string, 0, len(catchUp.Kept.Decisions))
+	for _, decision := range catchUp.Kept.Decisions {
+		refs = append(refs, decision.Ref)
+	}
+	return strings.Join(refs, " ")
+}
+
+// catchUpsNaming is, for each catch-up of root in the outbox other than row, whether it keeps a
+// decision of ref, by row id.
 func catchUpsNaming(t *testing.T, pool *store.Pool, root string, row int64, ref string) map[int64]bool {
 	t.Helper()
 	naming := map[int64]bool{}
@@ -164,7 +178,7 @@ func catchUpsNaming(t *testing.T, pool *store.Pool, root string, row int64, ref 
 			t.Fatalf("decode the catch-up %d of %s: %v", held.ID, root, err)
 		}
 		notice := payload.(record.Notice)
-		naming[held.ID] = strings.Contains(notice.CatchUp.Decided, ref)
+		naming[held.ID] = strings.Contains(catchUpKeptRefs(notice.CatchUp), ref)
 	}
 	return naming
 }
@@ -212,7 +226,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 	keepDecision(t, pool, records, "LEGION-1", ask, time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))
 	keptCatchUp(t, pool, records, "LEGION-1", 1, now)
 	leased, payload := leaseCatchUp(t, pool, records, "LEGION-1", now)
-	if payload.CatchUp.Kept == nil || !strings.Contains(payload.CatchUp.Decided, ask) {
+	if payload.CatchUp.Kept == nil || !strings.Contains(catchUpKeptRefs(payload.CatchUp), ask) {
 		t.Fatalf("the leased catch-up = %+v, want it to name %s", payload.CatchUp, ask)
 	}
 
@@ -224,7 +238,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, nil, now, time.Time{})
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
@@ -237,7 +251,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 
 	var told int
 	for _, published := range publisher.published() {
-		if strings.Contains(published.payload.(record.Notice).CatchUp.Decided, ask) {
+		if strings.Contains(catchUpKeptRefs(published.payload.(record.Notice).CatchUp), ask) {
 			told++
 		}
 	}

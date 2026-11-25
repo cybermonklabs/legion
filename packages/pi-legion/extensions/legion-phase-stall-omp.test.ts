@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
@@ -11,7 +12,9 @@ import {
   type Reply,
   type Request,
   runLegionPane,
+  sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
+import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -202,10 +205,13 @@ function legionToolDescription(request: Request): string {
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
- * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
- * file's own routes, and the stand-in's open-ask snapshot. */
+ * `legion`, `quietMs`, `selfCheck`, environment and `during` hook, what the stand-in answers
+ * ahead of this file's own routes, and the stand-in's open-ask snapshot. */
 interface PaneOptions
-  extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
+  extends Pick<
+    LegionPaneOptions,
+    "legion" | "quietMs" | "selfCheck" | "env" | "answer" | "during"
+  > {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
@@ -242,6 +248,7 @@ async function stallPane(
       legion: options.legion,
       quietMs: options.quietMs,
       selfCheck: options.selfCheck,
+      during: options.during,
       env: {
         ...PANE_IDENTITY,
         // The daemon puts the project token on every pane, and the architect notice's role topic
@@ -837,6 +844,112 @@ test.skipIf(skip)(
     // The phase is still open underneath; the WAITING line of the woken turn is what quiets it.
     expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
     expect(pane.completions()).toHaveLength(0);
+  },
+  180_000
+);
+
+// A `low` card from the daemon goes into the session's stored context with no turn (pi-envoy,
+// `lowCard`): it raises no `message_start`, so the phase reminder, which every turn's start makes
+// stale (`turnStarted`) and which reads every inbound event, sees nothing of it. The reminder the
+// turn's end armed comes when its time comes, and its turn reads the card.
+test.skipIf(skip)(
+  "a low card leaves the phase reminder as it was",
+  async () => {
+    const run = setup();
+    const reminderMs = 8_000;
+    // Every request the stand-in served, with the moment it was served: whether the reminder came
+    // when its time came is a matter of elapsed time alone.
+    const seen: { readonly path: string; readonly at: number }[] = [];
+    const card = `LOW-${randomUUID().slice(0, 8)}`;
+    let cardAt = 0;
+    const connection = await connect({ servers: run.nats });
+    cleanup.push(() => connection.close());
+    const pane = await stallPane(
+      run,
+      [
+        [{ type: "text", text: "Pushed the change." }],
+        [{ type: "text", text: "Still pushing." }],
+        [{ type: "text", text: "WAITING: CI on the pull request." }],
+        // Scripted so a turn that should not happen shows up as a turn.
+        [{ type: "text", text: "A turn that should never start." }],
+      ],
+      {
+        env: { LEGION_STALL_REMINDER_MS: String(reminderMs) },
+        quietMs: reminderMs + 6_000,
+        answer: (url) => {
+          seen.push({ path: url.pathname, at: Date.now() });
+          return undefined;
+        },
+        during: async ({ sessionID, turns, stopped }) => {
+          // The second turn is the continuation reminder's; its end arms the timer's reminder.
+          // A real clock, deliberately: the host reports that settle to no one this case hears.
+          while (turns().length < 2) {
+            if (stopped.error !== undefined) throw stopped.error;
+            await Bun.sleep(50);
+          }
+          await Bun.sleep(1_000);
+          const label = `low-${randomUUID()}`;
+          // The harness sets the headers it makes and hands them back to `request`: these are the
+          // header set NATS's own `request` takes, which its narrower type cannot say.
+          let frameHeaders = headers();
+          await sendRelayFrame({
+            connection: {
+              // `sendRelayFrame` always sends its options, though the connection's type leaves
+              // them optional, as NATS's own `request` does.
+              request: (subject, payload, options) => {
+                if (options === undefined) throw new Error("sendRelayFrame sent no options");
+                return connection.request(subject, payload, {
+                  timeout: options.timeout,
+                  headers: frameHeaders,
+                });
+              },
+            },
+            newHeaders: () => {
+              frameHeaders = headers();
+              return frameHeaders;
+            },
+            sessionID,
+            subject: `notifications.agent.${sessionID}`,
+            payload: StringCodec().encode(
+              JSON.stringify({
+                event_id: `evt-${label}`,
+                source: "agent",
+                source_event_id: `source-${label}`,
+                topic: "notifications.role.legion-stall-stall-2-implementer",
+                dedupe_key: `envoy.role.forward.${label}`,
+                issued_at: Date.now(),
+                payload_summary: card,
+                trace_id: `trace-${label}`,
+                urgency: "low",
+              })
+            ),
+            seq: 1,
+            stopped,
+          });
+          cardAt = Date.now();
+        },
+      }
+    );
+
+    const turns = pane.turns();
+    // Three turns: the assignment's, the continuation reminder's and the timer reminder's. The
+    // card started none.
+    expect(turns).toHaveLength(3);
+    const [, second, reminded] = turns as [Request, Request, Request];
+    expect(JSON.stringify(second.body.messages)).not.toContain(card);
+    const messages = Array.isArray(reminded.body.messages) ? reminded.body.messages : [];
+    expect(JSON.stringify(messages.at(-1))).toContain("repeats at the end of every turn");
+    expect(JSON.stringify(messages.slice(0, -1))).toContain(card);
+    // The reminder came when its time came: a whole reminder delay after the turn that armed it,
+    // though the card came in between.
+    const [, armedAt = 0, remindedAt = 0] = seen
+      .filter((request) => request.path === "/anthropic/v1/messages")
+      .map((request) => request.at);
+    expect(cardAt).toBeGreaterThan(armedAt);
+    expect(cardAt).toBeLessThan(remindedAt);
+    expect(remindedAt - armedAt).toBeGreaterThanOrEqual(reminderMs - 100);
+    // One entry per delivered reminder, the card's moment in between counting nothing.
+    expect(stallCounts(await pane.phaseEntries()).slice(0, 3)).toEqual([0, 1, 2]);
   },
   180_000
 );

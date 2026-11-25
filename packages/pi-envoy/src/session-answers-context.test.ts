@@ -358,11 +358,12 @@ test("prefix case: after a restart the first request carries every answers messa
 
 // A person who deletes a comment a list sent showed leaves the next read that item with
 // `deleted_at`, `deleted_by` and no words (`sessionanswers.go`), and the renderer prints it with
-// the delete's mark and no words line (`renderSessionAnswerItem`). The list sent keeps its place
-// and its bytes, the person's words with them: an earlier request delivered it. What keeps the
-// model from reading those words as current is the list appended after the last message, which
-// shows the comment deleted and says in its second block that it replaces every earlier list
-// (`SESSION_ANSWERS_REPLACES`). An edit is the same change, with the edited mark and the new words.
+// the delete's mark on its head line and no block of words (`renderSessionAnswerItem`). The list
+// sent keeps its place and its bytes, the person's words with them: an earlier request delivered
+// it. What keeps the model from reading those words as current is the list appended after the
+// last message, which shows the comment deleted and says in its second block that it replaces
+// every earlier list (`SESSION_ANSWERS_REPLACES`). An edit is the same change, with the edited
+// mark on the head line and the new words in their block.
 const COMMENT: SessionAnswer = {
   ...ITEM,
   kind: "comment",
@@ -375,7 +376,7 @@ const COMMENT: SessionAnswer = {
   ref: "dispatch://CORE-7/comment/c-1",
   href: "/issues/CORE-7#comment-c-1",
 };
-const COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the docs land.`;
+const COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\n<text>\nHold the release until the docs land.\n</text>`;
 /** `COMMENT` once alice deleted it, as Dispatch sends it. */
 const DELETED_COMMENT: SessionAnswer = {
   ...COMMENT,
@@ -390,7 +391,7 @@ const EDITED_COMMENT: SessionAnswer = {
   edited_at: "2026-10-27T11:00:00.000Z",
   text: "Hold the release until the changelog lands too.",
 };
-const EDITED_COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · edited 2026-10-27T11:00:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the changelog lands too.`;
+const EDITED_COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · edited 2026-10-27T11:00:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\n<text>\nHold the release until the changelog lands too.\n</text>`;
 
 /** What `readSessionAnswers` gives for a read whose window, from `SINCE` on, holds `item` alone:
  *  the list `renderSessionAnswers` renders at the window's end, the item's words and `SINCE`. */

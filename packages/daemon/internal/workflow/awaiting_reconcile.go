@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // ReconcileAwaiting moves each admitted root of project that now waits only on a person into
@@ -95,9 +98,12 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, root)
+		unresumable, claimedBy, err := Unresumable(ctx, e.store, tx, root)
 		if err != nil {
 			return nil, false, err
+		}
+		if claimedBy != "" {
+			unresumable += " by " + claimedBy
 		}
 		_, holds := slotted[root.Key]
 		view := awaitView{Root: root, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
@@ -110,7 +116,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		decision := decideAwait(view)
 		switch decision.Act {
 		case actEnter:
-			if err := e.enterAwaiting(ctx, tx, root, decision.Waiting, decision.Why); err != nil {
+			if err := e.enterAwaiting(ctx, tx, root, decision.Waiting, gates, decision.Why); err != nil {
 				return nil, false, err
 			}
 			entered = append(entered, root.Key)
@@ -234,7 +240,8 @@ const (
 
 // awaitView is what decideAwait reads of one root: its record, whether it holds an admission slot
 // (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why it
-// could not resume (Unresumable, "" when it could), its architect's run at the root's
+// could not resume (Unresumable: Unresumable's word, with the claim's holder where it names one,
+// "" when it could), its architect's run at the root's
 // generation, its asks' mirror rows, the design-gate steps the deployment gates (Steps) and the
 // gates the root holds by step (Gates). A gate's document names its approval requests — every
 // approval row of that document — and their answer is a review rather than a person's act on an
@@ -509,8 +516,10 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
 // a root in awaiting_person keeps its row through that wait (record.KeepsSlot), even where it
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
-// read the person's answer, and the controller is told.
-func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
+// read the person's answer, and the controller is told (AwaitingPersonNotice), the document of a
+// gate wait named by the step of gates that records it. reason is the decision's, for the log.
+func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting,
+	gates map[record.DesignStep]record.DesignGate, reason string) error {
 	// The root's task keeps its place (moveTask): the wait comes before its first step, so the task
 	// has not started, and awaiting_person, like admitted, is a phase of the architect before it.
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
@@ -527,13 +536,35 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 	if err := e.store.MarkIssueMoved(ctx, tx, root.Key, e.now()); err != nil {
 		return err
 	}
-	waitReason := fmt.Sprintf("%s waits on a person (%s): it keeps its admission slot until they answer", root.Key, reason)
-	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice{Kind: record.AwaitingPersonNotice, Reason: waitReason}); err != nil {
+	var step record.DesignStep
+	if waiting.Artifact != "" {
+		if gate := gateOfDocument(gates, waiting.Artifact); gate != nil {
+			step = gate.Step
+		}
+	}
+	notice, err := record.ControllerNoticeOf(AwaitingPersonNotice(root.Key, waiting, step))
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, root.Key, notice); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: root waits on a person and keeps its admission slot", "issue", root.Key, "tree", root.Tree,
 		"reason", reason, "since_seq", waiting.Since.Seq)
 	return nil
+}
+
+// AwaitingPersonNotice is the awaiting-person notice of root, which waits on a person and keeps
+// its admission slot: the ask it waits on (a dispatch:// link), or the document of step whose
+// version waits on a person's review (a dispatch:// link, stepRef) and that version.
+func AwaitingPersonNotice(root string, waiting record.Awaiting, step record.DesignStep) texts.AwaitingPersonRecord {
+	notice := texts.AwaitingPersonRecord{NoticeHead: texts.NoticeHead{Kind: texts.AwaitingPerson, Issue: root}}
+	if waiting.GateVersion != 0 {
+		notice.Document, notice.Version = stepRef(root, step), waiting.GateVersion
+	} else {
+		notice.Ask = itemRef(root, "ask", waiting.Ask)
+	}
+	return notice
 }
 
 // tellInPlace gives the architect of a root it would have released the resume task naming the act
@@ -595,7 +626,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	if err := e.store.StartHandout(ctx, tx, root.Key); err != nil {
 		return err
 	}
-	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
+	task := resumeTask(root.Key, waiting, step, gate, gateDocuments(gates), asks[root.Key], e.armed())
 	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
 	if err != nil {
 		return err
@@ -630,172 +661,296 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 	return step, &gate
 }
 
-// DesignApprovedWake is the phrase a resume task carries when the root's design gate is open at
-// the resume. The daemon sends no design-approved notice to a root waiting on a person
-// (applyArtifact, gateRegistered), so this resume is that root's design-approved wake: the
-// architect skill, its references and the root architect's prompt name this phrase, and a test
-// holds them to it.
-const DesignApprovedWake = "this resume is your design-approved wake"
-
-// resumeTask is the task an answered root's architect resumes with: what answered its wait
-// (Awaiting.AnsweredBy) and that act's own detail (Awaiting.AnsweredDetail, recorded when the wait
-// was answered, so a later act of the same kind does not rename it); how the document of the step
-// in question stands at the resume, read from that step's gate now, so an approval a newer
-// version superseded, or a gate closed again since, is said as it is, and an open gate is said as
-// the design-approved wake (DesignApprovedWake) — a changes request a later approval superseded
-// asks for no revision; a changes request the gate records as told after the wait began that did
-// not answer it, which no notice told (tellChangesOnce); what is still with the person (withHuman)
-// and what waits on the architect (a tree question, or the closed gate's approval request, on the
-// agent's turn). Handing back is advice only while the gate is not open, since an open gate moves
-// the root to planning, where a hand-back starts no wait; the request's own thread is named only
-// while the request is open. armed says whether the design gate is armed: with it off, no approval
-// is asked for, register_gate is never the advice, and an open gate is no person's approval. A
-// wait the gates.design: off rule answered (gateOffAnswer) is never said to be approved: under an
-// armed gate it is said as answered while the gate was off.
+// RootResume is the task an answered root's architect resumes with, as the record of its kind.
 //
-// Every sentence about the gate names step's own document (record.DesignStep.Document), which is
-// the document gate holds and the one whose version it prints: under a deployment that gates the
-// decisions or the criteria step first, the step in question is not the spec, and a task saying
-// "your spec" would send the architect to the wrong document. The READY refusal names a step's
-// document the same way (Engine.handoff).
-func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gate *record.DesignGate, asks []record.RootAsk, armed bool) string {
-	document := step.Document()
+// The act that answered its wait (Awaiting.AnsweredBy, texts.ActApproved and the others) and that
+// act's own detail (Awaiting.AnsweredDetail, recorded when the wait was answered, so a later act of
+// the same kind does not rename it): the ask it was on as a dispatch:// link, or the document of
+// step as one (stepRef) with the version the act was about; the closer of an ask nobody will
+// answer (AnsweredByClosed); and the person who acted and when, with their words in a block of
+// their own, as the act's Dispatch event carried them and the ask's mirror row keeps them
+// (record.RootAsk.PersonAnswerWords and PersonWords): an answer with the options it chose, a reply,
+// the reason of a changes request (read from the act's detail, with the person and the time the
+// gate records the request with, changesWords), a resolution's reason, and a
+// decline's note beside the sentences Dispatch wrote for the asking agent. The words are cut to
+// texts.OneAct with the count of the rest, or with the mark that more follows where the event did
+// not carry all of them (texts.Carry); where the resume carries the words of two acts, the act's
+// and a later changes request's reason, each is cut to texts.EachOfSeveral (eachOfSeveral).
+// gateArtifacts are the documents the root's gates are registered on, whose approval requests are
+// answered by a review rather than by a person's act on the ask (record.RootAsk.PersonActSeq),
+// which says which act's words those are.
+//
+// How the document of step stands at the resume, read from that step's gate now, so an approval
+// a newer version superseded, or a gate closed again since, is said as it is: the document (stepRef)
+// wherever the step has a gate, whatever the act, as main named it in each sentence of the gate
+// ("Your <doc> is not approved at version N", "the approval request for <doc> version N", "When the
+// <doc> is ready"), its latest version, whether the gate is open and whether it is armed. A step
+// with no gate row (gateInQuestion's nil, a question asked before any step was registered, or the
+// step after the one whose approval answered the wait) names no gate state, as main's resume wrote
+// no gate sentence for it (`case gate == nil`), but on an approval, which names whether the design
+// gate is armed all the same: that is what says whether a person approved, as main said it from
+// armed alone ("Your %s %s on %s was approved." or "The design gate on %s is off, so no approval
+// of your %s %s is asked for."). An open gate keeps texts.DesignApprovedWake word for word, since
+// the daemon sends no design-approved notice to a root waiting on a person (applyArtifact,
+// gateRegistered), so this resume is that root's design-approved wake. A wait the gates.design:
+// off rule answered (gateOffAnswer) says so (GateOffAtAnswer), so it is never read as a person's
+// approval. A changes request the gate records as told after the wait began that did not answer
+// it, which no notice told (tellChangesOnce), is named with its version, the document of step it
+// was made on and its reason in a block of its own.
+//
+// What is still with the person (withHuman): the asks as dispatch:// links, and the version whose
+// approval request is with them. What waits on the architect: the asks on its turn, a tree
+// question or the closed gate's approval request, and whether that request's thread is open. The
+// steps for each are the root architect's prompt's (roles/architect-root.md).
+func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gate *record.DesignGate, gateArtifacts []string,
+	asks []record.RootAsk, armed bool,
+) texts.RootResumeRecord {
 	gateOpen := gate != nil && classify.DesignGateOpen(*gate)
 	gateClosed := gate != nil && !gateOpen
-	version, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
-	gateOff = gateOff && waiting.AnsweredBy == record.AnsweredByApproval
-	var task strings.Builder
+	task := texts.RootResumeRecord{TaskHead: texts.TaskHead{Kind: texts.RootResume, Issue: key}}
+	if gate != nil {
+		task.Document, task.DocumentVersion = stepRef(key, step), gate.LatestVersion
+		task.GateOpen, task.GateArmed = &gateOpen, &armed
+	}
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
-		switch {
-		case armed && gateOff:
-			fmt.Fprintf(&task, "The design gate on %s was off when your wait was answered, so no person approved your %s %s then; the design gate is on again.",
-				key, document, version)
-		case armed:
-			fmt.Fprintf(&task, "Your %s %s on %s was approved.", document, version, key)
-		case gateOpen:
-			fmt.Fprintf(&task, "Your %s %s on %s is registered, and the design gate is off, so it needs no approval.", document, version, key)
-		default:
-			fmt.Fprintf(&task, "The design gate on %s is off, so no approval of your %s %s is asked for.", key, document, version)
-		}
+		detail, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
+		task.Act, task.Document, task.GateOffAtAnswer = texts.ActApproved, stepRef(key, step), gateOff
+		task.Version, _ = detailVersion(detail)
+		task.GateArmed = &armed
 	case record.AnsweredByChanges:
-		fmt.Fprintf(&task, "A person requested changes to your %s on %s at %s.", document, key, waiting.AnsweredDetail)
-		if gateOpen && armed {
-			fmt.Fprintf(&task, " A person approved the %s after that review, so it asks for no revision now; read it.", document)
-		} else {
-			fmt.Fprintf(&task, " Read the review, and revise the %s as they ask.", document)
-		}
+		task.Act, task.Document = texts.ActChangesRequested, stepRef(key, step)
+		version, reason := changesOfDetail(waiting.AnsweredDetail)
+		task.Version = version
+		words := changesWords(version, reason, gate, gateArtifactOf(gate), asks)
+		task.By, task.At, words.By, words.At = words.By, words.At, "", time.Time{}
+		task.Reason = &words
 	case record.AnsweredByVersion:
-		fmt.Fprintf(&task, "A newer version of your %s on %s, %s, handed the approval request back to you. Read it and the request's thread.", document, key, waiting.AnsweredDetail)
+		task.Act, task.Document = texts.ActVersion, stepRef(key, step)
+		task.Version, _ = detailVersion(waiting.AnsweredDetail)
 	case record.AnsweredByRetraction:
-		fmt.Fprintf(&task, "Your ask %s on %s was retracted when its decision block left the spec, so no person will answer it. "+
-			"Read the spec as it stands; if you still need the decision, ask again.", waiting.Ask, key)
+		task.Act, task.Ask = texts.ActRetracted, itemRef(key, "ask", waiting.Ask)
 	case record.AnsweredByClosed:
-		fmt.Fprintf(&task, "Your ask %s on %s was closed by %s, so no person will answer it. Read its thread; if you still need the decision, ask again.",
-			waiting.Ask, key, waiting.AnsweredDetail)
+		task.Act, task.Ask, task.ClosedBy = texts.ActClosed, itemRef(key, "ask", waiting.Ask), waiting.AnsweredDetail
 	case record.AnsweredByAsk:
-		fmt.Fprintf(&task, "A person answered your ask %s on %s, or replied in its thread; read it.", waiting.Ask, key)
+		task.Act, task.Ask = texts.ActAsk, itemRef(key, "ask", waiting.Ask)
+		carryAct(&task, askRow(asks, waiting.Ask), gateArtifacts)
 	case record.AnsweredByReply:
-		fmt.Fprintf(&task, "A person answered or replied in the thread of ask %s on %s; read that thread.", waiting.AnsweredDetail, key)
+		task.Act, task.Ask = texts.ActReply, itemRef(key, "ask", waiting.AnsweredDetail)
+		carryAct(&task, askRow(asks, waiting.AnsweredDetail), gateArtifacts)
 	case record.AnsweredByTurn:
-		fmt.Fprintf(&task, "A session's reply handed your question %s on %s to your turn, so no person is asked anything there; read its thread.",
-			waiting.AnsweredDetail, key)
+		task.Act, task.Ask = texts.ActTurn, itemRef(key, "ask", waiting.AnsweredDetail)
 	case record.AnsweredByDecline:
-		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
-		// row holds them (record.RootAsk.Decline): the daemon writes neither, so the architect
-		// reads the person's words and not the daemon's paraphrase of them. The note is quoted,
-		// as a review's reason is (changesDetail), so the architect reads where the person's own
-		// words begin and end. A decline the person wrote no note with ends after the sentences.
-		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
-		if decline := recordedDecline(asks, waiting.AnsweredDetail); decline != nil {
-			if decline.Words != "" {
-				fmt.Fprintf(&task, " %s", decline.Words)
-			}
-			if decline.Note != "" {
-				fmt.Fprintf(&task, " Their note: %q", decline.Note)
-			}
-		}
+		task.Act, task.Ask = texts.ActDeclined, itemRef(key, "ask", waiting.AnsweredDetail)
+		carryDecline(&task, askRow(asks, waiting.AnsweredDetail))
 	default:
-		fmt.Fprintf(&task, "A person acted on %s; read the issue's asks and its spec.", key)
-	}
-	switch {
-	case gate == nil:
-	case gateOpen && !armed:
-		fmt.Fprintf(&task, " The design gate is open at version %d: %s, so act on it as on design-approved.",
-			gate.LatestVersion, DesignApprovedWake)
-	case gateOpen:
-		fmt.Fprintf(&task, " Your %s is approved at version %d and the design gate is open: %s, so act on it as on design-approved.",
-			document, gate.LatestVersion, DesignApprovedWake)
-	case !armed:
-		fmt.Fprintf(&task, " The design gate is closed at version %d, as no registration of that version has opened it: when the %s is ready, "+
-			"register it at its current version, which opens the gate with no approval.", gate.LatestVersion, document)
-	case waiting.AnsweredBy == record.AnsweredByApproval && !gateOff:
-		fmt.Fprintf(&task, " That approval no longer stands: the %s is at version %d and is not approved.", document, gate.LatestVersion)
-	default:
-		fmt.Fprintf(&task, " Your %s is not approved at version %d.", document, gate.LatestVersion)
+		task.Act = cmp.Or(string(waiting.AnsweredBy), texts.ActActed)
 	}
 	if gate != nil && gate.ToldChangesVersion != nil && !(waiting.Since.Seq > 0 && gate.ToldChangesMark.Seq == 0) &&
 		gate.ToldChangesMark.After(waiting.Since) {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
 		if waiting.AnsweredBy != record.AnsweredByChanges || waiting.AnsweredDetail != detail {
-			fmt.Fprintf(&task, " A person then requested changes to your %s at %s. Read the review, and revise the %s as they ask.", document, detail, document)
+			task.LaterChangesVersion = *gate.ToldChangesVersion
+			later := changesWords(*gate.ToldChangesVersion, gate.ToldChangesReason, gate, gateArtifactOf(gate), asks)
+			task.LaterReason = &later
 		}
 	}
+	eachOfSeveral(task.Answer, task.Reply, task.Reason, task.Note, task.LaterReason)
 	requestOf := ""
 	if gate != nil {
 		requestOf = gateRequestOf(*gate, armed)
 	}
 	questions, request := withHuman(asks, requestOf)
-	var still, yours []string
 	if request {
-		still = append(still, fmt.Sprintf("the approval request for %s version %d", document, gate.LatestVersion))
+		task.ApprovalRequest = gate.LatestVersion
 	}
 	for _, ask := range questions {
-		still = append(still, "ask "+ask.Ask)
+		task.WithPerson = append(task.WithPerson, itemRef(key, "ask", ask.Ask))
 	}
-	requestOpen := false
 	for _, ask := range asks {
 		isRequest := ask.GateRequestOf(gateArtifactOf(gate))
 		if isRequest && ask.Open {
-			requestOpen = true
+			task.RequestOpen = true
 		}
 		if ask.Open && ask.WaitingOn == "agent" && (isRequest && gateClosed || ask.ByTree && ask.Question()) {
-			yours = append(yours, "ask "+ask.Ask)
+			task.WaitingOnYou = append(task.WaitingOnYou, itemRef(key, "ask", ask.Ask))
 		}
 	}
-	if len(yours) > 0 {
-		fmt.Fprintf(&task, " Waiting on you: %s; read each thread and reply.", strings.Join(yours, ", "))
-	}
-	switch {
-	case len(still) > 0 && !gateOpen:
-		fmt.Fprintf(&task, " Still with the person: %s. Hand each one back once you have done what the answer asks — a reply in its thread that "+
-			"leaves the turn with the person", strings.Join(still, ", "))
-		if armed && gateClosed {
-			task.WriteString(", or request approval again and register that version with register_gate")
-		}
-		task.WriteString(" — or close it if you no longer need it. Handing one back starts your next wait; then end your turn.")
-	case len(still) > 0:
-		fmt.Fprintf(&task, " Still with the person: %s. Continue.", strings.Join(still, ", "))
-	case gateClosed && armed:
-		fmt.Fprintf(&task, " When the %s is ready, hand the request back to the person: request approval again and register that version with register_gate", document)
-		if requestOpen {
-			task.WriteString(", or answer in the request's thread")
-		}
-		task.WriteString(". Handing it back starts your next wait; then end your turn.")
-	default:
-		task.WriteString(" Continue.")
-	}
-	return task.String()
+	return task
 }
 
-// recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it
-// carries the sentences Dispatch wrote for the asking agent and the person's own note, which the
-// resume prints. A record holding no such row — a decline mirrored by a release before this one,
-// or a row a later read has not reached — leaves the resume naming the ask alone.
-func recordedDecline(asks []record.RootAsk, ask string) *record.AskDecline {
+// resumeTask is RootResume's record as the root's architect reads it.
+func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gate *record.DesignGate, gateArtifacts []string,
+	asks []record.RootAsk, armed bool,
+) string {
+	return taskText(RootResume(key, waiting, step, gate, gateArtifacts, asks, armed))
+}
+
+// detailVersion reads the version an answer's detail names ("version <n>", the start of every
+// detail a review or a version writes: changesDetail, answerAwaitedGate, answerRegisteredGate), and
+// what follows it; 0 and the whole detail where it names none.
+func detailVersion(detail string) (int, string) {
+	rest, ok := strings.CutPrefix(detail, "version ")
+	if !ok {
+		return 0, detail
+	}
+	digits := rest
+	if end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' }); end >= 0 {
+		digits = rest[:end]
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, detail
+	}
+	return version, rest[len(digits):]
+}
+
+// changesOfDetail reads a changes request's version and reason back from the detail
+// changesDetail wrote, the reason as the person gave it: the detail quotes it, so it is unquoted.
+// A detail that does not read so gives its version and what follows it as the reason.
+func changesOfDetail(detail string) (int, string) {
+	version, rest := detailVersion(detail)
+	quoted, ok := strings.CutPrefix(rest, ": ")
+	if !ok {
+		return version, rest
+	}
+	reason, err := strconv.Unquote(quoted)
+	if err != nil {
+		return version, quoted
+	}
+	return version, reason
+}
+
+// changesWords is the reason of a changes request of version, cut to texts.OneAct (texts.Carry),
+// by the person who asked for the changes and when. The gate records the request it tells with its
+// reviewer and the time Dispatch gives the review (record.DesignGate.ToldChangesBy and
+// ToldChangesMark, written from the review's own event or a registration's read of it), and those
+// name it wherever the gate holds this version and this reason. A gate that names no reviewer — a
+// row an older daemon wrote — leaves the person's answer of the approval request of the gate's
+// document (artifact) whose words are that reason, which is how a person requests changes through
+// the request (Dispatch's reviewFromAnswer trims the reason the review keeps), as its mirror row
+// keeps them: that answer's words are the reason as its event carried them, so a body the event
+// marked cut says that more follows.
+func changesWords(version int, reason string, gate *record.DesignGate, artifact string, asks []record.RootAsk) texts.Words {
+	words := texts.Carry(reason, texts.OneAct, false)
+	if gate != nil && gate.ToldChangesVersion != nil && *gate.ToldChangesVersion == version && gate.ToldChangesReason == reason {
+		words.By, words.At = gate.ToldChangesBy, utc(gate.ToldChangesMark.At)
+	}
+	if words.By != "" {
+		return words
+	}
+	for _, ask := range asks {
+		answer := ask.PersonAnswerWords
+		if answer != nil && ask.GateRequestOf(artifact) && strings.TrimSpace(answer.Text) == reason {
+			words = answer.Carry(texts.OneAct)
+			words.By, words.At = answer.By, utc(answer.At)
+			return words
+		}
+	}
+	return words
+}
+
+// carryAct puts the person's act on row that answered the wait into task: the person, the time
+// and the options an answer chose as fields, and the words in the block the act is: an answer of
+// the ask (PersonAnswerWords), else the act PersonSeq records (PersonWords), which is the ask's
+// close or a reply in its thread. A close by the person is a resolution, its words its reason,
+// and a decline among them its note. Which of the two acts answered the wait is the one rule
+// RootAsk.PersonActSeq gives, read against gateArtifacts. A row the record does not hold, or one an
+// older daemon wrote, which kept no words, carries none.
+func carryAct(task *texts.RootResumeRecord, row *record.RootAsk, gateArtifacts []string) {
+	if row == nil {
+		return
+	}
+	seq := row.PersonActSeq(gateArtifacts...)
+	switch {
+	case seq == 0:
+	case seq != row.PersonSeq:
+		task.Answer = carryWords(task, row.PersonAnswerWords)
+	case seq == row.ClosedSeq && row.Decline != nil:
+		carryDecline(task, row)
+	case seq == row.ClosedSeq:
+		task.Reason = carryWords(task, row.PersonWords)
+	default:
+		task.Reply = carryWords(task, row.PersonWords)
+	}
+}
+
+// carryDecline puts a person's decline of the ask on row into task: the sentences Dispatch wrote
+// for the asking agent and the person's note, both as the mirror row holds them
+// (record.RootAsk.Decline), the daemon writing neither, so the architect reads the person's words
+// and not the daemon's paraphrase of them. The note's person, time and cut are those of the
+// decline's own act (PersonWords) where the row records the close as the person's act. A record
+// holding no decline — one mirrored by a release before this one, or a row a later read has not
+// reached — leaves the resume naming the ask alone.
+func carryDecline(task *texts.RootResumeRecord, row *record.RootAsk) {
+	if row == nil || row.Decline == nil {
+		return
+	}
+	task.DispatchWords = row.Decline.Words
+	words := row.PersonWords
+	if words == nil || row.PersonSeq != row.ClosedSeq {
+		words = &record.ActWords{Text: row.Decline.Note}
+	}
+	task.Note = carryWords(task, words)
+}
+
+// carryWords is words as task's block carries them, cut to texts.OneAct, with the person and the
+// time they acted put on task's own fields, where they are named once; their options too. Nil
+// where there are none, and where the act carried nothing at all.
+func carryWords(task *texts.RootResumeRecord, words *record.ActWords) *texts.Words {
+	if words == nil {
+		return nil
+	}
+	task.By, task.At, task.Options = words.By, utc(words.At), words.Options
+	if words.Text == "" && !words.More {
+		return nil
+	}
+	carried := words.Carry(texts.OneAct)
+	return &carried
+}
+
+// eachOfSeveral cuts each of blocks that carries words to texts.EachOfSeveral where more than one
+// does: a resume that carries the words of several acts carries up to that much of each
+// (dispatch://INFRA-3686/spec R1). A block with no words, the mark that more follows alone (a
+// payload_omitted stand-in), carries no act's words and does not count, as keptBound counts the
+// kept decisions. Each block was cut to texts.OneAct, which is a head of the act's words, so its
+// head of texts.EachOfSeveral is the act's own, and the units the second cut leaves off add to the
+// count of the rest. A block whose count is not known keeps its mark that more follows.
+func eachOfSeveral(blocks ...*texts.Words) {
+	worded := 0
+	for _, words := range blocks {
+		if words != nil && words.Text != "" {
+			worded++
+		}
+	}
+	if worded < 2 {
+		return
+	}
+	for _, words := range blocks {
+		if words == nil || words.Text == "" {
+			continue
+		}
+		head, rest := texts.Bound(words.Text, texts.EachOfSeveral)
+		words.Text = head
+		if !words.More {
+			words.Rest += rest
+		}
+	}
+}
+
+// utc is t in UTC, the zero time as it is.
+func utc(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.UTC()
+}
+
+// askRow is the mirror row of ask among asks, nil where the record holds none.
+func askRow(asks []record.RootAsk, ask string) *record.RootAsk {
 	for i := range asks {
-		if asks[i].Ask == ask && asks[i].Decline != nil {
-			return asks[i].Decline
+		if asks[i].Ask == ask {
+			return &asks[i]
 		}
 	}
 	return nil

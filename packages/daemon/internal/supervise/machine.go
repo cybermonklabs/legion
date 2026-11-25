@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -189,7 +190,7 @@ type Claim struct {
 	// (forgetSession), and why. The session itself stays in its store — nothing of it is deleted
 	// — so this is the one record of where it went, for the operator who may want to read it and
 	// for the agent that replaces it, which is told of it in the first task it is given
-	// (abandonedTask). It is persisted, since that first task can be a launch and a daemon
+	// (AbandonedSessionNote). It is persisted, since that first task can be a launch and a daemon
 	// restart away, and it is replaced rather than cleared by the next abandonment: the session
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
@@ -385,7 +386,7 @@ type Claim struct {
 	// LastDeathAt before LastReady is a death the running agent survived. All five are persisted:
 	// the operator reading a claim after a restart is the one who has to act on them, and the
 	// death's cause is what the record of that death names (endDied, EndedWork), which the
-	// restarted worker is told (RelaunchSentence, interruptedTask).
+	// restarted worker is told (RelaunchNote, CutTurnNote).
 	LastDeathCause     string
 	LastDeathAt        time.Time
 	LastStartFailure   string
@@ -506,9 +507,15 @@ type Claim struct {
 	// suspension excepted. Work that a role did not push goes with the disk the replacement
 	// deletes.
 	UpdateRound string
-	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
-	// text and the operator's reading of why this pod is being replaced.
+	// UpdateReasons is what the round was opened for, as the daemon found the drift: the
+	// operator's and the agent surfaces' reading of why this pod is being replaced, one text.
 	UpdateReasons string
+	// UpdateDrift is the same drift as items (runtime.DriftItem): each image and each setting that
+	// differs, which the round's ask and its update-stalled notice name by the image's short digest
+	// and the setting's key (UpdateTask, DriftFacts). It is nil while no round is open, and for a
+	// round an older daemon opened, which recorded the text alone: that round's ask and notice name
+	// the text (UpdateReasons) instead.
+	UpdateDrift []runtime.DriftItem
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
 	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
@@ -1188,12 +1195,13 @@ type Deps struct {
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
-	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
-	// is given: the model, and the HTTP status the provider answered where it answered one, in
-	// words built from structured fields alone. The claim carries the issue and the role. nil
-	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
-	// decision, so it returns at once.
-	ProviderErrorRunReached func(c Claim, reason string)
+	// providerErrorRunTold times in a row, once per run, with the provider-errors notice the
+	// project's controller is given (texts.ProviderErrorsRecord): the claim's issue and role, the
+	// run of turns, the model, the HTTP status the provider answered where it answered one, and
+	// how often at most the task is sent again, from structured fields alone. nil tells nobody, as
+	// it does for TaskConfirmed above. It is called inside the machine's decision, so it returns
+	// at once.
+	ProviderErrorRunReached func(c Claim, told texts.ProviderErrorsRecord)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1669,7 +1677,7 @@ type Machine struct {
 	// is: written and cleared with it (reportedProcess, letGo). It is kept for the one path that
 	// takes the dead turn's task back after the report rather than at it — a suspension that
 	// reaches the claim over that process (suspendOverADeadProcess) — so the task goes back with
-	// the note the death would have given it (interrupted, outOfMemoryTask). It is memory only,
+	// the note the death would have given it (interrupted, the out-of-memory note). It is memory only,
 	// as processGone is, and for the same reason.
 	goneOutOfMemory bool
 	// goneCause is the runtime's account of the death the report that set processGone found
@@ -1677,9 +1685,9 @@ type Machine struct {
 	// kept for the same suspension, which records the dead process's end as the death it is under
 	// this account (recordEnd, endDied) once the dead turn's task is taken back, unless a death
 	// died judged already recorded it, so the task is sent again saying why its process died
-	// rather than that a suspension ended it: the sentence in front of it reads that record, its
-	// own while the record is untold (relaunchSentence) and the record's cause once it is told
-	// (interruptedTask, EndedWork.Cause). Before the take-back the suspension also puts it on the
+	// rather than that a suspension ended it: the note in front of it reads that record, its own
+	// while the record is untold (RelaunchNote) and the record's cause once it is told
+	// (CutTurnNote, EndedWork.Cause). Before the take-back the suspension also puts it on the
 	// claim as died would have (Claim.LastDeathCause), which the operator's listing and a failed
 	// claim's notices read, and it puts back the cause the claim held when the take-back's write
 	// fails (suspendOverADeadProcess).
@@ -3385,13 +3393,14 @@ func (m *Machine) stoppedAStart() bool {
 	return stopped
 }
 
-// sessionStoreRetry is how long a start whose session store could not answer waits before trying
-// again, and sessionStoreReport how often the issue and the controller are told while that lasts:
-// a store outage is a deployment fault a person fixes, so the claim keeps its session and waits
-// for it rather than spending a launch budget on it, and the people who can fix it hear of it at
-// once and then once an hour rather than every minute (dispatch://INFRA-714 R8).
+// SessionStoreRetry is how long a start whose session store could not answer waits before trying
+// again, which the controller's session-store-fault notice names (workflow's sessionStoreFault),
+// and sessionStoreReport how often the issue and the controller are told while that lasts: a
+// store outage is a deployment fault a person fixes, so the claim keeps its session and waits for
+// it rather than spending a launch budget on it, and the people who can fix it hear of it at once
+// and then once an hour rather than every minute (dispatch://INFRA-714 R8).
 const (
-	sessionStoreRetry  = time.Minute
+	SessionStoreRetry  = time.Minute
 	sessionStoreReport = time.Hour
 )
 
@@ -3406,9 +3415,9 @@ const (
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
-		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
+		err, "generation", m.claim.Generation, "retry", SessionStoreRetry)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error {
+	m.relaunchLater(SessionStoreRetry, func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, time.Time{}, noEnd)
 	})
 	return errors.Join(err, m.persist(ctx))
@@ -4104,14 +4113,14 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // ended (EndedWork), and this is the one place that rule is written. When it records the
 // abandoned session, it ends that record too: a record that still tells is marked told, by no
 // delivery (ToldBy empty), so no take-back of a confirmation ever untells it (moveTelling). The
-// abandoned session's sentence (abandonedTask) already says that the turns, tool calls,
-// subagents and background jobs of the old session are gone, and the fresh agent started none of
-// them, so the record's sentence would tell it that work it never had has stopped. A record that
-// tells beside an abandoned session that tells is therefore always one of the fresh session's own
-// processes, and each reader tells both: the prompt's composer (Delivery.message), the delivery
-// of the record alone (queueRelaunch), and the ready's sentence for an architect's catch-up
-// (the daemon's applyTerminal). A delivery of the record alone that the claim still holds has
-// nothing left to say, and its next send retires it (sendPending).
+// abandoned session's note (AbandonedSessionNote) says that the old session was abandoned where it
+// stood, so its turns, tool calls, subagents and background jobs are gone, and the fresh agent
+// started none of them, so the record's note would tell it that work it never had has stopped. A
+// record that tells beside an abandoned session that tells is therefore always one of the fresh
+// session's own processes, and each reader tells both: the prompt's composer (Delivery.message),
+// the delivery of the record alone (queueRelaunch), and the ready's facts for an architect's
+// catch-up (the daemon's applyTerminal). A delivery of the record alone that the claim still
+// holds has nothing left to say, and its next send retires it (sendPending).
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
 // that process later: the launch's startFresh runs after the launch let the old process go
@@ -4270,7 +4279,7 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 // above carries the record (persist, or retirePending's transaction), as every let-go's own write
 // does (recordEnd). A stop passes its own cause (endStopped), whose comment names every retry
 // that relaunches a stopped claim on the session it records, so the turn the stop cut off and the
-// background work it ended are told to that session's next turn (relaunchSentence). The tree's
+// background work it ended are told to that session's next turn (RelaunchNote). The tree's
 // or the issue's close and the agent's own exit pass noEnd: each ends the claim's work on
 // purpose, so a record left on it would tell a later start of the claim that work it ended on
 // purpose was lost.
@@ -5009,5 +5018,6 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.UpdateDrift = slices.Clone(c.UpdateDrift)
 	return c
 }

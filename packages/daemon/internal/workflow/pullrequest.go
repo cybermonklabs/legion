@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
@@ -319,7 +320,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if !moved {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
+		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByPush)
 	case phase.Implementing:
 		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
@@ -381,7 +382,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByPush)
 }
 
 // reaskRound re-asks issue's review round (settleRound) after a fact that changed the pull
@@ -450,37 +451,40 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if awaitsMerge(*issue) {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, PRMergedNotice(issue.Key, *pr, issue.Phase, nil)); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
-}
-
-// waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
-// request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
-// close is waiting, and for whom. It also says how a child leaves without its own merge, which is
-// the architect's status write (record.EndChildRule), and that such a write counts once the daemon
-// has taken it (record.StatusNotTakenYet).
-func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
-		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByMerge)
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
-// waited for the issues beneath it instead, tells the architect that owns the issue once. It is
-// the two places a wait is newly entered — the merge arriving at an issue that awaits it (merged),
-// and an issue reaching merging on a pull request already merged (transition) — and nowhere else:
-// notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
-// departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
-// those two tell nobody.
+// waited for the issues beneath it instead, tells the architect that owns the issue once, naming
+// each issue the close waits for. It is the two places a wait is newly entered — the merge
+// arriving at an issue that awaits it (merged), and an issue reaching merging on a pull request
+// already merged (transition) — and nowhere else: notices never de-duplicate (notice writes a row
+// per call) and closeMerged is re-entered on the departure of every issue beneath it
+// (closeAwaitingMerge) and on every boot (sweepMerged), so those two tell nobody.
 func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	waiting, err := e.closeMerged(ctx, tx, issue, pr)
 	if err != nil || len(waiting) == 0 {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
-		Reason: waitingForTree(issue.Key, pr.Number, waiting)})
+	return e.notice(ctx, tx, issue.Key, PRMergedNotice(issue.Key, *pr, "", waiting))
+}
+
+// PRMergedNotice is the pr-merged notice of issue whose pull request pr merged: the pull request,
+// the phase the issue stood in where it was not merging (at, empty where it was), and each issue
+// the close waits for (waiting, nil where the merge closed the issue or it was not merging). A
+// notice whose close waits tells the architect how a child leaves without its own merge, as main's
+// waitingForTree did: it keeps record.StatusNotTakenYet and record.EndChildRule word for word,
+// which dispatch://INFRA-3178's R6 has such a notice say (R8 of dispatch://INFRA-3686).
+func PRMergedNotice(issue string, pr record.PullRequest, at phase.Phase, waiting []string) texts.PRMergedRecord {
+	merged := texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue}, PullRequest: pullRequestRef(pr), Phase: at,
+		WaitingFor: waiting}
+	if len(waiting) > 0 {
+		merged.StatusNotTakenYet, merged.EndChildRule = record.StatusNotTakenYet, record.EndChildRule
+	}
+	return merged
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
@@ -565,7 +569,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is done", issue.Key)}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, ChildClosedNotice(issue.Key, texts.LeftBehind{})); err != nil {
 			return nil, err
 		}
 	}
@@ -600,8 +604,20 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("pull request #%d closed without merging while %s was in %s", pr.Number, issue.Key, issue.Phase)})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, PRClosedUnmergedNotice(issue.Key, *pr, issue.Phase))
+}
+
+// PRClosedUnmergedNotice is the pr-closed-unmerged notice of issue whose pull request pr closed
+// without merging: the pull request and the issue's phase (at).
+func PRClosedUnmergedNotice(issue string, pr record.PullRequest, at phase.Phase) texts.PRClosedUnmergedRecord {
+	return texts.PRClosedUnmergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRClosedUnmerged, Issue: issue}, PullRequest: pullRequestRef(pr),
+		Phase: at}
+}
+
+// ChildClosedNotice is the child-closed notice of issue, a child that is done, and what its move
+// out of the workflow leaves behind (leftBehind): nothing for a child that closed at its merge.
+func ChildClosedNotice(issue string, left texts.LeftBehind) texts.ChildClosedRecord {
+	return texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue}, LeftBehind: left}
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge
@@ -731,10 +747,10 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // GitHub): the issue waits in implementing for a pull request record (implementationReady), and
 // nothing else tells anybody it is missing - the implementer's completion was applied with GitHub
 // unread, or the pull request it read was closed without merging since. The notice names the
-// issue, the repository, the branch and the handoff commit, and says what to do. It tells nothing
-// when the issue has left implementing, its implementer's handoff is another commit, or an open or
-// merged pull request is recorded: the read asked GitHub before the record changed, or the merge
-// told the architect (merged) and a completion moves the issue on it.
+// handoff commit, the repository and the branch. It tells nothing when the issue has left
+// implementing, its implementer's handoff is another commit, or an open or merged pull request is
+// recorded: the read asked GitHub before the record changed, or the merge told the architect
+// (merged) and a completion moves the issue on it.
 func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMissing) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Phase != phase.Implementing {
@@ -748,9 +764,15 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pull-request-missing", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s's implementer completed at %s, and GitHub shows no open pull request on %s %s, so %s stays in implementing. "+
-			"Tell its implementer (envoy_publish to its role topic) to open the pull request from %s; the daemon records it and moves %s to the next step of its task once it is open. "+
-			"When the work should not go on, decide %s's phase as for a pull request closed without merging.",
-			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, fact.Branch, issue.Key, issue.Key)})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, PullRequestMissingNotice(issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch))
+}
+
+// PullRequestMissingNotice is the pull-request-missing notice of issue, whose implementer completed
+// on commit with no open pull request on branch of repo. What the architect does on it - tell the
+// implementer to open the pull request from the branch, which the daemon records and then moves
+// the issue to the next step of its task, or decide the phase as for a pull request closed without
+// merging - is the architect's prompt's.
+func PullRequestMissingNotice(issue, commit, repo, branch string) texts.PullRequestMissingRecord {
+	return texts.PullRequestMissingRecord{NoticeHead: texts.NoticeHead{Kind: texts.PullRequestMissing, Issue: issue}, HandoffCommit: commit,
+		Repo: repo, Branch: branch}
 }

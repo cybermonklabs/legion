@@ -404,7 +404,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			if len(notices) != 1 || notices[0].row.ID != id {
 				t.Fatalf("countIntakeGiveUp answered row %d and the outbox holds %#v, want that one row", id, notices)
 			}
-			if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}); !reflect.DeepEqual(notices[0].notice, want) {
+			if want := queuedGaveUp(t, "LEGION", 1, giveUp); !reflect.DeepEqual(notices[0].notice, want) {
 				t.Fatalf("the notice reads %#v, want %#v", notices[0].notice, want)
 			}
 		}},

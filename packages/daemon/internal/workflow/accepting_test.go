@@ -110,12 +110,10 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 		t.Fatalf("status write = %q, %v; want retro", written, err)
 	}
 	task := startTask(t, pool, claim.RoleImplementer)
-	for _, want := range []string{"Phase: retro.", "Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1).", "Pull request: #42."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the implementer's retro task %q does not carry %q", task, want)
-		}
+	if !hasLines(task, "phase: retro", "handoff_phase: review", "handoff_version: 1", "pull_request: sjawhar/legion#42") {
+		t.Fatalf("the implementer's retro task %q, want its phase, the review's handoff and the pull request", task)
 	}
-	if strings.Contains(task, "Handoff commit:") {
+	if strings.Contains(task, "handoff_commit:") {
 		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
@@ -176,11 +174,12 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *t
 				" at the architect's request: the evidence does not cover the migration."; posted != want {
 				t.Fatalf("the status write posts %q on the issue, want %q", posted, want)
 			}
-			task := startTask(t, pool, tc.role)
-			for _, want := range []string{"Phase: " + string(tc.to) + ".", "Reason: the evidence does not cover the migration.", "Pull request: #42."} {
-				if !strings.Contains(task, want) {
-					t.Fatalf("the %s's task %q does not carry %q", tc.role, task, want)
-				}
+			read := readTaskOf(t, startTask(t, pool, tc.role))
+			if read.fields["phase"] != string(tc.to) || read.fields["moved_back_from"] != string(phase.Accepting) || read.fields["pull_request"] != "sjawhar/legion#42" {
+				t.Fatalf("the %s's task names %v, want %s moved back from accepting on the pull request", tc.role, read.fields, tc.to)
+			}
+			if block := read.block(t, "reason"); block.text != "the evidence does not cover the migration" || block.attrs["by"] != string(claim.RoleArchitect) {
+				t.Fatalf("the %s's task carries the reason block %+v, want the architect's words", tc.role, block)
 			}
 			if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/"+string(tc.role)] != 1 {
 				t.Fatalf("starts = %v, want the %s once and nobody else", started, tc.role)

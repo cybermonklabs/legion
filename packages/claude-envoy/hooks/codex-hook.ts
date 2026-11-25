@@ -17,6 +17,7 @@ import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
+import { oneLine } from "@legion/envoy-client/line-text"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
 import { configuredValue } from "../src/claude-session"
@@ -147,7 +148,10 @@ async function sessionStart(raw: unknown): Promise<void> {
       `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
     )
   } catch (error) {
-    process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)
+    // The failure can quote what Dispatch, or something in its place, answered: one line.
+    process.stdout.write(
+      `Dispatch authored-ask summary unavailable: ${oneLine(messageFor(error))}\n`,
+    )
   }
 }
 

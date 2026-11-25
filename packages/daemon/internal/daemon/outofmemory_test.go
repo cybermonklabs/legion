@@ -17,17 +17,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// outOfMemoryTools is where the rule about the work an issue pod does not run is written, which
-// is what the note sends the role to read.
-const outOfMemoryTools = "skill://legion-worker/references/tools.md"
-
 // A role whose turn ended with its pod running out of memory is told so with the task it is sent
 // again: the agent is given no reason by the kubelet that killed its container, so the task's
-// prompt carries the note and the pointer to the reference that says what an issue pod does not
-// run. The note belongs to the task the end cut off and to nothing else, so the role that held no
-// task is sent nothing. It survives a restart of the daemon, because the end is written on the
-// delivery in the store and the daemon that relaunches the role may not be the one that saw the
-// end: this test posts the end to one daemon and reads the prompt the next one sends.
+// prompt carries the out-of-memory note behind the note of the turn cut off (supervise's
+// Delivery.message). What the role does on reading it is its prompt's. The note belongs to the
+// task the end cut off and to nothing else, so the role that held no task is sent nothing. It
+// survives a restart of the daemon, because the end is written on the delivery in the store and
+// the daemon that relaunches the role may not be the one that saw the end: this test posts the end
+// to one daemon and reads the prompt the next one sends.
 func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) {
 	t.Parallel()
 	const task = "Continue Workflow. Issue: LEGION-484. Phase: implementing."
@@ -74,14 +71,12 @@ func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) 
 	}
 	sent := prompts[0].Message
 	switch {
-	case !strings.Contains(sent, task):
-		t.Errorf("the re-sent prompt does not carry the task %q: %q", task, sent)
-	case !strings.HasPrefix(sent, "Your previous turn on this task was interrupted"):
-		t.Errorf("the re-sent prompt does not begin with the interrupted sentence: %q", sent)
-	case !strings.Contains(sent, "ran out of memory"):
-		t.Errorf("the re-sent prompt does not say the pod ran out of memory: %q", sent)
-	case !strings.Contains(sent, outOfMemoryTools):
-		t.Errorf("the re-sent prompt does not point at %s: %q", outOfMemoryTools, sent)
+	case !strings.HasSuffix(sent, "\n\n"+task):
+		t.Errorf("the re-sent prompt does not end with the task %q: %q", task, sent)
+	case !strings.HasPrefix(sent, "kind: relaunch-note\n") || !strings.Contains(sent, "task_turn: true"):
+		t.Errorf("the re-sent prompt does not begin with the note of its turn cut off: %q", sent)
+	case !strings.Contains(sent, "\n\nkind: out-of-memory-note\nissue: "+podUpdateIssue+"\nreason: OOMKilled\nread_before_heavy_work: \"skill://legion-worker/references/tools.md\"\n\n"):
+		t.Errorf("the re-sent prompt does not carry the out-of-memory note: %q", sent)
 	}
 	if sent := next.workers[idle].Prompts(); len(sent) != 0 {
 		t.Fatalf("the %s, which held no task, was sent %+v; the note belongs to the turn the end cut off", idle, sent)

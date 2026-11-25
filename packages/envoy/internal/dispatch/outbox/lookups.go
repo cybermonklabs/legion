@@ -21,9 +21,9 @@ import (
 // joined, a comment's thread root's author, a message's author, the sessions a document credits,
 // the sessions a person's reply under a comment reaches and where the read found each
 // (loadCommentRecipients, threadRecipient), the sessions an issue's primary document credits
-// (loadPrimaryDocumentAuthors), what a new comment's mentions did (mentionDeliveries), and which
-// of a comment's mentions failed (mentionFallbackKeys). A comment or message that does not exist
-// answers no author, found false.
+// (loadPrimaryDocumentAuthors), and what a comment's mentions did (mentionDeliveries), which a new
+// comment's destinations read and a comment's edit asks of the sessions only a document credits
+// (creditFilter). A comment or message that does not exist answers no author, found false.
 type lookup interface {
 	followers(askID string) ([]string, error)
 	rootCommentAuthor(commentID string) (model.Actor, bool, error)
@@ -32,23 +32,14 @@ type lookup interface {
 	commentRecipients(commentID string) ([]threadRecipient, error)
 	primaryDocumentAuthors(issueKey string) ([]string, error)
 	mentionDeliveries(commentID string) (mentionDeliveries, error)
-	// mentionFallbackKeys answers the failed mentions of one comment alone
-	// (mentionDeliveries.fallbackKeys, keyed by session), which is all a comment's edit asks of
-	// its mentions: whether the session a document credits was named by the comment and never
-	// reached by that mention (addAuthorRoutes). It adds no reading of that comment anywhere
-	// else: a comment only an edit asked for is left out of the batch's readings
-	// (lookups.editOnly, lookups.readings).
-	mentionFallbackKeys(commentID string) (map[string]string, error)
 }
 
 // wanted is the lookup a batch's first pass over its events runs: it answers nothing and records
 // every id asked for, so that the batch reads each kind once (loadLookups). An event's destinations
 // ask for the same ids whatever the answers are, so a second pass over resolved lookups asks for
-// exactly these. editMentions holds the comments only mentionFallbackKeys asked for, which the
-// batch reads in the same statements as mentions and leaves out of its readings
-// (lookups.editOnly).
+// exactly these.
 type wanted struct {
-	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
+	asks, comments, messages, documents, threads, issues, mentions map[string]struct{}
 }
 
 func newWanted() *wanted {
@@ -56,7 +47,6 @@ func newWanted() *wanted {
 		asks: map[string]struct{}{}, comments: map[string]struct{}{},
 		messages: map[string]struct{}{}, documents: map[string]struct{}{},
 		threads: map[string]struct{}{}, issues: map[string]struct{}{}, mentions: map[string]struct{}{},
-		editMentions: map[string]struct{}{},
 	}
 }
 
@@ -95,11 +85,6 @@ func (w *wanted) mentionDeliveries(commentID string) (mentionDeliveries, error) 
 	return mentionDeliveries{}, nil
 }
 
-func (w *wanted) mentionFallbackKeys(commentID string) (map[string]string, error) {
-	w.editMentions[commentID] = struct{}{}
-	return nil, nil
-}
-
 // unansweredRecipients is a recipient read - the sessions a reply under a comment reaches, the
 // sessions an issue's primary document credits, the sessions a document credits - that an event's
 // destinations needed and whose read of its id failed (loadRecipients). The event's list ends
@@ -126,10 +111,7 @@ type lookups struct {
 	threads   map[string][]threadRecipient
 	primaries map[string][]string
 	mentions  map[string]mentionDeliveries
-	// editOnly names each comment only an edit asked for (wanted.editMentions): its reading is
-	// read and kept whole like every other, and readings leaves it out.
-	editOnly map[string]struct{}
-	failed   map[string]error
+	failed    map[string]error
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -195,26 +177,14 @@ func (l *lookups) mentionDeliveries(commentID string) (mentionDeliveries, error)
 	return l.mentions[id], nil
 }
 
-func (l *lookups) mentionFallbackKeys(commentID string) (map[string]string, error) {
-	id := canonicalID(commentID)
-	if err := l.failed["mention:"+id]; err != nil {
-		return nil, err
-	}
-	return l.mentions[id].fallbackKeys, nil
-}
-
 // readings is what the batch read of each comment's mentions, in no order: what the holders of
-// the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). The
-// reading of a comment only an edit asked for is left out (editOnly): the edit asks which of its
-// comment's mentions failed and nothing else, so the batch's readings stay the readings of its
-// new comments. This is the one place that rule is applied; every reader of a reading points
-// here.
+// the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). A
+// comment only an edit or a delete asked for is among them: that event asks its credits filter
+// whether a mention of the comment may yet name such a session, and the unpinned attempts answer
+// that by the holder their role resolves to (creditFilter, mentionDeliveries.editCreditCopyOf).
 func (l *lookups) readings() []mentionDeliveries {
 	readings := make([]mentionDeliveries, 0, len(l.mentions))
-	for id, deliveries := range l.mentions {
-		if _, editOnly := l.editOnly[id]; editOnly {
-			continue
-		}
+	for _, deliveries := range l.mentions {
 		readings = append(readings, deliveries)
 	}
 	return readings
@@ -243,11 +213,9 @@ type queryer interface {
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
 // whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
 // reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
-// read is of two sets of comments at once - the new comments whose destinations read what their
-// mentions did (wanted.mentions) and the comments whose edits ask which of their mentions failed
-// (wanted.editMentions, mentionFallbackKeys) - so it costs its two statements whatever either set
-// holds, and the reading of a comment only an edit asked for is left out of the batch's readings
-// (editOnlyIDs, lookups.readings).
+// read is of every comment a new comment's destinations or an edit's credits filter asked for
+// (wanted.mentions, creditFilter), the same reading for both, so it costs its two statements
+// however many of either the batch holds.
 //
 // A read of ask followers, thread root authors, message authors or mention deliveries that fails
 // fails the batch, which is then left unrecorded and read again. A recipient read - document
@@ -274,7 +242,6 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	messages := validIDs(want.messages, "message", "load message author %q", found.failed)
 	documents := validIDs(want.documents, "document", "load document %q session authors", found.failed)
 	mentions := validIDs(want.mentions, "mention", "load mention deliveries of comment %q", found.failed)
-	editMentions := validIDs(want.editMentions, "mention", "load mention deliveries of comment %q", found.failed)
 	threads := validIDs(want.threads, "thread", "", found.failed)
 	issues := slices.Sorted(maps.Keys(want.issues))
 	if err := loadFollowers(ctx, db, asks, found); err != nil {
@@ -287,36 +254,12 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 		return nil, err
 	}
 	_ = loadRecipients(ctx, db, loadDocumentSessionAuthors, documents, "document", found.documents, found.failed)
-	found.editOnly = editOnlyIDs(mentions, editMentions)
-	if err := loadMentionDeliveries(ctx, db, mergedIDs(mentions, editMentions), found); err != nil {
+	if err := loadMentionDeliveries(ctx, db, mentions, found); err != nil {
 		return nil, err
 	}
 	_ = loadRecipients(ctx, db, loadCommentRecipients, threads, "thread", found.threads, found.failed)
 	_ = loadRecipients(ctx, db, loadPrimaryDocumentAuthors, issues, "issue", found.primaries, found.failed)
 	return found, nil
-}
-
-// mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one
-// list loadMentionDeliveries reads for a batch's new comments and for the comments its edits ask
-// the failed mentions of, which costs the two statements of that read whatever either list holds.
-func mergedIDs(ids, more []string) []string {
-	both := slices.Concat(ids, more)
-	slices.Sort(both)
-	return slices.Compact(both)
-}
-
-// editOnlyIDs names each comment of editMentions that mentions does not hold: a comment the batch
-// read only because an edit asked which of its mentions failed. Its reading is read and kept
-// whole, like every other, and the batch's readings leave it out (lookups.readings). Both lists
-// are sorted (validIDs).
-func editOnlyIDs(mentions, editMentions []string) map[string]struct{} {
-	editOnly := make(map[string]struct{}, len(editMentions))
-	for _, id := range editMentions {
-		if _, both := slices.BinarySearch(mentions, id); !both {
-			editOnly[id] = struct{}{}
-		}
-	}
-	return editOnly
 }
 
 // validIDs returns the canonical form (canonicalID) of every id of set that is a uuid, sorted and
@@ -543,10 +486,13 @@ func loadDocumentSessionAuthors(ctx context.Context, db queryer, ids []string) (
 // (mentionDeliveries.fallbackKeys; that flag and the sent one together say whether the group has
 // settled at all, which is what mentionDeliveries.settledKeys holds a key for), and whether an
 // attempt of it still owed a send was created more than the bound a role route's forward waits
-// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That last
-// one is read of every group and carried by the unpinned ones alone: the attempts of a session
+// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That one
+// is read of every group and carried by the unpinned ones alone: the attempts of a session
 // the reading can name decide their copies by their state, and the state of one past this bound
-// is mentionResending whichever side of it the attempt is. What mode those
+// is mentionResending whichever side of it the attempt is. The last column is whether any
+// attempt of the group, settled or not, was created more than that bound ago, which the
+// comment's first attempts, made by its own write, answer for the whole comment
+// (mentionDeliveries.writtenPastTheBound). What mode those
 // attempts went in does not matter: every attempt of one mention sends under the mention's own
 // key (model.CommentMentionIdempotencyKey),
 // so the mode comes from comment_mentions - one row per (comment, target), which is what makes
@@ -568,7 +514,8 @@ var mentionDeliveryQuery = `
 	       bool_or(d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `),
 	       bool_or(d.state = 'failed' or (d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `)),
 	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") +
-	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `)
+	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `),
+	       bool_or(d.created_at < now() - ` + unnamedForwardBoundInterval + `)
 	from comment_deliveries d
 	left join comment_mentions m on m.comment_id = d.comment_id and m.target = d.target
 	where d.comment_id = any($1::text[]::uuid[])
@@ -577,9 +524,14 @@ var mentionDeliveryQuery = `
 
 // mentionFallbackHoldsQuery lists every destination of every comment in ids a fallback row owns,
 // settled or not: a row settled published or skipped that copy once, so the event's own publish
-// skips the destination for good (mentionDeliveries.held).
+// skips the destination for good (mentionDeliveries.held) - a credit's row that published nothing
+// excepted, which gives way to a copy the event gives that session by a rule of its own
+// (mentionDeliveries.creditRows, destinations.creditRowGivesWay). Each row says beside it whether
+// the row is still to be settled, the copy it owns being still to be published or skipped
+// (mentionDeliveries.unsettled), the target it is keyed by, if any, and whether it published its
+// copy, which say whether it is such a credit's row (fallbackCopy.creditOf).
 const mentionFallbackHoldsQuery = `
-	select comment_id::text, destination
+	select comment_id::text, destination, settled_at is null, target, published
 	from comment_fallback_copies
 	where comment_id = any($1::text[]::uuid[])
 `
@@ -621,14 +573,19 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
-// comment: a comment.created that names a mentioned session, which takes the whole reading, both
-// the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
-// a comment.edited whose payload names a mention, which takes that reading's failed mentions
-// alone (lookup.mentionFallbackKeys) and adds no reading to the batch's (editOnlyIDs,
-// lookups.readings). Every other event, resolutions and reopenings included, asks for no comment
-// and suppresses nothing. A comment no attempt was recorded for answers empty sets, so it
-// suppresses nothing either.
+// destinations fallback rows own (mentionDeliveries), in two statements. Four event types ask for
+// a comment: a comment.created that names a mentioned session, which takes the whole reading, both
+// the destinations it adds and the routes a mention's target suppresses (eventDestinations), a
+// comment.edited or a comment.deleted whose credits filter may leave a session a document credits
+// alone out, which asks it which of those sessions the comment's mentions name or may yet name
+// (creditFilter, mentionDeliveries.editCreditCopyOf) and adds none of its keys to that event's
+// copies: an edit's or a delete's payload is not read for the comment's mentions, so each asks
+// for every comment it changes there, and a comment.delivery receipt of an attempt that failed
+// pinned to a session, which asks it whether that session's credit's row is one to reopen
+// (reopenOnReceipt, mentionDeliveries.reopensCreditRowOf) and adds nothing to its own copies.
+// Every other event, resolutions and reopenings included, asks for no comment and suppresses
+// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
+// either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in
@@ -653,13 +610,19 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 	}
 	var commentID, target, mode string
 	var sessionID *string
-	var sent, resending, sending, abandoned, failedSend, pastForwardBound bool
+	var sent, resending, sending, abandoned, failedSend, pastForwardBound, writtenPastBound bool
 	chosen := map[string]*fallbackChoice{}
 	_, err = pgx.ForEachRow(rows,
 		[]any{&commentID, &sessionID, &target, &mode, &sent, &resending, &sending, &abandoned, &failedSend,
-			&pastForwardBound},
+			&pastForwardBound, &writtenPastBound},
 		func() error {
 			deliveries := of(commentID)
+			if writtenPastBound && !deliveries.writtenPastTheBound {
+				// The reading is held by value, so the flag is written back to the map it is
+				// read from (mentionDeliveries.writtenPastTheBound).
+				deliveries.writtenPastTheBound = true
+				found.mentions[commentID] = deliveries
+			}
 			state := mentionStateOf(sent, resending, sending, abandoned)
 			if sessionID == nil && (state == mentionSending || state == mentionResending) {
 				// An attempt of this target names no session and its send is still coming:
@@ -716,8 +679,19 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 		return fmt.Errorf("load the batch's fallback copies: %w", err)
 	}
 	var destination string
-	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination}, func() error {
-		of(commentID).held[destination] = struct{}{}
+	var rowTarget *string
+	var unsettled, published bool
+	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination, &unsettled, &rowTarget, &published}, func() error {
+		deliveries := of(commentID)
+		deliveries.held[destination] = struct{}{}
+		if unsettled {
+			deliveries.unsettled[destination] = struct{}{}
+		}
+		if rowTarget != nil && !published {
+			if _, credit := (fallbackCopy{destination: destination, key: *rowTarget, kind: targetMentions}).creditOf(); credit {
+				deliveries.creditRows[destination] = struct{}{}
+			}
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("load the batch's fallback copies: %w", err)

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // changesBody is the request for changes the review of these tests makes: the reason the review
@@ -54,7 +55,8 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 }
 
 // reviewRequestsChanges ends key's review round, in reviewing, with a request for changes whose
-// body is changesBody, as the review's settlement moves it (settleRound).
+// body is changesBody, as the review's settlement moves it (settleRound): the reviewer's row holds
+// the decision, whose body the implementer's task carries in its body block.
 func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -70,6 +72,7 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
+		reviewer.Decision = &record.ReviewDecision{State: "changes_requested", Body: changesBody, Head: pr.HeadSHA}
 		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, "", reviewer, pr, changesBody)
 	})
 
@@ -186,8 +189,8 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		// The return goes to the agent the step ran before, in its session, and the
 		// reviewer keeps its own: no start of the return asks for a fresh session, and the
 		// reviewer is started nothing.
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Implementing || !strings.Contains(start.Task, "Reason: "+changesBody) {
-			t.Fatalf("the implementer's start = %+v, want a start of implementing in its own session whose task holds %q", start, "Reason: "+changesBody)
+		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Implementing || readTaskOf(t, start.Task).block(t, "body").text != changesBody {
+			t.Fatalf("the implementer's start = %+v, want a start of implementing in its own session whose task holds the review %q in its body block", start, changesBody)
 		}
 		// An issue's one pending phase start the outbox has not run is replaced by the next one
 		// (record.Store.EnqueueStart), so the count can fall; it must not rise.
@@ -230,8 +233,8 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		}
 		testsFail(t, pool, engine, root.Key, 2)
 
-		if blocked := noticesOf(t, pool, root.Key, "pr-blocked"); len(blocked) != 1 || !strings.Contains(blocked[0].Reason, "review_round_cap=3") {
-			t.Fatalf("the pr-blocked notices = %+v, want one naming review_round_cap=3", blocked)
+		if blocked := noticesOf(t, pool, root.Key, "pr-blocked"); len(blocked) != 1 || blocked[0].Cap != 3 {
+			t.Fatalf("the pr-blocked notices = %+v, want one naming the cap 3 (review_round_cap)", blocked)
 		}
 		prompts := hookPrompts(t, pool)
 		if want := []string{"implementer", "tester", "reviewer"}; !sameStrings(promptRoles(prompts), want) {
@@ -344,11 +347,12 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 		t.Fatalf("the stop started the implementer %d times, want none", got-implementerBefore)
 	}
 	// A notice is the architect's to read, and names the role and the phase it is about, as the
-	// held notice of a failed claim does.
+	// held notice of a failed claim does, and the task, the step that failed and that no step could
+	// take the work back (cause: no_return).
 	notices := noticesOf(t, pool, root.Key, "task-stopped")
 	if len(notices) != 1 || notices[0].Role != claim.RoleReviewer || notices[0].Phase != phase.Reviewing ||
-		!strings.Contains(notices[0].Reason, "task a") || !strings.Contains(notices[0].Reason, "step 3 (reviewer)") {
-		t.Fatalf("the task-stopped notices = %+v, want one to the owner about the reviewer, naming task a and step 3 (reviewer)", notices)
+		notices[0].Task != "a" || notices[0].Step != 3 || notices[0].Cause != texts.TaskStoppedNoReturn {
+		t.Fatalf("the task-stopped notices = %+v, want one to the owner about the reviewer, naming task a, step 3 and the cause %s", notices, texts.TaskStoppedNoReturn)
 	}
 	stops := superviseRowsOf(t, pool, root.Key, "step_stop")
 	if len(stops) != 1 || stops[0].Role != claim.RoleReviewer || stops[0].Generation != root.Generation ||
@@ -438,9 +442,11 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
-			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
+		start := starts[len(starts)-1]
+		report := readTaskOf(t, start.Task)
+		if start.FreshSession || start.Phase != phase.Planning || report.fields["handoff_phase"] != "test" || report.fields["handoff_version"] != "1" ||
+			report.fields["tester_verdict"] != "fail" {
+			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report (handoff test version 1, tester_verdict fail)", start)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)

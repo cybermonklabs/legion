@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -29,7 +30,7 @@ import (
 // here again, from the record as one read transaction finds it, by the one render
 // (workflow.RenderNews):
 //
-//   - the gate sentence is said of the tree root's gate rows as they stand now, so a task composed
+//   - the gate's fields are said of the tree root's gate rows as they stand now, so a task composed
 //     while the gate stood open and sent after a later version closed it says closed;
 //   - an item stands while the gate's row of its step still holds the document it names, approved
 //     at its To (classify.DesignApprovalStands), and the told row of its audience still holds a
@@ -75,17 +76,17 @@ import (
 //   - the root architect's summary of a tree that lingers is dropped whole: linger holds every
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
-// The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news,
-// rendered by the one render every task of news goes through (renderNews). A phase start whose
-// news is all dropped is sent as its own text alone, carrying no news; a task queued for its news
-// alone (supervise.Delivery.NewsOnly) with nothing left to say — no item standing, and no opening
-// owed while the gate stands open — answers "", which the machine retires rather than sends. A task
-// whose news all stands as it is carried is answered with the bytes it carries, so a send of a task
-// the record has not moved under writes nothing; one whose items the send dropped, re-keyed or told
-// by another state than they carry, or whose openings it dropped, took on, numbered anew or said
-// closed, is answered with its news encoded again, so any later send reads what this send told, and
-// so does the copy this prompt's acknowledgement records (supervise.Delivery.Carried), which is
-// what the confirmation of this prompt's turn credits.
+// The task text is the start's own text (record.DeliveryNews.Task), then the news record of each
+// audience it speaks to, rendered by the one render every task of news goes through (renderNews).
+// A phase start whose news is all dropped is sent as its own text alone, carrying no news; a task
+// queued for its news alone (supervise.Delivery.NewsOnly) with nothing left to say — no item
+// standing, and no opening owed while the gate stands open — answers "", which the machine
+// retires rather than sends. A task whose news all stands as it is carried is answered with the
+// bytes it carries, so a send of a task the record has not moved under writes nothing; one whose
+// items the send dropped, re-keyed or told by another state than they carry, or whose openings it
+// dropped, took on, numbered anew or said closed, is answered with its news encoded again, so any
+// later send reads what this send told, and so does the copy this prompt's acknowledgement records
+// (supervise.Delivery.Carried), which is what the confirmation of this prompt's turn credits.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews) where a reconcile has something to send it: the item no longer stands,
@@ -107,13 +108,17 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	if err := json.Unmarshal(d.News, &carried); err != nil {
 		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
-	var sent renderedNews
+	var read newsAtSend
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, d.RoundNamed, time.Now)
+		read, err = readNewsAtSend(ctx, tx, w.records, w.gatedSteps, c.Token, carried, time.Now)
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
+	}
+	sent, err := renderNews(read, carried, d.News, d.RoundNamed, dispatchDocumentIssue(ctx, w.dispatch, w.log, c.Tree))
+	if err != nil {
+		return "", nil, fmt.Errorf("render the news the task held for %s carries: %w", c.Token, err)
 	}
 	if len(sent.dropped) > 0 {
 		if err := w.queueDesignNews(ctx, sent.dropped); err != nil {
@@ -141,25 +146,44 @@ type renderedNews struct {
 // (newsForStart), each send of a held task (designNews), and the narrowing of a root architect's
 // held task (rootTask, through designNews). So the news a delivery carries is computed from the
 // text it sends, by the function that renders that text, and nothing keeps a news field beside a
-// text it did not render. It reads carried as the record stands in the caller's transaction, for
-// the claim whose token is reader (readNewsAtSend), and answers the text — carried's own Task, a
-// blank line, then the news — and exactly the news that text names: none where nothing stands;
-// encoded, the bytes carried was decoded from, where it keeps carried as it was; and carried
-// encoded again otherwise. A start has no bytes to keep, and passes nil. A narrowing passes the
-// news it encoded again under the narrowed text (narrowedNews, through designNews), so news it
-// keeps as it was is answered as those bytes, under that text.
+// text it did not render. It renders sent, what carried says as the record stands in the caller's
+// transaction for the claim it is read for (readNewsAtSend), outside that transaction: it reads
+// nothing of the record, and answers the text — carried's own Task, then the news record of each
+// audience, joined (followedBy) — and exactly the news that text names: none where nothing
+// stands; encoded, the bytes carried was decoded from, where it keeps carried as it was; and
+// carried encoded again otherwise. A start has no bytes to keep, and passes nil. A narrowing
+// passes the news it encoded again under the narrowed text (narrowedNews, through designNews), so
+// news it keeps as it was is answered as those bytes, under that text.
+//
+// Each gate document the record gives as the bare artifact reference (workflow.GateDocuments) is
+// named from issueOf, the daemon's read of Dispatch where the claim sends the task (designNews),
+// as the start task and the catch-up name theirs where the outbox runs their rows
+// (workflow.NameNewsDocuments), once for each tree; where Dispatch does not answer, the bare
+// reference stays. A start passes nil and reads no Dispatch (newsForStart): every send of the task
+// renders it again and names its documents then.
 //
 // A reviewer's task that ends with the daemon's two sentences of its review round says so by a
 // fact (roundNamed: record.SuperviseRequest.RoundNamed at a start, supervise.Delivery.RoundNamed at
 // a send), and those two stay the last two of the text the reviewer is sent, which is where its
-// prompt reads them: the text is carried's Task cut before them (reviewround.Split), a blank line,
-// the news, and then the two sentences. A task that does not end with them as Sentences writes
-// them is rendered whole, as any other.
-func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
-	carried record.DeliveryNews, encoded []byte, roundNamed bool, now func() time.Time) (renderedNews, error) {
-	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
-	if err != nil {
-		return renderedNews{}, err
+// prompt reads them: the text is carried's Task cut before them (reviewround.Split), the news
+// records, and then the two sentences. Where news records follow the task's own text, the two go
+// on a line of their own after the last record, whichever form the task gave them (a task an
+// earlier release stored ends with Sentences after a space), so the closing line of a record's
+// last block stands alone, as a reader of the block needs it. Where none follows, the task is
+// sent as it stood, the two joined as the task joined them (reviewround.Split gives them with what
+// joins them to the text before, or alone where they are the whole task). A task that does not
+// end with them as Sentences or Ending writes them is rendered whole, as any other.
+func renderNews(sent newsAtSend, carried record.DeliveryNews, encoded []byte, roundNamed bool,
+	issueOf func(artifact string) (string, bool)) (renderedNews, error) {
+	records := make([]string, len(sent.news))
+	namedTrees := map[string]bool{}
+	for i, news := range sent.news {
+		// The news of one tree shares that tree's documents (newsTree.documents), named once.
+		if issueOf != nil && !namedTrees[news.Tree] {
+			workflow.NameNewsDocuments(news.Documents, issueOf)
+			namedTrees[news.Tree] = true
+		}
+		records[i] = workflow.RenderNews(news)
 	}
 	body, round := carried.Task, ""
 	if roundNamed {
@@ -167,33 +191,38 @@ func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []re
 			body, round = cut, sentences
 		}
 	}
-	rendered := renderedNews{task: paragraphs(body, sent.text) + round, says: sent.says, dropped: sent.dropped}
+	text := followedBy(body, records...)
+	if text != body && round != "" {
+		round = "\n" + strings.TrimLeft(round, " \n")
+	}
+	rendered := renderedNews{task: text + round, says: sent.says, dropped: sent.dropped}
 	switch {
 	case sent.kept.Empty():
 	case encoded != nil && !sent.rewritten && len(sent.kept.Items) == len(carried.Items) &&
 		len(sent.kept.Openings) == len(carried.Openings):
 		rendered.news = encoded
 	default:
+		var err error
 		if rendered.news, err = json.Marshal(sent.kept); err != nil {
-			return renderedNews{}, fmt.Errorf("encode the news %s's task carries: %w", reader, err)
+			return renderedNews{}, fmt.Errorf("encode the news the task carries: %w", err)
 		}
 	}
 	return rendered, nil
 }
 
-// newsAtSend is what a delivery's news says at its send: the text that follows the start's own
-// (text), what of the news still stands (kept, which keeps the start's own text), whether any of
-// it is worth a task of its own (says): an item that stands, or an opening owed while the gate
-// stands open, whether it keeps the news otherwise than it was carried (rewritten: an item
-// re-keyed to the version its told row holds now, marked with another run (inRun), or with its
-// unread review history taken on or let go, carriedChange, or an opening the delivery did not
-// carry, one it carried and no longer tells, one it carries under another opening number or
-// another run, or one it now says is closed), and the tree of each item it dropped that a
-// reconcile can still send (dropped), each once, whose reconcile the send queues: not the tree of
-// an item dropped because the record does not hold its issue or its tree, or because it is to the
-// architect of a lingering tree (readNewsAtSend).
+// newsAtSend is what a delivery's news says at its send: the news of each audience it speaks to,
+// whose records follow the start's own text (news, rendered by renderNews), what of the news still
+// stands (kept, which keeps the start's own text), whether any of it is worth a task of its own
+// (says): an item that stands, or an opening owed while the gate stands open, whether it keeps the
+// news otherwise than it was carried (rewritten: an item re-keyed to the version its told row
+// holds now, marked with another run (inRun), or with its unread review history taken on or let
+// go, carriedChange, or an opening the delivery did not carry, one it carried and no longer tells,
+// one it carries under another opening number or another run, or one it now says is closed), and
+// the tree of each item it dropped that a reconcile can still send (dropped), each once, whose
+// reconcile the send queues: not the tree of an item dropped because the record does not hold its
+// issue or its tree, or because it is to the architect of a lingering tree (readNewsAtSend).
 type newsAtSend struct {
-	text      string
+	news      []workflow.News
 	kept      record.DeliveryNews
 	says      bool
 	rewritten bool
@@ -232,16 +261,19 @@ func listenersOf(news record.DeliveryNews) []*newsListener {
 	return listeners
 }
 
-// newsTree is what the send reads of one tree: its root's record, the root's gate rows, whether
-// the standing gate is open (record.TreeGate.Open), the told rows of its issues, and what names the
+// newsTree is what the send reads of one tree: its root's record, the root's gate rows, the
+// document each row is bound to as the architect-start task and the catch-up name it
+// (workflow.GateDocuments, named from Dispatch after the transaction by renderNews), whether the
+// standing gate is open (record.TreeGate.Open), the told rows of its issues, and what names the
 // holder of each member's phase (newsClaims), which reads the tree's architect claims only the
 // first time the owner of a member in accepting is asked.
 type newsTree struct {
-	root   record.Issue
-	gates  map[record.DesignStep]record.DesignGate
-	open   bool
-	told   []record.DesignTold
-	claims *newsClaims
+	root      record.Issue
+	gates     map[record.DesignStep]record.DesignGate
+	documents map[record.DesignStep]string
+	open      bool
+	told      []record.DesignTold
+	claims    *newsClaims
 }
 
 // newsListened is one listener as the record stands at the send: its issue's record and tree, its
@@ -258,8 +290,9 @@ type newsListened struct {
 }
 
 // readNewsAtSend reads, in the caller's one transaction, what carried says as the record stands at
-// the moment the clock now gives, read for the claim whose token is reader, and renders it
-// (designNews). An item, an opening or a listener whose issue the record does not hold is dropped:
+// the moment the clock now gives, read for the claim whose token is reader, as the news each
+// audience is told (workflow.News), which renderNews renders after the transaction (designNews,
+// newsForStart). An item, an opening or a listener whose issue the record does not hold is dropped:
 // nothing can say what the gate of a tree the record does not know stands at. So is the architect
 // of a tree that lingers, items, opening and summary alike. A holder listener whose member's phase
 // reader does not hold now (newsClaims.holderOf) is dropped too, items and opening: its told row is
@@ -338,10 +371,10 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	}
 	sent := newsAtSend{kept: record.DeliveryNews{Task: carried.Task}}
 	keep := map[int]bool{}
-	var texts []string
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
-			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
+			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, Documents: heard.tree.documents,
+			OpeningOwed: heard.opening != nil}
 		for _, i := range heard.items {
 			change, kept, ok := recorded.carriedChange(items[i])
 			if !ok {
@@ -362,7 +395,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			continue
 		}
 		sent.says = sent.says || len(news.Items) > 0 || (heard.opening != nil && !heard.opening.Closed)
-		texts = append(texts, workflow.RenderNews(news))
+		sent.news = append(sent.news, news)
 	}
 	for i, item := range items {
 		if keep[i] {
@@ -379,7 +412,6 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			}
 		}
 	}
-	sent.text = paragraphs(texts...)
 	return sent, nil
 }
 
@@ -438,12 +470,16 @@ func readNewsTree(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 	if err != nil {
 		return nil, err
 	}
+	documents, err := workflow.GateDocuments(ctx, tx, records, gates)
+	if err != nil {
+		return nil, err
+	}
 	told, err := records.TreeTold(ctx, tx, root)
 	if err != nil {
 		return nil, err
 	}
-	trees[root] = &newsTree{root: *issue, gates: gates, open: record.TreeGate{Steps: steps, Rows: gates}.Open(), told: told,
-		claims: newNewsClaims(*issue, nil)}
+	trees[root] = &newsTree{root: *issue, gates: gates, documents: documents, open: record.TreeGate{Steps: steps, Rows: gates}.Open(),
+		told: told, claims: newNewsClaims(*issue, nil)}
 	return trees[root], nil
 }
 
@@ -523,7 +559,9 @@ func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.News
 // memberDraft is one member of a tree as the root architect's summary reads it before the change
 // sets are read: its record, how it is told (memberTelling: its state, and the issue whose
 // architect holds it in accepting where that is not the tree root's), and, for a member owed news,
-// the items its holder is owed now (record.OwedNews) and whether its holder row owes the opening.
+// the items its holder is owed now (record.OwedNews) and whether its holder row owes the opening,
+// which OwedNews owes only while the standing gate is open (openingOwed, false for a member owed
+// nothing).
 type memberDraft struct {
 	memberTelling
 	issue       record.Issue
@@ -537,17 +575,22 @@ type memberDraft struct {
 // (settlementOf's settleRaise): every item it is owed is recorded as changing nothing of the work
 // (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), and its holder
 // row owes no opening. A member whose row owes the opening is sent a task with it, so it is named
-// with its items and how its holder is told. An owed item the record cannot tell yet
-// (newsRecorded.change) is named by none.
+// with its items, how its holder is told, and that the task gives it the opening
+// (workflow.NewsMember.Opening). An owed item the record cannot tell yet (newsRecorded.change) is
+// named by none, and counted (workflow.NewsMember.Unnamed), so a member owed only the opening is
+// told apart from one owed news the daemon cannot name yet.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member
 	}
+	member.Opening = m.openingOwed
 	for _, item := range m.owed {
 		if change, ok := recorded.change(item); ok {
 			member.Items = append(member.Items, change)
+		} else {
+			member.Unnamed++
 		}
 	}
 	return member
@@ -597,9 +640,10 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	}
 	drafts := make([]memberDraft, 0, len(members))
 	for _, member := range members {
-		draft := memberDraft{issue: member, openingOwed: record.ToldRow(facts.Told, member.Key, record.AudienceHolder).OpeningOwed}
+		draft := memberDraft{issue: member}
 		if news, owes := owed.Member(member.Key); owes {
 			draft.owed, draft.memberTelling = news.Items, told[member.Key]
+			draft.openingOwed = record.ToldRow(facts.Told, member.Key, record.AudienceHolder).OpeningOwed
 		} else {
 			draft.state = untoldReason(owed.Untold[member.Key])
 		}
@@ -684,14 +728,18 @@ func boolOrder(b bool) int {
 	return 0
 }
 
-// paragraphs is each non-empty text in turn, a blank line between each two: the start's own text
-// and the news after it, or the news of each audience a delivery speaks to.
-func paragraphs(texts ...string) string {
-	said := make([]string, 0, len(texts))
-	for _, text := range texts {
-		if text != "" {
-			said = append(said, text)
-		}
+// followedBy is text, the start's own text, with the news record of each audience a delivery
+// speaks to after it, all joined by texts.Joined: a blank line between each two, and every block of
+// every record this release drew drawn again under a tag chosen against all the other text of the
+// task, with or without a note in front of it, so no record's words open or close the tag of
+// another's block. A start's text an earlier release queued, a start row main queued that this
+// release's outbox runs with news owed (newsForStart), is prose that holds no record line
+// (texts.Drawn): it goes as that release wrote it, a reason quoted in it as its author wrote it,
+// tags and all, and the news records' blocks take tags chosen against it. A text with no record
+// after it is sent as it stands. An empty text, or an empty record, is no part.
+func followedBy(text string, records ...string) string {
+	if !slices.ContainsFunc(records, func(rec string) bool { return rec != "" }) {
+		return text
 	}
-	return strings.Join(said, "\n\n")
+	return texts.Joined(append([]string{text}, records...)...)
 }

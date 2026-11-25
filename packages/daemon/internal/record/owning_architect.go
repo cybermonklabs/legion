@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // OwningArchitect is the architect claim of the issue the owner walk from issue ends at
@@ -29,8 +30,8 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // outbox can publish a child's close or status change while the child's own architect still holds
 // its role, before its suspension or close lands.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
-	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
-	return aboutItsArchitect || kind == "child-closed" || kind == "child-status"
+	aboutItsArchitect := role == claim.RoleArchitect && (kind == texts.WorkerDied || kind == texts.WorkerStalled)
+	return aboutItsArchitect || kind == texts.ChildClosed || kind == texts.ChildStatus
 }
 
 // OwningIssue is the key of the issue whose architect owns issue: the nearest issue at or above

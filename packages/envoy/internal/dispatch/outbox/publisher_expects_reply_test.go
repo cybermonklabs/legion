@@ -12,8 +12,8 @@ import (
 // an approved artifact are receipts a reader has nothing to send back to, and they would say so
 // out loud were it not for the listeners built before #2903, which read expects_reply only as a
 // string and drop a frame carrying the literal false (see envelope() in publisher.go for what
-// removes that). Every other event type has never said anything either, an ask event the same
-// branch gives an urgency included.
+// removes that). Every other event type has never said anything either, an ask event whose ask
+// carries an urgency included.
 //
 // What is read here is the marshalled envelope, because that is what the bus carries. And each
 // envelope is validated as resolveDestinations validates it before publishing, because an

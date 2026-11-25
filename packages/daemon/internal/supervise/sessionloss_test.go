@@ -90,7 +90,7 @@ func TestAStartTheSessionStoreCannotAnswerWaitsAndIsReportedHourly(t *testing.T)
 
 	// A minute later the same session is tried again, and the second fault inside the hour is not
 	// reported again.
-	h.advance(sessionStoreRetry)
+	h.advance(SessionStoreRetry)
 	h.wantCalls("Resume", 2)
 	h.wantBudgets(Budgets{LaunchFailures: 1})
 	if len(faults) != 1 {

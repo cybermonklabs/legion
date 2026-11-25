@@ -265,11 +265,14 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 }
 
 // StoppedByAPause is the id of the pause whose stop of claim token is the claim's newest stop that
-// ended `stopped`, where that stop ended after issue's newest pod release, whichever pause made it,
-// and 0 otherwise. It is the stop heldMessageOwed reads (internal/daemon's outbox.heldMessageOwed,
-// the one statement of the held role message's debt, R4 of dispatch://INFRA-3759): a role message
-// a pause held is owed to a role a pause stopped until the role's session holds its topic, and a
-// release recorded after the stop ends that debt.
+// ended `stopped`, where that stop ended after every release of issue's pod that suspended the
+// stop's role (stopOutlivesItsRolesRelease), whichever pause made it, and 0 otherwise. It is the
+// stop heldMessageOwed reads (internal/daemon's outbox.heldMessageOwed, the one statement of the
+// held role message's debt, R4 of dispatch://INFRA-3759): a role message a pause held is owed to a
+// role a pause stopped until the role's session holds its topic, and a release recorded after the
+// stop that suspended the role ends that debt. A release that suspended the pod's other roles alone
+// left the role as the stop left it, so the debt stands, and the resume still launches the role
+// for its held text, a low one included.
 // A later stop of the claim that is still open, or that ended any other way, is passed over: a
 // cancelled stop stopped nothing, and what a taken-over or failed one signals, the claim's state or
 // a later pod release already says. It reads no ready, unlike StoppingPauseTx: a woken agent says
@@ -278,8 +281,7 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select coalesce((select case
-				when s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
+		return tx.QueryRow(ctx, `select coalesce((select case when `+stopOutlivesItsRolesRelease+`
 				then s.pause_id else 0 end
 			from project_pause_stops s where s.claim = $3 and s.ended_as = $4 order by s.id desc limit 1), 0)`,
 			project, issue, string(token), string(PauseStopStopped)).Scan(&pause)
@@ -290,23 +292,63 @@ func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, toke
 	return pause, nil
 }
 
-// StoppingPauseTx is the id of the pause that stopped claim token, through tx: the pause of the
-// claim's newest stop, whatever its end, where that stop ended `stopped` after both issue's newest
-// pod release and the claim's last ready (claims.last_ready), and 0 otherwise. It is the statement
-// of which pause a wake of the claim belongs to, and a wake of the claim reads it twice over
-// (PodRecords.PauseOfWake): the session the wake brings back is one that pause stopped in a pod it
-// kept, which the wake's task says (decision 16 of dispatch://INFRA-3759, workflow.WakeTask), and a
-// wake taken once that pause has ended can be that pause's held wake, which pairs with no release
-// (decision 15, PodRecords.TakePodWake). A release recorded after that stop took the pod, and the
-// release's words are the true ones. A ready after it is the agent of a launch since, such as the
-// resume's, so something later stopped that session: an idle release suspends the role (its
-// outbox `suspend` row) before its teardown records the release, and a wake taken in between is
-// the release's. The held role message's debt reads StoppedByAPause, through heldMessageOwed, not
-// this. project is the project token, as pod_releases holds it.
+// stopOutlivesItsRolesRelease is the one condition, on a project_pause_stops row s of issue $2's
+// pod in project $1, that no release of that pod suspended s's role after s ended: s ended after
+// every release whose roles name s.role (pod_releases.roles, the roles a release suspended,
+// PodRelease.Roles). A release suspends only the live claims it stops, so one that names other
+// roles alone, or none, left a claim the stop had already suspended as the stop left it. Both reads
+// of a pause's stop use it, StoppedByAPause and stoppingPause, so the held message's debt, a wake
+// and an update-stalled notice can never read one release two ways.
+const stopOutlivesItsRolesRelease = `s.ended_at > coalesce((select max(r.at) from pod_releases r
+				where r.project = $1 and r.issue = $2 and s.role = any(string_to_array(r.roles, ','))), '-infinity'::timestamptz)`
+
+// StoppingPauseTx is the id of the pause that stopped claim token, through tx (stoppingPause). It
+// is the statement of which pause a wake of the claim belongs to, and a wake of the claim reads it
+// twice over (PodRecords.PauseOfWake): the session the wake brings back is one that pause stopped,
+// which the wake's task says (decision 16 of dispatch://INFRA-3759, workflow.WakeTask), and a wake
+// taken once that pause has ended can be that pause's held wake, which pairs with no release
+// (decision 15, PodRecords.TakePodWake). The held role message's debt reads StoppedByAPause,
+// through heldMessageOwed, not this. project is the project token, as pod_releases holds it.
 func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
+	return stoppingPause(ctx, tx, project, issue, token)
+}
+
+// StoppingPause is StoppingPauseTx in a read-only transaction of its own: the pause that stopped
+// claim token, read where no transaction of the caller's is open. An update-stalled notice reads
+// it for a claim that a pause stopped owing it no launch (internal/daemon's stoppedByAPause), whose
+// suspension that pause's stop, and no idle release, made. project is the project token, as
+// pod_releases holds it.
+func (s *Store) StoppingPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
+	var pause int64
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pause, err = stoppingPause(ctx, tx, project, issue, token)
+		return err
+	})
+	return pause, err
+}
+
+// stoppingPause is the one statement of which pause stopped claim token, read through tx (a
+// caller's transaction, or StoppingPause's own) by both StoppingPauseTx and StoppingPause, so a
+// wake and an update-stalled notice can never name two different pauses for one claim. It is the
+// pause of the claim's newest stop, whatever its end, where that stop ended `stopped` after both
+// the claim's last ready (claims.last_ready) and every release of issue's pod that suspended the
+// stop's role (stopOutlivesItsRolesRelease), and 0 otherwise.
+//
+// A release suspends only the live claims it stops and records their roles (PodRelease.Roles), so
+// only a release that names the role can have suspended the claim since that stop: then the
+// release's words are the true ones, since it is what took the claim's session down last. A
+// release that names other roles alone, or none, such as the idle release of a role that ran in
+// the pod after the resume, left a claim the stop had already suspended as the stop left it: the
+// pause stopped that session, though such a release took the pod the pause had kept. A ready after
+// the stop is the agent of a launch since, such as the resume's, so something later stopped that
+// session: an idle release suspends the role (its outbox `suspend` row) before its teardown
+// records the release, and a wake taken in between is the release's. project is the project token,
+// as pod_releases holds it.
+func stoppingPause(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4
-			and s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
+			and `+stopOutlivesItsRolesRelease+`
 			and s.ended_at > coalesce((select c.last_ready from claims c where c.token = $3), '-infinity'::timestamptz)
 			then s.pause_id else 0 end
 		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), 0)`,

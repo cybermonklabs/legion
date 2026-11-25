@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { decode } from "@toon-format/toon";
 import { renderInbound } from "../delivery";
 import { sessionAnswerRelationPhrase } from "../session-answer-relations";
+import { splitWordsBlocks } from "../words-block";
 
 /**
  * The report's case (dispatch://INFRA-4344) as a real outbox published it: a person's reply in
@@ -55,7 +56,19 @@ type RecordedCopy = AskReplyCopy & {
   readonly relation: string;
 };
 
-type Card = { envoy: Record<string, unknown> & { dispatch: Record<string, unknown> } };
+/** A card's fields, as TOON's `decode` reads them once its blocks are split off, and the words of
+ *  its blocks by the name of the field that holds them. */
+type Card = {
+  envoy: Record<string, unknown> & { dispatch: Record<string, unknown> };
+  words: Readonly<Record<string, string>>;
+};
+
+/** The card `content` as a reader reads it. */
+function read(content: string): Card {
+  const { head, blocks } = splitWordsBlocks(content);
+  const { envoy } = decode(head) as Pick<Card, "envoy">;
+  return { envoy, words: Object.fromEntries(blocks.map(({ name, text }) => [name, text])) };
+}
 
 const fixture = JSON.parse(
   readFileSync(
@@ -77,7 +90,7 @@ function copyOf(reply: AskReplyCopy["reply"], reader: AskReplyCopy["reader"]): A
 
 /** `copy` as the card `session` reads, from the topic it was handed on. */
 function cardOf(copy: AskReplyCopy, session: string): Card {
-  return decode(renderInbound(JSON.stringify(copy.envelope), session, copy.topic).content) as Card;
+  return read(renderInbound(JSON.stringify(copy.envelope), session, copy.topic).content);
 }
 
 /** The card of a reply on the reader's own ask, `askID` (A's unless named): the command that
@@ -124,7 +137,7 @@ describe("a person's reply on A's ask, as each session's card reads the copy it 
     // Which ask the reply is on, and what it says, stay on the card.
     expect(card.envoy.re).toBe(`dispatch://${fixture.issue_key}/ask/${fixture.ask_id}`);
     expect(card.envoy.dispatch.question).toBe("Which database backs the queue?");
-    expect(card.envoy.dispatch.reply).toBe("Which pool size do you need?");
+    expect(card.words["reply"]).toBe("Which pool size do you need?");
     expect(card.envoy.dispatch.state).toBe("open");
   });
 
@@ -170,8 +183,8 @@ describe("a reply too large for the bus, on an ask seven sessions own, as each s
   function standInCards(copy: StandInCopy): [Card, Card] {
     const raw = JSON.stringify(copy.envelope);
     return [
-      decode(renderInbound(raw, copy.reader, copy.topic).content) as Card,
-      decode(renderInbound(raw, copy.reader, copy.topic, wholeBody).content) as Card,
+      read(renderInbound(raw, copy.reader, copy.topic).content),
+      read(renderInbound(raw, copy.reader, copy.topic, { body: wholeBody }).content),
     ];
   }
 
@@ -196,7 +209,7 @@ describe("a reply too large for the bus, on an ask seven sessions own, as each s
 
       expectOwnersCard(arrived, standIn.ask_id);
       expectOwnersCard(whole, standIn.ask_id);
-      expect(whole.envoy.dispatch.reply).toBe(wholeBody);
+      expect(whole.words["reply"]).toBe(wholeBody);
     }
   });
 

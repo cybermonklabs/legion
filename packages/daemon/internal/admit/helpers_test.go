@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -145,6 +148,35 @@ func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key,
 	})
 	start.Decided = decided
 	return workflow.ArchitectStartTask(start)
+}
+
+// hasLines reports whether task, a text the daemon rendered from its kind's record
+// (texts.Render), holds each of lines as a whole line of its own: a field (`key: value`, a value
+// that TOON quotes in its quotes), a kept sentence, or a line of a block.
+func hasLines(task string, lines ...string) bool {
+	held := strings.Split(task, "\n")
+	for _, line := range lines {
+		if !slices.Contains(held, line) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasField reports whether task, a text the daemon rendered from its kind's record
+// (texts.Render), sets the field key, whatever its value.
+func hasField(task, key string) bool {
+	return slices.ContainsFunc(strings.Split(task, "\n"), func(line string) bool {
+		return strings.HasPrefix(line, key+": ") || strings.HasPrefix(line, key+"[")
+	})
+}
+
+// keptDecisionsTask is the kept-decisions task of LEGION-ROOT's tree (workflow.KeptDecisionsTask)
+// that names one decision a person made on LEGION-ROOT, by user:alice at fixedNow: its ref and
+// what they did.
+func keptDecisionsTask(ref string, decision record.DecisionKind) string {
+	return workflow.KeptDecisionsTask("LEGION-ROOT", record.KeptDecisions{Decisions: []record.DecisionMark{{
+		Ref: ref, At: fixedNow, Issue: "LEGION-ROOT", Decision: decision, Actor: "user:alice"}}})
 }
 
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
@@ -337,6 +369,18 @@ func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key
 		t.Fatalf("compose the resume task of %s: %v", key, err)
 	}
 	return task
+}
+
+// phaseResume is the resume task of issue's phase, built from the parts of its record, for an
+// issue with no plan rows on an engine that runs no runtime: the phase-resume record, whose
+// standing names the issue's branch alone (workflow.WorkingCopy with no directory).
+func phaseResume(t testing.TB, issue record.Issue) string {
+	t.Helper()
+	text, err := texts.Render(workflow.PhaseResume(issue, workflow.WorkingCopy(issue, nil)))
+	if err != nil {
+		t.Fatalf("render the resume task of %s: %v", issue.Key, err)
+	}
+	return text
 }
 
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
@@ -75,26 +76,10 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 	if lead, _, _ := strings.Cut(start.Task, "\n"); lead != "Production check of LEGION-209: child." {
 		t.Fatalf("the check task opens %q, want the line a resumed session tells the check by", lead)
 	}
-	for _, want := range []string{"sjawhar/legion", "#43", "merge-43", "Look 1, woken by the merge.", "handoff_complete", "pass", "pending", "fail",
-		// Nothing the daemon reads from a deployment wakes a look any more, so the task asks the
-		// checking agent for the time of its own next look and tells it to wait for nothing here.
-		"A pending report also carries wake_at", "Wait for nothing in this session",
-		// A defect with a clear fix goes to the controller topic, which hands it to the tree that
-		// owns the code and files it for Legion only when none does; one that needs a decision is a
-		// finding ask on the report issue, whose reference the checking agent publishes to the
-		// controller, which files only on a person's answer.
-		"a defect with a clear fix goes to the controller topic", "dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {
-		if !strings.Contains(start.Task, want) {
-			t.Fatalf("the check task lacks %q:\n%s", want, start.Task)
-		}
+	if want := []string{"look: 1", "woken_by: " + texts.WokenByMerge, "pull_request: sjawhar/legion#43", "merge_commit: merge-43"}; !hasLines(start.Task, want...) {
+		t.Fatalf("the check task lacks one of %q:\n%s", want, start.Task)
 	}
-	// The implementer never files an issue for a defect the check finds: the controller does.
-	for _, never := range []string{"dispatch issue", "issue of its own"} {
-		if strings.Contains(start.Task, never) {
-			t.Fatalf("the check task still says %q:\n%s", never, start.Task)
-		}
-	}
-	if strings.Contains(start.Task, "last look") {
+	if strings.Contains(start.Task, "last: true") {
 		t.Fatalf("the first look's task says it is the last:\n%s", start.Task)
 	}
 	if got := issueSuspensions(t, pool, "LEGION-209"); len(got) != 0 {
@@ -622,10 +607,11 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 }
 
 // assertWaitNotice checks that the architect was told the close waits exactly once: one pr-merged
-// notice, naming the pull request and waiting, the keys the close is waiting for, then the
-// sentence on a status the daemon has not taken yet and the rule that ends a child. The
-// architect's other notices — a child's close or its move out of the workflow among them — are not
-// this one's business.
+// notice, naming the pull request and waiting, the keys the close is waiting for, with no reason,
+// and keeping word for word the two texts main's sentence gave (a status the daemon has not taken
+// yet, record.StatusNotTakenYet, and the rule that ends a child, record.EndChildRule), as R8 keeps
+// dispatch://INFRA-3178's R6. The architect's other notices — a child's close or its move out of
+// the workflow among them — are not this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
@@ -634,10 +620,9 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow. LEGION-208 closes once the last of them leaves the workflow.", waiting) +
-		" " + record.StatusNotTakenYet + " " + record.EndChildRule
-	if len(got) != 1 || got[0].Reason != want {
-		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
+	if len(got) != 1 || strings.Join(got[0].WaitingFor, ", ") != waiting || got[0].PullRequest == "" || got[0].Reason != "" ||
+		got[0].StatusNotTakenYet != record.StatusNotTakenYet || got[0].EndChildRule != record.EndChildRule {
+		t.Fatalf("pr-merged notices = %+v, want one naming its pull request and waiting for %s, with the sentence on a status not taken yet and the rule that ends a child word for word", got, waiting)
 	}
 }
 

@@ -4,6 +4,7 @@ import { legacyAgentSubject, legacyDispatchIssueSubject } from "@legion/contract
 import { decode } from "@toon-format/toon";
 import { renderInbound } from "../delivery";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
+import { splitWordsBlocks } from "../words-block";
 
 // The rules `parseFrameJSON` holds every read of an inbound frame to, each row through a reader
 // that reads a frame with it. Before them, a zod object that passes unknown keys through copied a
@@ -127,7 +128,9 @@ describe("an inbound frame's fields are read from its own keys only", () => {
         { topic: legacyAgentSubject(reader) }
       )
     );
-    const card = decode(renderInbound(raw, reader).content) as { envoy: { to?: string } };
+    const card = decode(splitWordsBlocks(renderInbound(raw, reader).content).head) as {
+      envoy: { to?: string };
+    };
 
     expect(card.envoy.to).toBeUndefined();
   });
@@ -255,11 +258,12 @@ describe("an inbound frame's text is read as well-formed Unicode", () => {
   });
 
   test("renderInbound: a whole surrogate pair is the character it spells", () => {
-    const card = decode(
+    // A session's words come in a block of their own after the card's fields (`<message>`).
+    const { blocks } = splitWordsBlocks(
       renderInbound(String.raw`{"source":"agent","payload":"\ud83d\ude00"}`, reader).content
-    ) as { envoy: { message?: unknown } };
+    );
 
-    expect(card.envoy.message).toBe("\u{1F600}");
+    expect(blocks.find((block) => block.name === "message")?.text).toBe("\u{1F600}");
   });
 });
 

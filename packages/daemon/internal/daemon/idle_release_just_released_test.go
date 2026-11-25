@@ -121,7 +121,7 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 		rig.awaitResumed(wake.issue, 2)
 	}
 	for _, wake := range wakes {
-		rig.awaitTask(wake.issue, workflow.WakeTask(wake.kind, wake.detail, workflow.StoppedByRelease))
+		rig.awaitTask(wake.issue, workflow.WakeTask(wake.issue.key, wake.kind, wake.detail, workflow.StoppedByRelease))
 		if resumes := rig.resumesOf(wake.issue); len(resumes) != 1 || resumes[0].Kind != wake.kind {
 			t.Errorf("the resumes of %s are recorded as %+v, want one, of kind %q", wake.issue.key, resumes, wake.kind)
 		}
@@ -209,8 +209,13 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	//    message's text as its payload too, which the listener carries as a JSON document
 	//    (notify's Publish), and the session records that payload, so it is the text's JSON
 	//    encoding that is counted.
-	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, hook.Message(issue.key)))
-	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, loop.Message(issue.key)))
+	for _, fired := range []record.HookPrompt{hook, loop} {
+		text, err := fired.Message(issue.key)
+		if err != nil {
+			t.Fatalf("the %s hook prompt's text: %v", fired.Hook, err)
+		}
+		idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, text))
+	}
 }
 
 // idleRigPublishedText is text as a role session records a message the daemon published: the

@@ -71,21 +71,19 @@ func TestTheRootArchitectsSummarySaysAMemberWaitsWhileItsSubArchitectHoldsAnUnta
 				t.Fatalf("run the root architect's news-only start: %v", err)
 			}
 			task, _ := pendingNews(t, machine)
-			const prefix = "- LEGION-602, in accepting: "
-			var line string
-			for _, candidate := range strings.Split(task, "\n") {
-				if strings.HasPrefix(candidate, prefix) {
-					line = candidate
-				}
-			}
+			line := newsRecordOf(t, task, "root_architect", reconcileRoot).member(reconcileGrandchild)
 			if line == "" {
-				t.Fatalf("the root architect's summary = %q, want a line for LEGION-602", task)
+				t.Fatalf("the root architect's summary = %q, want a row for LEGION-602", task)
 			}
-			if tells := strings.Contains(line, "a task tells"); tells != tc.confirmed {
-				t.Fatalf("the summary's line for LEGION-602 = %q, want it to say a task tells it now: %t", line, tc.confirmed)
+			told := "when_task_taken"
+			if tc.confirmed {
+				told = "now"
 			}
-			if strings.Contains(line, "You hold it in accepting") {
-				t.Fatalf("the summary's line for LEGION-602 = %q, want no answer of the root architect's: a running sub-architect owns it", line)
+			if !strings.HasPrefix(line, "LEGION-602 accepting told="+told+" ") {
+				t.Fatalf("the summary's row for LEGION-602 = %q, want it told %s", line, told)
+			}
+			if strings.Contains(line, "told=by_you") {
+				t.Fatalf("the summary's row for LEGION-602 = %q, want no answer of the root architect's: a running sub-architect owns it", line)
 			}
 		})
 	}

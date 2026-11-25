@@ -42,7 +42,7 @@ type roleForReader struct {
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for:
-// noticeFor writes the notice of the move out of admitted with no role (R2),
+// NoticeFor writes the notice of the move out of admitted with no role (R2),
 // Engine.leftItsPhase records no worker's completion while the issue stands at admitted, the
 // completion route's entryFence answers a completion at admitted as one of a phase its role does
 // not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
@@ -50,8 +50,9 @@ type roleForReader struct {
 // reaches its answer through a guard that starts, resumes or reports no architect as a phase
 // worker, or names the role an admitted root's entry numbers are of, or names the architect in the
 // notice of a task its owner stopped in the architect's phase, where the stop ends no process
-// (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
-// architect's completion there, as its reader took the issue's phase while RoleFor named no role
+// (OwnerStoppedNotice, which Engine.taskStopped writes, at admitted as at accepting), or answers
+// the issue's own phase for the architect's completion there, as its reader took the issue's phase
+// while RoleFor named no role
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
 // plan.Supported holds every task to an implementer step with each tester, reviewer and
@@ -67,28 +68,32 @@ type roleForReader struct {
 var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                             {calls: 1, test: "TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}:       {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
-	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:                  {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
+	{file: "internal/admit/stalled.go", fn: "TreeStalledNotice"}:                  {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                           {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                              {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:           {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                        {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
-	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
+	{file: "internal/texts/rules.go", fn: "checksRedUrgency"}:                     {calls: 1, test: "TestEachKindHasTheUrgencyItsRuleGives"},
+	{file: "internal/texts/rules.go", fn: "ciSettledUrgency"}:                     {calls: 1, test: "TestEachKindHasTheUrgencyItsRuleGives"},
+	{file: "internal/workflow/architect_start.go", fn: "carriedPhase"}:            {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
-	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                 {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
+	{file: "internal/workflow/design_news.go", fn: "NewsRecord"}:                  {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
+	{file: "internal/workflow/effects.go", fn: "BackwardMoveOf"}:                  {calls: 1, test: "TestBackwardMoveOfReadsTheMoveTheAskerAndTheWordsOfEveryBackwardReason"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                      {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
+	{file: "internal/workflow/effects.go", fn: "PhaseAssignment"}:                 {calls: 1, test: "TestABackwardMoveReasonReachesTheNextTaskInABlock"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                         {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
-	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:              {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
+	{file: "internal/workflow/effects.go", fn: "backwardMoveAsked"}:               {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:               {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:              {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:              {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/engine.go", fn: "NoticeFor"}:                        {calls: 2, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
-	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
+	{file: "internal/workflow/plan_stop.go", fn: "OwnerStoppedNotice"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},

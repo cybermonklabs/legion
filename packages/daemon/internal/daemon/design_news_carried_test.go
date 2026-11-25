@@ -36,8 +36,9 @@ const (
 	// carriedBusy is Oh My Pi's answer to a prompt while another prompt's turn is being prepared
 	// or run.
 	carriedBusy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-	// carriedOpened is the opening sentence of the rig's gate at version 4 of its spec.
-	carriedOpened = "The design gate of LEGION-800 opened: a person approved version 4 of its spec document (artifact-800)"
+	// carriedOpened is the gate of the rig's news at the opening of version 4 of its spec, as its
+	// record names it (newsSaid).
+	carriedOpened = "open spec artifact-800 4 merge=released"
 	// pathChecks is the Verification document a rig's root registers beside its spec.
 	pathChecks = "artifact-800-checks"
 )
@@ -214,7 +215,7 @@ func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testi
 	before := len(conn.Prompts())
 	r.hello(reviewer)
 	resent := promptsAfter(conn, before)
-	if len(resent) != 1 || !strings.Contains(resent[0].Message, carriedOpened) {
+	if len(resent) != 1 || !newsTells(t, resent[0].Message, carriedOpened) {
 		t.Fatalf("the resend = %+v, want one prompt rendered with the opening the reopening owes", resent)
 	}
 	if state := reviewer.Claim().State; state != supervise.StateWorking {
@@ -250,7 +251,7 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 	endTurn(r.ctx, t, reviewer, token)
 	sent := r.delivered(reviewer)
 	if prompted := promptsAfter(conn, before); len(prompted) != 1 || prompted[0].DeliveryID != sent.ID ||
-		!strings.Contains(prompted[0].Message, carriedOpened) {
+		!newsTells(t, prompted[0].Message, carriedOpened) {
 		t.Fatalf("the reviewer's prompts at its turn's end = %+v, want the news task leading with the opening", prompted)
 	}
 
@@ -268,7 +269,7 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 	}
 	told := r.delivered(reviewer)
 	prompted := promptsAfter(conn, before)
-	if len(prompted) != 1 || prompted[0].DeliveryID != told.ID || strings.Count(prompted[0].Message, carriedOpened) != 1 {
+	if len(prompted) != 1 || prompted[0].DeliveryID != told.ID || newsCount(t, prompted[0].Message, carriedOpened) != 1 {
 		t.Fatalf("the reviewer's prompts after the sweep = %+v, want one task telling the reopening", prompted)
 	}
 	r.startTurn(reviewer)
@@ -336,7 +337,7 @@ func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing
 			restored.Wait()
 			sent := r.delivered(restored)
 			if prompted := booted.Prompts(); len(prompted) != 1 || prompted[0].DeliveryID != sent.ID ||
-				!strings.Contains(prompted[0].Message, "version 4, since version 3, which your phase last took") {
+				!newsTells(t, prompted[0].Message, "spec artifact-800 4 taken=3") {
 				t.Fatalf("the booted daemon's prompts = %+v, want the news task, once", prompted)
 			}
 			r.startTurn(restored)
@@ -388,7 +389,7 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 	}
 	again := r.delivered(reviewer)
 	if prompted := promptsAfter(conn, before); len(prompted) != 1 || prompted[0].DeliveryID != again.ID ||
-		!strings.Contains(prompted[0].Message, "version 4, since version 3, which your phase last took") {
+		!newsTells(t, prompted[0].Message, "spec artifact-800 4 taken=3") {
 		t.Fatalf("the reviewer's prompts after the sweep = %+v, want the news task again, once", prompted)
 	}
 	r.startTurn(reviewer)
@@ -474,8 +475,8 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 	// opened message.
 	r.checksEvent(intake.DispatchArtifactApproved, 3)
 	r.run(ofKind(record.OutboxKindRoleMessage))
-	if published := r.publishedTo(token); len(published) == 0 || !strings.HasPrefix(published[len(published)-1], "The design gate of LEGION-800 opened") {
-		t.Fatalf("the reviewer's role messages = %q, want the opened message last", published)
+	if gates := r.publishedGates(t, token); len(gates) == 0 || !strings.HasPrefix(gates[len(gates)-1], "open ") {
+		t.Fatalf("the reviewer's role messages = %q, want the opened message last", gates)
 	}
 
 	// Step 5: a decision-only version of the spec, which Dispatch carries approved, sends nothing.
@@ -543,7 +544,7 @@ func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(
 	}
 	told := r.delivered(restored)
 	if prompted := conn.Prompts(); len(prompted) != 1 || prompted[0].DeliveryID != told.ID ||
-		strings.Count(prompted[0].Message, carriedOpened) != 1 || !strings.Contains(prompted[0].Message, "version 4, since version 3") {
+		newsCount(t, prompted[0].Message, carriedOpened) != 1 || !newsTells(t, prompted[0].Message, "spec artifact-800 4 taken=3") {
 		t.Fatalf("the booted daemon's prompts = %+v, want one task telling the reopening and version 4", prompted)
 	}
 	r.startTurn(restored)

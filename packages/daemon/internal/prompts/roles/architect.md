@@ -164,9 +164,10 @@ each `unmet` finding there.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
-A news task can name this child while you hold it in `accepting`: its news starts
-`The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
-changed in the root's approved design. Read each named section and check at the new version.
+A news task can name this child while you hold it in `accepting`: a `design-news` record whose
+`issue` is the child, with `audience: holder` and `phase: accepting`, whose `items`, `sections`
+and `blocks` name what changed in the root's approved design, as your daemon part gives them.
+Read each named section and check at the new version.
 Then sign the child off, or send it back to the phase of an earlier step of its task, with a
 `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the

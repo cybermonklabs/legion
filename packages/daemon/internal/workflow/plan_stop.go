@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // stopTask stops w's task of issue where it stands, in the caller's transaction, or answers why
@@ -106,9 +107,9 @@ func stopRefusal(issue record.Issue, task string) *intake.Refusal {
 // stopUnreturned stops w's task of issue, whose step standing in issue.Phase failed with no step
 // before it of the type implementation to take its work back (returnTarget), as stop_task
 // stops it (stopTask), its step ending as end says; and tells the task's owner once, in a notice
-// of kind task-stopped whose reason names the task and the step. No return happened, so no pass,
-// pair, round or hook is counted. A failed step stands in the phase of its role, where a hold
-// always stands, so the stop's refusal is an error.
+// of kind task-stopped that names the task and the failed step (StopUnreturnedNotice). No return
+// happened, so no pass, pair, round or hook is counted. A failed step stands in the phase of its
+// role, where a hold always stands, so the stop's refusal is an error.
 func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, end StepEnd) error {
 	place, _ := w.PlaceOf(issue.Phase)
 	why := fmt.Sprintf("step %d (%s) failed and no earlier step of the type implementation can take the work", place.Position, w.Steps[place.Position-1].Role)
@@ -120,7 +121,25 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if refusal != nil {
 		return fmt.Errorf("stop task %s of %s after its failed step: %s", w.Task, issue.Key, refusal.Message)
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(w.Steps[place.Position-1].Role), Phase: issue.Phase, Reason: said})
+	return e.notice(ctx, tx, issue.Key, StopUnreturnedNotice(issue.Key, w.Task, place.Position, claim.Role(w.Steps[place.Position-1].Role), issue.Phase))
+}
+
+// StopUnreturnedNotice is the task-stopped notice of task of issue, which a failed step stopped:
+// the step at place, whose role is role, standing in phase, failed, and no step before it of the
+// type implementation can take the work back (texts.TaskStoppedNoReturn), as main's reason said
+// ("step %d (%s) failed and no earlier step of the type implementation can take the work").
+func StopUnreturnedNotice(issue, task string, place int, role claim.Role, at phase.Phase) texts.TaskStoppedRecord {
+	return texts.TaskStoppedRecord{NoticeHead: texts.NoticeHead{Kind: texts.TaskStopped, Issue: issue}, Role: role, Phase: at, Task: task,
+		Cause: texts.TaskStoppedNoReturn, Step: place}
+}
+
+// OwnerStoppedNotice is the task-stopped notice of task of issue, which its owner's stop_task
+// stopped where the issue stood, in phase at, whose role is that phase's: it names the architect
+// claim that made the call (StoppedBy), which the daemon's notice executor reads to publish the
+// notice only where the architect the issue's notices reach is another claim (texts.TaskStoppedByOwner).
+func OwnerStoppedNotice(issue, task string, at phase.Phase, by claim.Token) texts.TaskStoppedRecord {
+	return texts.TaskStoppedRecord{NoticeHead: texts.NoticeHead{Kind: texts.TaskStopped, Issue: issue}, Role: phase.RoleFor(at), Phase: at, Task: task,
+		Cause: texts.TaskStoppedByOwner, StoppedBy: by}
 }
 
 // taskStopped is the owner's stop_task of one task of a recorded issue: the task
@@ -213,12 +232,13 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
-		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, OwnerStoppedNotice(issue.Key, w.Task, from, fact.By))
 }
 
-// restartTask starts w's task of issue again at its first step, in the
-// caller's transaction, for reason, which that step's worker is told. It runs on a person's todo
+// restartTask starts w's task of issue again at its first step, in the caller's transaction, for
+// reason, which its log line names, and move, which that step's worker is told (PhaseMove's
+// Restarted, with the plan's version and the stopped tasks for a later version). It runs on a
+// person's todo
 // on a root held for the stopped task (releaseHeldRoot), and for a later version of the plan that
 // changes the stopped task or replaces it with a task of another id, where the work of the stopped
 // task ran: it stood at an act of its line (record.TaskPlace.Started). A task stopped before its
@@ -245,7 +265,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
 // the same write (endTaskWithLeave, and the merge of an issue that awaits it).
-func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
+func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string, move PhaseMove) error {
 	steps := w.steps()
 	if !w.Stored || len(steps) == 0 {
 		return fmt.Errorf("restart task %s of %s: its line %v holds no first step", w.Task, issue.Key, w.Line)
@@ -290,7 +310,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return err
 	}
 	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+		return task(issue, at, record.PhaseRow{}, pr, move)
 	}, true); err != nil {
 		return err
 	}

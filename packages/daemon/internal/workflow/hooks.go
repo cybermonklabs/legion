@@ -89,7 +89,7 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue string, hook Hoo
 	// whose record holds none: a hook can fire on a move made before the pull request exists.
 	pull := ""
 	if pr != nil {
-		pull = fmt.Sprintf("%s#%d", pr.Repo, pr.Number)
+		pull = pullRequestRef(*pr)
 	}
 	prompted := make([]string, 0, len(hook.Roles))
 	for _, role := range hook.Roles {

@@ -521,7 +521,7 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 		t.Fatalf("the implementer's wake after the resume is a %s wake marked with pause %d and release %d, want a %s wake of pause %d and no release",
 			kind, held, release, pods.WakeRoleMessage, pause.ID)
 	}
-	want := workflow.WakeTask(pods.WakeRoleMessage, string(worker), workflow.StoppedByPause)
+	want := workflow.WakeTask(issue, pods.WakeRoleMessage, string(worker), workflow.StoppedByPause)
 	testwait.Eventually(t, "the wake's start to give the implementer its task", func() bool { return r.claim(worker).Pending != nil })
 	if got := r.claim(worker).Pending.Task; got != want {
 		t.Fatalf("the implementer's task after the wake = %q, want the task of a role message's wake of a session the pause stopped, %q", got, want)

@@ -2,9 +2,7 @@ package admit
 
 import (
 	"context"
-	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // pauseTestProject opens a pause of the package's project at at, as the operator's pause writes
@@ -218,7 +217,7 @@ func TestTheArchitectStalledArmsCountNoTimeAPauseHeldTheProject(t *testing.T) {
 	}
 	for _, root := range roots {
 		if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-			t.Fatalf("the architect wakes of %s after the resume's pass = %q, want none: the pause held the project for that time", root, reasons)
+			t.Fatalf("the architect wakes of %s after the resume's pass = %+v, want none: the pause held the project for that time", root, reasons)
 		}
 		if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 0 {
 			t.Fatalf("the arms %s is marked told for after the resume's pass = %v, want none: a mark spent now would keep a real stall "+
@@ -226,12 +225,13 @@ func TestTheArchitectStalledArmsCountNoTimeAPauseHeldTheProject(t *testing.T) {
 		}
 	}
 
-	floor := fmt.Sprintf("counted from the end of pause %d at %s", pause, ended.UTC().Format(time.RFC3339))
 	floored := func(root string, arms []record.ArchitectStallArm, why string) {
 		t.Helper()
 		assertArchitectWakes(t, pool, root, arms, why)
-		if reason := architectWakes(t, pool, root)[len(arms)-1]; !strings.Contains(reason, floor) {
-			t.Errorf("the wake of %s = %q, want it to say it was %s", root, reason, floor)
+		if wake := architectWakes(t, pool, root)[len(arms)-1]; !wake.CountedFrom.Equal(ended) ||
+			wake.CountedFromEvent != texts.CountedFromPauseEnd || wake.PauseID != pause {
+			t.Errorf("the wake of %s counts from %s (%q, pause %d), want it to say it was counted from the end of pause %d at %s",
+				root, wake.CountedFrom, wake.CountedFromEvent, wake.PauseID, pause, ended)
 		}
 	}
 
@@ -247,7 +247,7 @@ func TestTheArchitectStalledArmsCountNoTimeAPauseHeldTheProject(t *testing.T) {
 	assertArchitectWakes(t, pool, failed, []record.ArchitectStallArm{record.ArchitectClaimUnreachable},
 		"the start the pause held has stood unrun past the bound since the pause ended")
 	if reasons := architectWakes(t, pool, slow); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of %s eleven minutes after the pause = %q, want none: the gate's bound is 90 minutes", slow, reasons)
+		t.Fatalf("the architect wakes of %s eleven minutes after the pause = %+v, want none: the gate's bound is 90 minutes", slow, reasons)
 	}
 
 	now = ended.Add(pastTheGate)
@@ -256,7 +256,7 @@ func TestTheArchitectStalledArmsCountNoTimeAPauseHeldTheProject(t *testing.T) {
 		"it has stood at admitted with no gate step past the gate's bound since the pause ended")
 	for _, root := range []string{unsent, unclaimed, failed} {
 		if reasons := architectWakes(t, pool, root); len(reasons) != 1 {
-			t.Fatalf("the architect wakes of %s = %q, want the one told already", root, reasons)
+			t.Fatalf("the architect wakes of %s = %+v, want the one told already", root, reasons)
 		}
 	}
 }
@@ -340,8 +340,8 @@ func TestTheTookNothingArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 			if len(tc.want) == 0 {
 				return
 			}
-			if ready := tc.lastReady.UTC().Format(time.RFC3339); !strings.Contains(architectWakes(t, pool, root)[0], ready) {
-				t.Fatalf("the wake of %s = %q, want it to name %s, the agent's ready the arm counted from", root, architectWakes(t, pool, root)[0], ready)
+			if wake := architectWakes(t, pool, root)[0]; !wake.Since.Equal(tc.lastReady) {
+				t.Fatalf("the wake of %s names since %s, want %s, the agent's ready the arm counted from", root, wake.Since, tc.lastReady)
 			}
 		})
 	}
@@ -359,7 +359,7 @@ func TestTheTookNothingArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 //
 //   - a root admitted at the pause's end, whose architect stood launching until 11m30s after it,
 //     was ready then and confirmed its entry's task at 12 minutes: no arm 91 minutes after the
-//     pause's end, and the arm 91 minutes after the confirmation, naming it;
+//     pause's end, and the arm 91 minutes after the confirmation, naming it and the entry;
 //   - a root whose architect confirmed its entry before the pause and was stopped by it owing a
 //     launch, whose resume of that pause was let out 11 minutes after its end: no arm 91 minutes
 //     after the pause's end, and the arm 91 minutes after the let-out, naming it.
@@ -373,8 +373,10 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 		// was first queued to the architect's claim and when a turn first confirmed one.
 		queued, confirmed time.Time
 		// letOut is the stuck clock of the architect's resume the pause held, none where it is
-		// the zero time, and from the moment the arm counts from, which its reason names.
+		// the zero time, and from the moment the arm counts from, which its notice names
+		// (counted_from) with what that moment is (event).
 		letOut, from time.Time
+		event        string
 		why          string
 	}{
 		{
@@ -383,8 +385,8 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 				f.admittedAt, f.raisedAt, f.state, f.lastReady, f.task = ended, ended, supervise.StateIdle, ready, false
 			},
 			queued: ended.Add(5 * time.Second), confirmed: ended.Add(12 * time.Minute),
-			from: ended.Add(12 * time.Minute),
-			why:  "the architect could take no turn of its entry before the pacing let its launch out, and it confirmed the entry's task then",
+			from: ended.Add(12 * time.Minute), event: texts.CountedFromEntryConfirmed,
+			why: "the architect could take no turn of its entry before the pacing let its launch out, and it confirmed the entry's task then",
 		},
 		{
 			name: "an architect the pause stopped owing a launch",
@@ -393,7 +395,7 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 				f.state, f.lastReady, f.task = supervise.StateWorking, ready, false
 			},
 			queued: began.Add(-time.Hour), confirmed: began.Add(-time.Hour + time.Minute),
-			letOut: ended.Add(11 * time.Minute), from: ended.Add(11 * time.Minute),
+			letOut: ended.Add(11 * time.Minute), from: ended.Add(11 * time.Minute), event: texts.CountedFromLaunchLetOut,
 			why: "the architect the pause stopped could take no turn before the pacing let out the launch the pause owed it",
 		},
 	} {
@@ -430,7 +432,7 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 			}
 			applySweep(t, pool, admission, "gate-let-out-1")
 			if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-				t.Fatalf("the architect wakes of %s 91 minutes after the pause's end = %q, want none: %s", root, reasons, tc.why)
+				t.Fatalf("the architect wakes of %s 91 minutes after the pause's end = %+v, want none: %s", root, reasons, tc.why)
 			}
 			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 0 {
 				t.Fatalf("the arms %s is marked told for 91 minutes after the pause's end = %v, want none: %s", root, marks, tc.why)
@@ -443,8 +445,19 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 			}
 			applySweep(t, pool, admission, "gate-let-out-2")
 			assertArchitectWakes(t, pool, root, want, tc.why)
-			if from := tc.from.UTC().Format(time.RFC3339); !strings.Contains(architectWakes(t, pool, root)[0], from) {
-				t.Fatalf("the wake of %s = %q, want it to name %s, the moment the arm counted from", root, architectWakes(t, pool, root)[0], from)
+			wantPause, wantEntry := int64(0), int64(0)
+			if tc.event == texts.CountedFromLaunchLetOut {
+				wantPause = pause
+			}
+			if tc.event == texts.CountedFromEntryConfirmed {
+				// The moment is the entry's first confirmation, so the notice names the entry, as
+				// main's "first confirmed a task of phase entry %d" did.
+				wantEntry = seededEntry
+			}
+			if wake := architectWakes(t, pool, root)[0]; !wake.CountedFrom.Equal(tc.from) || wake.CountedFromEvent != tc.event || wake.PauseID != wantPause ||
+				wake.Entry != wantEntry {
+				t.Fatalf("the wake of %s counts from %s (%q, pause %d, entry %d), want %s (%q, pause %d, entry %d), the moment the arm counted from",
+					root, wake.CountedFrom, wake.CountedFromEvent, wake.PauseID, wake.Entry, tc.from, tc.event, wantPause, wantEntry)
 			}
 		})
 	}
@@ -548,11 +561,12 @@ func TestTheStalledTreeNoticeCountsNoTimeAPauseHeldTheProject(t *testing.T) {
 			"for most of the tree's quiet time", got)
 	}
 
-	admission.now = func() time.Time { return resumed.Add(6*time.Hour + time.Minute) }
+	at := resumed.Add(6*time.Hour + time.Minute)
+	admission.now = func() time.Time { return at }
 	tick(t, pool, admission, "past-the-bound-since-the-resume")
 	got := stalledNotices(t, pool)
-	if len(got) != 1 || got[0].issue != root || !strings.Contains(got[0].reason, "The tree has been quiet for 13.0 hours.") {
+	if quiet := at.Sub(settled).Round(time.Minute).String(); len(got) != 1 || got[0].issue != root || got[0].quietFor != quiet {
 		t.Fatalf("the controller was told %#v once the bound had passed since the pause ended, want one notice of %s that "+
-			"says how long the tree has been quiet", got, root)
+			"says the tree has been quiet for %s, the pause's time included", got, root, quiet)
 	}
 }

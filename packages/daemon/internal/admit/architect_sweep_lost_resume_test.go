@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -35,16 +34,17 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 		waiting record.Awaiting
 		gate    *record.DesignGate
 		answer  intake.Fact
-		// names is what the task sent again must say: the ask or the review the person answered.
-		names []string
+		// lines are what the task sent again must hold: the act, with the ask or the review the
+		// person answered.
+		lines []string
 	}{
 		{name: "a question with no gate rows", waiting: record.Awaiting{Ask: "ask-q", Since: seqMark(10)},
-			answer: answeredBy("ask-q", 11), names: []string{"ask-q"}},
+			answer: answeredBy("ask-q", 11), lines: []string{"act: ask", "ask: " + askRef("ask-q")}},
 		{name: "a question with the gate registered", waiting: record.Awaiting{Ask: "ask-q", Since: seqMark(10)},
 			gate:   &record.DesignGate{Issue: root, ArtifactID: "artifact-root", LatestVersion: 2},
-			answer: answeredBy("ask-q", 11), names: []string{"ask-q"}},
+			answer: answeredBy("ask-q", 11), lines: []string{"act: ask", "ask: " + askRef("ask-q")}},
 		{name: "a gate wait answered by a changes request", waiting: record.Awaiting{GateVersion: 4, Since: seqMark(10)},
-			answer: changes, names: []string{"version 4", "name the rollback path"}},
+			answer: changes, lines: []string{"act: changes_requested", "version: 4", "name the rollback path"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -62,10 +62,8 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 				t.Fatalf("%s after the person's answer stands in %s waiting on %+v, want it resumed at admitted", root, got.Phase, got.Awaiting)
 			}
 			resumed := architectRow(t, pool, root)
-			for _, want := range tc.names {
-				if !strings.Contains(resumed.EntryTask, want) {
-					t.Fatalf("the resume's own task %q does not name %q, so this case proves nothing", resumed.EntryTask, want)
-				}
+			if !hasLines(resumed.EntryTask, tc.lines...) {
+				t.Fatalf("the resume's own task %q does not hold the lines %q, so this case proves nothing", resumed.EntryTask, tc.lines)
 			}
 
 			// The lane finishes the resume's start row without the task reaching the claim, and the
@@ -77,14 +75,12 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 				t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised", root, starts, resumed.Entry)
 			}
 			sent := starts[0].task
-			for _, want := range tc.names {
-				if !strings.Contains(sent, want) {
-					t.Errorf("the task sent again for entry %d is %q; it does not name %q, which the resume's own task %q named: "+
-						"the answer is the work this entry owes", resumed.Entry, sent, want, resumed.EntryTask)
-				}
+			if !hasLines(sent, tc.lines...) {
+				t.Errorf("the task sent again for entry %d is %q; it does not hold the lines %q, which the resume's own task %q held: "+
+					"the answer is the work this entry owes", resumed.Entry, sent, tc.lines, resumed.EntryTask)
 			}
-			for _, untrue := range []string{workflow.ArchitectDecompositionLabel, "no message is coming"} {
-				if strings.Contains(sent, untrue) {
+			for _, untrue := range []string{workflow.ArchitectDecompositionLabel, "nothing_else_starts_it: true"} {
+				if hasLines(sent, untrue) {
 					t.Errorf("the task sent again for entry %d is %q; it holds %q, which is false of a root whose architect has run "+
 						"and whose person's answer stands", resumed.Entry, sent, untrue)
 				}
@@ -123,7 +119,7 @@ func TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted
 			root, got.Phase, got.Awaiting)
 	}
 	resumed := architectRow(t, pool, root)
-	if resumed.Entry != seededEntry+1 || !resumed.EntryVerbatim || !strings.Contains(resumed.EntryTask, "was approved") {
+	if resumed.Entry != seededEntry+1 || !resumed.EntryVerbatim || !hasLines(resumed.EntryTask, "act: approved", "version: 4") {
 		t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, sent as written %t; want entry %d carrying the resume's "+
 			"own task, which says the spec was approved, marked to be sent as written", root, resumed.Entry, resumed.EntryTask,
 			resumed.EntryVerbatim, seededEntry+1)

@@ -1354,12 +1354,23 @@ notice_deliveries() {
 }
 # notice_line ISSUE ROLE NEEDLE prints each Envoy delivery in the claim's session holding NEEDLE.
 notice_line() { { claim_session_text "$1" "$2" || true; } | grep -F '"customType":"envoy-message"' | grep -F -- "$3" || true; }
-# architect_messages ISSUE ROLE counts the Envoy messages in the claim's session that ISSUE's
-# architect sent **and that want a reply**: the listener renders those with a reply_role naming its
-# sender's role topic (envoy-client's delivery.ts), which the proof's own steer and every other
-# sender do not carry. A message sent with expects_reply=false carries no reply_role and is not
-# counted, so a step that must see one of those matches on something else.
-architect_messages() { notice_deliveries "$1" "$2" "notifications.role.$(claim_token "$1" architect)"; }
+# architect_message_lines ISSUE ROLE prints each Envoy message in the claim's session that ISSUE's
+# architect sent **and that wants a reply**. A card from another session names the roles its
+# sender holds on a line of its own under `envoy:` (envoy-client's delivery.ts): `role: <token>`
+# for one role, `roles[<n>]: <token>,…` for several. A daemon card names no sender role, and its
+# payload's fields sit one level deeper, under `message:`. The session line holds the card as a
+# JSON string, so each line break of the card is the two characters `\n` there. A card that says
+# `expects_reply: false` is left out, so a step that must see one of those matches on something
+# else.
+architect_message_lines() {
+  local token
+  token=$(claim_token "$1" architect)
+  { claim_session_text "$1" "$2" || true; } | grep -F '"customType":"envoy-message"' |
+    grep -E -- "\\\\n  (role: $token|roles\\[[0-9]+\\]: ([^\\\\]*,)?$token(,[^\\\\]*)?)\\\\n" |
+    grep -vF -- '\n  expects_reply: false\n' || true
+}
+# architect_messages ISSUE ROLE counts those messages.
+architect_messages() { architect_message_lines "$1" "$2" | grep -c . || true; }
 notice_delivered() { [ "$(notice_deliveries "$@")" -ge 1 ]; }
 # worker_sessions SESSIONS prints each phase-worker session file under SESSIONS and the role it
 # claims, tab-separated. A session's role is its newest Envoy role claim; an architect or controller
@@ -1377,7 +1388,9 @@ worker_sessions() {
 # to, published on that architect's role topic, whatever role it names: a review-stuck notice can
 # name the reviewer's topic for the architect to ask, and a task-stopped notice names the role of
 # the phase the task stopped in. So a phase worker's session holds none, and a line here is a
-# notice routed to the wrong session.
+# notice routed to the wrong session. A role message (`ci-settled`, `gate-moved`, `memory-kill`,
+# `merge-forward-ask` and the others of the daemon's list) is no notice: it goes to a worker's own
+# role topic, so none is named here.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do

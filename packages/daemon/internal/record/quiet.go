@@ -93,7 +93,7 @@ type TreeQuiet struct {
 // It is the one statement of that membership, and the three readers that must never differ take
 // it: the measure itself (QuietTrees, where a claim of an issue that is no member moves
 // nothing), the admission pass's gathering of a stalled tree's issues and the notice that names
-// them (admit's tellStalledTrees and stalledTreeReason). A tree told to a controller as stopped
+// them (admit's tellStalledTrees and TreeStalledNotice). A tree told to a controller as stopped
 // must be made of exactly the issues whose stillness was measured, which is what one predicate
 // gives.
 func TreeMember(issue Issue) bool {

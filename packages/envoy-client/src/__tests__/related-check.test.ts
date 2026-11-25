@@ -117,20 +117,30 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
       [
         "2026-10-27T11:00:00Z · user ana@example.com · declined to answer your ask",
         "dispatch://CORE-7/ask/ask-1 · CORE-7: One transport for the service",
-        "Question: Which transport ships first?",
-        `Dispatch's words: ${DISPATCH_WORDS}`,
+        "<question>",
+        "Which transport ships first?",
+        "</question>",
+        "<dispatch_words>",
+        DISPATCH_WORDS,
+        "</dispatch_words>",
+        "<text>",
         "Whoever builds it decides.",
+        "</text>",
       ].join("\n")
     );
 
-    // A decline with no note is the ordinary one: Dispatch's words stand alone, with no empty
-    // line where the person's note would be.
+    // A decline with no note is the ordinary one: Dispatch's words stand alone, with no block
+    // where the person's note would be.
     expect(renderSessionAnswerItem({ ...declined, text: "" })).toBe(
       [
         "2026-10-27T11:00:00Z · user ana@example.com · declined to answer your ask",
         "dispatch://CORE-7/ask/ask-1 · CORE-7: One transport for the service",
-        "Question: Which transport ships first?",
-        `Dispatch's words: ${DISPATCH_WORDS}`,
+        "<question>",
+        "Which transport ships first?",
+        "</question>",
+        "<dispatch_words>",
+        DISPATCH_WORDS,
+        "</dispatch_words>",
       ].join("\n")
     );
   });

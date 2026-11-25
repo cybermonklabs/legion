@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -306,7 +307,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
 				}
 				starts := roleStarts(t, pool, child, claim.RoleReviewer)
-				if want := " " + reviewround.CommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
+				if want := "\n" + reviewround.CommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
 					t.Fatalf("the promoted reviewer's starts = %+v, want one whose task names %q", starts, want)
 				}
 			}
@@ -503,13 +504,13 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Working copy: branch legion/" + child + ". Resume the existing phase work."
+				want := phaseResume(t, record.Issue{Key: child, Title: child, Phase: phase.Merging})
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}
 				return
 			}
-			want := record.Notice{Kind: "held", Role: claim.RoleTester, Phase: phase.Testing, Reason: string(record.HoldEscalated)}
+			want := record.Notice{Kind: "held", Issue: child, Role: claim.RoleTester, Phase: phase.Testing, Hold: texts.HoldCarried, Reason: string(record.HoldEscalated)}
 			if len(held) != 1 || !reflect.DeepEqual(held[0], want) {
 				t.Fatalf("held notices to the carried root = %+v, want %+v once", held, want)
 			}

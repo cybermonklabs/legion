@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+  The listener raises no wake for a `low` publish of the Legion daemon to a role with no live
+  holder; a publish whose session its broker token proves still wakes the role, whatever its body
+  names. Dispatch sends the events of the daemon's own session at `low`, and an ask's events at the
+  default urgency. A person's reply in a thread whose session is live or unresponsive no longer also
+  goes to the sessions that only a document credits. Dispatch reads Envoy's registry for that rule
+  alone, with a bound on the reads open at once, and a registry that does not answer holds back only
+  the events that read it, for one read's wait. Every read Dispatch makes of the Envoy listener
+  takes its answer whole: one whose body stops after its headers or is cut short counts as the
+  listener not answering, never as its answer. A session the reply names, whose mention failed,
+  still gets the reply, also where the mention was a role's that names the session only after the
+  batch read it, after the forward's bound, or after the outbox read the role as another session's,
+  and where a person's Retry of a role's mention names the session and fails, however long after
+  the reply went out.
+  The person's edit of the reply, and the person's delete of it, read the reply's mentions from the
+  store, and wait for a mention of the reply still to settle no longer than that bound. Each then
+  goes to each session that got, or is owed, the reply through a failed mention, and to no other
+  session that only a document credits. A late copy of a live reply includes edits that the
+  recipient missed. A deleted reply is not sent from a held copy, also where a failed attempt that
+  the delete records reopens that copy. A copy of the
+  reply, of its edit or of its delete, that waits to learn whether such a mention names that
+  session holds back none of the issue's later events, so a person's later comment reaches that
+  session without waiting for any of them. A copy kept for a session that only a document credits
+  no longer holds a later reply back from that session once it claims the issue or the issue is
+  routed to it.
+  Dispatch fetches the identity token it presents to the listener within the call's own window, so
+  a metadata server that does not answer no longer holds a registry read past that window.

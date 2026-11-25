@@ -317,7 +317,7 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			},
 			fact:   intake.RetryOrEscalate{Issue: returnIssue, Decision: intake.RetryDecision},
 			engine: func() *Engine { return testEngine(config.DesignGateRootIssues, nil) },
-			role:   claim.RoleTester, want: phase.Testing, keeps: true, task: "Reason: retry held phase.",
+			role:   claim.RoleTester, want: phase.Testing, keeps: true, task: "retried: " + RetriedByArchitect,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

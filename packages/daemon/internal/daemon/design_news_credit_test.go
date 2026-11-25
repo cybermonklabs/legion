@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -157,7 +156,7 @@ func TestAStartComputedFromAnUnfinalCreditTellsThePairBeforeItOnceThatCreditIsGi
 	if len(sent.Items) != 1 || sent.Items[0].From == nil || *sent.Items[0].From != 3 || sent.Items[0].To != 5 {
 		t.Fatalf("the sent task carries %+v, want version 5 since version 3, the version its holder took now", sent.Items)
 	}
-	if !strings.Contains(task, "version 5, since version 3") || strings.Contains(task, "since version 4") {
+	if !newsTells(t, task, "spec artifact-600 5 taken=3 ") || newsTells(t, task, "taken=4") {
 		t.Fatalf("the sent task = %q, want version 5 told since version 3 and no word of version 4 as taken", task)
 	}
 }
@@ -224,7 +223,7 @@ func TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain(t *testing.T)
 	}
 	tester, conn := r.connect(pathRoot, claim.RoleTester)
 	task := r.delivered(tester)
-	if sent := conn.Prompts(); len(sent) != 1 || sent[0].DeliveryID != task.ID || !strings.Contains(sent[0].Message, "version 5, since version 4") {
+	if sent := conn.Prompts(); len(sent) != 1 || sent[0].DeliveryID != task.ID || !newsTells(t, sent[0].Message, "spec artifact-800 5 taken=4 ") {
 		t.Fatalf("the tester's prompts = %+v, want its phase task, telling version 5 since version 4: the case's premise", sent)
 	}
 	r.wantTold("after the tester's task was sent, before its turn took it", pathRoot, record.AudienceHolder, 4, false)

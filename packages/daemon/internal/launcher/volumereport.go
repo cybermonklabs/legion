@@ -335,9 +335,9 @@ const (
 	// shimwire.VolumeReportRefusedReads refused /proc reads and how many more there were
 	// (refusalsSaid, volumetrim.go). It is the same few hundred runes runtime.PodEndRunes gives a
 	// kubelet's reason and message, and for a like reason: that bound is there because a
-	// worker-died's reason names the pod end whole on its one line (internal/workflow's
-	// deathReason), and the volume-near-full notice's sentence quotes this reason whole on its
-	// one line (internal/workflow's volumeNoticeReason).
+	// worker-died names the pod end whole in a field of its own (internal/workflow's diedOf),
+	// and the volume-near-full notice carries this reason whole as its stopReason
+	// (internal/workflow's VolumeNearFullNotice).
 	volumeReportStopReasonRunes = 400
 	// volumeReportFaultRunes bounds each fault. A fault is a recovered panic with the whole
 	// stack of this goroutine behind it, and the frames that name where it fell over are the
@@ -348,12 +348,12 @@ const (
 	// raised the episode, which is one of shimwire's three words. Neither can be long today, so
 	// the cut changes no value this package writes; it is here so that every string of the
 	// report leaves this launcher under a bound this package chose, as the pod's own strings do.
-	// It is no protection of the sentence the architect's session reads, and is not meant as
+	// It is no protection of the notice the architect's session reads, and is not meant as
 	// one: a bound the launcher applies runs only where the sender is this launcher. That
-	// sentence is protected where it is built, by the daemon's own quoting
-	// (internal/workflow's volumeNoticeReason), and its size by the frame's own line limit
-	// (shimwire.MaxFrameBytes) and the lists' caps, since the frame's rule checks the identifier,
-	// the episode and how many entries each list holds, and no string's runes
+	// notice carries each string as a field value of its own, which the card's encoder quotes
+	// (internal/workflow's VolumeNearFullNotice), and its size is bounded by the frame's own line
+	// limit (shimwire.MaxFrameBytes) and the lists' caps, since the frame's rule checks the
+	// identifier, the episode and how many entries each list holds, and no string's runes
 	// (shimwire.LauncherVolumeReport.Validate).
 	volumeReportTrimmerRunes = 100
 )

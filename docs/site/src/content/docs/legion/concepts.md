@@ -164,7 +164,9 @@ minutes and no working copy or bookmark of its workspace holds a commit that ori
 nor the working copy a change, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
 head — brings the pod back and resumes the same sessions where they stopped. A commit that no
-working copy and no bookmark reaches, such as a side head, is not kept.
+working copy and no bookmark reaches, such as a side head, is not kept. A `low` notice or role
+message of the daemon, one its reader can act on at its next turn, brings no pod back: its reader
+reads it at the first turn that something else starts.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
@@ -187,8 +189,8 @@ before it approves ([review signalling](#review-signalling)), but an approved he
 holds blocked, on a check or a review the base branch requires, keeps the issue in `reviewing`
 until that merge state comes clean. What a red check does is reach the architect that owns
 the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+check that failed or was cancelled with its conclusion and counting the checks that passed; and
+hold the merge, where GitHub applies the base branch's own required checks.
 
 ### The plan of an issue
 
@@ -483,19 +485,24 @@ Legion uses GitHub's own review mechanisms rather than labels:
   issue may advance on. A head GitHub holds blocked, on a check or a review the repository
   requires, leaves the issue in `reviewing` until that merge state comes clean.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
-  daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
+  daemon names each check that failed or was cancelled, with the conclusion GitHub gave it, counts
+  the checks that passed and names the `gh pr checks` command that lists them, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
   current phase and, before `merging`, the implementer whose code the checks ran on, and moves the
-  issue nowhere; in `merging` the merge and what breaks it are the merger's. The
-  message names the head's commit statuses too, each with its state: Dispatch reads them from
-  GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
-  names no pull request. A red is for those roles to decide on — re-run a check that failed on
-  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
-  branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the architect before it accepts; those
-  reads are the ones that decide anything. Two settlements of the same head that name the same
-  checks tell nobody twice, and a lingering tree is told nothing at all.
+  issue nowhere; in `merging` the merge and what breaks it are the merger's. It treats the head's
+  commit statuses as it treats its checks, naming each that did not pass with its state and
+  counting the rest: Dispatch reads them from GitHub for each open head where its GitHub App holds
+  Commit statuses, since GitHub's status event names no pull request. The message is `med` for the
+  worker that holds the issue's current phase, which gets it at once, and `low` for each other
+  reader, which reads it at its next turn. Where no worker holds the phase (`admitted`,
+  `accepting`, `held`, `awaiting_person`), it is `med` for the architect. A red is for those roles
+  to decide on — re-run a check that failed on itself, fix code that is at fault, or wait — and for
+  GitHub to hold the merge over, under the base branch's own required checks, which Legion reads
+  only to decide whether a conflicting head needs its merge forward now (below), and never
+  re-implements. The reviewer reads the head's checks on GitHub itself before it approves, and the
+  architect before it accepts; those reads are the ones that decide anything. Two settlements of
+  the same head that name the same checks tell nobody twice, and a lingering tree is told nothing
+  at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
   minute apart, since a read made while GitHub is still computing can be stale. It acts only on a
@@ -512,9 +519,12 @@ Legion uses GitHub's own review mechanisms rather than labels:
   workspace and push, with no handoff and no completion for it, and the tester or the reviewer
   holding the phase is told to stop writing the workspace and not to complete its phase at the old
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
-  merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
-  once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
-  `implementing` only the implementer is told.
+  merger is asked: the merge is its own, and it resolves the conflict itself. Each of these
+  messages names the pull request, the head, the base and the phase the issue stays in, and is
+  `med`, so it starts its reader's turn. The architect is told once with a `checks-red` notice
+  naming the phase the issue stays in, the role asked and why the daemon acted: `low` while a
+  worker holds that phase, `med` for a held issue, which no worker works. In `implementing` only
+  the implementer is told.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -574,8 +584,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
   of that number; a move back made while the head conflicts with its base fires none. The daemon
-  writes the words to each role the hook names, between its own
-  header — the hook and the move — and its own counts of the moves back, and posts
+  writes the words to each role the hook names, below its own first line, which names the hook,
+  the issue and the move, and above its own facts as `key: value` lines: the count of the move
+  that fired the hook (`count`), every move back counted by kind (`counts`) and the pull request
+  (`pull_request`). It posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
   not, and a role that reads the words answers in its own turn. A deployment that writes no

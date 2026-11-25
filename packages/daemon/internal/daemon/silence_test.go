@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -244,20 +245,22 @@ func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake
 }
 
 // takesRelaunchSentence is role's replacement, relaunched holding nothing, reading the daemon's
-// own delivery of the sentence of what its pod's end took (dispatch://INFRA-3276 R3), which its
-// ready sent it at once, and saying says: Oh My Pi's acknowledgement, the turn it starts, its end,
-// and the prompt's result behind it. That turn is all the delivery asks of it, and its result
-// retires the delivery, so the worker holds nothing again and is the one nothing will prompt.
-func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
+// own delivery of the note of what its pod's end took (dispatch://INFRA-3276 R3), which its ready
+// sent it at once, holding the line says and not the line saysNot ("" for none): Oh My Pi's
+// acknowledgement, the turn it starts, its end, and the prompt's result behind it. That turn is
+// all the delivery asks of it, and its result retires the delivery, so the worker holds nothing
+// again and is the one nothing will prompt.
+func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says, saysNot string) {
 	r.t.Helper()
 	token, conn := r.tokens[role], r.workers[role]
-	testwait.Eventually(r.t, "the relaunched "+string(role)+" to be sent the relaunch's sentence", func() bool {
+	testwait.Eventually(r.t, "the relaunched "+string(role)+" to be sent the relaunch's note", func() bool {
 		return len(conn.Prompts()) > 0
 	})
 	prompts := conn.Prompts()
 	sent := prompts[len(prompts)-1]
-	if held := r.claimOf(role).Pending; held == nil || !held.Relaunch() || held.ID != sent.DeliveryID || !strings.Contains(sent.Message, says) {
-		r.t.Fatalf("the relaunched %s holds %+v and was sent %+v, want the relaunch's sentence saying %q", role, held, sent, says)
+	if held := r.claimOf(role).Pending; held == nil || !held.Relaunch() || held.ID != sent.DeliveryID || !strings.Contains(sent.Message, says) ||
+		(saysNot != "" && strings.Contains(sent.Message, saysNot)) {
+		r.t.Fatalf("the relaunched %s holds %+v and was sent %+v, want the relaunch's note saying %q and not %q", role, held, sent, says, saysNot)
 	}
 	r.awaitClaim(role, "the relaunch's sentence to be acknowledged", func(c supervise.Claim) bool {
 		return c.Pending != nil && !c.Pending.DeliveredAt.IsZero()
@@ -411,12 +414,10 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	if notice.Kind != "worker-silent" || notice.Role != worker || notice.Phase != phase.Implementing {
 		t.Fatalf("the notice is %+v, want a worker-silent notice of the implementer of implementing", notice)
 	}
-	for _, part := range []string{podUpdateIssue, string(worker), string(phase.Implementing),
-		last.Format(time.RFC3339), (podUpdateSilence + time.Minute).String(),
-		fmt.Sprintf("wrote the start row that sends the phase's task again, on phase entry %d its phase row names", silenceEntry)} {
-		if !strings.Contains(notice.Reason, part) {
-			t.Errorf("the notice's reason %q names no %q, which its architect needs to act on it", notice.Reason, part)
-		}
+	if notice.Issue != podUpdateIssue || !notice.LastStep.Equal(last) || notice.SilentFor != (podUpdateSilence+time.Minute).String() ||
+		notice.Sent != texts.SentPhaseTask || notice.Entry != silenceEntry || notice.Reason != "" {
+		t.Errorf("the notice is %+v, want %s's silence since %s, %s long, with the phase's task sent again at phase entry %d, and no reason",
+			notice, podUpdateIssue, last.Format(time.RFC3339), podUpdateSilence+time.Minute, silenceEntry)
 	}
 
 	publisher := rig.drain()
@@ -430,8 +431,8 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("the daemon logged the silence %d times, want once: %+v", len(lines), lines)
 	}
-	if lines[0]["record"] != notice.Reason {
-		t.Errorf("the log's record is %q, want the notice's own %q: the two halves are one record", lines[0]["record"], notice.Reason)
+	if lines[0]["silent_for"] != notice.SilentFor || lines[0]["sent"] != notice.Sent {
+		t.Errorf("the log's record is %+v, want the notice's silence %s and start row %s: the two halves are one record", lines[0], notice.SilentFor, notice.Sent)
 	}
 }
 
@@ -454,11 +455,8 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("the notices of %s = %+v, want the one its architect is owed", podUpdateIssue, notices)
 		}
-		if !strings.Contains(notices[0].Reason, "wrote the start row that sends the phase's task again") {
-			t.Errorf("the notice's reason %q does not say the daemon wrote the start row", notices[0].Reason)
-		}
-		if strings.Contains(notices[0].Reason, "phase entry") {
-			t.Errorf("the notice's reason %q names an entry the phase row does not hold", notices[0].Reason)
+		if notices[0].Sent != texts.SentPhaseTask || notices[0].Entry != 0 {
+			t.Errorf("the notice %+v does not say the daemon wrote the phase's start row at no entry", notices[0])
 		}
 		want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1,
 			Phase: phase.Implementing, Task: resumeTaskOf(t, rig.pool, rig.engine, podUpdateIssue), ResumeTask: true, NeedsSlot: true}}
@@ -533,7 +531,7 @@ func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 		rig.sweepForSilence()
 
 		notices := rig.silenceNotices()
-		if len(notices) != 1 || !strings.Contains(notices[0].Reason, first.Format(time.RFC3339)) {
+		if len(notices) != 1 || !notices[0].LastStep.Equal(first) {
 			t.Fatalf("two sweeps over one silence wrote %+v, want the one notice of the silence that began at %s",
 				notices, first.Format(time.RFC3339))
 		}
@@ -563,7 +561,7 @@ func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 		rig.sweepForSilence()
 
 		told := rig.silenceNotices()
-		if len(told) != 1 || !strings.Contains(told[0].Reason, second.Format(time.RFC3339)) {
+		if len(told) != 1 || !told[0].LastStep.Equal(second) {
 			t.Fatalf("the second silence left %+v in the outbox, want the one notice of the silence that began at %s: a worker that stepped and stopped again is told again",
 				told, second.Format(time.RFC3339))
 		}
@@ -875,12 +873,10 @@ func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testin
 	if notice.Kind != "worker-background-stalled" || notice.Role != worker || notice.Phase != phase.Implementing {
 		t.Fatalf("the notice is %+v, want a worker-background-stalled notice of the implementer of implementing", notice)
 	}
-	for _, part := range []string{podUpdateIssue, string(worker), string(phase.Implementing), "async-job, subagent",
-		reported.Format(time.RFC3339), (podUpdateBackground + time.Minute).String(),
-		"sent that worker nothing and will send it nothing for this"} {
-		if !strings.Contains(notice.Reason, part) {
-			t.Errorf("the notice's reason %q names no %q, which its architect needs to act on it", notice.Reason, part)
-		}
+	if notice.Issue != podUpdateIssue || !slices.Equal(notice.Work, []string{"async-job", "subagent"}) || !notice.ReportedAt.Equal(reported) ||
+		notice.StoodFor != (podUpdateBackground+time.Minute).String() || notice.Reason != "" {
+		t.Errorf("the notice is %+v, want %s's async-job and subagent reported at %s, standing %s, and no reason",
+			notice, podUpdateIssue, reported.Format(time.RFC3339), podUpdateBackground+time.Minute)
 	}
 
 	rig.sweepForSilence()
@@ -904,8 +900,8 @@ func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testin
 	if len(lines) != 1 {
 		t.Fatalf("the daemon logged the standing report %d times, want once: %+v", len(lines), lines)
 	}
-	if lines[0]["record"] != notice.Reason {
-		t.Errorf("the log's record is %q, want the notice's own %q: the two halves are one record", lines[0]["record"], notice.Reason)
+	if lines[0]["stood_for"] != notice.StoodFor {
+		t.Errorf("the log's record is %+v, want the notice's %s standing: the two halves are one record", lines[0], notice.StoodFor)
 	}
 }
 
@@ -962,7 +958,7 @@ func TestWorkerBackgroundStalledIsToldAgainWhenTheSessionsReportMoves(t *testing
 
 	rig.sweepForSilence()
 
-	if notices := rig.silenceNotices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, first.Format(time.RFC3339)) {
+	if notices := rig.silenceNotices(); len(notices) != 1 || !notices[0].ReportedAt.Equal(first) {
 		t.Fatalf("the first sweep wrote %+v, want the one notice of the report made at %s", notices, first.Format(time.RFC3339))
 	}
 	// The drain tells the architect that first notice and finishes its row, so what the outbox
@@ -974,12 +970,12 @@ func TestWorkerBackgroundStalledIsToldAgainWhenTheSessionsReportMoves(t *testing
 	rig.sweepForSilence()
 
 	told := rig.silenceNotices()
-	if len(told) != 1 || !strings.Contains(told[0].Reason, second.Format(time.RFC3339)) {
+	if len(told) != 1 || !told[0].ReportedAt.Equal(second) {
 		t.Fatalf("the second report left %+v in the outbox, want the one notice of the report made at %s: a reading that moved is a telling of its own",
 			told, second.Format(time.RFC3339))
 	}
-	if !strings.Contains(told[0].Reason, "subagent") {
-		t.Errorf("the notice's reason %q does not name the kind the session reported second", told[0].Reason)
+	if !slices.Contains(told[0].Work, "subagent") {
+		t.Errorf("the notice %+v does not name the kind the session reported second", told[0])
 	}
 	if got := rig.starts(); len(got) != 0 {
 		t.Fatalf("the supervise rows of %s = %+v, want none: neither telling sends that worker anything", podUpdateIssue, got)
@@ -1071,7 +1067,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	// The replacement is told first that the task its dead process reported died with the pod
 	// (dispatch://INFRA-3276 R3), and reads it in a turn; then nothing prompts it.
-	rig.takesRelaunchSentence(worker, "Each Claude Code background task that you started stopped with that process.")
+	rig.takesRelaunchSentence(worker, "stopped[1]: claude-background-task", "")
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
@@ -1115,7 +1111,7 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 	}
 
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	rig.takesRelaunchSentence(worker, "Each Claude Code background task that you started stopped with that process.")
+	rig.takesRelaunchSentence(worker, "stopped[1]: claude-background-task", "")
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
@@ -1206,9 +1202,9 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	rig.awaitClaim(worker, "its turn to end", func(c supervise.Claim) bool { return c.State != supervise.StateWorking })
 	old := rig.claimOf(worker).Generation
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	// No report of the dead launch had landed when its pod went, so the replacement is told that
-	// the daemon has none (dispatch://INFRA-3276 R3), and reads it in a turn.
-	rig.takesRelaunchSentence(worker, "The daemon has no report of the background work of your last turn.")
+	// No report of the dead launch had landed when its pod went, so the replacement's note states
+	// no report of its last turn (dispatch://INFRA-3276 R3), and it reads it in a turn.
+	rig.takesRelaunchSentence(worker, "kind: relaunch-note", "reported: true")
 	// The dead process's Stop-hook report, authenticated under its own launch, lands after the
 	// launch's clear.
 	if _, err := rig.st.PutClaimActivity(rig.ctx, token, old, claim.SessionActivity{

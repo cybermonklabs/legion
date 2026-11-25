@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The Claude Code plugin's notices state the fields of their kind, as the Oh My Pi plugins' do, and
+  its cards carry no reply procedure. A message put in front of a card, in the Codex hook's text
+  and in the prompt at unread rows, opens or closes no block of that card. In the Codex hook's
+  text, the plugin's own lines (its first line and each label) start with a mark minted for that
+  text, so a message that holds a person's label is not read as a person's message, and each card
+  has a label of its own, so a card after a person's message is not read as the person's. Each
+  of Envoy's notices names on its kind line the tool whose description gives its step (`notice:
+  message not shown (envoy_inbox)`).
+  A card over 96 KiB that `codex queue` takes as its start and a line naming the file holding all
+  of it is cut with no block left open (`cutDrawn`), so its words, a copy of that line among them,
+  stay inside their block and the line after the card is the plugin's. The SessionStart open-asks
+  summary keeps each ask on one line, whatever new lines an issue's title, a document's name or a
+  question holds, and so does the error a SessionStart hook prints
+  when it cannot read that summary. Each value among a card's fields, such as a comment's quote or
+  an ask's option labels, stays on its line: NEXT LINE (U+0085), LINE SEPARATOR and PARAGRAPH
+  SEPARATOR in it print as one space.

@@ -183,6 +183,24 @@ func (r *conflictLive) published(issue string) {
 	})
 }
 
+// recordOf is the record of message as the runner publishes it for the issue, where pr is the pull
+// request as the record holds it at delivery (record.MergeForwardMessage.Record), encoded as JSON.
+func (r *conflictLive) recordOf(message record.MergeForwardMessage, pr record.PullRequest) string {
+	r.t.Helper()
+	encoded, err := json.Marshal(message.Record(r.key, pr))
+	if err != nil {
+		r.t.Fatalf("encode the record of the merge forward's %s: %v", message.Step, err)
+	}
+	return string(encoded)
+}
+
+// toldRecord says whether told is message as the runner publishes it: under the summary
+// `<kind> on <KEY>`, with its kind's record as its payload (recordOf).
+func (r *conflictLive) toldRecord(told listenerPublish, message record.MergeForwardMessage, pr record.PullRequest) bool {
+	r.t.Helper()
+	return told.Message == noticeSummary(message.Kind(), r.key) && told.Payload == r.recordOf(message, pr)
+}
+
 // conflictBaseRules is what GitHub answers of the base for a head it answers conflicting, as the
 // daemon reads it (readBaseRules): the rules of the branch, one ruleset requiring ci whose rule
 // does not require a pull request to be current with the branch, and the branch itself unprotected

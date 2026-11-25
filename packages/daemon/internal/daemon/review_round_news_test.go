@@ -28,10 +28,10 @@ func wantRoundLast(t *testing.T, what, task, own, round string) {
 	if !named || sentences != round || strings.Count(task, reviewround.CommitLabel) != 1 || strings.Count(task, reviewround.EntryLabel) != 1 {
 		t.Fatalf("%s = %q, want it to end with the round's two sentences %q, once", what, task, round)
 	}
-	if own != "" && !strings.HasPrefix(body, own+"\n\n") {
-		t.Fatalf("%s = %q, want the start's own text, then a blank line, before the news", what, task)
+	if own != "" && !strings.HasPrefix(body, own+"\n\n"+newsKindLine+"\n") {
+		t.Fatalf("%s = %q, want the start's own text, then the news record", what, task)
 	}
-	if !strings.Contains(body, "version 5, since version 4, which your phase last took") || !strings.Contains(body, `"Design" changed`) {
+	if !newsTells(t, body, "spec "+reconcileDoc+" 5 taken=4 listed") || !newsTells(t, body, "0 Design changed") {
 		t.Fatalf("%s = %q, want the spec's news from version 4 to 5 before the round's two sentences", what, task)
 	}
 }
@@ -41,7 +41,9 @@ func wantRoundLast(t *testing.T, what, task, own, round string) {
 // its round (reviewround.Sentences). A reviewer's start that carries news of the approved design,
 // from a task the queue named (record.SuperviseRequest.RoundNamed), is rendered with the news
 // between the start's own text and those two sentences, at the start and at the send of the held
-// task again (renderNews), so the reviewer still reads its commit and its entry.
+// task again (renderNews), so the reviewer still reads its commit and its entry. The task here ends
+// with them after a space, as a task an earlier release stored does: after the news record they
+// stand on a line of their own, so the record's last line is not joined to them.
 func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing.T) {
 	t.Parallel()
 	r := newNewsReconcileRig(t)
@@ -51,6 +53,7 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 	token := r.holder(reconcileChild, claim.RoleReviewer, supervise.StateIdle, "", 1)
 	const own = "Review the change. Issue: LEGION-601. Phase: reviewing."
 	round := reviewround.Sentences(roundNewsHead, 1)
+	lined := "\n" + strings.TrimPrefix(round, " ")
 
 	started, err := r.runner.newsForStart(r.ctx, reviewed, record.SuperviseRequest{Op: "start", Tree: reconcileRoot,
 		Role: claim.RoleReviewer, Phase: phase.Reviewing, Generation: 1, Entry: 1, Task: own + round, RoundNamed: true}, token)
@@ -60,7 +63,7 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 	if !started.roundNamed || len(started.news) == 0 {
 		t.Fatalf("the reviewer's start carries %+v, want news, and its task marked as naming its round", started)
 	}
-	wantRoundLast(t, "the reviewer's start task", started.task, own, round)
+	wantRoundLast(t, "the reviewer's start task", started.task, own, lined)
 
 	sender := &workflowRuntime{pool: r.pool, records: r.records, gatedSteps: config.DesignGateRootIssues.Steps(),
 		dispatchProject: "LEGION", log: quietLogger()}
@@ -70,15 +73,15 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 	if err != nil {
 		t.Fatalf("send the reviewer's held task again: %v", err)
 	}
-	wantRoundLast(t, "the reviewer's task sent again", resent, own, round)
+	wantRoundLast(t, "the reviewer's task sent again", resent, own, lined)
 }
 
 // A start of the reviewer queued for news alone carries no task, so no queue named its round, and
 // the claim's send would give it the two sentences naming no commit and no entry, though the record
 // holds both. The start executor names them from the record instead (workflow.ReviewerTask): the
 // commit the reviewer's row holds, or `none` where it holds none, and the entry the row stands at,
-// after the news, and the delivery says the task names its round, so its send adds no second pair
-// (supervise's Delivery.message).
+// after the news on a line of their own (reviewround.Ending), and the delivery says the task names
+// its round, so its send adds no second pair (supervise's Delivery.message).
 func TestAReviewersNewsOnlyTaskNamesTheRoundTheRecordHolds(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -112,7 +115,7 @@ func TestAReviewersNewsOnlyTaskNamesTheRoundTheRecordHolds(t *testing.T) {
 			if pending := machine.Claim().Pending; !pending.NewsOnly || !pending.RoundNamed {
 				t.Fatalf("the reviewer holds %+v, want a task of news alone that says it names its round", pending)
 			}
-			wantRoundLast(t, "the reviewer's news-only task", task, "", reviewround.Sentences(tc.reviewed, 3))
+			wantRoundLast(t, "the reviewer's news-only task", task, "", "\n"+reviewround.Ending("", tc.reviewed, 3))
 		})
 	}
 }

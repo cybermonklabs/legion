@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The review event decides the round, and the reviewer's handoff records its findings
@@ -166,8 +168,8 @@ func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) 
 		t.Fatalf("after the approval of a blocked head the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
-		!strings.Contains(told[0].Reason, "GitHub reports that head blocked") || told[0].Topic != "" {
+	if len(told) != 1 || told[0].Cause != texts.CauseMergeState || told[0].Head != headOne || told[0].PullRequest != "sjawhar/legion#42" ||
+		told[0].MergeState != string(record.MergeStateBlocked) || told[0].Topic != "" || told[0].Passed == nil || told[0].EndsRound != "" {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and blocked, with no role topic", told)
 	}
 
@@ -219,12 +221,12 @@ func TestAnApprovalOnABlockedHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *t
 		t.Fatalf("after GitHub reported the head blocked the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
-		!strings.Contains(told[0].Reason, "GitHub reports that head blocked") {
+	if len(told) != 1 || told[0].Cause != texts.CauseMergeState || told[0].Head != headOne || told[0].PullRequest != "sjawhar/legion#42" ||
+		told[0].MergeState != string(record.MergeStateBlocked) {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and blocked", told)
 	}
-	stuck := []record.RoleMessage{{Role: treeRoleToken(t, "LEGION-208", claim.RoleReviewer),
-		Body: "The round you approved is stuck: " + told[0].Reason + "."}}
+	stuck := []roleTold{{Role: treeRoleToken(t, "LEGION-208", claim.RoleReviewer), Urgency: texts.Med,
+		Record: approvedRoundStuck(record.MergeStateBlocked, nil, 1)}}
 	assertRoleMessages(t, pool, "LEGION-208", stuck)
 
 	apply("clean", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
@@ -239,13 +241,12 @@ func TestAnApprovalOnABlockedHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *t
 }
 
 // The notice of a head GitHub will not merge from is read by a person deciding what to push next,
-// so it names GitHub's state and every check GitHub reported on that head with its conclusion.
-// The daemon reads no repository ruleset (dispatch://INFRA-714/spec R1), so it cannot name the
-// checks the base requires: a required check that never ran has no check run at all and is simply
-// absent from what it names, which the notice says in words, so a short list reads as the finding
-// rather than as the daemon leaving something out. The reviewer is told as well as the architect,
-// since it approved that head and is the role that reads the head's checks on GitHub; both are
-// told once for the head and the state.
+// so it names GitHub's state and the checks GitHub reported on that head: each that did not pass
+// with its conclusion, the count of those that passed, and the command that lists them. The daemon
+// reads no repository ruleset (dispatch://INFRA-714/spec R1), so it cannot name the checks the base
+// requires: a required check that never ran has no check run at all and is simply absent. The
+// reviewer is told as well as the architect, since it approved that head and is the role that
+// reads the head's checks on GitHub; both are told once for the head and the state.
 func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
@@ -262,19 +263,15 @@ func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *tes
 	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 
-	want := stuckMergeStateReason(blocked)
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || told[0].Reason != want {
-		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
+	if len(told) != 1 || told[0].Cause != texts.CauseMergeState || told[0].MergeState != string(record.MergeStateBlocked) ||
+		told[0].Passed == nil || *told[0].Passed != 1 || len(told[0].NotPassed) != 0 ||
+		told[0].ListPassed != "gh pr checks 42 --repo sjawhar/legion" || told[0].Summary != texts.StuckByOtherReview {
+		t.Fatalf("review-stuck notices %+v, want one naming blocked, the one check that passed and gh pr checks", told)
 	}
-	for _, phrase := range []string{"GitHub reports that head blocked", `"unit tests" succeeded`, "reads the base's rules only on a conflicting read", "absent here rather than named as missing"} {
-		if !strings.Contains(told[0].Reason, phrase) {
-			t.Fatalf("the notice reads %q, want it to name %q", told[0].Reason, phrase)
-		}
-	}
-	assertRoleMessages(t, pool, "LEGION-208", []record.RoleMessage{
-		{Role: treeRoleToken(t, "LEGION-208", claim.RoleReviewer), Body: "The round you approved is stuck: " + want + "."},
-	})
+	stuck := []roleTold{{Role: treeRoleToken(t, "LEGION-208", claim.RoleReviewer), Urgency: texts.Med,
+		Record: approvedRoundStuck(record.MergeStateBlocked, nil, 1)}}
+	assertRoleMessages(t, pool, "LEGION-208", stuck)
 
 	// A second read of the same head answering the same state tells neither of them again.
 	apply("second-read", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
@@ -282,16 +279,12 @@ func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *tes
 	if again := reviewStuckNotices(t, pool); len(again) != 1 {
 		t.Fatalf("the architect was told %d times (%+v), want once for the head and state", len(again), again)
 	}
-	assertRoleMessages(t, pool, "LEGION-208", []record.RoleMessage{
-		{Role: treeRoleToken(t, "LEGION-208", claim.RoleReviewer), Body: "The round you approved is stuck: " + want + "."},
-	})
+	assertRoleMessages(t, pool, "LEGION-208", stuck)
 
 	// GitHub answering the same head `behind` is a different finding, and is told once in its turn.
 	apply("behind", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBehind})
-	behind := blocked
-	behind.MergeState = record.MergeStateBehind
-	if again := reviewStuckNotices(t, pool); len(again) != 2 || again[1].Reason != stuckMergeStateReason(behind) {
+	if again := reviewStuckNotices(t, pool); len(again) != 2 || again[1].MergeState != string(record.MergeStateBehind) {
 		t.Fatalf("review-stuck notices %+v, want a second naming behind", again)
 	}
 }
@@ -343,8 +336,7 @@ func TestAnApprovalWhoseHeadHasACheckRunningTellsNobodyUntilItConcludes(t *testi
 	apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "GitHub reports that head blocked") ||
-		!strings.Contains(told[0].Reason, `"unit tests" succeeded`) {
+	if len(told) != 1 || told[0].MergeState != string(record.MergeStateBlocked) || told[0].Passed == nil || *told[0].Passed != 1 {
 		t.Fatalf("review-stuck notices %+v, want one naming blocked and the check that concluded", told)
 	}
 	if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -380,28 +372,37 @@ func toldStuckMark(t *testing.T, pool *pgxpool.Pool) (string, string) {
 	return head, state
 }
 
-// stuckRoleMessages is every message the outbox holds for a role saying the round it approved is
-// stuck, in order: the half of the review-stuck notice the reviewer gets.
+// stuckRoleMessages is every approved-round-stuck message the outbox holds for a role, in order:
+// the half of the review-stuck notice the reviewer gets.
 func stuckRoleMessages(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'body' from outbox where kind = 'role_message'
-		and payload->>'body' like 'The round you approved is stuck:%' order by id`)
+	rows, err := pool.Query(t.Context(), `select payload::text from outbox where kind = 'role_message'
+		and payload->>'kind' = 'approved-round-stuck' order by id`)
 	if err != nil {
 		t.Fatalf("read the reviewer's stuck messages: %v", err)
 	}
 	defer rows.Close()
-	bodies := []string{}
+	payloads := []string{}
 	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatalf("scan a stuck message: %v", err)
 		}
-		bodies = append(bodies, body)
+		payloads = append(payloads, payload)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the stuck messages: %v", err)
 	}
-	return bodies
+	return payloads
+}
+
+// approvedRoundStuck is the approved-round-stuck message to LEGION-208's reviewer of its approval
+// of headOne on pull request 42, which GitHub answers with state: the checks of red did not pass
+// and passed checks did.
+func approvedRoundStuck(state record.MergeState, red []texts.CheckConclusion, passed int) texts.ApprovedRoundStuckRecord {
+	return texts.ApprovedRoundStuckRecord{RoleHead: texts.RoleHead{Kind: texts.ApprovedRoundStuck, Issue: "LEGION-208"},
+		PullRequest: "sjawhar/legion#42", Head: headOne, MergeState: string(state), NotPassed: red, Passed: passed,
+		ListPassed: "gh pr checks 42 --repo sjawhar/legion"}
 }
 
 // A synchronize can arrive before the push webhook of its own move, and GitHub's verdict for the
@@ -800,7 +801,7 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 		{name: "the reviewer's approval written after its request for changes, which moved the issue first", steps: []string{"cr head id=11", "approve head id=12", "complete"}, want: phase.Implementing},
 		{name: "an outsider's approval written after the reviewer's request for changes", steps: []string{"cr head id=11", "approve head id=12 by=outsider", "complete"}, want: phase.Implementing},
 		{name: "an outsider's approval written after the reviewer's request for changes, delivered first", steps: []string{"approve head id=12 by=outsider", "cr head id=11", "complete"}, want: phase.Implementing},
-		{name: "an outsider's approval the only review of the round", steps: []string{"approve head id=12 by=outsider", "complete"}, want: phase.Reviewing, told: "no review that decides it"},
+		{name: "an outsider's approval the only review of the round", steps: []string{"approve head id=12 by=outsider", "complete"}, want: phase.Reviewing, told: texts.CauseUndecided},
 		{name: "a request for changes by an account with write access, delivered after the approval moved the issue", steps: []string{"approve head id=11", "cr head id=12 by=writer", "complete"}, want: phase.Accepting},
 		{name: "an approval by an account with write access, delivered after the request for changes moved the issue", steps: []string{"cr head id=11", "approve head id=12 by=writer", "complete"}, want: phase.Implementing},
 		{name: "a draft's request for changes submitted after a one-step approval that moved the issue", steps: []string{"approve head id=101 at=2", "cr head id=100 at=3", "complete"}, want: phase.Accepting},
@@ -808,7 +809,7 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 		{name: "a draft's approval submitted after a request for changes that moved the issue", steps: []string{"cr head id=101 at=2", "approve head id=100 at=3", "complete"}, want: phase.Implementing},
 		{name: "an untimed request for changes, then an older approval redelivered with a time", steps: []string{"cr head id=12", "approve head id=11 at=2", "complete"}, want: phase.Implementing},
 		{name: "a timed approval, then a newer untimed request for changes", steps: []string{"approve head id=11 at=2", "cr head id=12", "complete"}, want: phase.Accepting},
-		{name: "an approval, a push, then the new head's own pending settlement and its green", steps: []string{"sync", "push", "approve head", "cancelled", "complete", "rerun green"}, want: phase.Reviewing, unsettled: true, told: "no review that decides it"},
+		{name: "an approval, a push, then the new head's own pending settlement and its green", steps: []string{"sync", "push", "approve head", "cancelled", "complete", "rerun green"}, want: phase.Reviewing, unsettled: true, told: texts.CauseUndecided},
 		{name: "the checks of a head a push replaced", steps: []string{"sync", "push", "approve head", "green head", "complete"}, want: phase.Reviewing, unsettled: true},
 		{name: "a late settlement of a head a push replaced leaves the head's own", steps: []string{"sync", "push", "green", "red head", "read head-2", "approve", "complete"}, want: phase.Accepting, unsettled: true},
 		{name: "recorded before the chain: an approval of the current head", steps: []string{"approve head", "complete"}, want: phase.Accepting},
@@ -925,8 +926,8 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 			if tc.quiet && len(got) != 0 {
 				t.Fatalf("the architect was told the round was stuck: %+v, want nothing", got)
 			}
-			if tc.told != "" && (len(got) != 1 || !strings.Contains(got[0].Reason, tc.told)) {
-				t.Fatalf("review-stuck notices %+v, want one naming %q", got, tc.told)
+			if tc.told != "" && (len(got) != 1 || got[0].Cause != tc.told || got[0].EndsRound != texts.EndsRound(got[0].Head)) {
+				t.Fatalf("review-stuck notices %+v, want one of cause %q naming the review that ends the round", got, tc.told)
 			}
 		})
 	}
@@ -1172,8 +1173,40 @@ func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
 		and payload->>'role' = 'reviewer' order by id desc limit 1`).Scan(&task); err != nil {
 		t.Fatalf("read the reviewer's retry task: %v", err)
 	}
-	if !strings.Contains(task, told[0].Reason) {
-		t.Fatalf("the reviewer's retry task = %q, want it to carry the reason the architect was told, %q", task, told[0].Reason)
+	if told[0].EndsRound == "" || !strings.Contains(task, told[0].EndsRound) {
+		t.Fatalf("the reviewer's retry task = %q, want it to name the review that ends the round the architect was told of, %q", task, told[0].EndsRound)
+	}
+}
+
+// A round GitHub will not merge from, retried after its reviewer failed, names in the restarted
+// reviewer's task what the review-stuck notice named: GitHub's merge state for the head, the
+// checks GitHub reported on it (none failed here, one passed) and the command that lists them. A
+// fresh session never saw the approved-round-stuck message, so the task is where it reads them.
+func TestARetryOfARoundGitHubWillNotMergeNamesTheStateAndTheChecks(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergeStateRound(t, pool, record.MergeStateBlocked)
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	for i, fact := range []intake.Fact{
+		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
+			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)},
+		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
+		intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
+	} {
+		if result := apply(fmt.Sprintf("merge-state-%d", i), fact); result.Refusal != nil {
+			t.Fatalf("fact %d (%T) was refused: %+v", i, fact, result.Refusal)
+		}
+	}
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("the issue is in %s, want reviewing", got)
+	}
+	var task string
+	if err := pool.QueryRow(t.Context(), `select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start'
+		and payload->>'role' = 'reviewer' order by id desc limit 1`).Scan(&task); err != nil {
+		t.Fatalf("read the reviewer's retry task: %v", err)
+	}
+	if !hasLines(task, "stuck_round: merge-state", "merge_state: blocked", "passed: 1",
+		"list_passed: gh pr checks 42 --repo sjawhar/legion") {
+		t.Fatalf("the reviewer's retry task = %q, want it to name the merge state, the checks that passed and the command that lists them", task)
 	}
 }
 
@@ -1323,7 +1356,7 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 				t.Fatalf("the architect was told %d times (%+v), want %d", len(told), told, tc.told)
 			}
 			for _, notice := range told {
-				if notice.Role != claim.RoleReviewer || notice.Phase != phase.Reviewing || !strings.Contains(notice.Reason, headOne) ||
+				if notice.Role != claim.RoleReviewer || notice.Phase != phase.Reviewing || notice.Head != headOne ||
 					notice.Topic != "notifications.role.legion-legion-legion-208-reviewer" {
 					t.Fatalf("notice %+v, want the reviewer's reviewing round, naming the head, at the reviewer's role topic", notice)
 				}
@@ -1429,7 +1462,7 @@ func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		steps []intake.Fact
-		// told is what the one notice's reason names, and by the fact that wrote it; empty, the
+		// told is the head the one notice names, and by the fact that wrote it; empty, the
 		// architect is told nothing.
 		told []string
 		by   string
@@ -1474,8 +1507,8 @@ func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
 					t.Fatalf("the architect was told %d times (%+v), want once", len(told), told)
 				}
 				for _, want := range tc.told {
-					if !strings.Contains(told[0].Reason, want) {
-						t.Fatalf("the notice's reason %q does not name %q", told[0].Reason, want)
+					if told[0].Head != want || told[0].EndsRound != texts.EndsRound(want) {
+						t.Fatalf("the notice %+v does not name head %s and the review that ends the round", told[0], want)
 					}
 				}
 				if told[0].Summary != tc.by {
@@ -1515,9 +1548,10 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 	approve := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("approved", headOne)}
 	sync := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo}
 	push := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"}
-	// told is each review-stuck notice in the order written: the fact that wrote it, and what its
-	// reason names.
-	told := []record.Notice{{Summary: byCompletion, Reason: "APPROVE of head " + headOne + " or"}, {Summary: byPush, Reason: "APPROVE of head " + headTwo + " or"}}
+	// told is each review-stuck notice in the order written: the fact that wrote it, and the review
+	// that ends its round.
+	told := []record.Notice{{Summary: texts.StuckByCompletion, EndsRound: texts.EndsRound(headOne)},
+		{Summary: texts.StuckByPush, EndsRound: texts.EndsRound(headTwo)}}
 	for _, tc := range []struct {
 		name  string
 		steps []step
@@ -1545,8 +1579,8 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 				t.Fatalf("the architect was told %d times (%+v), want %d", len(got), got, len(told))
 			}
 			for i, want := range told {
-				if got[i].Summary != want.Summary || !strings.Contains(got[i].Reason, want.Reason) {
-					t.Fatalf("notice %d was written by %q naming %q, want by %q naming %q", i, got[i].Summary, got[i].Reason, want.Summary, want.Reason)
+				if got[i].Summary != want.Summary || got[i].EndsRound != want.EndsRound {
+					t.Fatalf("notice %d was written by %q ending at %q, want by %q ending at %q", i, got[i].Summary, got[i].EndsRound, want.Summary, want.EndsRound)
 				}
 			}
 		})
@@ -1577,8 +1611,8 @@ func TestAnApprovalOfAHeadTheRecordHasNotReachedDecidesOnlyOnceItArrives(t *test
 		// which is a head the round is stuck at afresh.
 		told []string
 	}{
-		{name: "the approved head arrives", head: headTwo, want: phase.Accepting, told: []string{byCompletion, byPush}},
-		{name: "a head above the approved one arrives", head: headThree, want: phase.Reviewing, told: []string{byCompletion, byPush}},
+		{name: "the approved head arrives", head: headTwo, want: phase.Accepting, told: []string{texts.StuckByCompletion, texts.StuckByPush}},
+		{name: "a head above the approved one arrives", head: headThree, want: phase.Reviewing, told: []string{texts.StuckByCompletion, texts.StuckByPush}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -1628,18 +1662,20 @@ func TestAnApprovalOfAHeadTheRecordHasNotReachedDecidesOnlyOnceItArrives(t *test
 // reviewStuckNotices is every review-stuck notice the outbox holds, in order.
 func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''), coalesce(payload->>'summary', ''),
-		coalesce(payload->>'reason', ''), coalesce(payload->>'topic', '')
-		from outbox where kind = 'notice' and payload->>'kind' = 'review-stuck' order by id`)
+	rows, err := pool.Query(t.Context(), `select payload from outbox where kind = 'notice' and payload->>'kind' = 'review-stuck' order by id`)
 	if err != nil {
 		t.Fatalf("read review-stuck notices: %v", err)
 	}
 	defer rows.Close()
 	notices := []record.Notice{}
 	for rows.Next() {
-		notice := record.Notice{Kind: "review-stuck"}
-		if err := rows.Scan(&notice.Role, &notice.Phase, &notice.Summary, &notice.Reason, &notice.Topic); err != nil {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatalf("scan review-stuck notice: %v", err)
+		}
+		var notice record.Notice
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("decode review-stuck notice %s: %v", payload, err)
 		}
 		notices = append(notices, notice)
 	}
@@ -2108,8 +2144,8 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 		t.Fatalf("after the reviewer completed the issue is in %s, want reviewing: the round is stuck", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	want := "a review that would otherwise have decided this round was set aside - footer names " + headEarlier + ", not the head " + headOne
-	if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
+	want := "footer names " + headEarlier + ", not the head " + headOne
+	if len(told) != 1 || told[0].Cause != texts.CauseUndecided || told[0].SetAside != want {
 		t.Fatalf("review-stuck notices %+v, want one naming the refusal %q", told, want)
 	}
 }
@@ -2182,7 +2218,7 @@ func TestANewRoundInheritsNoRefusal(t *testing.T) {
 	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 		Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2})
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || strings.Contains(told[0].Reason, "was set aside") {
+	if len(told) != 1 || told[0].SetAside != "" {
 		t.Fatalf("review-stuck notices %+v, want one naming no refusal of the round before it", told)
 	}
 }

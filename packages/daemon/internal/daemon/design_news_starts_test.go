@@ -41,8 +41,10 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 		t.Fatalf("run the news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	if !strings.Contains(task, "version 5, since version 4, which your phase last took") || !strings.Contains(task, `"Design" changed`) {
-		t.Fatalf("the reviewer's task = %q, want the spec's pair and its change list", task)
+	rec := oneNewsRecord(t, task)
+	if strings.Join(rec.items(), "\n") != "spec "+reconcileDoc+" 5 taken=4 listed" ||
+		strings.Join(rec.named(), "\n") != "0 Design changed\n0 requirement r2 changed" {
+		t.Fatalf("the reviewer's task = %q, want the spec's pair and its change rows: the section and the requirement Dispatch names", task)
 	}
 	if !machine.Claim().Pending.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 		t.Fatalf("the reviewer's task carries %+v, want the news-only item of the spec from 4 to 5", news)
@@ -250,14 +252,10 @@ func TestTheRootArchitectsStartIsQueuedOncePerTree(t *testing.T) {
 		t.Fatalf("run the root architect's news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	for _, want := range []string{
-		"A person approved a new version of the design of LEGION-600.",
-		"The approved design of LEGION-600 changed for LEGION-601, which you hold in accepting:",
-		"sign LEGION-601 off with `sign_off`",
-	} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the root architect's task = %q, want it to say %q", task, want)
-		}
+	newsRecordOf(t, task, "root_architect", reconcileRoot)
+	if accepting := newsRecordOf(t, task, "holder", reconcileChild); accepting.fields["phase"] != "accepting" ||
+		strings.Join(accepting.items(), "\n") != "spec "+reconcileDoc+" 5 taken=4 listed" {
+		t.Fatalf("the root architect's task = %q, want the holder form of %s in accepting beside its summary", task, reconcileChild)
 	}
 	if len(news.Items) != 2 {
 		t.Fatalf("the root architect's task carries %+v, want its own item and the accepting member's", news)
@@ -292,7 +290,7 @@ func TestASubArchitectsStartIsQueuedForItsAcceptingChild(t *testing.T) {
 		t.Fatalf("run the sub-architect's news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	if !strings.Contains(task, "changed for LEGION-602, which you hold in accepting:") || strings.Contains(task, "Each issue of the tree") {
+	if rec := oneNewsRecord(t, task); rec.fields["issue"] != reconcileGrandchild || rec.fields["audience"] != "holder" || rec.fields["phase"] != "accepting" {
 		t.Fatalf("the sub-architect's task = %q, want the holder form of its accepting child and no summary of the tree", task)
 	}
 	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileGrandchild, 4)}) {
@@ -338,38 +336,25 @@ func TestAnAcceptingChildsOwnArchitectIsToldItsNewsAndTheRootsSummaryNamesIt(t *
 		}
 	}
 
-	const accepting = "The approved design of LEGION-600 changed for LEGION-601, which you hold in accepting:"
 	task, news := pendingNews(t, own)
-	for _, want := range []string{accepting, "sign LEGION-601 off with `sign_off`"} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the task of %s's own architect = %q, want it to say %q", reconcileChild, task, want)
-		}
-	}
-	if strings.Contains(task, "A person approved a new version of the design of LEGION-600.") {
-		t.Fatalf("the task of %s's own architect = %q, want no summary of the tree: the summary is the root architect's", reconcileChild, task)
+	if rec := oneNewsRecord(t, task); rec.fields["issue"] != reconcileChild || rec.fields["audience"] != "holder" || rec.fields["phase"] != "accepting" ||
+		strings.Join(rec.items(), "\n") != "spec "+reconcileDoc+" 5 taken=4 listed" {
+		t.Fatalf("the task of %s's own architect = %q, want the holder form of it in accepting and no summary of the tree", reconcileChild, task)
 	}
 	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileChild, 4)}) {
 		t.Fatalf("the task of %s's own architect carries %+v, want the accepting child's item", reconcileChild, news)
 	}
 
 	summary, carried := pendingNews(t, root)
-	if !strings.Contains(summary, "A person approved a new version of the design of LEGION-600.") {
-		t.Fatalf("the root architect's task = %q, want its summary of the tree", summary)
-	}
-	if strings.Contains(summary, accepting) {
-		t.Fatalf("the root architect's task = %q, want no holder form of %s: its own architect holds it", summary, reconcileChild)
+	rec := oneNewsRecord(t, summary)
+	if rec.fields["audience"] != "root_architect" {
+		t.Fatalf("the root architect's task = %q, want its summary of the tree and no holder form of %s: its own architect holds it", summary, reconcileChild)
 	}
 	if want := []record.DeliveryNewsItem{newsItem(reconcileRoot, record.AudienceArchitect, record.DesignStepSpec, reconcileDoc, 4, 5)}; !reflect.DeepEqual(carried.Items, want) {
 		t.Fatalf("the root architect's task carries %+v, want its own item alone: %+v", carried.Items, want)
 	}
-	const prefix = "- LEGION-601, in accepting: "
-	var line string
-	for _, candidate := range strings.Split(summary, "\n") {
-		if strings.HasPrefix(candidate, prefix) {
-			line = candidate
-		}
+	if got, want := rec.member(reconcileChild), "LEGION-601 accepting told=now why= holder=architect architect_of=LEGION-601"; got != want {
+		t.Fatalf("the summary's member %s = %q, want %q", reconcileChild, got, want)
 	}
-	if want := prefix + "owed version 5 of the spec document, since version 4, which its phase last took; a task tells its own architect now."; line != want {
-		t.Fatalf("the summary's line for %s = %q, want %q", reconcileChild, line, want)
-	}
+	wantNewsLines(t, "summary's owed", rec.owed(), []string{"LEGION-601: spec " + reconcileDoc + " 5 taken=4 yours=true listed"})
 }

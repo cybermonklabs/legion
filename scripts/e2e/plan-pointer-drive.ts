@@ -81,7 +81,7 @@ type WroteName = DesignName | "none" | "several";
  *  counts one field for each of them:
  *
  *    approved    the file names the newest approved design, which is what the rule asks for;
- *    pointer     it names the design of the plan.md version the task line's handoff record
+ *    pointer     it names the design of the plan.md version the task's handoff record
  *                cites, which is the build the rule forbids;
  *    stale       it names an approved design that is neither the newest approved one nor the
  *                pointer's, which is lag;
@@ -156,8 +156,8 @@ const approvedAtStart: readonly number[] = [1, 6];
 const approvedVersionAtStart = approvedAtStart[approvedAtStart.length - 1];
 /** How many `plan` handoff records the issue holds. */
 const handoffRecords = 6;
-/** The `plan` handoff record the task's line names, which is the first of them. The newest
- *  record is `handoffRecords`, and the task's line names an older one: the pointer the task
+/** The `plan` handoff record the task names, which is the first of them. The newest
+ *  record is `handoffRecords`, and the task names an older one: the pointer the task
  *  carries is the stale one. */
 const taskHandoffVersion = 1;
 /** The plan.md version that record cites. The newest record cites `versionsAtStart` instead. */
@@ -172,7 +172,7 @@ function designAt(version: number): Design {
 }
 
 /** The file the first task of a two-task plan writes, the file the scored task writes, and the
- *  file the round's `implement` handoff body goes to. The task line the seed writes names them,
+ *  file the round's `implement` handoff body goes to. The task the seed writes names them,
  *  and the score reads the same two task files. */
 const firstFile = "note.txt";
 const scoredFile = "adoption.txt";
@@ -229,7 +229,7 @@ interface Row {
   /** The watcher's shape: `approved` when it recorded a plan review of the mid-session version,
    *  `unapproved` when it recorded none. */
   readonly midApproval: "approved" | "unapproved";
-  /** The `plan` handoff record the task line names. */
+  /** The `plan` handoff record the task names. */
   readonly taskHandoffVersion: number;
   /** The plan.md version that record cites. */
   readonly handoffCitesPlanVersion: number;
@@ -408,11 +408,14 @@ function handoffBody(issue: string, version: number, citesPlanVersion: number): 
   };
 }
 
-/** The task line the session is given, written from this file's own constants and its own list of
+/** The task the session is given, written from this file's own constants and its own list of
  *  the staged tasks, so one change cannot make the row print a version the session was never
- *  told. The `Handoff:` sentence is the shape the daemon renders (task,
- *  packages/daemon/internal/workflow/effects.go): the phase's word, the version the daemon
- *  accepted, and the command that reads that version. Nothing else in the task names a plan
+ *  told. It opens with the record the daemon renders for an implementing assignment
+ *  (texts.PhaseAssignmentRecord, packages/daemon/internal/texts/records_task.go): its kind and
+ *  issue first, then the title, the phase, and the handoff as two fields, the phase's word and
+ *  the version the daemon accepted, which the role prompt says how to read. Each value is one
+ *  that TOON writes with no quotes, so the lines are written here as the daemon renders them. The
+ *  round's own steps follow the record after a blank line. Nothing else in the task names a plan
  *  version, and nothing in it says the plan can have moved. */
 function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): string {
   const steps =
@@ -428,11 +431,17 @@ function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): s
   const round =
     tasks === 1 ? "one task and your own record of it" : "two tasks and your own record of them";
   const files = steps.length === 2 ? "two" : "three";
+  const record = [
+    "kind: phase-assignment",
+    `issue: ${issue}`,
+    `title: ${title}`,
+    "phase: implementing",
+    "handoff_phase: plan",
+    `handoff_version: ${taskHandoffVersion}`,
+  ];
   return (
-    `Continue ${title}. Issue: ${issue}. Phase: implementing.` +
-    ` Handoff: plan version ${taskHandoffVersion}` +
-    ` (dispatch handoff-read --issue ${issue} --phase plan --version ${taskHandoffVersion}).` +
-    ` This box carries no workspace, no jj and no GitHub for this issue, so your round is the` +
+    `${record.join("\n")}\n\n` +
+    `This box carries no workspace, no jj and no GitHub for this issue, so your round is the` +
     ` plan's ${round}: ${steps.join(", then ")}.` +
     ` Record nothing with dispatch and open no pull request: the round ends when the ${files}` +
     ` files are written.\n`
@@ -768,7 +777,7 @@ function score(runDir: string, arm: string, run: string, attempt: number): void 
     : approvedAtStart;
   const approvedDesign = designAt(approvedByThen[approvedByThen.length - 1]);
   const everApproved = new Set(approvedByThen.map((version) => designAt(version).name));
-  // The design of the plan.md version the task line's handoff record cites: the build the rule
+  // The design of the plan.md version the task's handoff record cites: the build the rule
   // forbids, which gets a verdict word of its own.
   const pointerDesign = designAt(taskHandoffCites);
   const row: Row = {

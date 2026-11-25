@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -74,7 +75,8 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.providerErrorRunReached(supervise.Claim{Token: implementer, Project: token, Tree: "CAPTURE-7", Issue: "CAPTURE-7",
-		Role: claim.RoleImplementer, Generation: 1}, "three provider errors in a row")
+		Role: claim.RoleImplementer, Generation: 1}, texts.ProviderErrorsRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: "CAPTURE-7"}, Role: claim.RoleImplementer, Turns: 3, RetryEvery: "10m0s"})
 
 	testwait.Eventually(t, "the provider-errors notice to commit and wake its lane", func() bool {
 		mu.Lock()

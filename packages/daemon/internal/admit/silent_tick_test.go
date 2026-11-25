@@ -2,6 +2,8 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +168,35 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 		}
 		if want := (6 * time.Hour).String(); named.Silent != want {
 			t.Errorf("the tick says the silence is %q, want %q: the time since the last step, as for any entry", named.Silent, want)
+		}
+	})
+	// A background stall is judged by the report alone (workflow.BackgroundStalledWorker), so the
+	// tick can name a worker whose claim's record holds no step of its agent. Such an entry states
+	// no last step and no time quiet: a zero time would read as a step at year 1, and the time
+	// since it as 292 years.
+	t.Run("a background report of a worker whose claim records no step", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
+		registerController(t, pool)
+		stalledReport := fixedNow.Add(-5 * time.Hour)
+		working := seedQuietRoot(t, pool, "LEGION-780", "A", phase.Implementing)
+		putWorkerClaim(t, pool, "LEGION-780", "LEGION-780", claim.RoleImplementer, working.Generation, supervise.StateReady, "")
+		reportedBackground(t, pool, "LEGION-780", stalledReport)
+
+		tick(t, pool, admission, "tick-1")
+
+		notice := tickNotice(t, pool)
+		if len(notice.Silent) != 1 || notice.Silent[0].Issue != "LEGION-780" || !notice.Silent[0].BackgroundSince.Equal(stalledReport) {
+			t.Fatalf("the tick names %#v as silent, want LEGION-780's implementer with its background report of %s", notice.Silent, stalledReport)
+		}
+		payload, err := json.Marshal(notice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if named := notice.Silent[0]; !named.LastStep.IsZero() || named.Silent != "" ||
+			strings.Contains(string(payload), `"lastStep"`) || strings.Contains(string(payload), `"silent":"`) {
+			t.Errorf("the tick states a last step or a time quiet of a worker its record holds no step of: %s", payload)
 		}
 	})
 	t.Run("nothing silent", func(t *testing.T) {

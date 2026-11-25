@@ -22,9 +22,6 @@ func personsTodo(key string) intake.DispatchIssue {
 	return intake.DispatchIssue{Key: key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "root", Rank: "U"}
 }
 
-// restartedBy is the reason the worker of the first step of a task a todo starts again is told.
-const restartedBy = "Reason: the issue was set to todo while its task was stopped."
-
 // loggedEngine is returnEngine logging into a buffer the test reads.
 func loggedEngine() (*Engine, *bytes.Buffer) {
 	engine := returnEngine()
@@ -101,10 +98,12 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		if got := len(hookPrompts(t, pool)); got != prompts {
 			t.Fatalf("the todo fired %d hook prompts, want none", got-prompts)
 		}
+		// The task names the restart as a field (restarted: todo), main's "Reason: the issue was
+		// set to todo while its task was stopped.".
 		row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer)
-		if row.Entry != entry+1 || !row.EntryMovedBack || !strings.Contains(row.EntryTask, restartedBy) {
-			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, raised as a move back, whose task holds %q",
-				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1, restartedBy)
+		if row.Entry != entry+1 || !row.EntryMovedBack || readTaskOf(t, row.EntryTask).fields["restarted"] != RestartedByTodo {
+			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, raised as a move back, whose task names restarted: %s",
+				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1, RestartedByTodo)
 		}
 		starts := superviseRowsOf(t, pool, root.Key, "start")
 		if start := starts[len(starts)-1]; start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Entry != row.Entry || start.Task != row.EntryTask {
@@ -160,8 +159,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		// beside the board's move: the issues the retro waits for. The architect's rules for
 		// ending a child stay in the architect's retro-held notice, which this text is not.
 		why := root.Key + " waits before its retro for these issues beneath it: " + heldBeneath + ". Legion starts the retro when the last one leaves."
-		if notice := retroHeldNotice(root.Key, []string{heldBeneath}).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
-			t.Fatalf("the architect's retro-held notice = %q, want it carrying the rules for ending a child and the sentence on a status not taken yet", notice)
+		if notice := retroHeldNotice(root.Key, []string{heldBeneath}); notice.EndChildRule != record.EndChildRule || notice.StatusNotTakenYet != record.StatusNotTakenYet ||
+			strings.Contains(why, record.EndChildRule) || strings.Contains(why, record.StatusNotTakenYet) {
+			t.Fatalf("the architect's retro-held notice = %+v, want it carrying the rules for ending a child and the sentence on a status not taken yet, which the person's text %q does not", notice, why)
 		}
 		if got, writes := outboxRowsOf(t, pool, root.Key), statusWrites(t, pool, root.Key); got != outbox+1 || len(writes) != statuses+1 ||
 			writes[len(writes)-1] != record.OrdinaryStatusWrite("in_progress", "todo", why) {
@@ -245,8 +245,8 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			t.Fatalf("%s with no plan rows after the todo stands in %s with hold %+v, want implementing with no hold", root.Key, issue.Phase, issue.Hold)
 		}
 		starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
-		if len(starts) != 1 || starts[0].Phase != phase.Implementing || !strings.Contains(starts[0].Task, "Reason: the issue was set to todo while its phase was held.") {
-			t.Fatalf("the implementer's starts = %+v, want one of implementing naming the release", starts)
+		if len(starts) != 1 || starts[0].Phase != phase.Implementing || readTaskOf(t, starts[0].Task).fields["retried"] != RetriedByTodo {
+			t.Fatalf("the implementer's starts = %+v, want one of implementing naming the release (retried: %s)", starts, RetriedByTodo)
 		}
 		if got := statusWrites(t, pool, root.Key); len(got) != 1 || got[0] != record.OrdinaryStatusWrite("in_progress", "todo", "") {
 			t.Fatalf("the status writes = %+v, want the one of implementing over the todo", got)

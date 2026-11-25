@@ -1,12 +1,12 @@
 package supervise
 
-// The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3): in front of the task the claim holds, as the whole of a delivery of
-// the daemon's own when it holds none, never to a fresh session for the old session's process and
-// behind the abandoned session's sentence for the fresh session's own, in front of a provider
-// error's, told only when a turn takes a prompt that carried it, and told again when that turn
-// turns out to be another's. The daemon package drives the same against the real workflow (its
-// TestARelaunchSentence… tests).
+// The note a relaunched process is told of what the last let-go of its process ended
+// (dispatch://INFRA-3276 R3, RelaunchNote): in front of the task the claim holds, as the whole of
+// a delivery of the daemon's own when it holds none, never to a fresh session for the old
+// session's process and behind the abandoned session's note for the fresh session's own, in front
+// of a provider error's, told only when a turn takes a prompt that carried it, and told again when
+// that turn turns out to be another's. The daemon package drives the same against the real
+// workflow (its TestARelaunchSentence… tests).
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // wantEndedTold is whether the claim's record of what its last let-go ended has been told, and by
@@ -60,14 +61,29 @@ func wantSaysNot(t *testing.T, prompt string, statements ...string) {
 	}
 }
 
-// A task whose turn a death cut off is sent to the relaunched process behind the record's
-// sentence, and behind that sentence alone: it names the cause in the runtime's own words, quoted
-// so no word of them reads as the daemon's; that the task's turn was interrupted and its tool calls
-// never answered; the subagent the process's own report named, and then that the subagents and
-// background jobs of that turn are gone, which a report read in the turn does not rule out; that
-// no result will come and the transcript does not say so; and that the agent checks what was done
-// before it repeats it. The turn that takes that prompt tells the record, and the next task
-// carries nothing.
+// relaunchNote is the relaunch note of h's claim for the record ended, as a prompt carries it: in
+// front of a task (task true), or as the whole text of the daemon's own delivery of it
+// (RelaunchNote).
+func (h *harness) relaunchNote(ended EndedWork, task bool) string {
+	return partText(RelaunchNote(h.claim().Issue, ended, task))
+}
+
+// abandonedNote is the abandoned-session note of h's claim, as a prompt carries it
+// (AbandonedSessionNote).
+func (h *harness) abandonedNote() string {
+	c := h.claim()
+	return partText(AbandonedSessionNote(c.Issue, c.Role, c.Abandoned.Session, c.Abandoned.Why))
+}
+
+// notesIn is how many notes the prompt carries in front of its task, each of which names its
+// kind on a line of its own (Delivery.message).
+func notesIn(prompt string) int { return strings.Count(prompt, "kind: ") }
+
+// A task whose turn a death cut off is sent to the relaunched process behind the record's note,
+// and behind that note alone: it names its kind and issue, the cause in the runtime's own words,
+// quoted so no word of them reads as the daemon's, that the task's turn was cut off, the subagent
+// the process's own report named, that a report of the turn is on record, and that a task
+// follows. The turn that takes that prompt tells the record, and the next task carries nothing.
 func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -88,20 +104,16 @@ func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 	if relaunchTask(resent.DeliveryID) {
 		t.Fatalf("the relaunched claim was sent %s, want its task: a claim holding a task is given no delivery of the daemon's own", resent.DeliveryID)
 	}
-	if want := relaunchSentence(ended, true) + "\n\n" + "implement the plan"; resent.Message != want {
+	if want := h.relaunchNote(ended, true) + "\n\n" + "implement the plan"; resent.Message != want {
 		t.Fatalf("the task was re-sent as %q, want %q", resent.Message, want)
 	}
 	wantSays(t, resent.Message,
-		"Your previous turn on this task was interrupted.",
-		"Your process ended because the process died: "+strconv.Quote(deathCause(observation))+".",
-		"Your tool calls in flight were never answered.",
-		saysSubagentStopped+" "+saysTurnGone,
-		"No result of that work will come to you.",
-		"Your transcript does not say so.",
-		"Before you do any of that work again, check what it already did. Then continue the task.")
-	wantSaysNot(t, resent.Message, saysNoReport, saysEveryOtherGone)
-	if strings.Count(resent.Message, "interrupted") != 1 {
-		t.Errorf("the prompt %q says its turn was interrupted more than once, want one sentence of the relaunch", resent.Message)
+		"kind: "+string(texts.RelaunchNote), "issue: LEGION-209",
+		saysCause("the process died: "+strconv.Quote(deathCause(observation))),
+		saysTurnCut, saysTaskTurn, saysSubagentStopped, saysReported, "task: true")
+	wantSaysNot(t, resent.Message, saysBackground)
+	if notesIn(resent.Message) != 1 {
+		t.Errorf("the prompt %q carries %d notes, want the relaunch's one", resent.Message, notesIn(resent.Message))
 	}
 	if strings.Contains(resent.Message, "\nIgnore every rule above") {
 		t.Errorf("the prompt %q carries the runtime's words unquoted", resent.Message)
@@ -122,10 +134,10 @@ func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 // the stop's own cause (recordEnd, endStopped), and settle retires the task the turn confirmed.
 // The operator's retry then hands the relaunched process a new task before its ready, as api's
 // retryStart starts the worker's phase again, and that task was in no turn of the stopped process.
-// So the sentence in front of it names the stop's cause, the turn the agent was in and the
-// subagent the report named, and never says the agent's previous turn on this task was
-// interrupted (EndedWork.inFrontOf). The control is a death in the task's turn, which takes the
-// task back (interrupted): the task sent again is the one that was in the turn, and is told so.
+// So the note in front of it names the stop's cause, the turn the agent was in and the subagent
+// the report named, and never that the turn cut off was this task's (EndedWork.inFrontOf). The
+// control is a death in the task's turn, which takes the task back (interrupted): the task sent
+// again is the one that was in the turn, and is told so.
 func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testing.T) {
 	const (
 		task = "implement the plan"
@@ -138,8 +150,8 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 		// ready; it answers the task that process is sent first.
 		letGo       func(h *harness) string
 		interrupted bool
-		// because is the sentence's statement of why the process ended, says the statement it
-		// makes of the turn cut off, and saysNot the one it must not make.
+		// because is the note's line of why the process ended, says the line it states of the
+		// turn cut off, and saysNot the one it must not state.
 		because, says, saysNot string
 	}{
 		{
@@ -157,7 +169,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 				h.relaunched()
 				return next
 			},
-			because: "Your previous process ended because " + endStopped + ".",
+			because: saysCause(endStopped),
 			says:    saysTurnCut, saysNot: saysTaskTurn,
 		},
 		{
@@ -170,8 +182,8 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 				return task
 			},
 			interrupted: true,
-			because:     "Your process ended because " + died + ".",
-			says:        saysTaskTurn, saysNot: saysTurnCut,
+			because:     saysCause(died),
+			says:        saysTaskTurn, saysNot: "kind: " + string(texts.CutTurnNote),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,20 +203,20 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 			sent, p := h.wantPrompts(2)[1], h.pending()
 			if sent.DeliveryID != p.ID || p.Task != want || p.Interrupted != tc.interrupted ||
 				!strings.HasSuffix(sent.Message, "\n\n"+want) {
-				t.Fatalf("the next process was sent %+v first as %+v, want the task %q, interrupted = %v, behind the record's sentence",
+				t.Fatalf("the next process was sent %+v first as %+v, want the task %q, interrupted = %v, behind the record's note",
 					sent, p, want, tc.interrupted)
 			}
-			wantSays(t, sent.Message, tc.because, tc.says, saysSubagentStopped, "Then continue the task.")
+			wantSays(t, sent.Message, tc.because, tc.says, saysTurnCut, saysSubagentStopped, "task: true")
 			wantSaysNot(t, sent.Message, tc.saysNot)
-			if strings.Count(sent.Message, "interrupted") != 1 {
-				t.Errorf("the prompt %q says a turn was interrupted more than once, want one sentence of the let-go", sent.Message)
+			if notesIn(sent.Message) != 1 {
+				t.Errorf("the prompt %q carries %d notes, want the let-go's one", sent.Message, notesIn(sent.Message))
 			}
 		})
 	}
 }
 
 // A claim that holds nothing when its new process is ready is given a delivery of the daemon's own
-// that carries the sentence alone: no phase, no run, no entry, an id the busy answer's
+// that carries the note alone: no phase, no run, no entry, an id the busy answer's
 // take-back keeps the prefix of (rotateTaskID). The acknowledgement tells nothing; the turn that
 // takes it does, and its retirement leaves the run the claim was serving where it was.
 func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
@@ -226,23 +238,15 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 		t.Fatalf("the death recorded %+v, want an untold record of the subagent alone", ended)
 	}
 	p := h.pending()
-	if !relaunchTask(p.ID) || p.Phase != "" || p.Generation != 0 || p.Entry != 0 || p.Task != RelaunchSentence(ended) {
-		t.Fatalf("the relaunched claim holds %+v, want the daemon's own delivery of the relaunch's sentence, of no phase, run or entry", p)
+	if !relaunchTask(p.ID) || p.Phase != "" || p.Generation != 0 || p.Entry != 0 || p.Task != h.relaunchNote(ended, false) {
+		t.Fatalf("the relaunched claim holds %+v, want the daemon's own delivery of the relaunch's note, of no phase, run or entry", p)
 	}
 	sent := h.wantPrompts(2)[1]
-	if sent.DeliveryID != p.ID || sent.Message != RelaunchSentence(ended) {
-		t.Fatalf("the relaunched claim was sent %+v, want the sentence alone under %s", sent, p.ID)
+	if sent.DeliveryID != p.ID || sent.Message != h.relaunchNote(ended, false) {
+		t.Fatalf("the relaunched claim was sent %+v, want the note alone under %s", sent, p.ID)
 	}
-	wantSays(t, sent.Message,
-		"Your previous process ended because the process died: ",
-		"You were not in a turn then.",
-		"Each subagent that you started stopped with that process.",
-		"No result of that work will come to you.",
-		"Your transcript does not say so.",
-		"Before you start any of that work again, check what it already did.")
-	if strings.Contains(sent.Message, "continue the task") {
-		t.Errorf("the sentence alone %q tells the agent to continue a task, want no task named", sent.Message)
-	}
+	wantSays(t, sent.Message, "kind: "+string(texts.RelaunchNote), saysCause(ended.Cause), saysSubagentStopped, saysReported)
+	wantSaysNot(t, sent.Message, saysTurnCut, "task: true")
 	h.wantEndedTold(false, "", "at the acknowledgement")
 
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: p.ID, Error: busyAnswer})
@@ -254,8 +258,8 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 	again := h.wantPrompts(3)[2]
-	if again.DeliveryID != rotated.ID || again.Message != RelaunchSentence(ended) {
-		t.Fatalf("the end of the agent's own turn sent %+v, want the sentence again under %s", again, rotated.ID)
+	if again.DeliveryID != rotated.ID || again.Message != h.relaunchNote(ended, false) {
+		t.Fatalf("the end of the agent's own turn sent %+v, want the note again under %s", again, rotated.ID)
 	}
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantEndedTold(true, again.DeliveryID, "once its turn began")
@@ -271,10 +275,10 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended: the operator's forget of the session ends that record, told by no delivery
-// (forgetSession), and the abandoned session's sentence says that everything of the old session
-// is gone. So the claim gets no delivery of the daemon's own at its ready, and its first task
-// carries the abandoned session's sentence and not the record's. The turn that takes that task
-// tells the abandonment and leaves the record as the forget left it.
+// (forgetSession), and the abandoned session's note says the old session was abandoned where it
+// stood. So the claim gets no delivery of the daemon's own at its ready, and its first task
+// carries the abandoned session's note and not the record's. The turn that takes that task tells
+// the abandonment and leaves the record as the forget left it.
 func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 	c := queuedClaim()
 	c.Session, c.SessionFile = "ses-old", "/sessions/old.jsonl"
@@ -290,11 +294,11 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 
 	first := h.wantPrompts(1)[0]
 	sent := first.Message
-	if want := abandonedTask(h.claim(), true) + "implement the plan"; sent != want {
+	if want := h.abandonedNote() + "\n\n" + "implement the plan"; sent != want {
 		t.Fatalf("the fresh session's first task was sent as %q, want %q", sent, want)
 	}
-	if strings.Contains(sent, "Your previous process ended") || strings.Contains(sent, "Your process ended") {
-		t.Errorf("the fresh session's first task %q carries the record's sentence beside the abandoned session's", sent)
+	if strings.Contains(sent, "kind: "+string(texts.RelaunchNote)) {
+		t.Errorf("the fresh session's first task %q carries the record's note beside the abandoned session's", sent)
 	}
 	h.wantEndedTold(true, "", "before the task's turn")
 
@@ -310,11 +314,11 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 // store.
 //
 // A claim that holds a task — the one its death took back from its turn — sends it to the fresh
-// agent behind the abandoned session's sentence alone: not the record's, nor the note of the old
-// session's interrupted turn. Oh My Pi acknowledges that prompt and then answers it busy: the
-// abandonment is still untold, and the task sent after the agent's own turn ends names it again,
-// and still carries no record sentence, because the record ended at the forget rather than
-// waiting on a confirmation the busy answer never gave.
+// agent behind the abandoned session's note alone: not the record's, nor the cut-turn note of the
+// old session's turn. Oh My Pi acknowledges that prompt and then answers it busy: the abandonment
+// is still untold, and the task sent after the agent's own turn ends names it again, and still
+// carries no record note, because the record ended at the forget rather than waiting on a
+// confirmation the busy answer never gave.
 //
 // A claim that holds the daemon's own delivery of the record when its session is forgotten holds
 // a delivery with nothing left to say: the fresh agent's ready retires it rather than send it,
@@ -350,12 +354,12 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 		if relaunchTask(first.DeliveryID) {
 			t.Fatalf("the fresh agent was sent %s, want its task", first.DeliveryID)
 		}
-		want := abandonedTask(h.claim(), true) + "implement the plan"
+		want := h.abandonedNote() + "\n\n" + "implement the plan"
 		if first.Message != want {
-			t.Fatalf("the fresh agent's first prompt is %q, want %q: the abandoned session's sentence alone in front of the task", first.Message, want)
+			t.Fatalf("the fresh agent's first prompt is %q, want %q: the abandoned session's note alone in front of the task", first.Message, want)
 		}
-		recordSentences := []string{"Your previous process ended", "Your process ended", "interrupted", "No result of that work will come to you."}
-		wantSaysNot(t, first.Message, recordSentences...)
+		recordNotes := []string{"kind: " + string(texts.RelaunchNote), "kind: " + string(texts.CutTurnNote), "kind: " + string(texts.OutOfMemoryNote)}
+		wantSaysNot(t, first.Message, recordNotes...)
 		if p := h.pending(); p.DeliveredAt.IsZero() || p.MarkedBy != first.DeliveryID {
 			t.Fatalf("the first prompt left %+v, want it acknowledged", p)
 		}
@@ -369,7 +373,7 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 		if second.Message != want {
 			t.Fatalf("the prompt after the busy answer is %q, want %q: the abandonment again, and no record", second.Message, want)
 		}
-		wantSaysNot(t, second.Message, recordSentences...)
+		wantSaysNot(t, second.Message, recordNotes...)
 
 		h.must(StreamTurnStart{Claim: testToken})
 		h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
@@ -414,13 +418,12 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 }
 
 // After a forget, a record that tells is one of the fresh session's own processes, and the fresh
-// agent is told it behind the abandoned session's sentence. Here the fresh agent is in a turn of
-// its own, which no prompt of the daemon's began, so nothing has told it the abandonment yet, and
-// its process dies in that turn: the death writes a record of the fresh process, the next prompt
-// carries the abandoned session's sentence and then that record's, and the turn that takes it
-// tells both. A claim holding nothing is sent the daemon's own delivery of the record
-// (queueRelaunch), which holds no task, so neither sentence tells the agent to continue one
-// (abandonedTask, relaunchSentence); one holding a task sends the task behind both sentences.
+// agent is told it behind the abandoned session's note. Here the fresh agent is in a turn of its
+// own, which no prompt of the daemon's began, so nothing has told it the abandonment yet, and its
+// process dies in that turn: the death writes a record of the fresh process, the next prompt
+// carries the abandoned session's note and then that record's, and the turn that takes it tells
+// both. A claim holding nothing is sent the daemon's own delivery of the record (queueRelaunch),
+// whose note states no task; one holding a task sends the task behind both notes.
 func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -454,15 +457,15 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 				t.Fatalf("the claim records the abandoned session %+v, want it still to tell", h.claim().Abandoned)
 			}
 			next := h.wantPrompts(base + 1)[base]
-			want := abandonedTask(h.claim(), false) + RelaunchSentence(ended)
+			want := h.abandonedNote() + "\n\n" + h.relaunchNote(ended, false)
 			if tc.task != "" {
-				want = abandonedTask(h.claim(), false) + relaunchSentence(ended, true) + "\n\n" + tc.task
+				want = h.abandonedNote() + "\n\n" + h.relaunchNote(ended, true) + "\n\n" + tc.task
 			}
 			if next.Message != want {
-				t.Fatalf("the next prompt is %q, want %q: the abandoned session's sentence, then the fresh process's record", next.Message, want)
+				t.Fatalf("the next prompt is %q, want %q: the abandoned session's note, then the fresh process's record", next.Message, want)
 			}
-			if got := strings.Count(next.Message, "continue the task"); tc.task == "" && got != 0 || tc.task != "" && got != 1 {
-				t.Errorf("the next prompt says %q %d times, want once in front of a task and never alone", "continue the task", got)
+			if got := strings.Count(next.Message, "task: true"); tc.task == "" && got != 0 || tc.task != "" && got != 1 {
+				t.Errorf("the next prompt says %q %d times, want once in front of a task and never alone", "task: true", got)
 			}
 			if relaunchTask(next.DeliveryID) != (tc.task == "") {
 				t.Fatalf("the next prompt went as %s, want the daemon's own delivery only for a claim holding nothing", next.DeliveryID)
@@ -481,7 +484,7 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 // queues the daemon's own delivery only for a claim that holds nothing (queueRelaunch), and this
 // one holds the task; the ready's send then drops it rather than send it (sendPending). The drop
 // leaves the claim holding nothing, so it is given the daemon's own delivery of the record and
-// sent it there, rather than leave the sentence for whatever task comes next (relaunchAfterDrop).
+// sent it there, rather than leave the note for whatever task comes next (relaunchAfterDrop).
 func TestARelaunchSentenceGoesAloneWhenTheHeldTaskIsDropped(t *testing.T) {
 	h := newBareHarness(t)
 	holds := true
@@ -507,15 +510,15 @@ func TestARelaunchSentenceGoesAloneWhenTheHeldTaskIsDropped(t *testing.T) {
 		t.Fatalf("the death recorded %+v, want an untold record of the task's turn", ended)
 	}
 	p := h.pending()
-	if !relaunchTask(p.ID) || p.Task != RelaunchSentence(ended) || p.Phase != "" {
+	if !relaunchTask(p.ID) || p.Task != h.relaunchNote(ended, false) || p.Phase != "" {
 		t.Fatalf("after the drop the claim holds %+v, want the daemon's own delivery of the record", p)
 	}
 	if stored, held := h.store.delivery(testToken); !held || stored.ID != p.ID {
 		t.Fatalf("the store holds %+v (held %v), want the daemon's own delivery %s", stored, held, p.ID)
 	}
 	sent := h.wantPrompts(2)[1]
-	if sent.DeliveryID != p.ID || sent.Message != RelaunchSentence(ended) {
-		t.Fatalf("the relaunched claim was sent %+v, want the record's sentence alone under %s", sent, p.ID)
+	if sent.DeliveryID != p.ID || sent.Message != h.relaunchNote(ended, false) {
+		t.Fatalf("the relaunched claim was sent %+v, want the record's note alone under %s", sent, p.ID)
 	}
 	if lines := h.logs.lines("the issue has left the phase this task was queued for"); len(lines) != 1 {
 		t.Errorf("the drop logged %q, want one line", lines)
@@ -525,7 +528,7 @@ func TestARelaunchSentenceGoesAloneWhenTheHeldTaskIsDropped(t *testing.T) {
 	h.wantEndedTold(true, p.ID, "once the delivery's turn began")
 }
 
-// A task a provider error took back carries its own sentence behind the record's: the agent reads
+// A task a provider error took back carries its own note behind the record's: the agent reads
 // what ended its process, then what the provider did, then the task.
 func TestARelaunchSentenceComesBeforeAProviderErrorNote(t *testing.T) {
 	h := workingClaim(t)
@@ -542,18 +545,18 @@ func TestARelaunchSentenceComesBeforeAProviderErrorNote(t *testing.T) {
 	ended := h.claim().EndedWork
 	prompts := h.prompts()
 	sent := prompts[len(prompts)-1]
-	if want := relaunchSentence(ended, true) + "\n\n" + p.ProviderErrorNote + "\n\n" + p.Task; sent.Message != want {
+	if want := h.relaunchNote(ended, true) + "\n\n" + p.ProviderErrorNote + "\n\n" + p.Task; sent.Message != want {
 		t.Fatalf("the task was re-sent as %q, want %q", sent.Message, want)
 	}
-	wantSays(t, sent.Message, "Each background job that you started stopped with that process.")
+	wantSays(t, sent.Message, "stopped[1]: async-job", "kind: "+string(texts.ProviderErrorNote), "http_status: 529")
 }
 
 // The record is told at the confirmation of a prompt that carried it, and only there. Oh My Pi
-// acknowledges a prompt at its admission and can then answer it busy, so a sentence marked told
-// at the acknowledgement reaches nobody: the prompt after the busy answer carries it again, and
-// the turn that takes that prompt tells it. A turn whose prompt this machine did not send — one
-// an earlier daemon sent, confirmed after a restart — tells nothing either, and the next task
-// carries the sentence again: told twice, never not at all.
+// acknowledges a prompt at its admission and can then answer it busy, so a note marked told at
+// the acknowledgement reaches nobody: the prompt after the busy answer carries it again, and the
+// turn that takes that prompt tells it. A turn whose prompt this machine did not send — one an
+// earlier daemon sent, confirmed after a restart — tells nothing either, and the next task
+// carries the note again: told twice, never not at all.
 func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 	t.Run("a busy answer after the acknowledgement", func(t *testing.T) {
 		h := newHarness(t)
@@ -563,7 +566,7 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		h.observe(runtime.Gone)
 		h.relaunched()
 
-		want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + "implement the plan"
+		want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "implement the plan"
 		first := h.wantPrompts(2)[1]
 		if first.Message != want {
 			t.Fatalf("the task was re-sent as %q, want %q", first.Message, want)
@@ -579,7 +582,7 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
 		second := h.wantPrompts(3)[2]
 		if second.Message != want {
-			t.Fatalf("the prompt after the busy answer is %q, want the sentence again in front of the task: nobody read it", second.Message)
+			t.Fatalf("the prompt after the busy answer is %q, want the note again in front of the task: nobody read it", second.Message)
 		}
 		h.must(StreamTurnStart{Claim: testToken})
 		h.wantEndedTold(true, second.DeliveryID, "once the task's turn began")
@@ -617,10 +620,10 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		h.must(RequestDeliver{Claim: testToken, Task: "review it", Generation: 5})
 		next := h.prompts()[len(h.prompts())-1]
 		// The death took back the task whose turn it cut off, and a turn of the relaunched process
-		// has worked that task since. This task was in no turn of the dead process, so the sentence
-		// in front of it tells the turn cut off as the one the agent was in (EndedWork.inFrontOf).
-		if want := relaunchSentence(h.claim().EndedWork.inFrontOf(h.pending()), true) + "\n\n" + "review it"; next.Message != want {
-			t.Fatalf("the next task was sent as %q, want %q: the sentence goes again until a prompt this daemon sent is taken", next.Message, want)
+		// has worked that task since. This task was in no turn of the dead process, so the note in
+		// front of it tells the turn cut off as the one the agent was in (EndedWork.inFrontOf).
+		if want := h.relaunchNote(h.claim().EndedWork.inFrontOf(h.pending()), true) + "\n\n" + "review it"; next.Message != want {
+			t.Fatalf("the next task was sent as %q, want %q: the note goes again until a prompt this daemon sent is taken", next.Message, want)
 		}
 		wantSays(t, next.Message, saysTurnCut)
 		wantSaysNot(t, next.Message, saysTaskTurn)
@@ -630,7 +633,7 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 // heldAtRelaunch is a relaunched claim whose record of its last let-go still tells — launch 1's,
 // which cut off a turn of the agent's own and a subagent with it — holding a task that no cut turn
 // took back, so it is not Interrupted, queued before the ready of launch 2 that sends it. It
-// returns the prompt that task goes as: the record's sentence in front of the task.
+// returns the prompt that task goes as: the record's note in front of the task.
 func heldAtRelaunch(t *testing.T, task string) (*harness, string) {
 	t.Helper()
 	c := queuedClaim()
@@ -643,7 +646,7 @@ func heldAtRelaunch(t *testing.T, task string) (*harness, string) {
 	if p := h.pending(); p.Interrupted {
 		t.Fatalf("the relaunched claim holds %+v, want a task no cut turn took back", p)
 	}
-	return h, relaunchSentence(c.EndedWork, true) + "\n\n" + task
+	return h, partText(RelaunchNote(c.Issue, c.EndedWork, true)) + "\n\n" + task
 }
 
 // A confirmation taken back as another turn's takes back the telling it made (moveTelling), in the
@@ -721,7 +724,7 @@ func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T
 			}
 			again := prompts[1]
 			if again.Message != want {
-				t.Fatalf("the task after the notice's turn was sent as %q, want %q: the agent never read the sentence", again.Message, want)
+				t.Fatalf("the task after the notice's turn was sent as %q, want %q: the agent never read the note", again.Message, want)
 			}
 			h.wantEndedTold(false, "", "before the task's own turn")
 
@@ -734,11 +737,11 @@ func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T
 // A confirmation the take-back keeps keeps its telling too, under the id it moves the task to
 // (takeBackPending, moveTelling), so a later take-back of that same confirmation still finds it. The
 // ready's prompt of the task waits out its turn, and the sweep sends the task again under a new id,
-// both behind the record's sentence. The turn of the first prompt starts late and confirms the task,
+// both behind the record's note. The turn of the first prompt starts late and confirms the task,
 // which tells the record by the pending id. Oh My Pi answers the second prompt busy, because it is
 // running the first one's turn: that turn stays the task's, and only the id moves, the telling
 // with it. The first prompt's result is then a provider error, a model call that failed: the
-// confirmation goes, the telling with it, and the task the ladder sends again carries the sentence.
+// confirmation goes, the telling with it, and the task the ladder sends again carries the note.
 func TestARelaunchSentenceToldByAKeptConfirmationMovesWithItsNewID(t *testing.T) {
 	const task = "implement the plan"
 	h, want := heldAtRelaunch(t, task)
@@ -770,15 +773,15 @@ func TestARelaunchSentenceToldByAKeptConfirmationMovesWithItsNewID(t *testing.T)
 
 	h.advance(promptRetryFirst)
 	again := h.wantPrompts(3)[2]
-	if !strings.HasPrefix(again.Message, relaunchSentence(h.claim().EndedWork, true)+"\n\n") {
-		t.Fatalf("the ladder sent the task as %q, want the record's sentence in front of it again", again.Message)
+	if !strings.HasPrefix(again.Message, h.relaunchNote(h.claim().EndedWork, true)+"\n\n") {
+		t.Fatalf("the ladder sent the task as %q, want the record's note in front of it again", again.Message)
 	}
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantEndedTold(true, again.DeliveryID, "once the re-sent task's turn began")
 }
 
 // A confirmation whose prompt's result has come stands at a let-go (untellInFlight): the result
-// says a turn ran the prompt, so the agent read the sentence it carried. Oh My Pi writes the
+// says a turn ran the prompt, so the agent read the note it carried. Oh My Pi writes the
 // result of the re-sent task's prompt before the agent_end of its turn, which leaves the claim
 // working with the task confirmed and no prompt waiting on a result (promptResulted). The turn is
 // then taken back — its process dies in it, or a held suspension's deadline stops it
@@ -817,7 +820,7 @@ func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing
 			h.relaunched()
 			told := h.claim().EndedWork
 			resent := h.wantPrompts(2)[1]
-			if want := relaunchSentence(told, true) + "\n\n" + "implement the plan"; resent.Message != want {
+			if want := h.relaunchNote(told, true) + "\n\n" + "implement the plan"; resent.Message != want {
 				t.Fatalf("the task was re-sent as %q, want %q", resent.Message, want)
 			}
 			from := len(h.store.history())
@@ -1005,10 +1008,10 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 				prompts := h.prompts()
 				again := prompts[len(prompts)-1]
 				if joins {
-					if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + task; again.Message != want {
+					if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + task; again.Message != want {
 						t.Fatalf("the task was sent again as %q, want %q", again.Message, want)
 					}
-				} else if want := RelaunchSentence(h.claim().EndedWork); !relaunchTask(again.DeliveryID) || again.Message != want {
+				} else if want := h.relaunchNote(h.claim().EndedWork, false); !relaunchTask(again.DeliveryID) || again.Message != want {
 					t.Fatalf("the relaunched claim holding no task was sent %+v, want the daemon's own delivery of %q", again, want)
 				}
 				if names := strings.Contains(again.Message, saysSubagentStopped); names != joins {
@@ -1020,7 +1023,7 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 }
 
 // A newer task takes the place of the daemon's own delivery of the relaunch's record while no
-// prompt of it waits on a result, and carries the sentence in front of itself. Once Oh My Pi has
+// prompt of it waits on a result, and carries the note in front of itself. Once Oh My Pi has
 // acknowledged a prompt of that delivery, its turn is the session's next, and the newer task is
 // refused as behind any untaken task, to go once that turn is over.
 func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
@@ -1053,7 +1056,7 @@ func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
 		sent := h.prompts()[len(h.prompts())-1]
-		if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + "review it"; sent.DeliveryID != "outbox:7" || sent.Message != want {
+		if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "review it"; sent.DeliveryID != "outbox:7" || sent.Message != want {
 			t.Fatalf("the newer task was sent as %+v, want %q under outbox:7", sent, want)
 		}
 	})

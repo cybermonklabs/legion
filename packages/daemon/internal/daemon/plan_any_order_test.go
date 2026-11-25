@@ -79,12 +79,16 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 	}
 	implementer := r.worker(claim.RoleImplementer)
 	told := implementer.take().Message
+	// The tester's report is the task's handoff fields: the record by its phase word and its
+	// version, which `dispatch handoff-read` reads, and the verdict (texts.PhaseAssignmentRecord).
+	lines := strings.Split(told, "\n")
 	for _, want := range []string{
-		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", tested.HandoffVersion, r.key, tested.HandoffVersion),
-		"Tester's verdict: fail.",
+		"handoff_phase: test",
+		"handoff_version: " + strconv.Itoa(tested.HandoffVersion),
+		"tester_verdict: fail",
 	} {
-		if !strings.Contains(told, want) {
-			t.Fatalf("%s's implementer was told %q after the tester failed the task, want the tester's report %q", r.key, told, want)
+		if !slices.Contains(lines, want) {
+			t.Fatalf("%s's implementer was told %q after the tester failed the task, want the tester's report in the line %q", r.key, told, want)
 		}
 	}
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 1 {

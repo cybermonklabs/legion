@@ -78,7 +78,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 		{
 			name: "the retry of a hold (retryPhase)", at: phase.Held, heldFrom: phase.Implementing, generation: 1, place: reviewing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false)
+				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, PhaseMove{Retried: RetriedByArchitect, Reason: "the architect retried the phase"}, false)
 				return err
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in implementing, and its task a is running at {Kind:step Position:3}, which stands in reviewing",
@@ -98,7 +98,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 		{
 			name: "a root's wait on a person (enterAwaiting)", at: phase.Admitted, generation: 1, place: implementing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				return engine.enterAwaiting(ctx, tx, issue, record.Awaiting{Ask: "ask-1"}, "the architect asked a person")
+				return engine.enterAwaiting(ctx, tx, issue, record.Awaiting{Ask: "ask-1"}, nil, "the architect asked a person")
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in awaiting_person, and its task a is running at {Kind:step Position:1}, which stands in implementing",
 		},

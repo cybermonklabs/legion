@@ -1,0 +1,55 @@
+-- 20261118092930_person_words.up.sql — the daemon keeps the words of a person's act, so the texts
+-- it writes about that act carry them (INFRA-3686).
+--
+-- A person answers an ask, replies in its thread, declines it or requests changes to a document.
+-- The daemon writes a text about each such act: the resume of a root that waited on the person, a
+-- start task or a catch-up that names what a person decided on a tree nobody heard, and the
+-- controller's parked-decision notice. Each text carries the person's words as the act's Dispatch
+-- event carried them. The texts are written later than the event arrives, so the words are kept
+-- with the record the text is built from: record.ActWords, as JSON with the keys text, options,
+-- by, at, more and rest.
+--
+-- root_asks.person_answer_words is the words of the person's answer at person_answer_seq, and
+-- root_asks.person_words the words of the person's other act at person_seq (a reply, or a
+-- resolution, whose words are its note). Each is written with the sequence it goes with
+-- (record.RootAsk), so the words on a row are always those of the act its sequence names, and the
+-- row's existing fences on the two sequences fence the words too. A person's decline keeps its
+-- own columns (20261111021610_ask_declined): its note is also the words of that act.
+--
+-- parked_decisions.words is the words of the decision a row keeps (record.ParkedDecision.Words):
+-- an answer's text and the options it chose, a reply's body, a resolution's note, a changes
+-- request's reason. The send-time rewrite of a start task builds the task again from what the
+-- rows named (record.DecisionMark, which carries the same words in its answer, options,
+-- answer_at, more and rest keys), so the words are on the row and not only on the fact. A newer
+-- decision that replaces a row replaces its words.
+--
+-- design_gates.told_changes_by is who made the changes request a gate records as told
+-- (record.DesignGate.ToldChangesBy, Dispatch's <kind>:<id> of the review's actor): the gate
+-- already keeps that request's version, its reason and its place in the issue's event log, and
+-- the resume of a root that waited on the person names the person beside the reason. It is
+-- written with the told version and cleared with it, as the reason is.
+--
+-- The words are kept whole. A text that carries them cuts them when it is written, never here, so
+-- an act read twice is kept equal.
+--
+-- Every row recorded before this migration takes null in each new column, which is what the
+-- record of those acts says: no words were read for them. A text built from such a row names the
+-- act and its reference with no words, as the release before this one did.
+--
+-- What an older daemon binary reads on this schema. Its root_asks, parked_decisions and
+-- design_gates reads name the columns it knows, and its writes leave the new ones out, so it reads
+-- every row and ignores the words. Its writes also leave the words a row holds as they are: a
+-- root_asks row whose sequence it moves to a newer act, a parked_decisions row it replaces with a
+-- newer decision, and a design_gates row whose told changes request it replaces with a newer one
+-- keep the words or the author of the older act, which this release reads after a roll forward.
+-- That older binary cannot read what this release writes into the outbox either: the
+-- DecisionMark words of a start task or a catch-up, and the new fields of every notice and role
+-- message. So a rollback
+-- past this release is a roll forward; docs/kubernetes.md ("Rolling back the release that carries
+-- a person's words in the daemon's texts") says why.
+--
+-- There is no down file: migrations here are forward-only.
+alter table root_asks add column person_answer_words jsonb;
+alter table root_asks add column person_words jsonb;
+alter table parked_decisions add column words jsonb;
+alter table design_gates add column told_changes_by text;

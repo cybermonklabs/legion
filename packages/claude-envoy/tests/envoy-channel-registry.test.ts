@@ -4,8 +4,10 @@ import {
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
 } from "@legion/contracts"
+import { TOPICS_REFUSED_NOTICE } from "@legion/envoy-client/relay-registration"
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
+import { noticeFields } from "@legion/test-fixtures/notice-fields"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
@@ -820,8 +822,14 @@ test("a topic the edge refuses at a heartbeat is told to the session once, namin
     )
 
     expect(told()).toHaveLength(1)
-    expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`)
-    expect(told()[0]).toContain("repository_not_in_project")
+    const notice = told()[0] ?? ""
+    // `topics` is a list (`topics[n]: …`), each refused topic an item of TOON's row.
+    expect(notice).toMatch(/^ {2}topics\[2\]: /m)
+    expect(noticeFields(notice)).toEqual({
+      notice: TOPICS_REFUSED_NOTICE.kind,
+      topics: [refusedRoot, `${refusedRoot}.>`].join(","),
+      reason: "repository_not_in_project",
+    })
     expect(session.topics()).not.toContain(`${refusedRoot}.>`)
   } finally {
     await session.shutdown()

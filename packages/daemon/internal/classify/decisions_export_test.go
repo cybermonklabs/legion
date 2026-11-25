@@ -230,7 +230,7 @@ func TestStaleReviewIsAReviewTheGateAlreadyFollowedWithAnother(t *testing.T) {
 	at := time.Date(2026, 10, 23, 17, 0, 0, 0, time.UTC)
 	recorded := record.EventMark{Seq: 12, At: at}
 	approved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 4, ApprovedVersion: new(4), ApprovedMark: recorded}
-	told := RecordChangesTold(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 4}, 4, "name the rollback path", recorded)
+	told := RecordChangesTold(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 4}, 4, "name the rollback path", "user:alice", recorded)
 	for _, tc := range []struct {
 		name  string
 		gate  record.DesignGate
@@ -250,9 +250,10 @@ func TestStaleReviewIsAReviewTheGateAlreadyFollowedWithAnother(t *testing.T) {
 			}
 		})
 	}
-	completed := RecordChangesTold(RecordChangesTold(record.DesignGate{LatestVersion: 4}, 4, "why", record.EventMark{At: at}), 4, "why", record.EventMark{Seq: 12, At: at})
-	if completed.ToldChangesMark != recorded {
-		t.Fatalf("told record of one review read by time, then by sequence = %#v, want it completed to %#v", completed.ToldChangesMark, recorded)
+	completed := RecordChangesTold(RecordChangesTold(record.DesignGate{LatestVersion: 4}, 4, "why", "", record.EventMark{At: at}), 4, "why", "user:alice", record.EventMark{Seq: 12, At: at})
+	if completed.ToldChangesMark != recorded || completed.ToldChangesBy != "user:alice" {
+		t.Fatalf("told record of one review read by time, then by sequence = %#v by %q, want it completed to %#v by user:alice",
+			completed.ToldChangesMark, completed.ToldChangesBy, recorded)
 	}
 	if !ReviewAfter(told, 4, record.EventMark{Seq: 10}) || ReviewAfter(told, 4, record.EventMark{Seq: 12}) {
 		t.Fatalf("ReviewAfter of the review at sequence 12 = wrong, want it after a read at 10 and not after one at 12")

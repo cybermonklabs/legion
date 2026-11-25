@@ -451,10 +451,13 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 			t.Fatalf("version 6 fired %d hook prompts, want none", got-prompts)
 		}
 		row := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-		const told = "Reason: the owner gave version 6 of the plan while task a was stopped."
-		if row.Entry != entry+1 || !row.EntryMovedBack || !strings.Contains(row.EntryTask, told) {
-			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, raised as a move back, whose task holds %q",
-				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1, told)
+		// The task names the restart as fields: restarted by the plan, its version and the task
+		// that was stopped (main's "Reason: the owner gave version 6 of the plan while task a was
+		// stopped.").
+		told := readTaskOf(t, row.EntryTask).fields
+		if row.Entry != entry+1 || !row.EntryMovedBack || told["restarted"] != RestartedByPlan || told["plan_version"] != "6" || told["stopped_tasks[1]"] != "a" {
+			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, raised as a move back, whose task names restarted: plan, plan_version: 6 and stopped_tasks a",
+				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1)
 		}
 		// The start of step 1 takes the place of the implementer's start the issue still owes,
 		// since no outbox ran here (Store.EnqueueStart): the last start is the one at the new entry.
@@ -617,9 +620,10 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 			t.Fatalf("%s after version 1 stands in %s with hold %+v, want implementing, the phase of a's step 1, with no hold", key, after.issue.Phase, after.issue.Hold)
 		}
 		row := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-		const told = "Reason: the owner gave version 1 of the plan while task default was stopped."
-		if row.Entry != 1 || !strings.Contains(row.EntryTask, told) {
-			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task holds %q", row.Entry, row.EntryTask, told)
+		// The task names the restart as fields (main's "Reason: the owner gave version 1 of the
+		// plan while task default was stopped.").
+		if told := readTaskOf(t, row.EntryTask).fields; row.Entry != 1 || told["restarted"] != RestartedByPlan || told["plan_version"] != "1" || told["stopped_tasks[1]"] != "default" {
+			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task names restarted: plan, plan_version: 1 and stopped_tasks default", row.Entry, row.EntryTask)
 		}
 		if row.StepTask != "a" || row.StepPlace != 1 {
 			t.Fatalf("the implementer's row names step %d of task %q, want step 1 of task a, the step its start raised it for", row.StepPlace, row.StepTask)

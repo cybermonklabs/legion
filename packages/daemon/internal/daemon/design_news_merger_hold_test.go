@@ -115,14 +115,9 @@ func TestThreeFailedHistoryReadsRecordTheHistoryUnreadWithNoVersionAndReleaseThe
 		t.Fatal("the merger's start created no claim")
 	}
 	task, news := pendingNews(t, machine)
-	for _, want := range []string{"version 5, since a version the daemon could not read",
-		`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the merger's task = %q, want it to say %q", task, want)
-		}
-	}
-	if strings.Contains(task, "first version a person approved") || len(news.Items) != 1 || news.Items[0].HistoryUnread == nil ||
-		!news.Items[0].HistoryUnread.ReadAt.Equal(unread.ReadAt) {
+	wantNewsLines(t, "items", newsItemsIn(t, task), []string{"spec " + reconcileDoc + " 5 taken=null no_pair " +
+		`reason="Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"`})
+	if len(news.Items) != 1 || news.Items[0].HistoryUnread == nil || !news.Items[0].HistoryUnread.ReadAt.Equal(unread.ReadAt) {
 		t.Fatalf("the merger's task = %q carrying %+v, want no first approval and the item with no earlier version, carrying the unread history", task, news)
 	}
 	// The moment read back through the delivery's JSON is the recorded one; compare the rest whole.
@@ -249,8 +244,8 @@ func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t 
 		t.Fatal("the merger's start created no claim")
 	}
 	task, news := pendingNews(t, machine)
-	if !strings.Contains(task, "version 5, since version 3, which your phase last took") || strings.Contains(task, "could not be read") ||
-		strings.Contains(task, "502 BAD_GATEWAY") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 3)}) {
+	if strings.Join(newsItemsIn(t, task), "\n") != "spec "+reconcileDoc+" 5 taken=3 listed" || strings.Contains(task, "502 BAD_GATEWAY") ||
+		!reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 3)}) {
 		t.Fatalf("the merger's task = %q carrying %+v, want the spec from version 3, which the history gave, and no word of the old failure", task, news)
 	}
 }
@@ -270,18 +265,17 @@ func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T
 		name string
 		// answers says whether Dispatch answers the review history once the merger is released.
 		answers bool
-		says    []string
+		items   []string
 		never   []string
 		// rekeyed says the send re-keys the item to version 3, the version the told row came to know.
 		rekeyed bool
 	}{
 		{name: "Dispatch answered and the pair is recorded", answers: true, rekeyed: true,
-			says:  []string{"version 5, since version 3, which your phase last took", `"Design" changed`},
-			never: []string{"could not be read", "502 BAD_GATEWAY"}},
+			items: []string{"spec " + reconcileDoc + " 5 taken=3 listed"},
+			never: []string{"502 BAD_GATEWAY"}},
 		{name: "a reconcile is pending while Dispatch still fails", answers: false,
-			says: []string{"version 5, since a version the daemon could not read",
-				`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`},
-			never: []string{"first version a person approved"}},
+			items: []string{"spec " + reconcileDoc + " 5 taken=null no_pair " +
+				`reason="Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsReconcileRig(t)
@@ -333,14 +327,10 @@ func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T
 				t.Fatalf("the merger's prompts = %+v, want its task, once", prompts)
 			}
 			message := prompts[0].Message
-			if !strings.HasPrefix(message, own+"\n\n") {
-				t.Fatalf("the merger's task sent = %q, want its own text and the news its start attached, never the bare text", message)
+			if !strings.HasPrefix(message, own+"\n\n"+newsKindLine+"\n") {
+				t.Fatalf("the merger's task sent = %q, want its own text and the news record its start attached, never the bare text", message)
 			}
-			for _, want := range tc.says {
-				if !strings.Contains(message, want) {
-					t.Fatalf("the merger's task sent = %q, want it to say %q", message, want)
-				}
-			}
+			wantNewsLines(t, "items", newsItemsIn(t, message), tc.items)
 			for _, never := range tc.never {
 				if strings.Contains(message, never) {
 					t.Fatalf("the merger's task sent = %q, want no %q", message, never)

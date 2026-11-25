@@ -94,8 +94,8 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 	// A changes request closes the gate, and the reviewer is told so.
 	r.dispatchEvent(intake.DispatchArtifactChangesRequested, 4)
 	r.run(ofKind(record.OutboxKindRoleMessage))
-	closed := r.publishedTo(token)
-	if len(closed) != 1 || !strings.HasPrefix(closed[0], "The design gate of LEGION-800 closed") {
+	closed := r.publishedGates(t, token)
+	if len(closed) != 1 || !strings.HasPrefix(closed[0], "closed spec artifact-800 ") {
 		t.Fatalf("the reviewer's role messages after the changes request = %q, want the one closed message", closed)
 	}
 
@@ -113,9 +113,8 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the reviewer's prompts after the opening = %+v, want the news task, once", prompted)
 	}
-	const opened = "The design gate of LEGION-800 opened: a person approved version 4 of its spec document (artifact-800)"
-	if strings.Count(prompted[0].Message, opened) != 1 || !strings.Contains(prompted[0].Message, "version 4, since version 3, which your phase last took") {
-		t.Fatalf("the reviewer's news task = %q, want it to lead with the opening once, %q, and tell version 4", prompted[0].Message, opened)
+	if newsCount(t, prompted[0].Message, carriedOpened) != 1 || !newsTells(t, prompted[0].Message, "spec artifact-800 4 taken=3") {
+		t.Fatalf("the reviewer's news task = %q, want it to carry the opening once, %q, and tell version 4", prompted[0].Message, carriedOpened)
 	}
 	r.startTurn(reviewer)
 	r.wantTold("after the news task's confirmation", pathRoot, record.AudienceHolder, 4, false)
@@ -214,9 +213,9 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the merger's prompts = %+v, want its task, once", prompted)
 	}
-	for _, want := range []string{"version 5, since version 4, which your phase last took", `"Design" changed`, `"r2" changed`} {
-		if !strings.Contains(prompted[0].Message, want) {
-			t.Fatalf("the merger's task = %q, want it to say %q: the architect's task never told the member's news", prompted[0].Message, want)
+	for _, want := range []string{"spec artifact-800 5 taken=4 listed", "0 Design changed", "0 requirement r2 changed"} {
+		if !newsTells(t, prompted[0].Message, want) {
+			t.Fatalf("the merger's task = %q, want its news to say %q: the architect's task never told the member's news", prompted[0].Message, want)
 		}
 	}
 	if got := architectConn.Prompts(); len(got) != 0 {
@@ -300,7 +299,7 @@ func TestAProviderErrorInTheTurnANewsOnlyStartReachedSendsThePhaseTaskAgain(t *t
 	}
 	news := r.delivered(tester)
 	if prompted := conn.Prompts(); len(prompted) != 3 || prompted[2].DeliveryID != news.ID ||
-		!strings.Contains(prompted[2].Message, "version 5, since version 4, which your phase last took") {
+		!newsTells(t, prompted[2].Message, "spec artifact-800 5 taken=4") {
 		t.Fatalf("the tester's prompts = %+v, want the news task third, telling version 5", prompted)
 	}
 }

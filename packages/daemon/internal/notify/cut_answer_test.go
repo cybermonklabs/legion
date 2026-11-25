@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // cutAnswer serves status with half of body under a Content-Length for the whole of it, then
@@ -65,7 +67,7 @@ func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
 	})
 	t.Run("Publish", func(t *testing.T) {
 		err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), "").
-			Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+			Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, texts.Med, "key-1")
 		if err == nil || errors.Is(err, ErrNoHolder) || errors.Is(err, ErrHolderUnresponsive) {
 			t.Fatalf("Publish answered by a cut 404 = %v; want a plain error, no refusal kind", err)
 		}
@@ -117,7 +119,7 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 		call   func(p *HTTPPublisher) error
 	}{
 		{"Publish", http.StatusInternalServerError, func(p *HTTPPublisher) error {
-			return p.Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+			return p.Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, texts.Med, "key-1")
 		}},
 		{"ReadSessionRegistration", http.StatusInternalServerError, func(p *HTTPPublisher) error {
 			_, err := p.ReadSessionRegistration(ctx, "ses_s")

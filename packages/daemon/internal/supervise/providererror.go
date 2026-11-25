@@ -2,10 +2,12 @@ package supervise
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -59,15 +61,14 @@ func promptRetryDelay(attempt int) time.Duration {
 // the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
-// one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// one cause; the controller's notice and the prompt the task goes behind state the status it is
+// built from (tellControllerOfProviderErrors, ProviderErrorNote).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus, model: r.Model,
 		line:  "supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		attrs: []any{"delivery", r.DeliveryID, "retryable", r.Retryable, "provider", r.Provider},
 		turn:  "this claim's turn",
-		next:  fmt.Sprintf("the daemon keeps the task and sends it again every %s at most", promptRetryMax),
 		// The prompt's turn ran and is over, and its result has ended the wait for results
 		// (promptResulted), so nothing of the task is left outstanding.
 		before: func(ctx context.Context) error { return m.takeBackPending(ctx, taskRead) },
@@ -75,7 +76,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 	if err != nil || failed {
 		return err
 	}
-	return m.providerErrorClears(ctx, cause)
+	return m.providerErrorClears(ctx, cause, r.HTTPStatus)
 }
 
 // unpromptedTurnEnded judges a refused turn that ran no prompt of the daemon's — a phase reminder
@@ -86,17 +87,17 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 // send again, since whatever the claim owes, this turn did not carry it, and the reminder that
 // started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can
 // clear, or whose report carries no status, is counted and written down and nothing more, and the
-// controller's notice says that nothing is sent again. The cause is built from the status alone,
-// and the notice names no model, since a report carries none. Whether the report failed the claim
-// is what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome).
+// controller's notice says that the turn ran no prompt of the daemon's, so nothing is sent again.
+// The cause is built from the status alone, and the notice names no model, since a report carries
+// none. Whether the report failed the claim is what the turn-outcome answer says
+// (Machine.turnOutcomeFailed, HandleTurnOutcome).
 func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
 	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
-		status: r.HTTPStatus,
-		line:   "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
-		attrs:  []any{"generation", r.Generation, "sequence", r.Sequence},
-		turn:   "a turn this claim's agent ran with no prompt of the daemon's",
-		next: "the last of them ran no prompt of the daemon's (a phase reminder, an Envoy message or a " +
-			"background job's result), so the daemon sends no task again for it",
+		status:     r.HTTPStatus,
+		line:       "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
+		attrs:      []any{"generation", r.Generation, "sequence", r.Sequence},
+		turn:       "a turn this claim's agent ran with no prompt of the daemon's",
+		unprompted: true,
 	})
 	m.turnOutcomeFailed = failed
 	if err != nil || failed {
@@ -107,16 +108,17 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 
 // providerErrorTurn is one turn that ended in a provider error, as providerErrorTurnEnded counts
 // it: the status and the model the error named (each zero where it named none), the warning
-// line's message and its own attributes, the failure sentence's words for the turn, the notice's
-// words for what the daemon does now, and what runs before a failure, if anything.
+// line's message and its own attributes, the failure sentence's words for the turn, whether the
+// turn ran no prompt of the daemon's, which the notice states because the daemon then has no task
+// to send again (ProviderErrorsNotice), and what runs before a failure, if anything.
 type providerErrorTurn struct {
-	status int
-	model  string
-	line   string
-	attrs  []any
-	turn   string
-	next   string
-	before func(context.Context) error
+	status     int
+	model      string
+	line       string
+	attrs      []any
+	turn       string
+	unprompted bool
+	before     func(context.Context) error
 }
 
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
@@ -130,7 +132,7 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 	cause := providerErrorCause(t.status)
 	m.claim.ProviderErrorRun++
 	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
-	m.tellControllerOfProviderErrors(t.model, cause, t.next)
+	m.tellControllerOfProviderErrors(t.model, t.status, t.unprompted)
 	if t.before != nil {
 		if err := t.before(ctx); err != nil {
 			return cause, false, err
@@ -185,14 +187,15 @@ func holdsTheIssue(status int) bool {
 }
 
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
-// the delivery counts one more send, carries the sentence the re-sent prompt is given
-// (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns in
+// the delivery counts one more send, carries the note the re-sent prompt is given
+// (Delivery.ProviderErrorNote: the provider-error note of the HTTP status the provider answered,
+// ProviderErrorNote, rendered), and is written with the claim's run of provider-error turns in
 // one transaction. Its timer's firing is what sends it (promptRetryDue); until then sendPending
 // holds it, and a newer task queued meanwhile replaces it rather than waiting behind it (queue).
-func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
+func (m *Machine) providerErrorClears(ctx context.Context, cause string, status int) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
-	p.ProviderErrorNote = providerErrorTask(cause)
+	p.ProviderErrorNote = partText(ProviderErrorNote(m.claim.Issue, status))
 	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
 		return err
 	}
@@ -216,8 +219,8 @@ func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
 // status the provider answered, else nothing more than that a provider failed. A refusal's
 // own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
-// prompt this is written into nor the controller's notice. A content filter's refusal carries no
-// status, so it is the second of the two.
+// claim's failure nor the controller's notice. A content filter's refusal carries no status, so it
+// is the second of the two.
 func providerErrorCause(status int) string {
 	if status != 0 {
 		return "a provider error (HTTP " + strconv.Itoa(status) + ")"
@@ -225,35 +228,60 @@ func providerErrorCause(status int) string {
 	return "a provider error"
 }
 
-// providerErrorTask is the sentence a task taken back by a provider error is sent behind, as the
-// relaunch's sentence is the one a task taken back from a turn its process could not finish is
-// sent behind (relaunchSentence, interruptedTask). Another agent reads it, so it follows
-// ASD-STE100: one instruction per sentence, and active voice.
-func providerErrorTask(cause string) string {
-	return "Your previous turn on this task stopped because of " + cause + ". Your work did not cause it. " +
-		"The daemon sends you the task again. Read what that turn already did in your workspace and on the " +
-		"issue's branch. Then continue the task."
+// ProviderErrorNote is the provider-error note of issue (texts.ProviderErrorNoteRecord), which a
+// task taken back by a provider error is sent behind, as the relaunch note is the one a task
+// taken back from a turn its process could not finish is sent behind (RelaunchNote, CutTurnNote).
+// It is built from the HTTP status the provider answered alone, and names none where it answered
+// none (status 0): the provider's own text reaches no prompt (providerErrorCause). What the agent
+// does on reading it is its role prompt's.
+func ProviderErrorNote(issue string, status int) texts.ProviderErrorNoteRecord {
+	return texts.ProviderErrorNoteRecord{
+		TaskHead:   texts.TaskHead{Kind: texts.ProviderErrorNote, Issue: issue},
+		HTTPStatus: status,
+	}
 }
 
 // tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
 // provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
 // zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none. next is what the daemon does about the
-// turn that reached the count, in the caller's words: a prompt's task is kept and sent again, and
-// a turn that ran no prompt of the daemon's has no task to send (providerErrorTurnEnded).
-func (m *Machine) tellControllerOfProviderErrors(model, cause, next string) {
+// is a notice rather than a hold: R2 forbids an attempt limit. The notice is the provider-errors
+// record (ProviderErrorsNotice): the claim's role, the run of turns, model, the model the failed
+// request went to (empty when the error named none), status, the HTTP status the provider
+// answered (0 for none, as a content filter's refusal answers), and what the daemon does about the
+// turn that reached the count: a prompt's task is kept and sent again, every promptRetryMax at
+// most, and unprompted says that turn ran no prompt of the daemon's, so it has no task to send
+// (providerErrorTurnEnded). The provider's own text is in no part of it (providerErrorCause).
+func (m *Machine) tellControllerOfProviderErrors(model string, status int, unprompted bool) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
-	on := ""
-	if model != "" {
-		on = " on " + model
-	}
-	reason := fmt.Sprintf("%d turns in a row%s ended in %s; %s", m.claim.ProviderErrorRun, on, cause, next)
+	told := ProviderErrorsNotice(m.claim.Issue, m.claim.Role, m.claim.ProviderErrorRun, model, status, unprompted)
 	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
-	m.deps.ProviderErrorRunReached(m.current(), reason)
+		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status, "unprompted", unprompted)
+	m.deps.ProviderErrorRunReached(m.current(), told)
+}
+
+// ProviderErrorsNotice is the provider-errors notice of issue: the role whose run of turns ended
+// in provider errors, the count of those turns, the model the failed request went to (empty when
+// the error named none), the HTTP status the provider answered (0 for none), and what the daemon
+// does about the last of those turns. Where that turn ran a prompt of the daemon's, the daemon
+// keeps the prompt's task and sends it again, and the notice names promptRetryMax, the longest the
+// ladder waits between sends. Where it ran none (unprompted: a phase reminder, an Envoy message or
+// a background job's result), the notice says so (texts.ProviderErrorsRecord.LastTurnUnprompted)
+// and names no wait, since the daemon sends no task again for that turn.
+func ProviderErrorsNotice(issue string, role claim.Role, turns int, model string, status int, unprompted bool) texts.ProviderErrorsRecord {
+	notice := texts.ProviderErrorsRecord{
+		NoticeHead:         texts.NoticeHead{Kind: texts.ProviderErrors, Issue: issue},
+		Role:               role,
+		Turns:              turns,
+		Model:              model,
+		HTTPStatus:         status,
+		LastTurnUnprompted: unprompted,
+	}
+	if !unprompted {
+		notice.RetryEvery = promptRetryMax.String()
+	}
+	return notice
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

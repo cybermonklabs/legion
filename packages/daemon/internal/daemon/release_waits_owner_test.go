@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A repository's recovery tells each child its release_children left unrecorded to the architect
@@ -45,10 +45,13 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 		t.Fatalf("tell the release waits: %v", err)
 	}
 
-	type told struct{ issue, reason string }
+	type told struct {
+		issue   string
+		payload string
+	}
 	var got []told
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select issue, payload->>'reason' from outbox
+		rows, err := tx.Query(ctx, `select issue, payload::text from outbox
 			where kind = 'notice' and payload->>'kind' = 'child-release-stalled' order by issue`)
 		if err != nil {
 			return err
@@ -56,7 +59,7 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 		defer rows.Close()
 		for rows.Next() {
 			var notice told
-			if err := rows.Scan(&notice.issue, &notice.reason); err != nil {
+			if err := rows.Scan(&notice.issue, &notice.payload); err != nil {
 				return err
 			}
 			got = append(got, notice)
@@ -68,29 +71,12 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 	if len(got) != 2 || got[0].issue != root || got[1].issue != own {
 		t.Fatalf("stalled notices %+v; want one on %s and one on %s", got, root, own)
 	}
-	for i, tc := range []struct {
-		names, not []string
-	}{
-		{[]string{
-			"LEGION-5 (its parent LEGION-9 is not recorded: release LEGION-9 first, then LEGION-5)",
-			"LEGION-6 (its parent LEGION-1 is recorded now: release LEGION-6 again)",
-			"LEGION-7 (its parent LEGION-50 is recorded now: release LEGION-7 again)",
-		}, []string{"LEGION-3", "LEGION-4"}},
-		{[]string{
-			"LEGION-3 (its parent LEGION-2 is recorded now: release LEGION-3 again)",
-			"LEGION-4 (its parent LEGION-2 is recorded now: release LEGION-4 again)",
-		}, []string{"LEGION-5", "LEGION-6", "LEGION-7"}},
+	for i, want := range [][]texts.UnrecordedChild{
+		{{Child: "LEGION-5", Parent: "LEGION-9"}, {Child: "LEGION-6", Parent: "LEGION-1", ParentRecorded: true}, {Child: "LEGION-7", Parent: "LEGION-50", ParentRecorded: true}},
+		{{Child: "LEGION-3", Parent: "LEGION-2", ParentRecorded: true}, {Child: "LEGION-4", Parent: "LEGION-2", ParentRecorded: true}},
 	} {
-		notice := got[i]
-		for _, want := range tc.names {
-			if !strings.Contains(notice.reason, want) {
-				t.Errorf("the notice on %s says %q; want it to name %q", notice.issue, notice.reason, want)
-			}
-		}
-		for _, other := range tc.not {
-			if strings.Contains(notice.reason, other) {
-				t.Errorf("the notice on %s says %q; want it not to name %s", notice.issue, notice.reason, other)
-			}
+		if !recoveredUnrecorded(t, got[i].payload, want) {
+			t.Errorf("the notice on %s is %s; want it to name exactly %+v", got[i].issue, got[i].payload, want)
 		}
 	}
 }

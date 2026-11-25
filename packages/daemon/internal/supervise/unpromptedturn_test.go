@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The cases of this file are dispatch://INFRA-4508's R4: a turn that ran no prompt of the
@@ -53,7 +54,7 @@ func idleClaim(t *testing.T, set ...func(*Deps)) *harness {
 // countNotices is a dependency change that counts the controller's notices of a run of
 // provider-error turns into told.
 func countNotices(told *int) func(*Deps) {
-	return func(d *Deps) { d.ProviderErrorRunReached = func(Claim, string) { *told++ } }
+	return func(d *Deps) { d.ProviderErrorRunReached = func(Claim, texts.ProviderErrorsRecord) { *told++ } }
 }
 
 // wantNotices fails the case unless the controller has been told want times after turn.
@@ -320,39 +321,39 @@ func TestAPluginTurnReportOfAGenerationTheClaimLeftIsNotJudged(t *testing.T) {
 
 // The controller's notice says what the daemon does about the turn that reached the count. A run
 // of refused reminders on an idle claim owes no task, so nothing is sent again, and the notice
-// says that; a run that a refused prompt reaches six at keeps that prompt's task and sends it
-// again, and its notice says that (TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
+// says that the last turn ran no prompt of the daemon's and names no wait between sends; a run
+// that a refused prompt reaches six at keeps that prompt's task and sends it again, and its notice
+// names the longest wait between those sends (TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce
 // holds the model it names).
 func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
-	var reasons []string
+	var notices []texts.ProviderErrorsRecord
 	tell := func(d *Deps) {
-		d.ProviderErrorRunReached = func(_ Claim, reason string) { reasons = append(reasons, reason) }
+		d.ProviderErrorRunReached = func(_ Claim, notice texts.ProviderErrorsRecord) { notices = append(notices, notice) }
 	}
 
 	h := idleClaim(t, tell)
 	for turn := 1; turn <= providerErrorRunTold; turn++ {
 		h.pluginTurn(uint64(turn), true, 529)
 	}
-	if len(reasons) != 1 {
-		t.Fatalf("the controller was told %d times, want once", len(reasons))
+	if len(notices) != 1 {
+		t.Fatalf("the controller was told %d times, want once", len(notices))
 	}
-	for _, want := range []string{"6 turns in a row", "HTTP 529", "no prompt of the daemon's", "sends no task again"} {
-		if !strings.Contains(reasons[0], want) {
-			t.Errorf("the notice is %q, want it to say %q", reasons[0], want)
-		}
+	if got := notices[0]; got.Turns != providerErrorRunTold || got.HTTPStatus != 529 || !got.LastTurnUnprompted {
+		t.Errorf("the notice is %+v, want it to name %d turns in a row, HTTP 529, and a last turn that ran no prompt of the daemon's",
+			got, providerErrorRunTold)
 	}
-	if strings.Contains(reasons[0], "keeps the task") {
-		t.Errorf("the notice is %q, want no word of a task kept and sent again: the claim owes none", reasons[0])
+	if got := notices[0].RetryEvery; got != "" {
+		t.Errorf("the notice names a task kept and sent again every %s, want none: the claim owes no task", got)
 	}
 
-	reasons = nil
+	notices = nil
 	p := workingClaim(t, tell)
 	for turn := 1; turn < providerErrorRunTold; turn++ {
 		p.pluginTurn(uint64(turn), true, 529)
 	}
 	p.refusedTurn(providerErrorRunTold, 529, "529 overloaded_error: Overloaded")
-	if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps the task and sends it again") {
-		t.Fatalf("the notices are %q, want one that says the prompt's task is kept and sent again", reasons)
+	if len(notices) != 1 || notices[0].LastTurnUnprompted || notices[0].RetryEvery != promptRetryMax.String() {
+		t.Fatalf("the notices are %+v, want one that says the prompt's task is kept and sent again every %s at most", notices, promptRetryMax)
 	}
 }
 

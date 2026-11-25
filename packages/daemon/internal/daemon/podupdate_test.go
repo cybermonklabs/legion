@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -58,8 +60,12 @@ const (
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
 	podUpdateSilence = 30 * time.Minute
-	// podUpdateDrift is the drift the fake runtime reports for the issue's pod.
-	podUpdateDrift = "image"
+	// podUpdateImage is the image a pod of the issue is built from now, and podUpdateDigest the
+	// short digest a text about the round names it by (texts.ShortDigest).
+	podUpdateImage  = "ghcr.io/cybermonklabs/legion-worker@sha256:7e3a9c1b5d2f4086a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5"
+	podUpdateDigest = "7e3a9c1b5d2f"
+	// podUpdateDrift is the drift the fake runtime reports for the issue's pod: its image moved.
+	podUpdateDrift = "image ghcr.io/cybermonklabs/legion-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000, now " + podUpdateImage
 	// podUpdateKeptDrift is a drift of the kind a launch keeps the pod for and starts its role
 	// degraded in: the operator's volume holding that role's overlay moved, so a pod built before
 	// the move cannot carry the file the role's Oh My Pi would be told to read. The launch starts
@@ -86,6 +92,8 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 // contract its registration declared. round, reasons and signalled seed an update round the store
 // already holds on the claim, as an earlier tick or an earlier release left it, with the sweep's
 // ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it is not;
+// drift is the items that round recorded beside its reasons (supervise.Claim.UpdateDrift), none
+// for a round an older daemon opened;
 // left is the round the claim left when the daemon started it again in another pod than that
 // round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its own,
 // for a claim that records one the rest of the issue has left behind; suspendedBy is who
@@ -102,6 +110,7 @@ type podUpdateRole struct {
 	contract    int
 	round       string
 	reasons     string
+	drift       []runtime.DriftItem
 	signalled   bool
 	unasked     bool
 	left        string
@@ -207,6 +216,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		if role.round != "" {
 			opened := podUpdateStart
 			c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt = role.round, role.reasons, &opened
+			c.UpdateDrift = role.drift
 			c.UpdateLeftRound = role.left
 			if !role.unasked {
 				c.UpdateTaskedAt = &opened
@@ -351,8 +361,24 @@ func podUpdateLocator(token claim.Token, issue, pod string) *runtime.Locator {
 func (r *podUpdateRig) drifts(reasons ...string) {
 	r.t.Helper()
 	for _, token := range r.tokens {
-		r.rt.ScriptPodDrift(token, reasons...)
+		r.rt.ScriptPodDrift(token, driftOf(reasons...)...)
 	}
+}
+
+// driftOf is each reason as the Sandbox runtime answers it (PodDrift): the reason whole, and its
+// item, whose key is the reason's first word, as every reason is written (`<key> <held>, now
+// <handed>`), and which names, for the image, the image a pod is built from now.
+func driftOf(reasons ...string) []runtime.Drift {
+	drift := make([]runtime.Drift, len(reasons))
+	for i, reason := range reasons {
+		key, rest, _ := strings.Cut(reason, " ")
+		item := runtime.DriftItem{Key: key}
+		if _, handed, found := strings.Cut(rest, ", now "); found && key == runtime.DriftImage {
+			item.Image = handed
+		}
+		drift[i] = runtime.Drift{DriftItem: item, Reason: reason}
+	}
+	return drift
 }
 
 // worker is the context of a goroutine a test starts beside the rig's own calls — a machine's
@@ -905,6 +931,36 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 	}
 }
 
+// A worker that joins an open round is given the round's own terms: the drift the round was
+// opened for, as its text and as its items, never the drift a later tick read
+// (dispatch://INFRA-2981 R9). The ask and the update-stalled notice name the items of the first
+// claim of the round they read, so a joining claim that recorded this tick's items beside the
+// round's text could make them name a drift the round was not opened for.
+func TestPodUpdateGivesAWorkerThatJoinsAnOpenRoundTheRoundsOwnTerms(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer),
+		podUpdateRole{role: claim.RoleArchitect, state: supervise.StateQueued},
+	)
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+
+	// The configuration moves again under the open round, and the architect starts into the pod
+	// the round keeps: the next tick reads another drift and posts the round to the architect.
+	rig.drifts(podUpdateKeptDrift)
+	rig.startInPod(claim.RoleArchitect, podUpdatePod)
+	rig.tick()
+
+	joined := rig.awaitRound(claim.RoleArchitect, podUpdateRound)
+	if joined.UpdateReasons != podUpdateDrift {
+		t.Errorf("the architect joined the round with the reasons %q, want the round's own %q", joined.UpdateReasons, podUpdateDrift)
+	}
+	want := []runtime.DriftItem{{Key: runtime.DriftImage, Image: podUpdateImage}}
+	if !slices.Equal(joined.UpdateDrift, want) {
+		t.Errorf("the architect joined the round with the drift items %+v, want the round's own %+v", joined.UpdateDrift, want)
+	}
+}
+
 // A worker answers from inside a turn, and that turn ends a moment later. The replacement waits
 // for it: no role process is ended mid-turn.
 func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
@@ -982,11 +1038,12 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	if notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
 		t.Errorf("the notice names round %q of pod %q, want %q of %q", notice.Update.Round, notice.Update.Pod, podUpdateRound, podUpdatePod)
 	}
-	if want := podUpdateDrift + ", disk"; notice.Update.Reasons != want {
-		t.Errorf("the notice names reasons %q, want %q", notice.Update.Reasons, want)
+	if got := notice.Update; !slices.Equal(got.Images, []string{podUpdateDigest}) || !slices.Equal(got.Settings, []string{"disk"}) || got.Reasons != "" {
+		t.Errorf("the notice names images %q, settings %q and reasons %q; want the image %s and the setting disk by its key, and no text",
+			got.Images, got.Settings, got.Reasons, podUpdateDigest)
 	}
-	if !strings.Contains(notice.Reason, "An operator suspended") || !strings.Contains(notice.Reason, string(claim.RoleImplementer)) {
-		t.Errorf("the notice says %q, want it to name the operator's suspension of the implementer", notice.Reason)
+	if notice.Holds != texts.HoldsOperator || notice.Refusal != "" {
+		t.Errorf("the notice is %+v, want it to name the operator's suspension", notice)
 	}
 	wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleTester: true})
 	wantNoRefusedNotice(t, rig)
@@ -1589,7 +1646,7 @@ type podGoneAfterTheDriftRead struct {
 	reads atomic.Int64
 }
 
-func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]runtime.Drift, error) {
 	if r.reads.Add(1) == 1 {
 		return r.Runtime.PodDrift(ctx, k)
 	}
@@ -2035,8 +2092,8 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times about a replacement that keeps failing, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "The runtime refused the pod replacement") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
-		t.Errorf("the notice says %q, want the refusal and the error the runtime gave", notices[0].Reason)
+	if notices[0].Holds != texts.HoldsRuntimeRefused || !strings.Contains(notices[0].Refusal, "the api server refused the suspension") {
+		t.Errorf("the notice is %+v, want the runtime's refusal and the error the runtime gave", notices[0])
 	}
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 	wantNoRefusedNotice(t, rig)
@@ -2189,8 +2246,8 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 		waiting[0].Role != claim.RoleImplementer || waiting[0].State != string(supervise.StateSuspended) {
 		t.Fatalf("the notice waits on %+v, want the suspended implementer alone", notices[0].Update.Waiting)
 	}
-	if !strings.Contains(notices[0].Reason, "An operator suspended") || !strings.Contains(notices[0].Reason, string(claim.RoleImplementer)) {
-		t.Errorf("the notice says %q, want it to name the operator's suspension of the implementer", notices[0].Reason)
+	if notices[0].Holds != texts.HoldsOperator {
+		t.Errorf("the notice is %+v, want it to name the operator's suspension", notices[0])
 	}
 	wantNoRefusedNotice(t, rig)
 	if messages := rig.messages(); len(messages) != 0 {
@@ -2569,10 +2626,8 @@ func TestPodUpdatePodlessNoticeMarksWhichWorkersAnswered(t *testing.T) {
 		t.Fatalf("at the bound %s the controller was told %d times about a podless round an operator holds, want once", rig.clock.Now(), len(notices))
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
-	for _, want := range []string{"No claim of this issue records a process in a pod", "An operator suspended", string(claim.RoleTester)} {
-		if !strings.Contains(notices[0].Reason, want) {
-			t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
-		}
+	if notices[0].Holds != texts.HoldsOperator || notices[0].Update == nil || notices[0].Update.Pod != "" {
+		t.Errorf("the notice is %+v with round %+v, want an operator's suspension holding a round no claim records a pod of", notices[0], notices[0].Update)
 	}
 	wantNoRefusedNotice(t, rig)
 }
@@ -2913,8 +2968,8 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 		t.Errorf("the sweep ended the round over a gone pod %d times, want once: %+v", len(lines), lines)
 	}
 	if notices := rig.notices(); len(notices) != 0 {
-		t.Errorf("the controller was told %q, over %+v: the round it names is of a pod that is gone, and nothing of that round waits on a turn",
-			notices[0].Reason, notices[0].Update)
+		t.Errorf("the controller was told %+v, over %+v: the round it names is of a pod that is gone, and nothing of that round waits on a turn",
+			notices[0], notices[0].Update)
 	}
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q; every worker of the round had answered before its pod went", messages)

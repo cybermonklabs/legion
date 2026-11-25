@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -42,6 +43,8 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // parkDecision hands the person's spec decision a notice reports to the one rule for a decision
 // nobody in its tree hears (record.RelayParkedDecision): the project's controller is told, in a
 // parked-decision notice of its own, and the decision is kept for the root's next architect start.
+// The decision is kept at the runner's clock, which is the kept row's identity, and carries the
+// time the person made it as its act's own (noticeWords), which the parked-decision notice names.
 // It runs in a transaction of its own that marks key processed and owns the commit hook the write
 // registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It does
 // nothing for a kind that is no spec decision, nor for a changes request the person has since
@@ -103,12 +106,36 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			}
 		}
 		outcome, err = record.RelayParkedDecision(ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now, Words: noticeWords(notice)},
+			notice.Version, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)
 	}
 	return nil
+}
+
+// noticeWords are the person's act a spec decision's notice carries, as the decision it parks
+// keeps it (record.ParkedDecision.Words): who acted and the act's own time, the approval's or the
+// review's Dispatch time (`at`), so the parked-decision notice and every text that names the kept
+// decision later say when the person made it rather than when the daemon kept it (record's
+// ParkedDecisionNoticeOf, workflow's KeptDecisionsOf). A design-changes-requested notice also
+// carries the reason, by the reviewer: the notice carries it already cut to texts.OneAct
+// (workflow's ChangesRequestedNotice), and its words object counts what the cut left off from the
+// review's event, which carried the whole reason. So the kept words carry that count (Rest), and
+// every text that names the decision later gives the count of the rest; they say that more
+// follows only where the notice's words object says so. An approval and a carried gate's opening
+// carry no words but the act's time. Nil for a notice that names no time and no reason, which an
+// earlier release queued: its decision is told at the time the daemon kept it.
+func noticeWords(notice record.Notice) *record.ActWords {
+	if notice.Kind == texts.DesignChangesRequested && notice.Reason != "" {
+		meta := notice.Words["reason"]
+		return &record.ActWords{Text: notice.Reason, By: notice.Actor, At: notice.At, More: meta.More, Rest: meta.Rest}
+	}
+	if notice.At.IsZero() {
+		return nil
+	}
+	return &record.ActWords{By: notice.Actor, At: notice.At}
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The codes the API answers a refused pause or resume with (decision 20 of the plan).
@@ -529,17 +530,46 @@ func StopKey(pause store.Pause, issue string) string {
 	return pause.Project
 }
 
-// pausedNotice is the controller's project-paused notice: who paused, when, and why.
-func pausedNotice(pause store.Pause) (store.PauseRow, error) {
-	return pauseRow(pause.Project, record.ControllerNotice{Kind: record.ProjectPausedNotice,
-		Pause: &record.ProjectPause{ID: pause.ID, By: actor(pause.By), At: pause.Since, Reason: pause.Reason}}, pause.Since)
+// PausedNotice is the controller's project-paused notice of pause, as the record of its kind
+// (texts.ProjectPausedRecord): its issue is the project key, and it names the pause, who paused,
+// when, and why. The reason is the words of who paused, bounded at texts.OneAct and named in the
+// notice's words object with who paused and when (pause.reason).
+func PausedNotice(pause store.Pause) texts.ProjectPausedRecord {
+	by := actor(pause.By)
+	reason := texts.Carry(pause.Reason, texts.OneAct, false)
+	return texts.ProjectPausedRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.ProjectPaused, Issue: pause.Project},
+		Pause:      &record.ProjectPause{ID: pause.ID, By: by, At: pause.Since, Reason: reason.Text},
+		Words:      map[string]texts.WordsMeta{"pause.reason": {By: by.Kind, At: pause.Since, Rest: reason.Rest}},
+	}
 }
 
-// resumedNotice is the controller's project-resumed notice: who resumed, when, and the pause it
-// ended.
+// ResumedNotice is the controller's project-resumed notice of ended, the pause a resume ended, as
+// the record of its kind (texts.ProjectResumedRecord): its issue is the project key, and it names
+// that pause, who resumed, and when.
+func ResumedNotice(ended store.Pause) texts.ProjectResumedRecord {
+	return texts.ProjectResumedRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.ProjectResumed, Issue: ended.Project},
+		Pause:      &record.ProjectPause{ID: ended.ID, By: actor(ended.EndedBy), At: ended.EndedAt},
+	}
+}
+
+// pausedNotice is the row of pause's project-paused notice (PausedNotice).
+func pausedNotice(pause store.Pause) (store.PauseRow, error) {
+	notice, err := record.ControllerNoticeOf(PausedNotice(pause))
+	if err != nil {
+		return store.PauseRow{}, err
+	}
+	return pauseRow(pause.Project, notice, pause.Since)
+}
+
+// resumedNotice is the row of the project-resumed notice of ended (ResumedNotice).
 func resumedNotice(ended store.Pause) (store.PauseRow, error) {
-	return pauseRow(ended.Project, record.ControllerNotice{Kind: record.ProjectResumedNotice,
-		Pause: &record.ProjectPause{ID: ended.ID, By: actor(ended.EndedBy), At: ended.EndedAt}}, ended.EndedAt)
+	notice, err := record.ControllerNoticeOf(ResumedNotice(ended))
+	if err != nil {
+		return store.PauseRow{}, err
+	}
+	return pauseRow(ended.Project, notice, ended.EndedAt)
 }
 
 // pauseRow encodes payload through record's own constructor, which validates it, as the store's

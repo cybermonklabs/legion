@@ -10,7 +10,7 @@ import "time"
 // Three readers take it, each for one thing. The daemon's send (supervise.Deps.DesignNews) reads
 // it at every send: it drops each item and opening that no longer stands, re-keys each item it
 // carries to the version its told row holds now, and renders the text again from the record, so
-// the text sent is always Task, a blank line, then the news as the record stands at that send, and
+// the text sent is always Task, then the news records as the record stands at that send, and
 // the news the delivery carries is exactly what that text names, each item and opening marked with
 // the run it was rendered in (DeliveryNewsItem.Generation and TreeGeneration). The claim store
 // reads it in SQL, by these JSON names, from the copy the prompt a confirmed turn answers carried
@@ -32,7 +32,7 @@ type DeliveryNews struct {
 	Items []DeliveryNewsItem `json:"items,omitempty"`
 	// Openings is each audience the delivery says the gate's state to in place of the opening's
 	// role message: one whose told row owed the opening when the delivery took it on
-	// (DesignTold.OpeningOwed), so its news leads with the gate sentence.
+	// (DesignTold.OpeningOwed), so its news record carries the gate's fields.
 	Openings []DeliveryOpening `json:"openings,omitempty"`
 }
 

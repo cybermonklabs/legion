@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // registerIntakeController records project's controller as the daemon does when
@@ -134,6 +136,16 @@ func named(failure IntakeFailure) NoticeGiveUp {
 	return NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject)}
 }
 
+// queuedGaveUp is project's intake-gave-up notice that counts count give-ups and names giveUps,
+// as countIntakeGiveUp queues it: the record of its kind (GaveUpNotice), whose issue is the
+// project key.
+func queuedGaveUp(t *testing.T, project string, count int, giveUps ...NoticeGiveUp) ControllerNotice {
+	t.Helper()
+	notice, err := ControllerNoticeOf(GaveUpNotice(project, count, giveUps))
+	must(t, err)
+	return notice
+}
+
 // leaseNotice leases the notice row id as the outbox's lane does when it comes due at now, and
 // answers the lease's token.
 func leaseNotice(t *testing.T, st *store.Store, id int64, now time.Time) string {
@@ -175,7 +187,7 @@ func TestAGiveUpBeforeTheNoticeIsLeasedJoinsIt(t *testing.T) {
 	if want := now.Add(giveUpNoticeDelay); !got.row.NextAt.Equal(want) {
 		t.Errorf("the notice is due at %s, want %s: the first give-up's time plus %s", got.row.NextAt.UTC(), want, giveUpNoticeDelay)
 	}
-	want := ControllerNotice{Kind: IntakeGaveUpNotice, Count: 2, GiveUps: []NoticeGiveUp{named(first), named(second)}}
+	want := queuedGaveUp(t, "LEGION", 2, named(first), named(second))
 	if !reflect.DeepEqual(got.notice, want) {
 		t.Errorf("the notice reads %#v, want %#v", got.notice, want)
 	}
@@ -208,13 +220,13 @@ func TestAGiveUpThatFindsTheNoticeLeasedOpensTheNext(t *testing.T) {
 		t.Fatalf("the outbox holds %d intake-gave-up notices, want the leased one and the next: %#v", len(notices), notices)
 	}
 	leased, next := notices[0], notices[1]
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(first)}}); !reflect.DeepEqual(leased.notice, want) {
+	if want := queuedGaveUp(t, "LEGION", 1, named(first)); !reflect.DeepEqual(leased.notice, want) {
 		t.Errorf("the leased notice reads %#v, want it as it was leased, %#v", leased.notice, want)
 	}
 	if next.row.ID != second.NoticeID || !next.row.NextAt.Equal(secondAt.Add(giveUpNoticeDelay)) {
 		t.Errorf("the next notice is row %d due at %s, want row %d due at %s", next.row.ID, next.row.NextAt.UTC(), second.NoticeID, secondAt.Add(giveUpNoticeDelay))
 	}
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(second)}}); !reflect.DeepEqual(next.notice, want) {
+	if want := queuedGaveUp(t, "LEGION", 1, named(second)); !reflect.DeepEqual(next.notice, want) {
 		t.Errorf("the next notice reads %#v, want %#v", next.notice, want)
 	}
 }
@@ -254,14 +266,14 @@ func TestAGiveUpAfterAFailedAttemptOfTheNoticeOpensTheNext(t *testing.T) {
 		t.Fatalf("the outbox holds %d intake-gave-up notices, want the retried one and the next: %#v", len(notices), notices)
 	}
 	retried, next := notices[0], notices[1]
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(first)}}); retried.row.ID != first.NoticeID ||
+	if want := queuedGaveUp(t, "LEGION", 1, named(first)); retried.row.ID != first.NoticeID ||
 		!reflect.DeepEqual(retried.notice, want) {
 		t.Errorf("the retried notice is row %d reading %#v, want row %d as its attempt read it, %#v", retried.row.ID, retried.notice, first.NoticeID, want)
 	}
 	if !next.row.NextAt.Equal(secondAt.Add(giveUpNoticeDelay)) {
 		t.Errorf("the next notice is due at %s, want %s", next.row.NextAt.UTC(), secondAt.Add(giveUpNoticeDelay))
 	}
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 2, GiveUps: []NoticeGiveUp{named(second), named(third)}}); !reflect.DeepEqual(next.notice, want) {
+	if want := queuedGaveUp(t, "LEGION", 2, named(second), named(third)); !reflect.DeepEqual(next.notice, want) {
 		t.Errorf("the next notice reads %#v, want %#v", next.notice, want)
 	}
 	namedIn := map[int64][]int64{}
@@ -429,7 +441,7 @@ func TestAGiveUpWithNoControllerRegisteredGetsNoNotice(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("the outbox holds %d intake-gave-up notices after the controller registered, want one", len(notices))
 	}
-	if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{named(told)}}); !reflect.DeepEqual(notices[0].notice, want) {
+	if want := queuedGaveUp(t, "LEGION", 1, named(told)); !reflect.DeepEqual(notices[0].notice, want) {
 		t.Errorf("the notice reads %#v, want %#v: the give-up before the controller registered is in none", notices[0].notice, want)
 	}
 	if noticeIDOf(t, st, alone.ID) != 0 {
@@ -438,24 +450,29 @@ func TestAGiveUpWithNoControllerRegisteredGetsNoNotice(t *testing.T) {
 }
 
 // The intake-gave-up notice is a controller notice and no architect's: the give-up is the
-// daemon's own, of no issue an architect runs. The validation takes it in a ControllerNotice with
-// its count and the give-ups it names, and refuses it in a Notice, and refuses it naming none.
+// daemon's own, of no issue an architect runs, so the one list marks it a controller notice whose
+// one reader is the controller. The validation takes it in a ControllerNotice with its count and
+// the give-ups it names, as its record builds it, and refuses it in a Notice, and refuses it
+// naming none.
 func TestTheIntakeGaveUpNoticeIsOneOfTheControllerOnlyNoticeKinds(t *testing.T) {
-	if !controllerOnlyNoticeKind(IntakeGaveUpNotice) {
-		t.Fatalf("the %s kind is not controller-only, so a notice of it would be queued to an architect's topic", IntakeGaveUpNotice)
+	entry, listed := texts.Lookup(IntakeGaveUpNotice)
+	if !listed || entry.Form != texts.ControllerNotice || !texts.IsControllerNotice(IntakeGaveUpNotice) {
+		t.Fatalf("the list holds %s as a %q (listed %t), want a controller notice, so a notice of it is never queued to an architect's topic",
+			IntakeGaveUpNotice, entry.Form, listed)
 	}
-	if validNoticeKind(IntakeGaveUpNotice) {
-		t.Fatalf("the %s kind is on the architect's own list, so an architect would be told a give-up meant for the controller", IntakeGaveUpNotice)
+	if !slices.Equal(entry.Readers, []claim.Role{claim.RoleController}) {
+		t.Fatalf("the list gives %s the readers %v, want the controller alone: an architect would be told a give-up meant for the controller",
+			IntakeGaveUpNotice, entry.Readers)
 	}
 	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-	giveUps := []NoticeGiveUp{{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"}}
-	if _, err := NewOutboxRow("LEGION", ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: giveUps}, at); err != nil {
+	notice := queuedGaveUp(t, "LEGION", 1, NoticeGiveUp{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"})
+	if _, err := NewOutboxRow("LEGION", notice, at); err != nil {
 		t.Fatalf("the notice the daemon writes is refused: %v", err)
 	}
-	if _, err := NewOutboxRow("LEGION", ControllerNotice{Kind: IntakeGaveUpNotice}, at); err == nil {
+	if _, err := NewOutboxRow("LEGION", ControllerNotice{Kind: IntakeGaveUpNotice, Issue: "LEGION"}, at); err == nil {
 		t.Fatalf("a notice that counts and names no give-up is taken, and a controller reading it would learn nothing")
 	}
-	if _, err := NewOutboxRow("LEGION", Notice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: giveUps}, at); err == nil {
+	if _, err := NewOutboxRow("LEGION", Notice(notice), at); err == nil {
 		t.Fatalf("the notice is taken as an architect's notice, which is the one reader that cannot act on it")
 	}
 }

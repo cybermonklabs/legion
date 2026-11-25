@@ -14,7 +14,7 @@ import type {
   DispatchEvent,
 } from "@legion/contracts";
 import { SESSION_ID_PATTERN } from "@legion/contracts";
-import { bodyWasCut, carriedItem, wholeCarriedBody } from "./delivery";
+import { bodyWasCut, carriedItem, type WholeBody, wholeCarriedBody } from "./delivery";
 import {
   type DispatchClient,
   DispatchGatewayError,
@@ -38,6 +38,7 @@ import {
   withPictureLines,
 } from "./dispatch-pictures";
 import { messageFor } from "./errors";
+import { oneLine } from "./line-text";
 
 const PICTURE_TYPE_NAMES = "a PNG, JPEG, GIF or WebP";
 
@@ -269,7 +270,7 @@ export async function eventTextsWhole(
   // Several events of one page can name the same comment or message, and every read of it
   // answers the same current body, so one read serves them all. The map is written before the
   // first await, so callbacks running together share the read rather than each starting one.
-  const reads = new Map<string, Promise<string | undefined>>();
+  const reads = new Map<string, Promise<WholeBody | undefined>>();
   const whole = await Promise.all(
     events.map(async (event) => {
       const item = bodyWasCut(event.payload) ? carriedItem(event) : undefined;
@@ -280,8 +281,8 @@ export async function eventTextsWhole(
         read = wholeCarriedBody(client, item);
         reads.set(key, read);
       }
-      const body = await read;
-      return body === undefined ? eventTexts(event) : [{ text: body, at: event.created_at }];
+      const post = await read;
+      return post === undefined ? eventTexts(event) : [{ text: post.body, at: event.created_at }];
     })
   );
   return whole.flat();
@@ -300,7 +301,10 @@ export interface PicturesRead {
 }
 
 /** The line naming the picture a result shows as its `index`th image: the one shape
- *  `shownPictureAddresses` reads back from a transcript. */
+ *  `shownPictureAddresses` reads back from a transcript. The name is its uploader's words, and the
+ *  address can come from another author's body, whose address pattern admits U+0085 (`[^\s()]`),
+ *  so the line is made one line (`oneLine`): a line they started could stand as one of the
+ *  `Pictures:` lines, which Pi appends after a delivered card as its own. */
 export function shownPictureLine(
   index: number,
   address: string,
@@ -308,7 +312,9 @@ export function shownPictureLine(
   mimeType: string,
   bytes: number
 ): string {
-  return `- image ${index}: ${address} (${name}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`;
+  return oneLine(
+    `- image ${index}: ${address} (${name}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`
+  );
 }
 
 // `shownPictureLine` as it starts a line, its address a versioned Dispatch address.
@@ -412,7 +418,9 @@ export function forgetShownPictures(sessionId: string): void {
  * it. Dispatch's stated size and type rule a picture out before its bytes are fetched. An address
  * in `shown`, the pictures this session was already shown, is named as shown earlier, read
  * nothing and counts toward neither limit. `shown` is only read: the result's `shown` names the
- * pictures shown here, which the caller adds once the model has them.
+ * pictures shown here, which the caller adds once the model has them. Each picture is one line
+ * (`oneLine`, as in `shownPictureLine`): its address can come from another author's body, and a
+ * reason names the upload by its uploader's name or quotes Dispatch's failure.
  */
 export async function readPictures(
   client: DispatchClient,
@@ -427,7 +435,7 @@ export async function readPictures(
   let shownBytes = 0;
   const overBudget = `past this read's ${PICTURES_SHOWN_MAX_BYTES / 1024 / 1024} MiB of pictures; dispatch doc-read shows it`;
   for (const address of addresses) {
-    const skip = (reason: string) => lines.push(`- not shown: ${address} (${reason})`);
+    const skip = (reason: string) => lines.push(oneLine(`- not shown: ${address} (${reason})`));
     if (shown?.has(address)) {
       skip("shown earlier this session; dispatch doc-read shows it again");
       continue;

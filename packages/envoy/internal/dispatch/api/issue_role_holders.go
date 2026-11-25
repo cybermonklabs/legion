@@ -101,7 +101,7 @@ func legionProjectOf(key string) string {
 // legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
 // dispatch.DaemonSession).
 func legionDaemonSessionOf(key string) string {
-	return legionDaemonSessionPrefix + legionProjectOf(key)
+	return model.LegionDaemonSessionPrefix + legionProjectOf(key)
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session

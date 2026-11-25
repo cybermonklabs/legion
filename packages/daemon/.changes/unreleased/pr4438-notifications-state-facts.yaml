@@ -1,0 +1,188 @@
+kind: Changed
+body: |-
+  Every task, notice and role message the daemon sends an agent session is now a record of one kind
+  on one list (`internal/texts`), rendered as `key: value` lines in one form, with an urgency for
+  each reader. A text gives the facts of its event as fields and no step the reader's prompt already
+  gives; a list names what its reader acts on and counts the rest. So a CI settlement, a review
+  round GitHub will not merge and the wake of a settlement name each check that did not pass, by
+  GitHub's word for its run (`not_passed`), each check GitHub skipped (`skipped`), with a field that
+  says once that a skipped check ran nothing on that head (`each_skipped_check: ran_nothing`), and
+  each commit status in state `failure` or `error` (`not_passed_statuses`), and count the checks
+  that passed (`passed`) and, apart from them, the commit statuses that passed (`passed_statuses`),
+  so `passed: 0` with no check named says that no check ran on the head, as the old settlement's
+  "reporting no check" did. A text about a person's act carries the person's words, up to 4,000 UTF-16
+  units of one act or 1,000 of each of several, in a block of its own after the facts; the intake
+  keeps those words on the rows the texts are built from (migration `20261118092930_person_words`).
+  A message-refused notice quotes the first line of the refused write in a block of its own too,
+  named by its author: where that line is the daemon's sentence of a worker's backward move or of
+  the architect's close and then that author's words, the notice gives the sentence as a field
+  (`refused_move: <from>-<to>`, `refused_close: before_first_phase`) and the block holds the
+  worker's or the architect's words alone, from their first line that holds a character other than
+  white space, so a close whose reason opens with a line break, or with a line of spaces, quotes the
+  architect's words and not the daemon's sentence or the spaces;
+  any other line is the daemon's own, whole. The block holds no character the daemon added: a line
+  ends at a line feed or at a carriage return and a line feed, neither of which the block holds; a
+  line past 200 UTF-16 units is cut with no ellipsis, and never inside a letter and the combining
+  marks after it (by Go's own Unicode tables, 17.0.0 in Go 1.27.3), an emoji and its skin-tone
+  modifier, the characters a zero width joiner joins, the two regional indicators of a flag or the
+  jamo of one Hangul syllable, though it can part a prepended concatenation mark or a reph from the
+  character after it and the consonants of an Indic conjunct with no joiner; the words object counts
+  every UTF-16 unit of the words after the block, the later lines among them but not the line
+  endings the words end with (`rest`), as the notice's `length` counts the refused body in UTF-16
+  units; and a worker's words lose the full stop the daemon's sentence adds after words that end
+  with none, so words of one line that end with one `.` lose that `.` too, since the two read
+  alike. A refused write whose first line is empty says so (`first_line_empty: true`), as main's
+  said that it begins `""`. A session-forgotten notice says why the session was forgotten
+  (`launcher_lookup: failed`, `resumed_by_id: false`).
+  The notice of a child that left the workflow (`child-closed`, or `child-status` with
+  `change: left`) names its open pull request (`open_pull_request`) and each issue under it that is
+  not done, with its status (`under_not_done`). The `pr-merged` notice of a close that waits keeps
+  the sentence on a status the daemon has not taken yet (`status_not_taken_yet`) and the rules for
+  ending a child (`end_child_rule`) word for word, as main's did, and the `children-first` notice
+  keeps those rules too (`end_child_rule`). The task of every look of a production check states
+  that a requirement only the deploy can show that the look observes as not met is a fail
+  (`not_met_requirement: fail`) and that one still unobserved at the last look is a fail
+  (`unobserved_requirement: fail`), and the last look's task also states the rest of the rule of
+  its verdict beside `last: true` (`pending: only_with_no_deploy_only_requirement`) and that a last
+  look nobody reported closes the check as not run (`unreported: not_run`). A look's task names a
+  bound that is not whole days as Go writes the duration (`bound_duration: 36h0m0s`, `1h30m0s`),
+  as main's named it, rather than cut to whole days, and every look names the bound the check's
+  record keeps, whose bound time is truncated to the microsecond at the check's open as its open
+  time is. The look that a pending report's wake starts names when the daemon recorded that
+  report on the block of its summary (`at`), which the check keeps (`production_checks.reported_at`,
+  migration `20261122011615_production_check_reported_at`); the look of a check recorded before it
+  names no time. Each `check_wake` row this release queues says what it wakes: the retry of a look
+  nobody reported is marked `retry`, which makes the look it starts a retry (`woken_by: retry`),
+  and the checking role's own wake is marked `pending`, whose look gives its reason as the role's
+  summary whatever words it opens with. A row an earlier release queued carries neither mark: it
+  is a retry where its reason is word for word that release's sentence of a retry, as that release
+  read it, and otherwise the checking role's own wake. An
+  update-stalled notice names who suspended each suspended claim it lists (`suspended_by:
+  operator` for the operator's suspension, one held for a claim's turn among them, and
+  `suspended_by: pause` for a claim a project's pause stopped, answered or not, whether the pause
+  still owes it a launch or stopped it owing none with no ready of the claim since and no release
+  of the pod since that suspended the claim's role, apart from an idle release's `released`) and
+  each claim that left the round's pod
+  (`left_round: true`), whose suspension holds no pod; a phase-finished notice of a role's own move
+  back says so whether or not the role gave words (`moved_back: true`), a let-go notice says of
+  each child whether Dispatch's listing still holds it (`listed`), an unslotted notice names why an
+  awaiting root cannot resume by a word (`unresumable: label-removed`, `left-workflow` or
+  `claimed`) with the holder of its Dispatch claim (`claimed_by`), an architect-stalled notice
+  names its arm in the words the controller's skill quotes (`reason`) and, where it counted from a
+  confirmation of its entry, that entry (`entry`), a pr-blocked notice names its conflict rounds
+  not counted, 0 included (`conflict_rounds`), a merge-queue-removal message says that the event
+  names no reason and that the merger reads GitHub (`event_reason: none`, `read_on: github`), a
+  merge-forward ask says that the head conflicts with its base, that two reads of GitHub found it
+  so, and where to push (`head_conflicts_with_base: true`, `conflict_reads: 2`, `push_to`), a
+  merge-forward hold names the role asked to merge the base forward (`asked: implementer`), a
+  memory-kill message says where heavy work runs
+  (`heavy_work_runs`), a volume-near-full notice writes each backslash of a name as `\\` as well as
+  each line break, so two names stay two values, and a root's resume names its gate step's
+  document whatever the act (`document`), names no gate state for a step with no gate, and names
+  whether the design gate is armed on an approval of such a step (`gate_armed`). A gate row records
+  the issue whose document it is bound to (`design_gates.document_issue`, migration
+  `20261122040952_design_gate_document_issue`), so the start task, the catch-up and the gate-moved
+  message of a root that carried its old root's gate name the old root's document; for a row that
+  records none, the start task, the catch-up and the news of an approved design read it from the
+  document's own registration in the store, else from Dispatch when the daemon queues the start
+  task, writes it again (where a decision it named left the tree, or a newer decision replaced one
+  it named), publishes the catch-up or sends the news, else give the document's bare artifact
+  reference (`/api/v1/artifacts/<id>`); and a parked decision's
+  notice names when the person made it (`at`). A relaunch note and a catch-up's `relaunch` of a
+  cut turn say that its tool calls in flight were never answered and that the subagents and
+  background jobs of that turn are gone (`in_flight_tool_calls: never_answered`,
+  `turn_background_work: gone`), and, where no report speaks of the process's last turn, of a
+  process in no turn or a cut turn that names no work that stopped, that every subagent and
+  background job of the process is gone (`process_background_work: gone`); an out-of-memory note
+  points to the worker skill's tools guide
+  (`read_before_heavy_work`); the task of a review's request for changes names GitHub's id of the
+  review (`review_id`), where a cut body is read whole; a merge-forward ask whose required check
+  has not passed says that GitHub runs no check on the head (`checks_on_head: none`), and a
+  merge-forward review names the review it asks for (`review_asked`); a checks-red notice names
+  the role asked to merge the base forward (`asked: implementer`, or in `merging`
+  `asked: merger`) and the head (`head`), and a checks-red row that names no `head`, which an
+  earlier release queued, is `med` for the architect in every phase, since it may be of a held
+  issue; the merger's merge-forward ask in `merging` carries the fields of the
+  implementer's, the steps it gave the merger being in the merger's prompt; a worker-died of a role
+  that does not work the issue's phase says that nothing is held (`nothing_held: true`); a
+  worker-died and a held notice write each line break and backslash of a failure record's texts,
+  and of the worker-died's own `detail`, `death` and `pod_end`, as Go writes them in a string
+  (`\n`, `\\`) rather than joining lines with ` / `, so every character is kept; and a
+  tree-stalled notice tells the controller to read the tree first (`first: read_tree`) and names
+  what it decides among (`decide: ask_role_what_it_waits_on,park_tree`). A
+  `memory-guard-kill` notice of one of the controller's own processes is a record of its own kind
+  on the list, which names what stopped the process (`cause: guard`, `kernel` or
+  `kernel-protected`), the process by its executable (`process`), its `pid`, its `size`, the pod's
+  reading (`pod_memory`) and the pod's `limit`, no `reason`, and no `role`, which was its reader's
+  own; the controller's prompt says what
+  each cause means for its session and what to run in place of the same program. A
+  root's start task of a gate
+  that stands part way takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`).
+  A woken role's task of
+  a message to its role topic says that a kept copy whose hour ended before the session came back
+  does not reach it (`expired_does_not_reach: true`), and of a message to its session that a
+  message Envoy or Dispatch stored reaches it and a direct message Envoy refused reaches it when
+  its sender sends it again (`stored_reaches_session: true`, `refused_sender_sends_again: true`).
+  A woken role whose session a project's pause stopped is told `stopped_by: pause`, and its wake is
+  that pause's held wake, also where a later release of the pod suspended other roles alone and
+  took the pod: only a release that suspended the role, or a ready of it, ends the pause's claim on
+  it, as for the update-stalled notice's `suspended_by: pause`, and a role message the pause held
+  for it stays owed to it, so the resume launches it for that message, a `low` one included.
+  A design gate's opening tells a reader owed no news of the approved design the version of the
+  step's document it took, since which nothing it holds changed, as a field of its gate-moved
+  message (`unchanged_since`). News of an approved design is a `design-news` record of its own
+  kind, a task of its own or the record after a start's own record: the tree, the issue and the
+  phase its holder holds it in, or each member of the tree with how it is told for the root's
+  architect, whether its task gives it the gate's opening (`opening`) and how many items it is
+  owed that the daemon cannot name yet (`unnamed`); each document's version and the version its
+  reader took, with each changed section and block as a row; the daemon's reason for a read of
+  Dispatch it gave up on (`by="daemon"`), a heading, a block id and a type the daemon does not name
+  in blocks of their own; and, where the opening is owed, the gate's fields as a gate-moved
+  message gives them, said of the gate at the send. Every block of a start's record and of each
+  news record after it takes a tag chosen against all the other text of the task, with or without
+  a note in front of it. An operator's task, and a task or a start an earlier release queued,
+  which is prose with no `kind:` line, goes behind the notes of a cut turn or a relaunch, and
+  before the news records, as its author wrote it, tags and all. The readers' prompts give the
+  steps the news
+  text gave: each answer, reading a first version whole, and the command that prints a version.
+  A notice is published with its kind's urgency, and a `low` text wakes no released pod. A
+  `phase-finished` notice of a move into `accepting` is `med` for the architect whoever finished,
+  since no worker runs there, and so is a row an earlier release queued, which names no `to` and
+  may be such a move; the other moves of an implementer, a tester or a merger stay `low`. Of the
+  role messages to a role whose pod is released, only
+  a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
+  the role. A text that a project's pause held, a `low` one too, launches its reader at the resume,
+  and the pause's two notices to the controller (`project-paused`, `project-resumed`) are records on
+  the list. So is the controller's `intake-gave-up` notice, which names the project key as its
+  `issue` beside its `count` and its `giveUps`, and a `parked-decision` of a person's approval that
+  a later change of its parked root's status kept from queuing the root names, in place of a
+  reason, the approval's Dispatch event (`approval_seq`), the event that changed the root's status
+  (`status_change_seq`), the status the root stood at (`status`), that it queued nothing
+  (`not_queued: true`) and the issue whose `todo` brings the root back (`set_todo`). The update ask
+  names each of its five steps in their order (`push_to`,
+  `background_work`, `evidence`, `answer`, `then`), what to do with background work that ends after
+  the answer (`late_background_work`), when an answer brings the round's end forward
+  (`every_answer_brings_it_forward: when_no_turn_or_background_work`), and that a named service the
+  role started is in no report and holds nothing (`named_services: in_no_report_hold_nothing`).
+  The update ask to the reviewer, which creates no commit, names no `push_to` and asks no commit of
+  its background work (`background_work: finish_or_stop`, `late_background_work: answer_again`).
+  The texts of an owner's plan are records too. A phase assignment and a resume name where the
+  worker's work stands as fields (`branch`, `directory`, `task`, `step`, `steps`, and each step
+  before it that reported, in `reported`, by its handoff's phase and version), and the text of the
+  task's block, which the owner wrote, in a `task_text` block by the architect claim that gave that
+  version of the plan, at the time it gave it; a stopped task started again names what started it
+  (`restarted: todo` or `plan`, with `plan_version` and `stopped_tasks`). The `task-stopped` notice
+  (`med`) names the task, what stopped it (`cause: owner` or `no_return`) and the failed `step`;
+  `plan-not-taken` (`low`) names why the first step took no plan (`why: earlier_owner`, a plan of
+  an earlier owner, or `why: group`, an issue whose experiment's group runs the default steps, with
+  that group's `experiment` and `variant`), each version it did not take, once (`not_taken`), and
+  the plan it runs (`runs`); `retro-held` (`low`) names each issue the retro waits for
+  (`waiting_for`) and keeps the two texts on ending a child word for word. A `worker-stalled`
+  notice whose replacement waits at its issue pod's start gate names `end: relaunch waits for its
+  pod`. The merger's merge-forward landed message names the head whose approval it waits for,
+  where its task has a reviewer step (`approval_owed`). No field of a daemon text holds NEXT LINE,
+  LINE SEPARATOR or PARAGRAPH SEPARATOR: the writer writes each as a space, so an issue's title that
+  holds one stays on its field's line. A queued changes request from an earlier release matches
+  the current request only if its whole reason matches. A shared prefix does not match.
+  A rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
+  carries a person's words in the daemon's texts").

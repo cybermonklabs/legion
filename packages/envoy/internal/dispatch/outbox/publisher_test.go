@@ -127,6 +127,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
+	hearingFor(deps, []*batchEvent{single}, found).hear(ctx)
 	to, resolveErr := eventDestinations(ctx, deps, single, found)
 	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
@@ -308,8 +309,8 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 	waitFor(t, time.Second, "ask answer publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
-	if asker := publisher.all()[1]; asker.Topic != "notifications.agent.session-asker" || asker.InReplyTo != askID {
-		t.Fatalf("asker route = (%q, %q)", asker.Topic, asker.InReplyTo)
+	if asker := publisher.all()[1]; asker.Topic != "notifications.agent.session-asker" || asker.InReplyTo != askID || asker.Urgency != "" {
+		t.Fatalf("asker route = (%q, %q, urgency %q), want no urgency", asker.Topic, asker.InReplyTo, asker.Urgency)
 	}
 	item := publisher.all()[0]
 	if item.EventID != fmt.Sprintf("dispatch-%d", event.ID) || item.SourceEventID != fmt.Sprint(event.ID) {
@@ -318,8 +319,9 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 	if item.Source != "dispatch" || item.Topic != "notifications.dispatch.issue.T-1.ask.answered" {
 		t.Fatalf("source/topic = (%q, %q)", item.Source, item.Topic)
 	}
-	if item.InReplyTo != askID || item.Urgency != "blocking" {
-		t.Fatalf("answer metadata = (%q, %q)", item.InReplyTo, item.Urgency)
+	// The ask's own urgency is for the person it asks, so the answer goes at the default.
+	if item.InReplyTo != askID || item.Urgency != "" {
+		t.Fatalf("answer metadata = (%q, %q), want no urgency", item.InReplyTo, item.Urgency)
 	}
 	var payload model.Event
 	if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
@@ -333,6 +335,163 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 	}
 	if err := item.Validate(); err != nil {
 		t.Fatalf("published envelope does not validate: %v", err)
+	}
+}
+
+// urgencyCheck is one event of an urgency test, the urgency every copy of it must carry ("" for the
+// default) and the topics its copies must reach.
+type urgencyCheck struct {
+	event   model.Event
+	urgency string
+	topics  []string
+}
+
+// checkUrgencies runs the outbox over the checks' events, which an issue's owner chain publishes in
+// order, and fails unless each event's copies reached exactly its topics, each at its urgency.
+func checkUrgencies(t *testing.T, database *store.Store, broker *events.Broker, checks []urgencyCheck) []contracts.Envelope {
+	t.Helper()
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+	waitFor(t, 5*time.Second, "every event published", func() bool {
+		for _, check := range checks {
+			if publishedAt(t, database, check.event.ID) == nil {
+				return false
+			}
+		}
+		return true
+	})
+	items := publisher.all()
+	for _, check := range checks {
+		var topics []string
+		for _, item := range items {
+			if item.SourceEventID != fmt.Sprint(check.event.ID) {
+				continue
+			}
+			topics = append(topics, item.Topic)
+			if item.Urgency != check.urgency {
+				t.Errorf("%s by %s reached %s at urgency %q, want %q", check.event.Type, check.event.Actor.ID, item.Topic, item.Urgency, check.urgency)
+			}
+		}
+		slices.Sort(topics)
+		want := slices.Sorted(slices.Values(check.topics))
+		if !slices.Equal(topics, want) {
+			t.Errorf("%s by %s reached %v, want %v", check.event.Type, check.event.Actor.ID, topics, want)
+		}
+	}
+	return items
+}
+
+// The Legion daemon's session (legion-daemon:<PROJECT>) tells each role that must act on an
+// issue's change through a text of its own, so Dispatch sends an event of that session's at urgency
+// low to every destination it reaches: an issue.updated, a child.status and a message.created, the
+// child.status forwarded to the issue's role route among them. The same events by a person or by
+// another session go at the default, to the route where they notify. An issue.released by the
+// daemon's session goes at the default to every destination, the copy to the session that lost
+// the claim among them, and so does an issue.closed by it (daemonEventGoesLow).
+func TestAnEventOfTheDaemonsSessionGoesAtLow(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	const role = "legion-architect-t1"
+	seedIssue(t, database, "T-1", new("role:"+role))
+	daemon := model.Actor{Kind: "session", ID: model.LegionDaemonSessionPrefix + "TT"}
+	person := model.Actor{Kind: "user", ID: "alice"}
+	other := model.Actor{Kind: "session", ID: "session-other"}
+	issueTopic := func(eventType string) string { return "notifications.dispatch.issue.T-1." + eventType }
+	roleTopic := contracts.RoleTopicPrefix + role
+	appendIssueEvent := func(eventType string, actor model.Actor, payload any) model.Event {
+		return appendEvent(t, database, broker, model.Event{IssueKey: new("T-1"), Type: eventType, Actor: actor, Payload: payload})
+	}
+	var checks []urgencyCheck
+	for _, actor := range []model.Actor{daemon, person, other} {
+		urgency := ""
+		if actor.ID == daemon.ID {
+			urgency = "low"
+		}
+		// Only a person's issue.updated and message.created notify, so only theirs reach the route;
+		// a child.status reaches it whoever acts (events.Broker.Notify).
+		notified := func(eventType string) []string {
+			if actor.Kind == "user" {
+				return []string{issueTopic(eventType), roleTopic}
+			}
+			return []string{issueTopic(eventType)}
+		}
+		checks = append(checks,
+			urgencyCheck{
+				event:   appendIssueEvent("issue.updated", actor, map[string]any{"title": "A new title"}),
+				urgency: urgency, topics: notified("issue.updated"),
+			},
+			urgencyCheck{
+				event:   appendIssueEvent("child.status", actor, map[string]any{"child": "T-2", "status": "done"}),
+				urgency: urgency, topics: []string{issueTopic("child.status"), roleTopic},
+			},
+			urgencyCheck{
+				event: appendIssueEvent("message.created", actor, model.MessageEventPayload{
+					Message: model.Message{ID: "message-" + actor.ID, IssueKey: new("T-1"), Body: "The phase moved."},
+				}),
+				urgency: urgency, topics: notified("message.created"),
+			},
+		)
+	}
+	released := appendIssueEvent("issue.released", daemon, map[string]any{
+		"reason": "released",
+		"previous_claim": map[string]any{
+			"actor": map[string]any{"kind": "session", "id": "session-one"},
+			"at":    "2026-11-18T05:00:00Z",
+		},
+	})
+	closed := appendIssueEvent("issue.closed", daemon, map[string]any{"status": "done"})
+	checks = append(checks,
+		urgencyCheck{event: released, topics: []string{issueTopic("issue.released"), contracts.LegacyAgentSubject("session-one")}},
+		urgencyCheck{event: closed, topics: []string{issueTopic("issue.closed")}},
+	)
+	checkUrgencies(t, database, broker, checks)
+}
+
+// An ask's own urgency is for the person it asks, so no ask.* event carries it: an ask asked at
+// urgency low and answered by a person reaches the issue's topic and the asker at the default,
+// while each copy carries the ask with its own urgency in the event's payload. An ask.resolved by
+// the Legion daemon's session goes at the default too, since every ask.* event does
+// (daemonEventGoesLow).
+func TestAnAskEventGoesAtTheDefaultUrgency(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	asker := model.Actor{Kind: "session", ID: "session-asker"}
+	askID := seedAsk(t, database, "T-1", asker, "Which region goes first?")
+	if _, err := database.Pool.Exec(context.Background(), `update asks set urgency = 'low' where id = $1`, askID); err != nil {
+		t.Fatalf("ask %s at urgency low: %v", askID, err)
+	}
+	ask := model.Ask{ID: askID, IssueKey: new("T-1"), Question: "Which region goes first?", Urgency: "low"}
+	answeredAsk := ask
+	answeredAsk.State = "answered"
+	answeredAsk.Answer = &model.AskAnswer{User: "alice", Selected: []string{"East"}}
+	answered := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "ask.answered", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: answeredAsk,
+	})
+	resolvedAsk := ask
+	resolvedAsk.State = "resolved"
+	resolved := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "ask.resolved",
+		Actor: model.Actor{Kind: "session", ID: model.LegionDaemonSessionPrefix + "TT"}, Payload: resolvedAsk,
+	})
+	askerTopic := contracts.LegacyAgentSubject(asker.ID)
+	items := checkUrgencies(t, database, broker, []urgencyCheck{
+		{event: answered, topics: []string{"notifications.dispatch.issue.T-1.ask.answered", askerTopic}},
+		{event: resolved, topics: []string{"notifications.dispatch.issue.T-1.ask.resolved", askerTopic}},
+	})
+	for _, item := range items {
+		var event struct {
+			Payload struct {
+				Urgency string `json:"urgency"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the payload of the copy to %s: %v", item.Topic, err)
+		}
+		if event.Payload.Urgency != "low" {
+			t.Fatalf("the copy to %s carries the ask at urgency %q, want the ask's own low", item.Topic, event.Payload.Urgency)
+		}
 	}
 }
 

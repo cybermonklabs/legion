@@ -29,10 +29,67 @@ whose limit must stay below something the row must not wait out says that too.
 
 ## Inbound delivery
 
-`renderInbound(raw, sessionID, subject?)` accepts an additive Envoy envelope and returns a TOON
-block with recognized routing and delivery fields. The renderer includes `to` only for a direct
-message to the reader, formats sender identity and reply metadata, renders structured payloads
-once as `message`, and marks unknown sources or fields with `unrecognised`.
+`renderInbound(raw, sessionID, subject?)` accepts an additive Envoy envelope and returns a card:
+TOON under `envoy:`, with each recognized routing and delivery field once, then a block for each
+part of it that another author wrote. The card says `to: you` only for a direct message to the
+reader, and names neither the reader's session id nor its role, apart from a Dispatch event's
+`target`, which names the reader's session as `you (session:<id>)`. A card from another session
+names the sender's session and title (`from`), each role the sender holds once (`role`, or `roles`
+where it holds more than one), the time (`at`) and the message id (`id`). It carries no reply
+command: the `envoy_send` and `envoy_publish` descriptions say how to reply from those fields. The
+message's words follow the fields whole in a `<message>` block, JSON text too, so no key of the
+message reads as a field of the card. A notice or role message of the Legion daemon
+(`from: agent`) keeps its `<kind> on <KEY>` summary and shows its payload's fields as lines under
+`message`, in the payload's order. It leaves out a `role` that names the reader, whose topic ends
+in `-<role>`. Each field that the payload's `words` object names, by its path in the payload
+(`summary`, or `kept[1].answer` for a field inside a list), is drawn in a block with the author
+and the time `words` gives, and `words` itself is not shown. The block's name is the field's name
+with each character other than an ASCII letter, a digit or `_` written as `_`, and `_` before a
+leading digit, and its `field` attribute gives the path where that name is not the path. A path
+whose field the payload leaves out (a stand-in the bus took with its long fields dropped) draws a
+block with no words and the entry's `more` or `rest`. A payload with no `words` shows every
+field, and so does one whose `words` has a key that is no path (a segment holds `.`, `[`, `]`,
+white space, a control character, `<`, `>`, `"`, `'` or `&`) or whose path names a list's item or
+a field that holds no string. A role message the daemon publishes as text (the hook prompt)
+follows the fields in a `<message>` block. A card that is not the daemon's notes
+`body names session <id>` for a session that its summary or payload names and its fields do not,
+other than the sender, the reader and the author of an ask. Unknown sources or fields are marked
+with `unrecognised`.
+
+A block (`@legion/envoy-client/words-block`) applies the rule of the daemon's texts (`texts.Render`
+and `texts.InFront`, `packages/daemon/internal/texts`): an opening tag, the words exactly as
+written, and the closing tag, each on lines of their own. A block's tag is the first of `name`,
+`name-1`, `name-2` and on, where `name` is the name of the field that holds the words, whose
+opening tag `<tag` and closing tag `</tag` neither the card's fields before the blocks nor the
+words of any block of the card hold, and that no earlier block of the card took. The fields hold
+other authors' words too (an ask's question, an issue's title in a catch-up), so nothing in the
+card opens or closes an element of a block's tag but that block, and two blocks never share a tag.
+`wordsBlocks(before, blocks)` draws all the blocks that follow `before` by that rule in one pass,
+in time and memory linear in the text's length however many names the blocks have and however
+long a run of a tag name's characters the text holds; a block's name is one a tag can have
+(`[A-Za-z_][A-Za-z0-9_]*`), and any other throws. Each text is scanned once for the run of those
+characters after each `<` and `</`, and each block's tag is a lookup of its name in what was found,
+which follows a run only as far as a name looked up shares its characters. `inFront(parts, text)`
+is what a host hands on when it puts lines or other messages in front of a card (the Codex
+inbox's hook text, claude-envoy's prompt at the rows a turn never read): the parts and the card
+joined by blank lines, with the card's blocks drawn again, attributes and words unchanged, under
+the tags the rule gives them against everything in front of them as well. Where nothing in front
+holds such a tag, and for a text with no block, that is the two joined as they are. A host that
+joins many cards one after another builds the text with `TextInFront` (`part` for a text it joins
+as it is, `card` for a card), which gives the same text as `inFront` called on each card with
+everything before it, and keeps the tags already held from one card to the next, so the whole
+text is drawn in time and memory linear in its length however many names its cards' blocks have
+(the Go daemon's `texts.InFront` reads a drawn block by the same rule, which
+`packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag
+carries `by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is
+set; a card sets `by` and `at` only where its own fields do not name the author and the time, and
+not where the object that holds the words' field, below the payload's own fields, has a `by` or an
+`at` of its own (a project-paused card's `pause` names who paused and when, so its reason's block
+names neither). By the same rule it sets `more` only where that object says no `more` of its own:
+a catch-up's kept decision says it in its row, as every decision whose words were cut does, so
+the decision's answer block does not.
+`splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
+`decode` reads, and the blocks, and checks each tag against the rule.
 
 A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
 (or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
@@ -46,9 +103,15 @@ of it. A payload that is text already is never held to the bound; its frame boun
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
-parsed event under `dispatch: { issue_key, type, actor, payload }` with `payload` typed per event
+parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
 type; a payload whose shape disagrees with its event type's schema is preserved as its raw parsed
-value under `dispatch`, never dropped or reduced to prose. A dispatch envelope with no payload at
+value under `dispatch`, never dropped or reduced to prose. A Dispatch card keeps its reply command
+(`reply_with`). The body of a comment, a suggestion, a reply or a message, the text a suggestion
+proposes (`suggestion.replace_with`, in a `<replace_with>` block), an ask's answer and its
+previous answer, and a resolution's reason leave the fields for blocks after them; the options an
+answer chose, a resolution's kind and the words Dispatch writes beside a decline
+(`dispatch_words`) stay fields, and so do the heads of the item a card is about (`question`,
+`quote`, `previous`, a message's `reply_body`). A dispatch envelope with no payload at
 all falls back to the same `summary` field every other source gets and marks `unrecognised:
 payload`. On a `notifications.dispatch.*` topic, which carries every event of its owner, the
 renderer skips the events Dispatch marks `quiet` — a delivery receipt, an anchor refresh,
@@ -136,11 +199,13 @@ frame that failed because the host moved on names a session that is closed here 
 is shown or recorded for it then. It answers whether the frame was reported, so the relay settles
 a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere; a
 notice shown to the session it names is reported even where the host moved before it resolved,
-and only its record waits for a host that is still on that session. `failureNoticeFields` words
-that card, and
-`envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
-holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
-`sessionID()` names another.
+and only its record waits for a host that is still on that session. `failureNoticeText` writes
+that card through `noticeText` (`@legion/envoy-client/notice-text`), which writes a notice's fields
+under `envoy:` in TOON by the one encode of a card's fields (`encodeFields`), so a sender's summary
+that holds a newline stays inside its own field, one that holds NEXT LINE, LINE SEPARATOR or
+PARAGRAPH SEPARATOR holds a space for each, and a field that holds a list is written as a list
+(`topics[n]: …`).
+Work started for one session stops, writing nothing, once `sessionID()` names another.
 
 The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps
 only how it shows a card, how it warns, and how it persists. `replayFollowedSubjects(
@@ -492,10 +557,12 @@ edge mode refuses a whole registration that names a topic of no project of the s
 403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
 registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
 (`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
-which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
-them, and registers the rest at once, whichever path registered. The resend names only the topics
-the session still follows (`followed` is read again before it), so one unsubscribed while the
-registration waited is not put back, and the relay forgets only the refused topics
+which, once, with the reason (`drop`, a notice whose `topics` is a list of those topics,
+`topics[n]: …`, and whose `reason` is the listener's: `refusedTopicsNoticeText`, whose step is in
+`envoy_inbox`'s description), logs one line naming them, and registers the rest
+at once, whichever path registered. The resend names only the topics the session still follows
+(`followed` is read again before it), so one unsubscribed while the registration waited is not
+put back, and the relay forgets only the refused topics
 (`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
 `repositories_unknown` and 403 `token_not_admitted` drop nothing.
 

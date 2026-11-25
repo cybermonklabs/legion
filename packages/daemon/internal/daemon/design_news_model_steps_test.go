@@ -697,13 +697,13 @@ func (m *newsModel) opened() {
 	for _, row := range m.rows() {
 		row.openSeq = told[toldKey{row.issue, row.audience}].Opening
 		for _, a := range row.agents {
-			messages := m.r.publishedTo(a.token)
-			for _, message := range messages[a.messages:] {
-				if strings.HasPrefix(message, "The design gate of "+pathRoot+" opened") {
+			gates := m.r.publishedGates(m.t, a.token)
+			for _, gate := range gates[a.messages:] {
+				if strings.HasPrefix(gate, "open ") {
 					row.told[row.openSeq] = true
 				}
 			}
-			a.messages = len(messages)
+			a.messages = len(gates)
 		}
 	}
 }

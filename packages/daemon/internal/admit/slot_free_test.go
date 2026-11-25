@@ -22,7 +22,7 @@ import (
 // controller_wake_test.go).
 func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 	slotFree := func(issue string) []effect {
-		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}}
+		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: issue}}}
 	}
 	t.Run("a finished tree", func(t *testing.T) {
 		pool := migratedPool(t)

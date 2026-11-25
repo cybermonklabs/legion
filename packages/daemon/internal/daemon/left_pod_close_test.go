@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -436,9 +436,8 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	if held := holdsOf(t, rig, workflow.IdleHoldUnpushedWork); len(held) != 1 {
 		t.Fatalf("holds = %+v, want one %s", rig.records(t).Holds, workflow.IdleHoldUnpushedWork)
 	}
-	messages := roleMessages(publisher, string(rig.token))
-	if len(messages) != 1 || !strings.Contains(messages[0], idleRigUnpushed.Commits[0]) {
-		t.Fatalf("messages to %s = %q, want one naming the commit %s", rig.token, messages, idleRigUnpushed.Commits[0])
+	if messages := roleMessages(publisher, string(rig.token)); !namesTheWork(messages, rig.issue.Key, idleRigUnpushed) {
+		t.Fatalf("messages to %s = %+v, want one %s record naming the commit %s", rig.token, messages, texts.IdleReleaseDeclined, idleRigUnpushed.Commits[0])
 	}
 
 	rows := rig.sequenceValue(t, "outbox")

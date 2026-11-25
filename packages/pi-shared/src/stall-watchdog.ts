@@ -1,4 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors";
+import { noticeKind, noticeText } from "@legion/envoy-client/notice-text";
 import type {
   ToolCallEvent,
   ToolExecutionEndEvent,
@@ -40,10 +41,11 @@ import type { StallLimits } from "./stall-limits";
  * **Pure.** Every collaborator is a field, as `src/phase-reminder.ts` states for the reminder, so
  * a unit test drives the whole ladder with no host, and this module imports no Oh My Pi and no
  * `node:` module: `packages/claude-envoy` bundles `packages/pi-shared` with no `node_modules`
- * (`src/envoy-notice.ts`); its one package import is `@legion/envoy-client/errors`, which imports
- * nothing at all and which `src/phase-reminder.ts` already bundles that way. The `/proc` reader,
- * the process ending, the abort, the owner's notice and the exit counter are implemented in
- * `packages/pi-legion` and passed in.
+ * (`src/envoy-notice.ts`). Its package imports are `@legion/envoy-client/errors`, which imports
+ * nothing at all and which `src/phase-reminder.ts` already bundles that way, and
+ * `@legion/envoy-client/notice-text`, whose one package import is `@toon-format/toon`. The
+ * `/proc` reader, the process ending, the abort, the owner's notice and the exit counter are
+ * implemented in `packages/pi-legion` and passed in.
  *
  * **What was measured, and when.** Each of these cost an hour to establish and decides something
  * here. All were measured on 2026-11-07 against `/opt/omp/bin/omp` (`omp/18.16.0`) in `--mode rpc`
@@ -393,23 +395,36 @@ export function callOverdue(
     : undefined;
 }
 
-/** The message the worker sends its own session once the abort has ended the turn: it names the
- * call that was ended, so the next turn knows what did not finish. */
-export function restartMessage(call: StallCall, overdue: StallOverdue): string {
-  const seconds = Math.round(overdue.openMs / 1_000);
-  return (
-    `Your turn was ended because its \`${call.toolName}\` call (${call.toolCallId}) had been ` +
-    `running ${seconds} seconds with no result, past ${ruleText(overdue.rule)}. Nothing else was ` +
-    "touched. Decide whether that call is still worth making, and go on with your work."
-  );
-}
+/**
+ * The message the worker sends its own session once the abort has ended the turn (`turn ended`):
+ * the call that was ended (`call_tool`, `call_id`), how long it had run with no result
+ * (`open_seconds`), and the rule it passed (`rule`: `deadline`, its own deadline and the grace,
+ * or `bound`, the role's bound), so the next turn knows what did not finish. What the worker does
+ * on it is in its role prompt.
+ */
+export const TURN_ENDED_NOTICE = noticeKind("legion", "turn ended", [
+  "call_tool",
+  "call_id",
+  "open_seconds",
+  "rule",
+  "deadline_seconds",
+  "grace_seconds",
+  "bound_seconds",
+]);
 
-/** The rule a notice names, in words. */
-function ruleText(rule: StallRule): string {
-  return rule.kind === "deadline"
-    ? `its own ${Math.round(rule.deadlineMs / 1_000)}-second deadline and a ` +
-        `${Math.round(rule.graceMs / 1_000)}-second grace`
-    : `this role's ${Math.round(rule.boundMs / 1_000)}-second bound`;
+/** The `turn ended` message for `call`, which `overdue` found past its rule. */
+export function restartMessage(call: StallCall, overdue: StallOverdue): string {
+  const { rule } = overdue;
+  const seconds = (ms: number) => Math.round(ms / 1_000);
+  return noticeText(TURN_ENDED_NOTICE, {
+    call_tool: call.toolName,
+    call_id: call.toolCallId,
+    open_seconds: seconds(overdue.openMs),
+    rule: rule.kind,
+    deadline_seconds: rule.kind === "deadline" ? seconds(rule.deadlineMs) : undefined,
+    grace_seconds: rule.kind === "deadline" ? seconds(rule.graceMs) : undefined,
+    bound_seconds: rule.kind === "bound" ? seconds(rule.boundMs) : undefined,
+  });
 }
 
 /** Whether this message is an assistant reply that ended aborted (`stopReason: "aborted"`), which

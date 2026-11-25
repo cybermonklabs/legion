@@ -269,7 +269,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
 	expectRefusal(t, "a person's write", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
-	for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+	for _, session := range []string{model.LegionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 		refused := putStep(t, handler, issue, uuid.NewString(), implementerStart(map[string]any{"kind": "session", "id": session}))
 		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 	}
@@ -611,7 +611,7 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-daemon-token-of-one-project"
 	answer := liveNamedToken(caller.jkt)
-	answer.Session = legionDaemonSessionPrefix + brokerTestProject
+	answer.Session = model.LegionDaemonSessionPrefix + brokerTestProject
 	rig.broker.Says(token, answer)
 	issueOf := func(project string) string {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {

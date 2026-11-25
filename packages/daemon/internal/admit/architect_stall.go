@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -21,14 +22,14 @@ import (
 // same arms. The arms are stated here once: the pass, the entry sweep's gate (OwesEntryWork) and
 // the state (ArchitectStallArms) all ask architectStalls.
 
-// architectStall is one arm the stall reading raises over one root on a pass: the root,
-// the arm, what the record says, which the wake's reason carries after the arm's own words, and
-// the moment the pass read it.
+// architectStall is one arm the stall reading raises over one root on a pass: the root, the arm,
+// the notice of it with what the record says for that arm (ArchitectStalledNotice), and the moment
+// the pass read it.
 type architectStall struct {
-	root record.Issue
-	arm  record.ArchitectStallArm
-	why  string
-	at   time.Time
+	root   record.Issue
+	arm    record.ArchitectStallArm
+	notice texts.ArchitectStalledRecord
+	at     time.Time
 }
 
 // mark is the stall as the mark that keeps its arm to one wake keys it (record.ArchitectStall).
@@ -92,20 +93,30 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 			return nil, err
 		}
 		for _, arm := range []struct {
-			arm record.ArchitectStallArm
-			why string
+			arm   record.ArchitectStallArm
+			facts *texts.ArchitectStalledRecord
 		}{
 			{record.ArchitectTookNothing, took},
 			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], floor, now)},
 			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, run, floor,
 				letOuts[root.Key], now)},
 		} {
-			if arm.why != "" {
-				stalls = append(stalls, architectStall{root: root, arm: arm.arm, why: arm.why, at: now})
+			if arm.facts != nil {
+				stalls = append(stalls, architectStall{root: root, arm: arm.arm, notice: ArchitectStalledNotice(root, arm.arm, *arm.facts), at: now})
 			}
 		}
 	}
 	return stalls, nil
+}
+
+// ArchitectStalledNotice is the architect-stalled controller notice of root for arm: the
+// architect's role, the arm, the arm in the words the controller's skill quotes it by
+// (record.ArchitectStallArm.Words, the notice's reason), the root's phase, and what the record
+// says for that arm (facts, which the arm's own reading fills).
+func ArchitectStalledNotice(root record.Issue, arm record.ArchitectStallArm, facts texts.ArchitectStalledRecord) texts.ArchitectStalledRecord {
+	facts.NoticeHead = texts.NoticeHead{Kind: texts.ArchitectStalled, Issue: root.Key}
+	facts.Role, facts.Arm, facts.Reason, facts.Phase = claim.RoleArchitect, string(arm), arm.Words(), root.Phase
+	return facts
 }
 
 // stallFloor is the moment no arm of the stall reading counts time from before: the end of the
@@ -181,17 +192,24 @@ func (a *Admission) readPauseLetOuts(ctx context.Context, tx pgx.Tx, floor stall
 }
 
 // count is the moment a wait of the project counts its bound from, given the moment the wait
-// names (since): since, or the floor where the floor is later. Each arm counts its bound so, and
-// the stalled-tree notice a tree's quiet time (tellStalledTrees); the second arm hands the
-// floor's moment to workflow.ArchitectRelaunchOf, which counts a queued start's age from no
-// earlier than it. said is what the arm's reason adds where the floor is later, and "" where it
-// is not, so the reason keeps naming the moment the arm names and says where the count began.
-func (f stallFloor) count(since time.Time) (from time.Time, said string) {
+// names (since): since, or the floor where the floor is later, which floored says. Each arm counts
+// its bound so, and the stalled-tree notice a tree's quiet time (tellStalledTrees); the second arm
+// hands the floor's moment to workflow.ArchitectRelaunchOf, which counts a queued start's age from
+// no earlier than it. Where the floor is later, the arm's notice keeps naming the moment the arm
+// names and states where the count began (countedFrom).
+func (f stallFloor) count(since time.Time) (from time.Time, floored bool) {
 	if !f.at.After(since) {
-		return since, ""
+		return since, false
 	}
-	return f.at, fmt.Sprintf(" That time is counted from the end of pause %d at %s, which held the project.",
-		f.pause, f.at.UTC().Format(time.RFC3339))
+	return f.at, true
+}
+
+// countedFrom sets on facts the moment an arm counted its bound from where that is later than
+// the moment the arm names (texts.ArchitectStalledRecord.CountedFrom), what that moment is (a
+// texts.CountedFrom word), and the pause it is the end of, or whose held launch's let-out it is
+// (0 for the first confirmation of the entry's task).
+func countedFrom(facts *texts.ArchitectStalledRecord, from time.Time, event string, pause int64) {
+	facts.CountedFrom, facts.CountedFromEvent, facts.PauseID = from.UTC(), event, pause
 }
 
 // ArchitectStallArms is, by root key, every arm of the stall reading that holds for that root's
@@ -264,9 +282,8 @@ func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[stri
 // root's arm to one wake is the mark instead, which is keyed by the arm as well, so a root two
 // arms read wakes the controller twice and neither case hides the other.
 //
-// The reason each wake carries begins with the arm's own words (record.ArchitectStallArm.Words)
-// and then says what the record says, so a controller reads which of the three raised the wake
-// it holds without opening anything.
+// Each wake carries its arm and what the record says for that arm, so a controller reads which of
+// the three raised the wake it holds without opening anything.
 func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls []architectStall) error {
 	if len(stalls) == 0 {
 		return nil
@@ -283,15 +300,17 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 		if !told[i] {
 			continue
 		}
-		reason := stall.arm.Words() + ": " + stall.why
-		if err := a.enqueue(ctx, tx, stall.root.Key, record.ControllerNotice{Kind: record.ArchitectStalledNotice,
-			Role: claim.RoleArchitect, Reason: reason}, stall.at); err != nil {
+		notice, err := record.ControllerNoticeOf(stall.notice)
+		if err != nil {
+			return err
+		}
+		if err := a.enqueue(ctx, tx, stall.root.Key, notice, stall.at); err != nil {
 			return err
 		}
 		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: the controller was told a root's architect has stalled",
 				"issue", stall.root.Key, "arm", string(stall.arm), "phase", stall.root.Phase,
-				"generation", stall.root.Generation, "reason", reason)
+				"generation", stall.root.Generation)
 		})
 	}
 	return nil
@@ -307,8 +326,10 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // claim's agent is not up, which is where a launch the wake pacing has parked stands, it counts
 // nothing. The pause keeps such a task unsent (supervise's sendPending), and stops at its ready
 // an architect launched before the task went, so the task stands pending, unconfirmed and not
-// taken back, through the whole pause. It answers what the record says, and "" for a root it does
-// not read.
+// taken back, through the whole pause. It answers what the record says — the entry, its first
+// queueing, whether a let-go took it back, the moment the arm counts from where that is later
+// than the first queueing (the agent's ready, or the end of the latest pause), and the bound — and
+// nil for a root it does not read.
 //
 // The task is read as the delivery of the entry the row names, of the root's generation, which is
 // R7's "its entry's task" (dispatch://INFRA-2614), and no other. A task of an earlier run, or of
@@ -335,40 +356,38 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // readings are asked last, so a root whose claim holds no such task costs no read.
 func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseEntry,
 	run record.RoleRun, floor stallFloor, now time.Time,
-) (string, error) {
+) (*texts.ArchitectStalledRecord, error) {
 	held := run.Claim
 	if held == nil || held.Pending == nil {
-		return "", nil
+		return nil, nil
 	}
 	task := held.Pending
 	if task.Entry == 0 || task.Entry != row.Entry || task.Generation != root.Generation || !task.ConfirmedAt.IsZero() ||
 		task.QueuedAt.IsZero() {
-		return "", nil
+		return nil, nil
 	}
 	queued := firstQueued(*held)
 	since, counted := tookNothingSince(*held, queued)
 	if !counted {
-		return "", nil
+		return nil, nil
 	}
 	from, floored := floor.count(since)
 	if now.Sub(from) <= workflow.StrandedReleaseWake {
-		return "", nil
+		return nil, nil
 	}
 	served, err := a.architectServed(ctx, tx, root, row, run)
 	if err != nil || !served {
-		return "", err
+		return nil, err
 	}
-	unconfirmed := "No turn of that claim has confirmed it."
-	switch {
-	case task.Interrupted:
-		unconfirmed = fmt.Sprintf("A let-go of the claim's process took it back from a turn of it, and no turn has confirmed it since %s, "+
-			"the later of its first queueing and the moment the claim's relaunched agent was ready.", since.UTC().Format(time.RFC3339))
-	case since.After(queued):
-		unconfirmed = fmt.Sprintf("No turn of that claim has confirmed it since %s, when the claim's agent was last ready to take it.",
-			since.UTC().Format(time.RFC3339))
+	took := &texts.ArchitectStalledRecord{Entry: task.Entry, QueuedAt: queued.UTC(), Interrupted: task.Interrupted,
+		Bound: workflow.StrandedReleaseWake.String()}
+	if task.Interrupted || since.After(queued) {
+		took.Since = since.UTC()
 	}
-	return fmt.Sprintf("the task of phase entry %d was first queued to the architect's claim of %s at %s. %s%s The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, queued.UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase), nil
+	if floored {
+		countedFrom(took, from, texts.CountedFromPauseEnd, floor.pause)
+	}
+	return took, nil
 }
 
 // tookNothingSince is the moment the first arm counts the pending task of held from, given when
@@ -446,10 +465,10 @@ func firstQueued(held record.RoleClaim) time.Time {
 // the daemon's next move for its architect (workflow.ArchitectRelaunchOf), and either its
 // architect's claim is failed or retired, or the root holds no architect claim at all while the
 // work of its entry has stood more than workflow.StrandedReleaseWake. It answers what the record
-// says, and "" for a root it does not read. Both stretches of time it reads, a queued start's age
+// says, and nil for a root it does not read. Both stretches of time it reads, a queued start's age
 // and the time the work of the entry has stood, are counted from no earlier than the end of the
 // project's latest pause (floor): the pause held every start, so none of them could run while it
-// stood.
+// stood. Where the floor is the later moment, the notice states it (countedFrom).
 //
 // workflow.ArchitectRelaunchOf decides which start of the run is the daemon's next move, and the
 // pass's own start (sent) is one too. The arm waits while such a start stands because the
@@ -465,7 +484,7 @@ func firstQueued(held record.RoleClaim) time.Time {
 // at dispatch://INFRA-2614, measured by its tester on the whole daemon).
 //
 // A root waiting on a person is in the workflow, holding its slot through the wait
-// (record.KeepsSlot), so the arm reads it as it reads any root, and its reason says that it waits.
+// (record.KeepsSlot), so the arm reads it as it reads any root, and its notice says that it waits.
 // The daemon queues no start of its architect while it waits, since the sweep's reach leaves such
 // a root out (workflow.ArchitectAtWork), and the answer to the wait queues the next one
 // (workflow.Engine.ResumeAwaitedRoot), which the outbox runs against a failed claim with a retry
@@ -482,55 +501,50 @@ func firstQueued(held record.RoleClaim) time.Time {
 // (ArchitectStallArms reads no mark), which is what the controller's guidance has it read on its
 // ticks once the wait is gone (skills/legion-controller/references/wakes.md).
 //
-// The reason of a claim says which case holds: the start of its run has run against it and left
-// it failed or retired, or no start of its run queued inside the bound waits to relaunch it. A
-// root with no claim has no start that ran against a claim, so its reason says only that no start
-// queued inside the bound waits to create one.
+// The notice of a claim names its state and which case holds: the start of its run has run
+// against it and left it failed or retired (relaunch_failing), or no start of its run queued
+// inside the bound waits to relaunch it. A root with no claim has no start that ran against a
+// claim, so its notice names the entry whose work has stood and since when.
 //
 // run is the reading the pass made before its sends, so where the pass itself wrote the start of
 // a root with no claim (sent) the wake still stands — a root with no claim that long is stalled
-// whatever this pass writes — and its reason says the start was written, rather than that none
-// waits.
-func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, floor stallFloor, now time.Time) string {
+// whatever this pass writes — and its notice says the start was written (start_written).
+func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, floor stallFloor, now time.Time) *texts.ArchitectStalledRecord {
 	if !record.InWorkflow(root) {
-		return ""
+		return nil
 	}
 	held := run.Claim
 	if held != nil && held.State != supervise.StateFailed && held.State != supervise.StateRetired {
-		return ""
+		return nil
 	}
 	relaunch := workflow.ArchitectRelaunchOf(run, root, floor.at, now)
 	if relaunch == workflow.RelaunchNext {
-		return ""
+		return nil
 	}
-	var waits string
-	if root.AwaitingPerson() {
-		waits = " The root waits on a person, and the daemon queues the next start of its architect when that wait is answered."
-	}
+	unreachable := &texts.ArchitectStalledRecord{AwaitsPerson: root.AwaitingPerson()}
 	if held != nil {
 		if sent {
-			return ""
+			return nil
 		}
-		if relaunch == workflow.RelaunchFailing {
-			return fmt.Sprintf("the architect claim of %s is %s. The start of its run has run against it and left it %s, and the outbox only runs that start again on its backoff. The root stands at %s in the workflow.%s",
-				root.Key, held.State, held.State, root.Phase, waits)
+		unreachable.ClaimState, unreachable.RelaunchFailing = string(held.State), relaunch == workflow.RelaunchFailing
+		if !unreachable.RelaunchFailing {
+			unreachable.Bound = workflow.StrandedReleaseWake.String()
 		}
-		return fmt.Sprintf("the architect claim of %s is %s, no start of its run queued in the last %s waits to relaunch it, and the root stands at %s in the workflow.%s",
-			root.Key, held.State, workflow.StrandedReleaseWake, root.Phase, waits)
+		return unreachable
 	}
 	if row.Entry == 0 || row.RaisedAt.IsZero() {
-		return ""
+		return nil
 	}
 	from, floored := floor.count(row.RaisedAt)
 	if now.Sub(from) <= workflow.StrandedReleaseWake {
-		return ""
+		return nil
 	}
-	queue := "no start of one queued in the last " + workflow.StrandedReleaseWake.String() + " waits to create it"
-	if sent {
-		queue = "the daemon wrote the start of its architect again in the same transaction as this wake"
+	unreachable.Entry, unreachable.Since, unreachable.StartWritten = row.Entry, row.RaisedAt.UTC(), sent
+	unreachable.Bound = workflow.StrandedReleaseWake.String()
+	if floored {
+		countedFrom(unreachable, from, texts.CountedFromPauseEnd, floor.pause)
 	}
-	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.%s%s",
-		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339), floored, waits)
+	return unreachable
 }
 
 // architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of
@@ -539,8 +553,9 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // (since); the end of the project's latest pause (floor), since the pause stopped the architect,
 // which could register no step while it stood; the let-out of the launch the latest pause held
 // for its architect (letOut, the zero time for none); and, where a turn of its architect has
-// confirmed a task of that entry, the moment it first did. It answers what the record says, with
-// the moment it counted from, and "" for a root it does not read.
+// confirmed a task of that entry, the moment it first did. It answers since, the bound and, where
+// it counted from a later moment, that moment, what it is and the pause it is of (countedFrom), with
+// the entry where that moment is the entry's confirmation, and nil for a root it does not read.
 //
 // The later of the admission and the raised entry is the issue's own decision. A root a person
 // answered after a six hour wait comes back to admitted holding the admission row it has held all
@@ -572,30 +587,40 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // worker, and a gate it has not registered holds nothing up yet.
 func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, run record.RoleRun,
 	floor stallFloor, letOut, now time.Time,
-) string {
+) *texts.ArchitectStalledRecord {
 	if root.Phase != phase.Admitted || len(gate.Rows) > 0 {
-		return ""
+		return nil
 	}
 	since := admittedAt
 	if row.RaisedAt.After(since) {
 		since = row.RaisedAt
 	}
 	if since.IsZero() {
-		return ""
+		return nil
 	}
-	from, counted := floor.count(since)
+	from, floored := floor.count(since)
+	event, pause := "", int64(0)
+	if floored {
+		event, pause = texts.CountedFromPauseEnd, floor.pause
+	}
 	if letOut.After(from) {
-		from, counted = letOut, fmt.Sprintf(" That time is counted from %s, when the wake pacing let out its architect's launch, which pause %d held.",
-			letOut.UTC().Format(time.RFC3339), floor.pause)
+		from, event, pause = letOut, texts.CountedFromLaunchLetOut, floor.pause
 	}
 	if held := run.Claim; held != nil && row.Entry != 0 && held.Handshake.Entry == row.Entry &&
 		held.Handshake.Generation == root.Generation && held.Handshake.ConfirmedAt.After(from) {
-		from, counted = held.Handshake.ConfirmedAt, fmt.Sprintf(" That time is counted from %s, when a turn of its architect first confirmed a task of phase entry %d.",
-			held.Handshake.ConfirmedAt.UTC().Format(time.RFC3339), row.Entry)
+		from, event, pause = held.Handshake.ConfirmedAt, texts.CountedFromEntryConfirmed, 0
 	}
 	if now.Sub(from) <= workflow.ArchitectGateWake {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.%s",
-		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake, counted)
+	slow := &texts.ArchitectStalledRecord{Since: since.UTC(), Bound: workflow.ArchitectGateWake.String()}
+	if event == texts.CountedFromEntryConfirmed {
+		// The moment is that entry's confirmation, so the notice names the entry, as main's
+		// "first confirmed a task of phase entry %d" did.
+		slow.Entry = row.Entry
+	}
+	if event != "" {
+		countedFrom(slow, from, event, pause)
+	}
+	return slow
 }

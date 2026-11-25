@@ -127,10 +127,11 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 }
 
 // An approved new version of a tree's design reaches the session holding each affected issue's
-// phase as a news task (workflow.RenderNews), and the daemon judges nothing of what it means for
-// the work: the holder decides (dispatch://INFRA-175 R2 to R5, Design 7). So every phase worker's
-// composed prompt carries the two answers, written once in the part every phase worker shares: a
-// move back with a reason naming the version and the change when the work is stale, with the
+// phase as a news task, a design-news record (workflow.RenderNews), and the daemon judges nothing
+// of what it means for the work: the holder decides (dispatch://INFRA-175 R2 to R5, Design 7). So
+// every phase worker's composed prompt carries the record's holder form, the command that prints a
+// version, and the two answers, written once in the part every phase worker shares: a move back
+// with a reason naming the version and the change when the work is stale, with the
 // implementer alone pushing first, or a comment naming the version when it is current. The planner
 // carries its own answer, since a stale plan is its own work wherever its step stands. The merger
 // carries the opening a news task can bring in place of the opened message, and the WAITING line
@@ -147,9 +148,12 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Run("phase workers", func(t *testing.T) {
-		const news = "`The approved design of <tree> changed for <issue>, which you hold in <phase>:`"
+		const news = "Its `issue` is the issue you hold, in the phase its `phase` names (`audience: holder`)"
 		answers := []string{
 			news,
+			"`taken`, the version your phase last took",
+			"so read the new version whole",
+			"`dispatch doc-read --issue <tree> --artifact <artifact> --version <version>`",
 			"If your work is stale, call the `legion` tool's `request_backward_move` with `to`",
 			"a `reason` that names the version and the change",
 			"Before that call, the implementer pushes the work it has. No other role pushes before it.",
@@ -176,22 +180,24 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 			ruleIn(t, part, waiting, "each turn", "`WAITING`")
 		}
 		composedSays(t, composer, claim.RoleMerger, false, opening,
-			"`The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open`",
+			"The `gate-moved` message with `gate: open` and `merge: released` says that every step the deployment gates now stands open",
 			"end each turn with a line that starts `WAITING`", "The daemon sends a task only between turns")
 	})
 	t.Run("architects", func(t *testing.T) {
 		const (
-			accepting = "`The approved design of <tree> changed for <issue>, which you hold in accepting:`"
-			summary   = "`A person approved a new version of the design of <tree>.`"
+			accepting = "`audience: holder` and `phase: accepting`"
+			summary   = "`audience: root_architect`"
 			message   = "Request no approval for it."
 		)
 		// The moves back name the phase of an earlier step of the issue's task, any of them, as the
 		// owner's plan reads them: a list of named phases holds only for the default steps, since a
 		// reviewer step before the acceptance is an earlier step too.
 		answers := []string{accepting, "to the phase of an earlier step of its task, with a `reason` that names the version and the change"}
-		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
+		duty := []string{summary, "`by_you`, you hold it in `accepting`, so you answer it yourself", "a merged change never moves back",
+			"whose pull request is still open", "`dispatch ask` the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
-		ruleIn(t, "go/architect-common.md", accepting, answers...)
+		ruleIn(t, "go/architect-common.md", accepting, append(slices.Clone(answers),
+			"`dispatch doc-read --issue <tree> --artifact <artifact> --version <version>`", "so read the new version whole")...)
 		ruleIn(t, "go/architect-common.md", summary, duty...)
 		ruleIn(t, "go/architect-common.md", message, append(slices.Clone(r4), "Under a `Design gate steps` line that reads `none`")...)
 		ruleIn(t, "roles/architect.md", accepting, answers...)

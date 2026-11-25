@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // seedBeneath records a child of parent in tree, standing in at with the Dispatch status its
@@ -184,26 +185,26 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	if got := record.AcceptedAncestor(held, treeByKey(t, pool, "LEGION-208")); got != "LEGION-208" {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want LEGION-208, found by walking past the done parent", got)
 	}
-	var reason string
+	var change, ancestor string
 	if err := pool.QueryRow(context.Background(),
-		"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
+		"select payload->>'change', payload->>'accepted_ancestor' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").
+		Scan(&change, &ancestor); err != nil {
 		t.Fatalf("read the child-status notice: %v", err)
 	}
-	for _, want := range []string{"LEGION-300", "LEGION-208", "admitted"} {
-		if !strings.Contains(reason, want) {
-			t.Fatalf("the child-status notice %q does not say %q", reason, want)
-		}
+	if change != texts.ChangeBeneathAccepted || ancestor != "LEGION-208" {
+		t.Fatalf("the child-status notice names change %q under accepted ancestor %q, want %q under LEGION-208", change, ancestor, texts.ChangeBeneathAccepted)
 	}
 }
 
-// The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
-// as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
-// no reviewer step has no reviewed head, and an issue stands in merging once its task's last step
-// passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
-// the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
+// The notice of a person's todo beneath an accepted ancestor names the ancestor whose head the
+// daemon accepted, which is the head the last step of the ancestor's task passed, whatever that
+// step is: a plan with no reviewer step has no reviewed head, and an issue stands in merging once
+// its task's last step passed (record.Accepted). The notice is a record whose facts are fields
+// (dispatch://INFRA-3686): `change: beneath-accepted` and the ancestor, with no reason, and the
+// architect's prompt says what that change means. The ancestor walks today's line in one case and
+// the plan `implementer tester`, which has no reviewer step, in the other; the notice is one.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
-	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it while LEGION-208 stands in retro or merging."
+	var first string
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -227,13 +228,21 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
 
-			var reason string
+			var change, ancestor, reason, payload string
 			if err := pool.QueryRow(context.Background(),
-				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
+				"select payload->>'change', coalesce(payload->>'accepted_ancestor', ''), coalesce(payload->>'reason', ''), payload::jsonb::text "+
+					"from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").
+				Scan(&change, &ancestor, &reason, &payload); err != nil {
 				t.Fatalf("read the child-status notice: %v", err)
 			}
-			if reason != want {
-				t.Fatalf("the child-status notice = %q, want %q", reason, want)
+			if change != texts.ChangeBeneathAccepted || ancestor != "LEGION-208" || reason != "" {
+				t.Fatalf("the child-status notice names change %q under accepted ancestor %q with the reason %q, want %q under LEGION-208 and no reason",
+					change, ancestor, reason, texts.ChangeBeneathAccepted)
+			}
+			if first == "" {
+				first = payload
+			} else if payload != first {
+				t.Fatalf("the child-status notice under an ancestor whose plan has no reviewer step is %s, want the one today's steps give: %s", payload, first)
 			}
 		})
 	}
@@ -248,7 +257,10 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 // daemon after the architect calls again. The children-first notice ends a child, released or not,
 // by the same write. The why the daemon posts beside a person's todo on a held parent is for that
 // person, and carries none of this (heldParentWait's reason, held in restart_task_test.go). Each
-// row holds only that much of the wording.
+// row holds only that much of the wording. The pr-merged, children-first and retro-held notices are
+// records whose facts are fields (dispatch://INFRA-3686), and each keeps those texts word for word
+// as fields of its own, as R8 keeps INFRA-3178's R6 (the architect's ruling), so their rows read
+// the notice as the outbox carries it.
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -281,17 +293,26 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 			rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 			for _, notice := range architectNotices(t, rig.pool) {
 				if notice.Kind == "pr-merged" {
-					return notice.Reason
+					if notice.Reason != "" {
+						t.Fatalf("the pr-merged notice carries the reason %q, want its facts as fields", notice.Reason)
+					}
+					return notice.StatusNotTakenYet + " " + notice.EndChildRule
 				}
 			}
 			t.Fatalf("no pr-merged notice after a merge that waits for LEGION-209")
 			return ""
 		}},
-		{"children-first", false, func(*testing.T) string {
-			return ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208", Open: []record.OpenChild{{Key: "LEGION-209", Status: "triage"}}}).Reason
+		{"children-first", false, func(t *testing.T) string {
+			notice, err := record.NoticeOf(ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208",
+				Open: []record.OpenChild{{Key: "LEGION-209", Status: "todo", Released: true}}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return notice.EndChildRule
 		}},
 		{"retro-held", true, func(*testing.T) string {
-			return retroHeldNotice("LEGION-208", []string{"LEGION-209"}).Reason
+			held := retroHeldNotice("LEGION-208", []string{"LEGION-209"})
+			return held.StatusNotTakenYet + " " + held.EndChildRule
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

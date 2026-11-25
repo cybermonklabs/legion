@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // strangerRepo is the repository no record of these tests' project names before a test's own, as
@@ -282,8 +283,8 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 		t.Fatalf("%s recorded as %+v under backlog %s", child, got, parent)
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") || !strings.Contains(notices[0], "GitHub answered for "+strangerRepo+" again") ||
-		!strings.Contains(notices[0], child+" (its parent "+parent+" is not recorded: release "+parent+" first, then "+child+")") {
+	if len(notices) != 1 || !recoveredUnrecorded(t, notices[0], []texts.UnrecordedChild{{Child: child, Parent: parent}}) ||
+		!strings.Contains(notices[0], `"repos": ["`+strangerRepo+`"]`) {
 		t.Fatalf("notices to %s's architect once GitHub answered for %s = %q, want one naming %s and %s: the wait was kept for the recovery that answered",
 			tree, strangerRepo, notices, child, parent)
 	}
@@ -378,11 +379,14 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 			tree, strangerRepo, w.unreadReasons())
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
-		!strings.Contains(notices[0], "the daemon no longer waits for GitHub to answer for "+strangerRepo+", because no todo issue labelled for Legion or under a parent names it now") ||
-		!strings.Contains(notices[0], stalled+" (backlog in Dispatch now, and its parent "+parent+" is not recorded: release "+parent+" first, then "+stalled+")") || strings.Contains(notices[0], recorded) {
-		t.Fatalf("notices to %s's architect once %s was let go = %q, want one naming %s with its Dispatch status, not %s",
-			tree, strangerRepo, notices, stalled, recorded)
+	want := []texts.LetGoChild{{Child: stalled, Parent: parent, Listed: true, Status: "backlog", Repo: strangerRepo}}
+	notice, told := record.Notice{}, len(notices) == 1
+	if told {
+		notice, told = letGoTold(t, notices[0], texts.StallLetGoNoTodo)
+	}
+	if !told || !slices.Equal(notice.Repos, []string{strangerRepo}) || !slices.Equal(notice.LetGo, want) {
+		t.Fatalf("notices to %s's architect once %s was let go = %q, want one %s notice of %s naming %+v, not %s",
+			tree, strangerRepo, notices, texts.StallLetGoNoTodo, strangerRepo, want, recorded)
 	}
 	w.recoveringMu.Lock()
 	left, unread := len(w.releaseWaits[strangerRepo]), len(w.unread)
@@ -396,11 +400,12 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 	}
 }
 
-// A let-go notice says what is true of the repository it names and of each child. It opens with
-// why the repository was let go: no todo issue an admission would record names it, or one does
-// and a read GitHub answered at another issue's preparation answers for it without a read of
-// GitHub. It names a child whose parent the daemon does not record with that parent to release
-// first, as the recovery's own notice does: release_children files a todo child under its
+// A let-go notice says what is true of the repository it names and of each child. Its stall says
+// why the repository was let go: no todo issue an admission would record names it
+// (texts.StallLetGoNoTodo), or one does and a read GitHub answered at another issue's preparation
+// answers for it without a read of GitHub (texts.StallLetGoAnswered). It names each child with its
+// Dispatch status and its parent, with whether the daemon records that parent, which is the
+// parent to release first where it does not: release_children files a todo child under its
 // parent's unread repository when the parent is what waits, and the child is recorded only under
 // a recorded parent. Before, every let-go notice said no todo issue named the repository, false
 // where one did, and told a child that was todo all along to be released again once it is todo,
@@ -408,9 +413,6 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testing.T) {
 	t.Parallel()
 	const tree, parent, child = "LEGION-985", "LEGION-986", "LEGION-987"
-	noTodo := "the daemon no longer waits for GitHub to answer for " + strangerRepo + ", because no todo issue labelled for Legion or under a parent names it now"
-	elsewhere := "the daemon no longer waits for GitHub to answer for " + strangerRepo + ", because a read GitHub answered for it at another issue's preparation answers for it now"
-	backlog := child + " (backlog in Dispatch now: release it again once it is todo)"
 	for _, tc := range []struct {
 		name string
 		why  letGoWhy
@@ -418,19 +420,19 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 		// other than the tree's recorded root (parent).
 		shown  []dispatch.Issue
 		parent string
-		// opening and line are what the notice must say, and never what it must not.
-		opening, line, never string
+		// stall and row are the notice's stall and its one child.
+		stall string
+		row   texts.LetGoChild
 	}{
 		{name: "no todo issue is left on it", why: letGoNoTodo, parent: tree,
-			shown:   []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
-			opening: noTodo, line: backlog, never: elsewhere},
+			shown: []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
+			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: strangerRepo}},
 		{name: "a todo issue is left on it that another preparation's read answers for", why: letGoAnsweredElsewhere, parent: tree,
-			shown:   []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
-			opening: elsewhere, line: backlog, never: "because no todo issue"},
+			shown: []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
+			stall: texts.StallLetGoAnswered, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: strangerRepo}},
 		{name: "a todo child filed under its unrecorded parent's repository", why: letGoNoTodo, parent: parent,
-			shown:   []dispatch.Issue{issue(parent, strangerRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
-			opening: noTodo, line: child + " (todo in Dispatch now, and its parent " + parent + " is not recorded: release " + parent + " first, then " + child + ")",
-			never: "release it again once it is todo"},
+			shown: []dispatch.Issue{issue(parent, strangerRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
+			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: parent, Listed: true, Status: "todo", Repo: strangerRepo}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -447,8 +449,12 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 				t.Fatalf("tell the let-go waits: %v", err)
 			}
 			notices := treeNotices(t, w, tree)[before:]
-			if len(notices) != 1 || !strings.Contains(notices[0], tc.opening) || !strings.Contains(notices[0], tc.line) || strings.Contains(notices[0], tc.never) {
-				t.Fatalf("notices to %s's architect = %q, want one opening %q and naming %q, never %q", tree, notices, tc.opening, tc.line, tc.never)
+			notice, told := record.Notice{}, len(notices) == 1
+			if told {
+				notice, told = letGoTold(t, notices[0], tc.stall)
+			}
+			if !told || !slices.Equal(notice.Repos, []string{strangerRepo}) || !slices.Equal(notice.LetGo, []texts.LetGoChild{tc.row}) {
+				t.Fatalf("notices to %s's architect = %q, want one %s notice of %s naming %+v", tree, notices, tc.stall, strangerRepo, tc.row)
 			}
 		})
 	}

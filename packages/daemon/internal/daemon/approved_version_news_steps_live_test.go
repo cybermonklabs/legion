@@ -367,7 +367,7 @@ func (r *sessionsRun) answers() (sessionsOutcome, string) {
 		news := ""
 		if !r.until(r.deadline, func() bool {
 			for _, prompt := range r.transcript(member, claim.RoleReviewer).user {
-				if strings.Contains(prompt, "The approved design of") {
+				if strings.Contains(prompt, newsKindLine) {
 					news = prompt
 					return true
 				}

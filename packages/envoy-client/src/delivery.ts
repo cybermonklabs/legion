@@ -1,4 +1,5 @@
 import {
+  type Actor,
   ArtifactCreatedEventPayloadSchema as ArtifactCreatedPayloadSchema,
   ArtifactHumanEditedEventPayloadSchema as ArtifactHumanEditedPayloadSchema,
   ArtifactVersionEventPayloadSchema as ArtifactVersionPayloadSchema,
@@ -32,10 +33,9 @@ import {
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
 } from "@legion/contracts";
-import { encode, encodeLines, escapeString } from "@toon-format/toon";
+import { escapeString } from "@toon-format/toon";
 import { z } from "zod";
-import { deletedMark, withEditedMark } from "./actor-text";
-import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
+import { textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
@@ -44,7 +44,10 @@ import { pictureAddresses } from "./dispatch-pictures";
 import { messageFor } from "./errors";
 import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
+import { oneLine } from "./line-text";
+import { defineOwn, encodeFieldLines, encodeFields } from "./notice-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
+import { type NamedWords, wordsBlocks } from "./words-block";
 
 const KNOWN_SOURCES: Readonly<Record<string, unknown>> = EnvelopeSchema.shape.source.enum;
 const FOREIGN_SESSION_ID = /\b01a0[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
@@ -472,10 +475,7 @@ const RecoverableDispatchDeliveryFailureSchema = z
     { message: "delivery resource must match its event type" }
   );
 
-export type DeliveryEnvelope = Pick<
-  InboundEnvelope,
-  "source" | "source_session" | "payload" | "sender" | "event_id"
->;
+export type DeliveryEnvelope = Pick<InboundEnvelope, "source" | "source_session" | "sender">;
 
 export type RenderInboundResult = {
   readonly skip: boolean;
@@ -483,6 +483,10 @@ export type RenderInboundResult = {
   readonly envelope?: InboundEnvelope;
   /** Actor of a Dispatch event that passed the wire schema. */
   readonly dispatchActor?: DispatchEvent["actor"];
+  /** Type of a Dispatch event that passed the wire schema (`frame.event.type`): with `delivery`,
+   *  what a host reads to tell an event's card from the message or mention Dispatch delivers to
+   *  the session, and an ask's card (`ask.*`) from the rest. */
+  readonly dispatchType?: string;
   readonly delivery?: DispatchDelivery;
   readonly rejectedDelivery?: DispatchDelivery;
   readonly malformedDelivery?: true;
@@ -590,21 +594,35 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
 
+/** A comment or message as Dispatch's API reads it whole (`wholeCarriedBody`): its body, and the
+ *  marks of a correction its author made since the event, each a field of its own on the card the
+ *  frame is rendered again as (`renderInbound`'s `wholeBody`): when they last edited it
+ *  (`edited_at`), or when and as whom they deleted it (`deleted_at`, `deleted_by`), whose body the
+ *  delete cleared. A mark the post does not carry is left out. */
+export interface WholeBody {
+  readonly body: string;
+  readonly edited_at?: string;
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor | null;
+}
+
 /** The whole body of a comment or message, read from the server. Undefined when the read fails
  *  or its answer does not hold the item, so the caller keeps the part its event carried: a body
  *  the server will not answer is still better read in part than not at all. A direct message,
  *  which belongs to no issue, is read through the session it was delivered to. An item its
- *  author deleted since answers the deleted line every read prints for one (`deletedMark`) in
- *  place of the body the delete cleared. An item its author edited answers its current body
- *  followed by the mark every line prints for one (` · edited <time>`, `editedMark`): the card a
- *  host renders with this body re-read the post, so it prints the words the post holds now, which
- *  an edit since the event may have changed. A card that prints only what its frame carried reads
- *  nothing here, and keeps the delivery Dispatch sent as it was sent. */
+ *  author deleted since answers no body, and the time and the author of the delete
+ *  (`deleted_at`, `deleted_by`), which the card states as fields where the body the delete
+ *  cleared would stand. An item its author edited answers its current body and the time of its
+ *  last edit (`edited_at`): the card a host renders with this body re-read the post, so it prints
+ *  the words the post holds now, which an edit since the event may have changed, and says when
+ *  they were written. The marks are fields and never words of the body's block, which holds the
+ *  author's words alone. A card that prints only what its frame carried reads nothing here, and
+ *  keeps the delivery Dispatch sent as it was sent. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
   session?: string
-): Promise<string | undefined> {
+): Promise<WholeBody | undefined> {
   try {
     let posts: readonly (CommentRead["comment"] | MessageRead["message"])[];
     if (item.resource === "comment") {
@@ -620,36 +638,63 @@ export async function wholeCarriedBody(
     }
     const post = posts.find((candidate) => candidate.id === item.id);
     if (post === undefined) return undefined;
-    if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
-    return withEditedMark(post.body, post.edited_at);
+    if (post.deleted_at != null) {
+      return { body: "", deleted_at: post.deleted_at, deleted_by: post.deleted_by };
+    }
+    return post.edited_at == null
+      ? { body: post.body }
+      : { body: post.body, edited_at: post.edited_at };
   } catch {
     return undefined;
   }
 }
 
+/** Who sent `envelope`, as a card's `from:` names it: the sending session, else its source, with
+ *  the session's title after it. The title is the sender's own words, made one line (`oneLine`):
+ *  the label is printed on one line wherever it stands, outside a card's TOON fields too (a host's
+ *  prompt that quotes the card, an `envoy_inbox` row), so each run of white space in the title, a
+ *  new line and U+0085, U+2028 and U+2029 among it, prints as one space. */
 export function senderLabel(envelope: DeliveryEnvelope): string {
-  const sender = envelope.source_session ?? envelope.source ?? "unknown";
-  return envelope.sender?.title === undefined ? sender : `${sender} (${envelope.sender.title})`;
+  const sender = sendingSession(envelope) ?? envelope.source ?? "unknown";
+  const title = envelope.sender?.title;
+  return title === undefined ? sender : `${sender} (${oneLine(title)})`;
 }
 
-/**
- * A ready-to-issue reply any host can act on: an Envoy tool call (OMP devices and claude-envoy's
- * MCP tools share these names), or the `dispatch` command line that answers a Dispatch event.
- */
-export type ReplyHint =
-  | { readonly tool: string; readonly args: Readonly<Record<string, string>> }
-  | { readonly command: string };
+/** The session that sent `envelope`: the `source_session` its body names, else the session the
+ *  listener's sender stamp names (`sender.session_id`), which is the session a broker token
+ *  proved where the body named none. Undefined where neither names one: only the Legion daemon's
+ *  own publish names no session. */
+function sendingSession(envelope: DeliveryEnvelope): string | undefined {
+  const session = envelope.source_session || envelope.sender?.session_id;
+  return session === undefined || session === "" ? undefined : session;
+}
 
-export function replyWith(envelope: DeliveryEnvelope): ReplyHint | undefined {
-  if (envelope.source !== "agent" || envelope.source_session === undefined) return undefined;
-  return {
-    tool: "envoy_send",
-    args: {
-      session_id: envelope.source_session,
-      ...(envelope.event_id === undefined ? {} : { in_reply_to: envelope.event_id }),
-      message: "...",
-    },
-  };
+/** Whether the Legion daemon sent `envelope`: its source is `agent`, and it names no session,
+ *  neither as `source_session` nor in the listener's sender stamp (`sendingSession`). A message of
+ *  a session names that session in one of the two. */
+export function daemonSent(envelope: DeliveryEnvelope): boolean {
+  return envelope.source === "agent" && sendingSession(envelope) === undefined;
+}
+
+/** The `dispatch` command line that answers a Dispatch event, which its card prints. */
+type ReplyCommand = { readonly command: string };
+
+/** An author or an actor that a Dispatch payload names: an object with a kind and an id, or the
+ *  login of a person, as an answer names who answered. */
+function actorOf(value: unknown): { readonly kind: string; readonly id: string } | undefined {
+  if (typeof value === "string") return value === "" ? undefined : { kind: "user", id: value };
+  if (!isObject(value)) return undefined;
+  const { kind, id } = value;
+  return typeof kind === "string" && typeof id === "string" ? { kind, id } : undefined;
+}
+
+/** How a block names the author of its words: `<kind>:<id>`, the form the daemon's texts name an
+ *  actor in. Undefined where the event's actor, which the card's fields name, is that author, and
+ *  where the payload names no author. */
+function authorBy(author: unknown, actor: DispatchEvent["actor"]): string | undefined {
+  const who = actorOf(author);
+  if (who === undefined || (who.kind === actor.kind && who.id === actor.id)) return undefined;
+  return `${who.kind}:${who.id}`;
 }
 
 // Dispatch event payloads follow the wire contract: issue.* carries the Issue,
@@ -717,7 +762,7 @@ function dispatchCommentReplyWith(
   event: DispatchEvent,
   topic: string | undefined,
   comment: CommentPayload | undefined
-): ReplyHint | undefined {
+): ReplyCommand | undefined {
   if (comment === undefined || comment.id === undefined) return undefined;
 
   const reply = comment.ask_id;
@@ -804,32 +849,36 @@ function repliedAskRelation(
 // row again. `question` is the head only: enough to recognise the ask, the full text is one
 // `dispatch read` away. Every other event type keeps its validated payload (`dispatchPayload`).
 // `askId` lets the caller add the ask's ref when the envelope carries no `in_reply_to` (the
-// producer correlates answers and replies, not openings or edits).
+// producer correlates answers and replies, not openings or edits). `words` are the words of a
+// person's act that the event carries (a reply, an answer, a resolution's reason), which the card
+// draws in blocks after its fields.
 type CompactDispatchRecord = Readonly<Record<string, string | readonly string[]>>;
 interface CompactDispatch {
   readonly record: CompactDispatchRecord;
   readonly askId: string | undefined;
+  readonly words: readonly NamedWords[];
 }
 
-// How a closed ask reads on the card: the kind, the person's own reason where the record holds
-// one, and the words Dispatch wrote for the asking agent where it holds those (a decline), under
-// the label every reader of them names them with (`dispatchWordsText`), so nobody reads
-// Dispatch's instruction as the person's note. A decline the person wrote no note with is the
-// ordinary one, so an empty reason leaves no separator behind.
-function askResolutionText(
-  resolution: z.infer<typeof AskPayloadSchema>["resolution"]
-): string | undefined {
-  if (resolution === null || resolution === undefined) return undefined;
-  const kind = resolution.kind ?? "resolved";
-  const reason = resolution.reason ?? "";
-  const closed = reason === "" ? kind : `${kind}: ${reason}`;
-  const words = dispatchWordsText(resolution.dispatch_words);
-  return words === undefined ? closed : `${closed} · ${words}`;
+/** The block of the words `text` of the field `name`, which `author` wrote at `at`; none where the
+ *  event carried no words. The block names the author only where the event's actor is not that
+ *  author (`authorBy`), and gives the words' `field` path where the field is inside an object of
+ *  the payload. */
+function said(
+  name: string,
+  text: string | null | undefined,
+  author: unknown,
+  at: string | undefined,
+  actor: DispatchEvent["actor"],
+  field?: string
+): NamedWords[] {
+  if (text === null || text === undefined || text === "") return [];
+  return [{ name, words: { text, by: authorBy(author, actor), at, field } }];
 }
 
 function dispatchCompact(
   event: DispatchEvent,
   comment: CommentPayload | undefined,
+  createdAt: string | undefined,
   ownsAsk: boolean | undefined
 ): CompactDispatch | undefined {
   if (event.type === "artifact.human_edited") {
@@ -837,24 +886,31 @@ function dispatchCompact(
     // card as a fenced block (humanEditDiffBlock), where a reader sees it as the diff it is.
     const edit = ArtifactHumanEditedPayloadSchema.safeParse(event.payload);
     if (!edit.success) return undefined;
-    return { askId: undefined, record: { edit: humanEditHead(edit.data) } };
+    return { askId: undefined, record: { edit: humanEditHead(edit.data) }, words: [] };
   }
   if (event.type === "comment.created") {
     if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
     const question = dispatchAskQuestion(comment);
     // `state` tells a clarification on an open ask from discussion after the answer;
     // `waiting_on` says whose move it is now, which is a move for the ask's own sessions alone
-    // (`ownsRepliedAsk`): a session the reply reached for another reason is shown no turn.
+    // (`ownsRepliedAsk`): a session the reply reached for another reason is shown no turn. The
+    // record names no time, so the reply's block gives the comment's own.
     return {
       askId: comment.ask_id,
       record: {
         ...(question === undefined ? {} : { question }),
-        reply: comment.body ?? "",
         ...(comment.ask_state === undefined ? {} : { state: comment.ask_state }),
         ...(comment.ask_waiting_on === undefined || ownsAsk === false
           ? {}
           : { waiting_on: comment.ask_waiting_on }),
       },
+      words: said(
+        "reply",
+        comment.body,
+        comment.author,
+        comment.created_at ?? createdAt,
+        event.actor
+      ),
     };
   }
   if (!event.type.startsWith("ask.")) return undefined;
@@ -863,6 +919,7 @@ function dispatchCompact(
   );
   if (!ask.success) return undefined;
   let record: CompactDispatchRecord = { question: textHead(ask.data.question ?? "") };
+  let words: readonly NamedWords[] = [];
   switch (event.type) {
     case "ask.opened":
     case "ask.edited": {
@@ -891,14 +948,31 @@ function dispatchCompact(
       break;
     }
     case "ask.answered": {
-      const previousAnswer = ask.data.previous_answer;
+      // The options an answer chose are labels of the ask's own, so they stay fields; the words
+      // the person typed go in a block. The schema keeps neither who gave the answer nor when, so
+      // the block reads both from the payload as the event carried it.
+      const answer = ask.data.answer;
+      const given: Readonly<Record<string, unknown>> =
+        isObject(event.payload) && isObject(event.payload["answer"]) ? event.payload["answer"] : {};
+      const givenAt = given["at"];
+      const previous = ask.data.previous_answer;
+      const selected = (answer?.selected ?? []).filter((label) => label !== "");
+      const previousSelected = (previous?.selected ?? []).filter((label) => label !== "");
       record = {
         ...record,
-        answer: askAnswerText(ask.data.answer),
-        ...(previousAnswer === null || previousAnswer === undefined
-          ? {}
-          : { previous_answer: askAnswerText(previousAnswer) }),
+        ...(selected.length === 0 ? {} : { selected }),
+        ...(previousSelected.length === 0 ? {} : { previous_selected: previousSelected }),
       };
+      words = [
+        ...said(
+          "answer",
+          answer?.text,
+          given["user"],
+          typeof givenAt === "string" && givenAt !== "" ? givenAt : createdAt,
+          event.actor
+        ),
+        ...said("previous_answer", previous?.text, previous?.user, previous?.at, event.actor),
+      ];
       break;
     }
     case "ask.asked_of": {
@@ -916,14 +990,32 @@ function dispatchCompact(
       break;
     }
     case "ask.resolved": {
-      const resolved = askResolutionText(ask.data.resolution);
-      record = resolved === undefined ? record : { ...record, resolved };
+      // The kind, and the words Dispatch wrote for the asking agent beside a decline, are
+      // Dispatch's, so they stay fields, where nobody reads Dispatch's instruction as the
+      // person's note; the reason is the words of whoever closed the ask, in a block.
+      const resolution = ask.data.resolution;
+      if (resolution === null || resolution === undefined) break;
+      const dispatchWords = resolution.dispatch_words;
+      record = {
+        ...record,
+        resolved: resolution.kind ?? "resolved",
+        ...(dispatchWords === undefined || dispatchWords === ""
+          ? {}
+          : { dispatch_words: dispatchWords }),
+      };
+      words = said(
+        "reason",
+        resolution.reason,
+        resolution.actor,
+        resolution.at ?? createdAt,
+        event.actor
+      );
       break;
     }
     default:
       break;
   }
-  return { askId: ask.data.id, record };
+  return { askId: ask.data.id, record, words };
 }
 
 function dispatchPayload(event: DispatchEvent): unknown {
@@ -942,6 +1034,50 @@ function dispatchPayloadForReader(event: DispatchEvent, sessionID: string): unkn
   if (!hasTarget(payload)) return payload;
   const target = payload.target;
   return target === `session:${sessionID}` ? { ...payload, target: `you (${target})` } : payload;
+}
+
+/**
+ * The payload a card prints of a comment, a suggestion or a message, and the blocks of its author's
+ * words: its body, and the text a suggestion proposes (`suggestion.replace_with`). Those words
+ * leave the payload, and so does a suggestion that holds nothing else. The author leaves it too,
+ * and each block names the author where the event's actor is someone else (`authorBy`). A block
+ * gives the time of the event where the payload gives none: a message payload carries none.
+ */
+function payloadWords(
+  event: DispatchEvent,
+  payload: unknown,
+  createdAt: string | undefined
+): { readonly payload: unknown; readonly words: readonly NamedWords[] } {
+  const carriesBody = ["comment.", "suggestion.", "message."].some((prefix) =>
+    event.type.startsWith(prefix)
+  );
+  if (!carriesBody || !isObject(payload) || Array.isArray(payload)) return { payload, words: [] };
+  const { author, body, suggestion } = payload;
+  const suggested: Readonly<Record<string, unknown>> =
+    isObject(suggestion) && !Array.isArray(suggestion) ? suggestion : {};
+  const { replace_with: proposed } = suggested;
+  const drawsBody = typeof body === "string" && body !== "";
+  const drawsProposed = typeof proposed === "string" && proposed !== "";
+  if (!drawsBody && !drawsProposed) return { payload, words: [] };
+  const named = actorOf(author) !== undefined;
+  const rest = Object.fromEntries(
+    Object.entries(payload).flatMap(([key, value]): [string, unknown][] => {
+      if ((key === "body" && drawsBody) || (key === "author" && named)) return [];
+      if (key !== "suggestion" || !drawsProposed) return [[key, value]];
+      const left = Object.entries(suggested).filter(([field]) => field !== "replace_with");
+      return left.length === 0 ? [] : [[key, Object.fromEntries(left)]];
+    })
+  );
+  const at = typeof rest["created_at"] === "string" ? undefined : createdAt;
+  return {
+    payload: rest,
+    words: [
+      ...(drawsBody ? said("body", body, author, at, event.actor) : []),
+      ...(drawsProposed
+        ? said("replace_with", proposed, author, at, event.actor, "suggestion.replace_with")
+        : []),
+    ],
+  };
 }
 
 // A comment.created reply to an ask carries the question text (ask_question) alongside
@@ -999,7 +1135,11 @@ type DispatchFrame =
       readonly event: DispatchEvent;
       readonly notify: unknown;
       readonly quiet: unknown;
-      readonly delivery: unknown;
+      /** The delivery a targeted frame asks of the session (`targetedDelivery`); undefined for an
+       *  event no delivery wraps. */
+      readonly delivery: DispatchDelivery | undefined;
+      /** When the event happened (its `created_at`), which the event schema does not keep. */
+      readonly createdAt: string | undefined;
     }
   | {
       readonly raw: unknown;
@@ -1012,20 +1152,82 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** `event` with the whole body of the item it carried only the first part of, or none of: the
- *  body the server answered, with the edited mark after it for an item edited since, or the
- *  deleted line for an item deleted since (`wholeCarriedBody`), and neither flag that said the
- *  body on the event was not the item's own (`bodyWasCut`). The event is left as it arrived when
- *  the caller read no body. */
-function withWholeBody(event: DispatchEvent, body: string | undefined): DispatchEvent {
-  if (body === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
-  const { body_truncated: _cut, payload_omitted: _omitted, ...carried } = event.payload;
-  return { ...event, payload: { ...carried, body } };
+ *  body the server answered, the marks of an edit or a delete since (`wholeCarriedBody`) as the
+ *  payload's own fields, and neither flag that said the body on the event was not the item's own
+ *  (`bodyWasCut`). An item deleted since has no body: the payload names the delete instead, so the
+ *  card draws no block for words that are gone. The event is left as it arrived when the caller
+ *  read no body. */
+function withWholeBody(event: DispatchEvent, whole: WholeBody | undefined): DispatchEvent {
+  if (whole === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
+  const {
+    body_truncated: _cut,
+    payload_omitted: _omitted,
+    body: _part,
+    ...carried
+  } = event.payload;
+  const { body, ...marks } = whole;
+  return {
+    ...event,
+    payload: { ...carried, ...(whole.deleted_at === undefined ? { body } : {}), ...marks },
+  };
 }
 
-/** The frame one Dispatch envelope's payload carries. `wholeBody` is the body of the item the
- *  event named as cut, read from the server since (`renderInbound`'s `cutItem`); the event then
- *  reads as though it had carried that body whole. */
-function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
+/**
+ * The delivery a targeted frame asks of the session: the message or comment, the attempt and its
+ * mode, where the answer goes, and the broadcast a message is one copy of, read from the frame as
+ * the schema checked it (`DispatchTargetedFrameSchema`), whose event is `checked`; and its body,
+ * read from `payload`, the payload `withWholeBody` made of that event, so whether a read replaces
+ * the body is `withWholeBody`'s rule alone. Nothing else is read from `payload`, so a render given
+ * the body whole names the delivery the frame names, a post deleted since included, whose payload
+ * then holds no body for a schema to require. `body` is that payload's body (empty for a post
+ * deleted since), and `bodyTruncated` is there while that payload says the body is its first part
+ * only. Undefined for a frame whose event and delivery do not match, which the schema refuses
+ * before this is asked.
+ */
+function targetedDelivery(
+  checked: DispatchEvent,
+  requested: z.infer<typeof DispatchTargetedDeliverySchema>,
+  payload: DispatchEvent["payload"]
+): DispatchDelivery | undefined {
+  const body = typeof payload["body"] === "string" ? payload["body"] : "";
+  const carried = payload["body_truncated"] === true ? { body, bodyTruncated: true } : { body };
+  if (checked.type === "message.created" && !isCommentTargetedDelivery(requested)) {
+    const message = DispatchTargetedMessagePayloadSchema.safeParse(checked.payload);
+    if (!message.success) return undefined;
+    return {
+      resource: "message",
+      id: message.data.id,
+      attempt: requested.attempt,
+      mode: requested.mode,
+      replyPath: dispatchReplyPath("message", message.data.id),
+      replyFields: {},
+      issueKey: checked.issue_key,
+      ...carried,
+      ...(typeof message.data.broadcast_id === "string"
+        ? { broadcastId: message.data.broadcast_id }
+        : {}),
+    };
+  }
+  if (checked.type === "comment.created" && isCommentTargetedDelivery(requested)) {
+    return {
+      resource: "comment",
+      id: requested.comment_id,
+      attempt: requested.attempt,
+      mode: requested.mode,
+      replyPath: dispatchReplyPath("comment", requested.comment_id),
+      replyFields: { target: requested.target },
+      issueKey: checked.issue_key,
+      ...carried,
+    };
+  }
+  return undefined;
+}
+
+/** The frame one Dispatch envelope's payload carries. `wholeBody` is the item the event named as
+ *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
+ *  it had carried that body whole (`withWholeBody`), and a targeted frame's delivery is read from
+ *  the frame as it was checked, with the body that event carries (`targetedDelivery`). */
+function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): DispatchFrame {
   let value: unknown;
   try {
     value = parseFrameJSON(rawPayload);
@@ -1037,16 +1239,17 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
   if (isObject(value) && "delivery" in value) {
     const targeted = DispatchTargetedFrameSchema.safeParse(value);
     if (targeted.success) {
-      // `notify` and `quiet` are fields of the event the frame wraps, which is where the
-      // outbox marshals them, and the schema drops both as unknown keys.
-      const wireFrame = value as {
-        readonly event: DispatchEvent & { readonly notify?: unknown; readonly quiet?: unknown };
-      };
+      // `notify`, `quiet` and `created_at` are fields of the event the frame wraps, which is where
+      // the outbox marshals them, and the schema drops all three as unknown keys.
+      const wireFrame = value as { readonly event: WireEvent };
+      const event = withWholeBody(targeted.data.event, wholeBody);
       return {
-        event: withWholeBody(targeted.data.event, wholeBody),
+        event,
         notify: wireFrame.event.notify,
         quiet: wireFrame.event.quiet,
-        delivery: targeted.data.delivery,
+        delivery: targetedDelivery(targeted.data.event, targeted.data.delivery, event.payload),
+        createdAt:
+          typeof wireFrame.event.created_at === "string" ? wireFrame.event.created_at : undefined,
       };
     }
     const recoverable = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
@@ -1075,17 +1278,22 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
 
   const parsed = DispatchEventSchema.safeParse(value);
   if (!parsed.success) return { raw: value };
-  const wireEvent = value as DispatchEvent & {
-    readonly notify?: unknown;
-    readonly quiet?: unknown;
-  };
+  const wireEvent = value as WireEvent;
   return {
     event: withWholeBody(parsed.data, wholeBody),
     notify: wireEvent.notify,
     quiet: wireEvent.quiet,
     delivery: undefined,
+    createdAt: typeof wireEvent.created_at === "string" ? wireEvent.created_at : undefined,
   };
 }
+
+/** An event as the outbox marshals it, with the fields the event schema drops. */
+type WireEvent = DispatchEvent & {
+  readonly notify?: unknown;
+  readonly quiet?: unknown;
+  readonly created_at?: unknown;
+};
 
 /**
  * The fewest bytes a card may lay a payload out in: the hub's largest frame (nats-server's
@@ -1101,13 +1309,14 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
  */
 export const INBOUND_CARD_MAX_BYTES = 1 << 20;
 
-/** `value` as TOON, or undefined once its lines pass `maxBytes`. The encoder yields one line at a
- *  time, so a layout far larger than its value costs no more than the bound to refuse. */
-function encodeWithin(value: unknown, maxBytes: number): string | undefined {
+/** `card` as TOON (`encodeFieldLines`), or undefined once its lines pass `maxBytes`. The encoder
+ *  yields one line at a time, so a layout far larger than its value costs no more than the bound
+ *  to refuse. */
+function encodeWithin(card: object, maxBytes: number): string | undefined {
   const lines: string[] = [];
   // The newlines that join the lines: one fewer than the lines.
   let bytes = -1;
-  for (const line of encodeLines(value)) {
+  for (const line of encodeFieldLines(card)) {
     bytes += Buffer.byteLength(line) + 1;
     if (bytes > maxBytes) return undefined;
     lines.push(line);
@@ -1121,16 +1330,370 @@ export function inboundTimestamp(milliseconds: number | undefined): string {
   return Number.isNaN(date.getTime()) ? "unknown" : date.toISOString().replace(".000Z", "Z");
 }
 
-/** One inbound envelope's JSON as a card for the agent, with what the host does with it. A body
- *  is bounded block by block, so one event can carry its first part alone, or none of it, and
- *  the result names that item as `cutItem`: a host that reads it whole
- *  (`wholeCarriedBody`) renders again with the body in `wholeBody`, and the card then holds the
- *  body the comment or message route answers rather than one that stops mid-thought. */
+/** A value that starts as an RFC 3339 time does. */
+const TIME = /^\d{4}-\d{2}-\d{2}T/;
+
+/** A key of a daemon payload's `words` object: the path of a field in the payload, its segments
+ *  joined by `.`, each followed by the index of a list's item in brackets for each list the path
+ *  enters there, as `summary` or `catch_up.kept.decisions[1].answer`. A segment is a field's name
+ *  that holds no `.`, `[`, `]`, white space, control character, `<`, `>`, `"`, `'` or `&`. */
+const WORDS_PATH =
+  /^[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*(?:\.[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*)*$/u;
+
+/** One key of a words path (`WORDS_PATH`): a field's name, or the index of a list's item in
+ *  brackets. */
+const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
+
+/** A payload's field as a card lays it out: the value it shows among the card's fields, and the
+ *  words of another author it took out of that value, each for a block of its own. */
+interface LaidPayload {
+  readonly fields: unknown;
+  readonly words: readonly NamedWords[];
+}
+
+/**
+ * What a card shows of a notice or a role message of the Legion daemon published as an object:
+ * its fields in the payload's key order, and a block for each field that holds another author's
+ * words. The payload's `words` object names those fields by their path in the payload
+ * (`WORDS_PATH`: `summary`, `catch_up.kept.decisions[1].answer`) with their author and time
+ * (`texts.WordsPaths`, packages/daemon/internal/texts/words.go). Each such field, a string,
+ * leaves the fields for a block of its own, in the payload's order, and `words` itself is not
+ * shown. The block's name is the field's name with each character a tag's name cannot hold
+ * written as `_` (`blockName`), so a block takes a tag of its own, and its `field` attribute gives
+ * the path where that name is not the path. A path whose field the payload leaves out, as a
+ * stand-in the bus took with its long fields dropped leaves out an answer, draws a block with no
+ * words after those, with its entry's mark that more follows. A block names the author and the
+ * time only where no field of the objects that hold the words names them, and where the object
+ * that holds the words' field, when that is no field of the payload itself, holds no `by` (for
+ * the author) or `at` (for the time) of its own: the pause of a project-paused notice names who
+ * paused and when (`pause.by`, `pause.at`), and so its reason's block names neither. By the same
+ * rule a block says that more follows only where that object says no `more` of its own: a
+ * catch-up's kept decision says it in its row (texts.DecisionMark), so its answer's block does
+ * not. The row is where every decision says it, also one whose words the event left out, which
+ * no block draws. What the holders name is read once for each holder, however many words it
+ * holds. A `role` that names the reader (the card's topic ends in `-<role>`) is not shown: the
+ * reader knows its own role. A payload with no `words` object, as a daemon before that object
+ * writes, shows every field, and so does a payload whose `words` object has a key that is no
+ * path, or whose path names a list's item or a field that holds no string: the daemon writes no
+ * such key, and its words have no block to go in.
+ */
+function daemonFields(
+  payload: Readonly<Record<string, unknown>>,
+  topics: readonly (string | undefined)[]
+): LaidPayload {
+  const named = payload["words"];
+  const paths = isObject(named) && !Array.isArray(named) ? named : undefined;
+  // `Object.fromEntries` defines each key as an own field, `__proto__` too: JSON.parse makes it an
+  // own key, and an assignment would take it as the object's prototype.
+  const visible = Object.fromEntries(
+    Object.entries(payload).filter(
+      ([key, value]) =>
+        !(
+          key === "role" &&
+          typeof value === "string" &&
+          topics.some((topic) => topic?.endsWith(`-${value}`) === true)
+        )
+    )
+  );
+  const every = { fields: visible, words: [] };
+  if (paths === undefined) return every;
+  const keyed: KeyedPath[] = [];
+  for (const path of Object.keys(paths)) {
+    if (!WORDS_PATH.test(path)) return every;
+    keyed.push([
+      path,
+      Array.from(path.matchAll(PATH_KEY), ([, key, index]) => key ?? Number(index)),
+    ]);
+  }
+  const root = Object.fromEntries(Object.entries(visible).filter(([key]) => key !== "words"));
+  const taken: TakenWords[] = [];
+  const fields = withoutWords(root, pathTree(keyed), [], taken);
+  const found = new Set(taken.map(({ path }) => path));
+  for (const [path, keys] of keyed) {
+    if (found.has(path)) continue;
+    const name = keys.at(-1);
+    if (typeof name !== "string" || fieldAt(root, keys).found !== undefined) return every;
+    taken.push({ path, name, text: "", holders: fieldAt(fields, keys).holders });
+  }
+  const names = holderNames();
+  const words = taken.map(({ path, name, text, holders }): NamedWords => {
+    const entry = paths[path];
+    const meta: Readonly<Record<string, unknown>> = isObject(entry) ? entry : {};
+    const { by, at, rest, more } = meta;
+    const time = typeof at === "string" && TIME.test(at) ? Date.parse(at) : Number.NaN;
+    const own = holders.length > 1 ? holders[holders.length - 1] : undefined;
+    const byShown =
+      (own !== undefined && namesOwn(own, "by")) ||
+      holders.some((holder) => names(holder).values.has(by));
+    const timeShown =
+      (own !== undefined && namesOwn(own, "at")) ||
+      holders.some((holder) => {
+        const { values, times } = names(holder);
+        return values.has(at) || (!Number.isNaN(time) && times.has(time));
+      });
+    const moreShown = own !== undefined && Object.hasOwn(own, "more") && own["more"] === true;
+    const block = blockName(name);
+    return {
+      name: block,
+      words: {
+        text,
+        by: typeof by === "string" && !byShown ? by : undefined,
+        at: typeof at === "string" && !timeShown ? at : undefined,
+        field: path === block ? undefined : path,
+        rest: typeof rest === "number" && Number.isInteger(rest) ? rest : undefined,
+        more: more === true && !moreShown,
+      },
+    };
+  });
+  return { fields, words };
+}
+
+/** What the fields of one object that holds words name: their values, and the instant of each
+ *  value that starts as an RFC 3339 time does (`TIME`). */
+interface HolderNames {
+  readonly values: ReadonlySet<unknown>;
+  readonly times: ReadonlySet<number>;
+}
+
+/** What each object that holds words names (`HolderNames`), read the first time it is asked of
+ *  and kept, so the fields of an object are read once however many words it holds. */
+function holderNames(): (holder: Readonly<Record<string, unknown>>) => HolderNames {
+  const read = new Map<Readonly<Record<string, unknown>>, HolderNames>();
+  return (holder) => {
+    let names = read.get(holder);
+    if (names === undefined) {
+      const values = new Set(Object.values(holder));
+      const times = new Set<number>();
+      for (const value of values) {
+        if (typeof value !== "string" || !TIME.test(value)) continue;
+        const time = Date.parse(value);
+        if (!Number.isNaN(time)) times.add(time);
+      }
+      names = { values, times };
+      read.set(holder, names);
+    }
+    return names;
+  };
+}
+
+/** Whether `holder` has a field `key` that names something: a value that is neither null nor
+ *  empty. */
+function namesOwn(holder: Readonly<Record<string, unknown>>, key: string): boolean {
+  const value = Object.hasOwn(holder, key) ? holder[key] : undefined;
+  return value !== undefined && value !== null && value !== "";
+}
+
+/** The name of the block of the field `name`, a segment of a words path (`WORDS_PATH`): `name`
+ *  with each character that is no ASCII letter, digit or `_` written as `_`, and a `_` before a
+ *  leading digit. That is a name a tag can have (`wordsBlocks`), and it holds no `-`, which joins
+ *  a tag's suffix to its name, so no block's name is another block's tag with a suffix. */
+function blockName(name: string): string {
+  const written = name.replace(/[^A-Za-z0-9_]/gu, "_");
+  return /^[0-9]/.test(written) ? `_${written}` : written;
+}
+
+/** The objects along `keys` in `value`, from `value` to the object of the last key, and the value
+ *  of the last key: undefined where `value` leaves it out. */
+function fieldAt(
+  value: unknown,
+  keys: readonly (string | number)[]
+): { readonly holders: Readonly<Record<string, unknown>>[]; readonly found: unknown } {
+  const holders: Readonly<Record<string, unknown>>[] = [];
+  let at = value;
+  for (const key of keys) {
+    if (!isObject(at)) return { holders, found: undefined };
+    if (!Array.isArray(at)) holders.push(at);
+    at = Object.hasOwn(at, key) ? at[key] : undefined;
+  }
+  return { holders, found: at };
+}
+
+/** A field that holds another author's words, taken out of a daemon payload's fields: its path,
+ *  its name (the path's last segment), and its words. */
+interface TakenWords {
+  readonly path: string;
+  readonly name: string;
+  readonly text: string;
+  /** The objects that hold the words, from the payload's own fields to the words' object. */
+  readonly holders: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** A words path of a payload, as written and as its keys (`PATH_KEY`). */
+type KeyedPath = readonly [string, readonly (string | number)[]];
+
+/** A step of the words paths' tree (`pathTree`): the path that ends here, where one does, and the
+ *  step each longer path takes next, by its key (`PATH_KEY`): a field's name, or a list's index. */
+interface PathStep {
+  path?: string;
+  readonly next: Map<string | number, PathStep>;
+}
+
+/** The words paths of a payload, each with its keys (`PATH_KEY`), as one tree: from its root, a
+ *  path's keys lead to the step where that path ends. */
+function pathTree(keyed: readonly KeyedPath[]): PathStep {
+  const root: PathStep = { next: new Map() };
+  for (const [path, keys] of keyed) {
+    let step = root;
+    for (const key of keys) {
+      let next = step.next.get(key);
+      if (next === undefined) {
+        next = { next: new Map() };
+        step.next.set(key, next);
+      }
+      step = next;
+    }
+    step.path = path;
+  }
+  return root;
+}
+
+/** `value`, which the words paths reach at `step` of their tree (`pathTree`), less each string
+ *  field at which a path ends, each of which goes to `taken`. `step` is undefined where no words
+ *  path reaches `value`, as below a field whose name is no segment of one (`WORDS_PATH`), which
+ *  no path's keys hold. `holders` are the objects that hold `value`, from the payload's own fields
+ *  down: one list for the whole walk, which takes each object as the walk enters it and lets it go
+ *  as the walk leaves it, so a level costs the same at any depth. A field taken keeps a copy of
+ *  the list, no longer than its path. */
+function withoutWords(
+  value: unknown,
+  step: PathStep | undefined,
+  holders: Readonly<Record<string, unknown>>[],
+  taken: TakenWords[]
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => withoutWords(item, step?.next.get(index), holders, taken));
+  }
+  if (!isObject(value)) return value;
+  const kept: Record<string, unknown> = {};
+  holders.push(kept);
+  for (const [key, item] of Object.entries(value)) {
+    const next = step?.next.get(key);
+    if (typeof item === "string" && next?.path !== undefined) {
+      taken.push({ path: next.path, name: key, text: item, holders: holders.slice() });
+    } else {
+      defineOwn(kept, key, withoutWords(item, next, holders, taken));
+    }
+  }
+  holders.pop();
+  return kept;
+}
+
+/** A line that Go's `strings.TrimSpace` leaves empty: Unicode White_Space alone, which U+0085
+ *  holds and JavaScript's `trim` does not (and U+FEFF, which `trim` removes, is not). */
+const BLANK_LINE = /^\p{White_Space}*$/u;
+
+/** Whether `summary` opens `text`: the first line of `text` that is not blank, less the white
+ *  space before it, begins with the summary less its closing ellipsis. That line is the one
+ *  Envoy's listener makes a message's summary of (`OneLineSummary`,
+ *  packages/envoy/internal/contracts/normalize.go), which reads a line as blank as Go's
+ *  `strings.TrimSpace` does (`BLANK_LINE`). */
+function summaryOpens(text: string, summary: string | undefined): boolean {
+  if (summary === undefined) return false;
+  const head = summary.endsWith("…") ? summary.slice(0, -1) : summary;
+  // A payload can be long, so the scan stops at its first line that is not blank.
+  let start = 0;
+  let end = text.indexOf("\n");
+  while (end !== -1 && BLANK_LINE.test(text.slice(start, end))) {
+    start = end + 1;
+    end = text.indexOf("\n", start);
+  }
+  const line = end === -1 ? text.slice(start) : text.slice(start, end);
+  const first = BLANK_LINE.test(line) ? "" : line;
+  return first.replace(/^[ \t\r]+/, "").startsWith(head);
+}
+
+/**
+ * The card's fields under `envoy:` as TOON: `shown`, then `after` (the note and the issues the
+ * render found), with the fields of `shown` the card holds, the words that go in blocks after
+ * them, and why it shows the payload as text.
+ *
+ * `layPayload`, where given, lays the payload's field out first: a daemon payload's fields, less
+ * the words its `words` object names, which it answers too (`daemonFields`). The fields replace the
+ * payload's field in place.
+ *
+ * The card's TOON encoder recurses once per level of a value, and so does `daemonFields`' walk
+ * (`withoutWords`), so a payload nested some thousands of levels deep overflows the stack (an
+ * object chain 7,000 deep does in the encoder in Bun 1.4.4, and one 40,000 deep that holds a
+ * `words` object does in the walk). A throw out of `renderInbound` throws in every host's render
+ * and in the consumer's give-up alike, so the frame would go back to the stream on every delivery
+ * and nobody would be told of it. And each level indents every line below it, so a deep value the
+ * encoder does reach the bottom of lays out in bytes that grow with the square of its depth: a
+ * 20 KB array chain made a 100 MB card. So a payload's field that is an object or a list is laid
+ * out within `bound` bytes (`encodeWithin`), and the walk, the encoder and that bound are one
+ * fallback here. Either way the payload is the text its sender sent, so the card shows it as that
+ * text in the field that lays it out (`payloadKey`: `message`, or a Dispatch frame's `dispatch`),
+ * with no block of its words, `payloadShownAsText` says what threw or that the layout passed the
+ * bound, and the host takes the frame. That text is bounded as every message's is: by the frame,
+ * at most the hub's 1 MiB. A payload's field that already is text is bounded so already, and a
+ * throw the payload is not behind is thrown as before.
+ *
+ * Each string value the card's fields hold, the payload shown as text too, stays on its line: the
+ * card is written by the one encode of a card's and a notice's fields (`encodeFields`), inside the
+ * same fallback.
+ */
+function encodeCardFields(
+  shown: Readonly<Record<string, unknown>>,
+  after: Readonly<Record<string, unknown>>,
+  payloadKey: "dispatch" | "message",
+  payload: string | undefined,
+  bound: number,
+  layPayload?: () => LaidPayload
+): {
+  readonly toon: string;
+  readonly shown: Readonly<Record<string, unknown>>;
+  readonly words: readonly NamedWords[];
+  readonly payloadShownAsText?: string;
+} {
+  let reason: string;
+  try {
+    const laid = layPayload?.();
+    const fields = laid === undefined ? shown : { ...shown, [payloadKey]: laid.fields };
+    const card = { envoy: { ...fields, ...after } };
+    const value = fields[payloadKey];
+    const toon =
+      typeof value === "object" && value !== null ? encodeWithin(card, bound) : encodeFields(card);
+    if (toon !== undefined) return { toon, shown: fields, words: laid?.words ?? [] };
+    reason = `its layout is larger than the ${bound} bytes a card holds`;
+  } catch (error) {
+    if (payload === undefined || !(payloadKey in shown)) throw error;
+    reason = messageFor(error);
+  }
+  // The payload's field keeps its place among the card's fields.
+  const asText = { ...shown, [payloadKey]: payload };
+  return {
+    toon: encodeFields({ envoy: { ...asText, ...after } }),
+    shown: asText,
+    words: [],
+    payloadShownAsText: reason,
+  };
+}
+
+/**
+ * One inbound envelope's JSON as a card for the agent, with what the host does with it.
+ *
+ * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlocks`) for each part
+ * of it that another author wrote: a session's message, JSON text too, the body, reply, answer or
+ * reason of a Dispatch event and the text a suggestion proposes, and each field a daemon notice
+ * names in its `words` object. A person's edit of a document has its diff after the card as a
+ * fenced block instead. A card from another session names the sender's session and title, each
+ * role the sender holds, the time and the message id, and carries no reply command: the
+ * descriptions of `envoy_send` and `envoy_publish` say how to reply from those fields. A Dispatch
+ * card keeps its reply command.
+ *
+ * A body is bounded block by block, so one event can carry its first part alone, or none of it, and
+ * the result names that item as `cutItem`: a host that reads it whole (`wholeCarriedBody`) renders
+ * again with that read in `wholeBody`, and the card then holds the body the comment or message
+ * route answers rather than one that stops mid-thought, with the marks of an edit or a delete
+ * since as fields of its own. A targeted frame's `delivery` is the same in both renders, read from
+ * the frame as its schema checked it, with only its `body` the one read whole: so a host still
+ * holds the frame to the session it names, its mode and its attempt where the read finds the post
+ * deleted, and the read's `deleted_at` is what tells it that no body is left to deliver.
+ */
 export function renderInbound(
   raw: string,
   sessionID: string,
   subject?: string,
-  wholeBody?: string
+  wholeBody?: WholeBody
 ): RenderInboundResult {
   let value: unknown;
   try {
@@ -1138,7 +1701,7 @@ export function renderInbound(
   } catch {
     return {
       skip: false,
-      content: encode({
+      content: encodeFields({
         envoy: { topic: subject ?? "unknown", unrecognised: "payload was not JSON" },
       }),
     };
@@ -1156,7 +1719,7 @@ export function renderInbound(
     if (!tolerant.success) {
       return {
         skip: false,
-        content: encode({ envoy: { unrecognised: parseIssues.join(", ") || "envelope" } }),
+        content: encodeFields({ envoy: { unrecognised: parseIssues.join(", ") || "envelope" } }),
       };
     }
     const data = tolerant.data as Partial<InboundEnvelope>;
@@ -1164,8 +1727,9 @@ export function renderInbound(
   }
   let dispatchEvent: unknown;
   let dispatchActor: DispatchEvent["actor"] | undefined;
+  let dispatchType: string | undefined;
   let dispatchIssue: string | undefined;
-  let dispatchReply: ReplyHint | undefined;
+  let dispatchReply: ReplyCommand | undefined;
   let delivery: DispatchDelivery | undefined;
   let rejectedDelivery: DispatchDelivery | undefined;
   let malformedDelivery = false;
@@ -1180,6 +1744,8 @@ export function renderInbound(
   // ask's author, another follower's session when this session merely replied; on a reply in an
   // ask's thread the sessions that own the ask (`ask_sessions`), which every copy carries.
   let payloadSessions: readonly string[] = [];
+  // The words another author wrote that follow the card's fields, each in a block of its own.
+  const blocks: NamedWords[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
@@ -1223,6 +1789,7 @@ export function renderInbound(
             skip: false,
             content: `Unsubscribed from ${dispatchOwner(frame.event, topic)} by ${who}`,
             envelope,
+            dispatchType: frame.event.type,
           };
         }
         // Same shape for a human curating an ask's followers: only the session the
@@ -1246,6 +1813,7 @@ export function renderInbound(
                 ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_follow", { ask, action: "unfollow" })} to stop.`
                 : `No longer following ask ${ask} on ${owner} (removed by ${who}).`,
             envelope,
+            dispatchType: frame.event.type,
           };
         }
         const comment =
@@ -1254,7 +1822,7 @@ export function renderInbound(
             : undefined;
         const commentPayload = comment?.success === true ? comment.data : undefined;
         const ownsAsk = ownsRepliedAsk(commentPayload, sessionID);
-        const compact = dispatchCompact(frame.event, commentPayload, ownsAsk);
+        const compact = dispatchCompact(frame.event, commentPayload, frame.createdAt, ownsAsk);
         payloadSessions = commentPayload?.ask_sessions ?? [];
         if (frame.event.type.startsWith("ask.")) {
           const asked = AskAuthorPayloadSchema.safeParse(frame.event.payload);
@@ -1266,51 +1834,20 @@ export function renderInbound(
           inReplyTo = dispatchReplyRef(frame.event, topic, inReplyTo, commentPayload);
         }
         dispatchReply = dispatchCommentReplyWith(frame.event, topic, commentPayload);
-        if (frame.event.type === "message.created") {
-          const message = DispatchTargetedMessagePayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (message.success && requested.success && !isCommentTargetedDelivery(requested.data)) {
-            delivery = {
-              resource: "message",
-              id: message.data.id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("message", message.data.id),
-              replyFields: {},
-              issueKey: frame.event.issue_key,
-              body: message.data.body,
-              ...(message.data.body_truncated === true ? { bodyTruncated: true } : {}),
-              ...(typeof message.data.broadcast_id === "string"
-                ? { broadcastId: message.data.broadcast_id }
-                : {}),
-            };
-            // A human's direct message to this session carries no issue key, and
-            // `dispatch message` answers it with `--in-reply-to` alone; every other targeted
-            // message names the issue the reply posts into.
-            dispatchReply = {
-              command: commandLine("dispatch_message", {
-                ...(frame.event.issue_key === null ? {} : { issue: frame.event.issue_key }),
-                in_reply_to: message.data.id,
-                body: "...",
-              }),
-            };
-          }
-        } else if (frame.event.type === "comment.created") {
-          const comment = DispatchTargetedCommentPayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (comment.success && requested.success && isCommentTargetedDelivery(requested.data)) {
-            delivery = {
-              resource: "comment",
-              id: requested.data.comment_id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("comment", requested.data.comment_id),
-              replyFields: { target: requested.data.target },
-              issueKey: frame.event.issue_key,
-              body: comment.data.body,
-              ...(comment.data.body_truncated === true ? { bodyTruncated: true } : {}),
-            };
-          }
+        // The delivery the frame asked for, as the frame was checked: a render given the body
+        // whole names the same one, a post deleted since too (`targetedDelivery`).
+        delivery = frame.delivery;
+        if (delivery?.resource === "message") {
+          // A human's direct message to this session carries no issue key, and
+          // `dispatch message` answers it with `--in-reply-to` alone; every other targeted
+          // message names the issue the reply posts into.
+          dispatchReply = {
+            command: commandLine("dispatch_message", {
+              ...(frame.event.issue_key === null ? {} : { issue: frame.event.issue_key }),
+              in_reply_to: delivery.id,
+              body: "...",
+            }),
+          };
         }
         // A reply in an ask's thread says what it is to this session, in the words the session's
         // answers list gives it, and carries the command that answers the ask only for a session
@@ -1339,14 +1876,24 @@ export function renderInbound(
                   ask: dispatchReplyRef(frame.event, topic, compact.askId, commentPayload),
                   ...compact.record,
                 };
+        const shown =
+          compact === undefined
+            ? payloadWords(
+                frame.event,
+                dispatchPayloadForReader(frame.event, sessionID),
+                frame.createdAt
+              )
+            : { payload: undefined, words: compact.words };
         dispatchEvent = {
           owner: dispatchOwner(frame.event, topic),
           type: frame.event.type,
           actor: frame.event.actor,
           ...(relation === undefined ? {} : { relation }),
-          ...(compactRecord ?? { payload: dispatchPayloadForReader(frame.event, sessionID) }),
+          ...(compactRecord ?? { payload: shown.payload }),
         };
+        blocks.push(...shown.words);
         dispatchActor = frame.event.actor;
+        dispatchType = frame.event.type;
         bodyNote = carriedBodyNote(frame.event);
         if (bodyWasCut(frame.event.payload)) cutItem = carriedItem(frame.event);
         pictures = eventPictures(frame.event);
@@ -1362,59 +1909,71 @@ export function renderInbound(
     }
   }
 
-  let parsedPayload: unknown;
-  if (
+  // What a card shows of a payload that is not a Dispatch event's. A message of another session
+  // (`sendingSession`: its `source_session`, or the session the listener's sender stamp names) is
+  // its sender's words, so it goes in a block whole, JSON text too: no key of it reads as a field
+  // of the card. A notice or a role message of the Legion daemon (`agent`, with no session) shows
+  // its fields as lines (`daemonFields`), and one it publishes as text (the hook prompt) goes in a
+  // block. Every other source shows its payload as one `message` field.
+  const sender = sendingSession(envelope);
+  const sessionSent = envelope.source !== "dispatch" && sender !== undefined;
+  const fromDaemon = daemonSent(envelope);
+  let message: unknown;
+  let messageText: string | undefined;
+  // A daemon payload's fields, laid out with the card's own inside the encoder's fallback
+  // (`encodeCardFields`), since the walk that takes its words out recurses as the encoder does.
+  let layPayload: (() => LaidPayload) | undefined;
+  if (sessionSent) {
+    // The listener carries a message of one line as its summary alone.
+    messageText =
+      envelope.payload === undefined || envelope.payload === envelope.payload_summary
+        ? envelope.payload_summary
+        : envelope.payload;
+  } else if (
     !dispatchRendered &&
     envelope.payload !== undefined &&
-    (envelope.source === "github" || envelope.payload !== envelope.payload_summary)
+    envelope.payload !== envelope.payload_summary
   ) {
+    let parsedPayload: unknown;
     try {
       parsedPayload = parseFrameJSON(envelope.payload);
     } catch {
       parsedPayload = envelope.payload;
     }
+    if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
+      const payload = parsedPayload;
+      message = payload;
+      layPayload = () => daemonFields(payload, [envelope.topic, subject]);
+    } else if (fromDaemon && !isObject(parsedPayload)) {
+      messageText = typeof parsedPayload === "string" ? parsedPayload : envelope.payload;
+    } else {
+      message = parsedPayload;
+    }
   }
-
+  if (messageText !== undefined) blocks.push({ name: "message", words: { text: messageText } });
   const payloadSummary = envelope.payload_summary ?? "unknown";
-  const message =
-    !dispatchRendered &&
-    envelope.payload !== undefined &&
-    envelope.payload !== envelope.payload_summary
-      ? parsedPayload
-      : undefined;
-  const summaryIsHead =
-    typeof message === "string" &&
-    envelope.payload_summary !== undefined &&
-    message.startsWith(
-      envelope.payload_summary.endsWith("…")
-        ? envelope.payload_summary.slice(0, -1)
-        : envelope.payload_summary
-    );
-  // The summary is scanned before the payload, in index order, and the pattern spans no
-  // newline, so this sees the same matches as scanning the two joined by "\n".
-  let foreignSession: string | undefined;
-  for (const part of [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
-    for (const match of part.matchAll(FOREIGN_SESSION_ID)) {
-      if (
-        match[0] !== envelope.source_session &&
-        match[0] !== sessionID &&
-        !payloadSessions.includes(match[0])
-      ) {
-        foreignSession = match[0];
-        break;
+  const headText = messageText ?? (typeof message === "string" ? message : undefined);
+  const summaryIsHead = headText !== undefined && summaryOpens(headText, envelope.payload_summary);
+  // Each session that the summary or the payload names, other than the sender, the reader and the
+  // sessions the event's own payload names (`payloadSessions`), in the order they come: the
+  // summary's first. A daemon card names none: the daemon names a session in a field or in a
+  // worker's words on purpose, never as a misrouted message does.
+  const namedSessions: string[] = [];
+  for (const part of fromDaemon ? [] : [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
+    for (const [id] of part.matchAll(FOREIGN_SESSION_ID)) {
+      if (id !== sender && id !== sessionID && !payloadSessions.includes(id)) {
+        namedSessions.push(id);
       }
     }
-    if (foreignSession !== undefined) break;
   }
-  const role = envelope.sender?.roles?.[0];
-  // A card that says the sender wants nothing back prints no ready-made reply. The two are one
-  // statement to the reader, and a filled-in envoy_send under `expects_reply: false` is an
+  const roles = [...new Set(envelope.sender?.roles ?? [])].filter((role) => role !== "");
+  // A Dispatch card that says the sender wants nothing back prints no reply command. The two are
+  // one statement to the reader, and a filled-in command under `expects_reply: false` is an
   // invitation to do the thing the line just said is not wanted. `optional` and `required` keep
-  // the hint. This withholds a Dispatch frame's own reply command too: the one such frame carrying
-  // `false` is a comment mention that joins no ask thread, and its card still names the comment,
-  // so a reader who answers anyway has what it needs without being invited.
-  const wantsNoReply = envelope.expects_reply === false;
-  const reply = wantsNoReply ? undefined : (dispatchReply ?? replyWith(envelope));
+  // it. The one Dispatch frame carrying `false` is a comment mention that joins no ask thread, and
+  // its card still names the comment, so a reader who answers anyway has what it needs without
+  // being invited.
+  const reply = envelope.expects_reply === false ? undefined : dispatchReply;
   const sourceIssue =
     parseIssues.includes("source") || KNOWN_SOURCES[envelope.source] !== undefined
       ? undefined
@@ -1425,14 +1984,15 @@ export function renderInbound(
       ...(sourceIssue === undefined ? [] : [sourceIssue]),
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
-  const rendered = {
+  const shownFields = {
     // The session's inbox in either form, the session alone or under a project, names it the
     // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
     ...(envelope.topic !== undefined &&
     topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
-      ? { to: `you (${sessionID})` }
+      ? { to: "you" }
       : {}),
     from: senderLabel(envelope),
+    ...(roles.length === 0 ? {} : roles.length === 1 ? { role: roles[0] } : { roles }),
     at: inboundTimestamp(envelope.issued_at),
     id: envelope.event_id ?? "unknown",
     // The listener could not deliver this message when it was sent, so it kept it until this
@@ -1444,14 +2004,6 @@ export function renderInbound(
     ...(inReplyTo === undefined ? {} : { re: inReplyTo }),
     ...(envelope.supersedes === undefined ? {} : { supersedes: envelope.supersedes }),
     ...(reply === undefined ? {} : { reply_with: reply }),
-    ...(role === undefined || wantsNoReply
-      ? {}
-      : {
-          reply_role: {
-            tool: "envoy_publish",
-            args: { topic: `notifications.role.${role}`, message: "..." },
-          },
-        }),
     ...(dispatchRendered
       ? { dispatch: dispatchEvent }
       : {
@@ -1459,26 +2011,9 @@ export function renderInbound(
           ...(message === undefined ? {} : { message }),
         }),
     ...(bodyNote === undefined ? {} : { body_note: bodyNote }),
-    ...(foreignSession === undefined
-      ? {}
-      : {
-          note: `body names session ${foreignSession}; the sender is ${envelope.source_session ?? "unknown"}`,
-        }),
-    ...(unrecognised === undefined ? {} : { unrecognised }),
   };
-
-  // The card's TOON encoder recurses once per level of a value, so a payload nested some
-  // thousands of levels deep overflows the stack (an object chain 7,000 deep does in Bun 1.4.4).
-  // A throw out of here throws in every host's render and in the consumer's give-up alike, so
-  // the frame would go back to the stream on every delivery and nobody would be told of it. And
-  // each level indents every line below it, so a deep value the encoder does reach the bottom of
-  // lays out in bytes that grow with the square of its depth: a 20 KB array chain made a 100 MB
-  // card. Either way the payload is the text its sender sent, so the card shows it as that text,
-  // as it shows a payload that is no JSON, and the host takes the frame. That text is bounded as
-  // every message's is: by the frame, at most the hub's 1 MiB. A payload that already is text is
-  // bounded so already, and a throw the payload is not behind is thrown as before.
+  const issues = unrecognised === undefined ? {} : { unrecognised };
   const payloadKey = dispatchRendered ? "dispatch" : "message";
-  const payloadValue = dispatchRendered ? dispatchEvent : message;
   // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
   // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
   // that is more than the hub's frame: a 1 MiB comment read whole still lays out whole. The body
@@ -1488,29 +2023,45 @@ export function renderInbound(
     INBOUND_CARD_MAX_BYTES,
     2 *
       (Buffer.byteLength(raw) +
-        (wholeBody === undefined ? 0 : Buffer.byteLength(escapeString(wholeBody))))
+        (wholeBody === undefined ? 0 : Buffer.byteLength(escapeString(wholeBody.body))))
   );
-  let card: string | undefined;
-  let payloadShownAsText: string | undefined;
-  try {
-    card =
-      typeof payloadValue === "object" && payloadValue !== null
-        ? encodeWithin({ envoy: rendered }, cardBound)
-        : encode({ envoy: rendered });
-  } catch (error) {
-    if (envelope.payload === undefined || payloadValue === undefined) throw error;
-    payloadShownAsText = messageFor(error);
+  const laidOut = encodeCardFields(
+    shownFields,
+    issues,
+    payloadKey,
+    envelope.payload,
+    cardBound,
+    layPayload
+  );
+  blocks.push(...laidOut.words);
+  let fields = laidOut.toon;
+  let payloadShownAsText = laidOut.payloadShownAsText;
+  // The note names a session that the card's words name and its fields do not, as a message sent
+  // to the wrong session names the one it was for. A session that a field names already, such as
+  // a Dispatch event's actor, is not named twice. A payload the fields show as text is shown so
+  // again beside the note.
+  const foreignSession = namedSessions.find((id) => !fields.includes(id));
+  if (foreignSession !== undefined) {
+    const note = `body names session ${foreignSession}`;
+    const noted = encodeCardFields(
+      laidOut.shown,
+      { note, ...issues },
+      payloadKey,
+      envelope.payload,
+      cardBound
+    );
+    fields = noted.toon;
+    payloadShownAsText ??= noted.payloadShownAsText;
   }
-  if (card === undefined) {
-    payloadShownAsText ??= `its layout is larger than the ${cardBound} bytes a card holds`;
-    card = encode({ envoy: { ...rendered, [payloadKey]: envelope.payload } });
-  }
-
+  // Each block's tag is chosen against the fields as well as the words of every block: the fields
+  // hold other authors' words too (an ask's question, an issue's title in a catch-up).
+  const card = blocks.length === 0 ? fields : `${fields}\n${wordsBlocks(fields, blocks)}`;
   return {
     skip: false,
     content: trailer === "" ? card : `${card}\n\n${trailer}`,
     envelope,
     ...(dispatchActor === undefined ? {} : { dispatchActor }),
+    ...(dispatchType === undefined ? {} : { dispatchType }),
     ...(delivery === undefined ? {} : { delivery }),
     ...(rejectedDelivery === undefined ? {} : { rejectedDelivery }),
     ...(malformedDelivery ? { malformedDelivery: true as const } : {}),

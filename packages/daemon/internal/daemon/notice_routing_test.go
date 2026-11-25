@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -39,13 +40,13 @@ type holderPublisher struct {
 	kept      []outboxPublish
 }
 
-func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	_, err := p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
+	_, err := p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 	return err
 }
 
-func (p *holderPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
-	return p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+func (p *holderPublisher) PublishKept(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	return p.answer(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency, keep: true})
 }
 
 // answer is the one body of both publishes: whether the listener kept the message, and its

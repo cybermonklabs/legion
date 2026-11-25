@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -845,8 +846,12 @@ func TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease(t *testi
 			if !ok {
 				t.Fatalf("the rig's publisher is a %T, which records no message", rig.runner.notices)
 			}
-			if messages := roleMessages(publisher, string(rig.token)); len(messages) != tc.messages {
-				t.Fatalf("messages to %s = %q, want %d", rig.token, messages, tc.messages)
+			messages := roleMessages(publisher, string(rig.token))
+			if len(messages) != tc.messages {
+				t.Fatalf("messages to %s = %+v, want %d", rig.token, messages, tc.messages)
+			}
+			if tc.messages == 1 && !namesTheWork(messages, rig.issue.Key, tc.work) {
+				t.Fatalf("messages to %s = %+v, want one %s record naming the change on %s", rig.token, messages, texts.IdleReleaseDeclined, tc.work.Head)
 			}
 		})
 	}

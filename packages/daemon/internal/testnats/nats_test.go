@@ -228,6 +228,41 @@ func TestEachTestGetsTheServerEmpty(t *testing.T) {
 	})
 }
 
+// A test leaves an external server as it took it: once the test has ended, its own cleanups and
+// its leak check run, nothing it made there is left, so the next suite on that server, which need
+// not empty it first, meets none of it (emptyAtTheEnd). The row takes the server in a subtest,
+// creates a stream and publishes to it. Once that subtest has ended, the row holds the server as a
+// take does, but empties nothing, since a take's reset would empty it and prove nothing, and reads
+// the streams the server holds. Main removes the package's container with the binary, so nothing
+// on it reaches a later suite, and a run on the container skips this row.
+func TestATestLeavesNoStreamOnTheExternalServer(t *testing.T) {
+	if server, _, err := external(); err == nil && server == "" {
+		t.Skipf("%s names no running NATS server, so the package's server is its container, which Main removes with the binary", externalURLEnv)
+	}
+	if !t.Run("makes a stream", func(t *testing.T) {
+		js := JetStream(t)
+		CreateStream(t, js, jetstream.StreamConfig{Name: "MADE_BY_THE_TEST", Subjects: []string{"made.>"}})
+		if _, err := js.Publish(t.Context(), "made.one", []byte("x")); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}) {
+		return
+	}
+	s := take(t)
+	conn, js, err := ready(t.Context(), s.url, t.Name())
+	if err != nil {
+		t.Fatalf("connect to the NATS server at %s: %v", s.url, err)
+	}
+	defer conn.Close()
+	names := js.StreamNames(t.Context())
+	for name := range names.Name() {
+		t.Errorf("stream %s is still on the NATS server after the test that made it ended", name)
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("list the NATS server's streams: %v", err)
+	}
+}
+
 // A test that publishes a burst without waiting for acks leaves messages the server routes after
 // the test ends. The next test, recreating a stream on the same subjects, finds none of them: the
 // reset waits for the previous test's connections to be gone first.
@@ -413,13 +448,14 @@ func onServersHost(t *testing.T, s *server, name string, args ...string) {
 }
 
 // The stream a test is handed must be empty. A create that comes back holding an earlier test's
-// work, which URL's purge says how a create can do, fails the test there, naming each message by
-// subject, stream sequence and stored time and each consumer by name, rather than reaching the
-// test as a count it reads later and reads as its own. A stream holding a consumer and no message
-// names the consumer alone: there is no message to name, and a sequence nothing stored is not
-// one. A stream whose range holds a deleted sequence names the stored messages after that gap and
-// counts the rest right: with more messages than the failure names one by one, the last of the
-// named ones is the message that far past the gap, and the remainder is the count of what is left.
+// work, which the purge in emptyStreams says how a create can do, fails the test there, naming
+// each message by subject, stream sequence and stored time and each consumer by name, rather than
+// reaching the test as a count it reads later and reads as its own. A stream holding a consumer
+// and no message names the consumer alone: there is no message to name, and a sequence nothing
+// stored is not one. A stream whose range holds a deleted sequence names the stored messages after
+// that gap and counts the rest right: with more messages than the failure names one by one, the
+// last of the named ones is the message that far past the gap, and the remainder is the count of
+// what is left.
 func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 	js := JetStream(t)
 	for _, row := range []struct {

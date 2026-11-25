@@ -3,14 +3,16 @@ import { join } from "node:path";
 import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import { deletedMark, editedMark } from "./actor-text";
-import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
+import { QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
 import { jsonLineRecord } from "./json-line-record";
+import { oneLine } from "./line-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
+import { type NamedWords, TextInFront, wordsBlocks } from "./words-block";
 
 /**
  * People's answers on every model request: what people wrote in the last 72
@@ -67,20 +69,26 @@ export function isNoAnswersRoute(error: unknown): boolean {
 }
 
 /**
- * One item as both the per-request list and `dispatch answers` print it, in this order: the time
- * the person wrote it, the person (with the agent that wrote it for them, through
- * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, `edited <time>` on an edited comment or message, and the mark every read
- * prints for a post its author withdrew (`deletedMark`), whose words the server sends empty); its
- * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
- * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
- * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
- * with the sentences Dispatch wrote for the asking agent; then the person's words in full.
+ * One item as both the per-request list and `dispatch answers` print it. The plugin's own lines
+ * come first: the time the person wrote it, the person (with the agent that wrote it for them,
+ * through `actorActText`) and what it is to the session (with `replaces an earlier answer` on an
+ * answer that replaced one, `edited <time>` on an edited comment or message, and the mark every
+ * read prints for a post its author withdrew (`deletedMark`), whose words the server sends empty);
+ * then its `dispatch://` reference and its issue or document, or that it is a direct message.
+ * Each of the two stays one line whatever an issue's title, a document's name or a token's name
+ * holds.
  *
- * The person's own words and Dispatch's stand on lines of their own, the label naming whose
- * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
- * wherever an item carries them rather than on the `declined` kind alone, so an item kind a
- * newer Dispatch adds keeps them.
+ * The words that others wrote follow, each in a block of its own named for its field
+ * (`wordsBlocks`): the ask's question (`question`), cut to 200 characters, on an answer, on a
+ * decline and on a reply in an ask's thread; on an answer, the options chosen (`selected`), one to
+ * a line, and an empty block when it chose none; on a decline, the sentences Dispatch wrote for
+ * the asking agent (`dispatch_words`); then the person's own words in full (`text`). Each block's
+ * tag is one that neither the plugin's lines nor the words of any block hold, so no words close
+ * their block, open another or stand as a line of the plugin's outside a block: a person's words
+ * that hold a whole item, its head line and a `Selected:` line included, stay inside their own
+ * block. The block's name says whose words it holds, so nobody reads Dispatch's instruction as
+ * something the person wrote. Dispatch's words print wherever an item carries them rather than on
+ * the `declined` kind alone, so an item kind a newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
   const phrase = sessionAnswerRelationPhrase(item.relation);
@@ -97,21 +105,28 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
       : owner === undefined
         ? item.ref
         : `${item.ref} · ${owner}`;
-  const lines = [head.join(" · "), where];
+  // A title or a name is another author's words on one of the plugin's lines, so it is made one
+  // line (`oneLine`): a line it started could stand as an item's head line, or open a block that
+  // a list's draw (`inFront`) takes for one of the item's.
+  const before = [head.join(" · "), where].map(oneLine).join("\n");
+  const blocks: NamedWords[] = [];
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -
-    // and not what the person wrote in this item, which prints whole below; it is cut to the
-    // length every surface quotes a question at (QUESTION_HEAD).
-    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
+    // and not what the person wrote in this item; it is cut to the length every surface quotes a
+    // question at (QUESTION_HEAD).
+    blocks.push({
+      name: "question",
+      words: { text: textHead(item.ask.question, QUESTION_HEAD) },
+    });
   }
   if (item.kind === "answer") {
-    const selected = item.selected ?? [];
-    lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
+    blocks.push({ name: "selected", words: { text: (item.selected ?? []).join("\n") } });
   }
-  const words = dispatchWordsText(item.dispatch_words);
-  if (words !== undefined) lines.push(words);
-  if (item.text !== "") lines.push(item.text);
-  return lines.join("\n");
+  if (item.dispatch_words !== undefined && item.dispatch_words !== "") {
+    blocks.push({ name: "dispatch_words", words: { text: item.dispatch_words } });
+  }
+  if (item.text !== "") blocks.push({ name: "text", words: { text: item.text } });
+  return blocks.length === 0 ? before : `${before}\n${wordsBlocks(before, blocks)}`;
 }
 
 /** The items written inside the 72 hours before `now`, in the order given. */
@@ -247,6 +262,12 @@ export interface RenderSessionAnswersOptions {
  * When any item is left out, the last line counts them and names `dispatch answers` (no command
  * with `withoutCommand`). Items are
  * filtered by the 72-hour window at `now` first. Undefined when the window holds nothing.
+ *
+ * Each item's blocks take their tags again against all of the list in front of them (`TextInFront`,
+ * as `inFront` would give them): the failure reason and every earlier item hold other authors'
+ * words, so no two blocks of the list share a tag, and nothing ahead of a block opens or closes it.
+ * An item whose tags nothing ahead holds is joined exactly as `renderSessionAnswerItem` gives it.
+ * The list is scanned for tags once, as it grows, and the first item that does not fit ends it.
  */
 export function renderSessionAnswers(
   items: readonly SessionAnswer[],
@@ -266,50 +287,51 @@ export function renderSessionAnswers(
       ? SESSION_ANSWERS_MARKER
       : `${SESSION_ANSWERS_MARKER}\nAs read at ${options.cached.readAt}; this read failed: ${failureSentence(options.cached.reason)}`;
   const namesCommand = options.withoutCommand !== true;
-  const blocks: string[] = [];
-  let length = header.length;
+  const list = new TextInFront(header);
+  let text = header;
+  let shown = 0;
   for (const item of inWindow) {
-    const block = renderSessionAnswerItem(item);
-    const after = count - blocks.length - 1;
-    const needed =
-      length + 2 + block.length + (after === 0 ? 0 : 2 + leftOutLine(after, namesCommand).length);
+    list.card(renderSessionAnswerItem(item));
+    const next = list.text();
+    const after = count - shown - 1;
+    const needed = next.length + (after === 0 ? 0 : 2 + leftOutLine(after, namesCommand).length);
+    // The item that does not fit is in `list` now, but the loop ends here and reads `list` no more.
     if (needed >= SESSION_ANSWERS_MAX_CHARS) break;
-    blocks.push(block);
-    length += 2 + block.length;
+    text = next;
+    shown += 1;
   }
-  const leftOut = count - blocks.length;
-  const text = [
-    header,
-    ...blocks,
-    ...(leftOut === 0 ? [] : [leftOutLine(leftOut, namesCommand)]),
-  ].join("\n\n");
-  return text;
+  const leftOut = count - shown;
+  return leftOut === 0 ? text : `${text}\n\n${leftOutLine(leftOut, namesCommand)}`;
 }
 
 /** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the
- *  per-request list's item format and with no cap, or a line saying there is none. */
+ *  per-request list's item format and with no cap, each item's blocks drawn against all in front
+ *  of them as that list draws them (`TextInFront`), or a line saying there is none. */
 export function renderSessionAnswersList(
   items: readonly SessionAnswer[],
   options: { readonly now: number | Date }
 ): string {
   const shown = withinWindow(items, Number(options.now));
   if (shown.length === 0) return "No person wrote to this session in the last 72 hours.";
-  return [
-    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session in the last 72 hours, newest first, word for word:`,
-    ...shown.map(renderSessionAnswerItem),
-  ].join("\n\n");
+  const list = new TextInFront(
+    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session in the last 72 hours, newest first, word for word:`
+  );
+  for (const item of shown) list.card(renderSessionAnswerItem(item));
+  return list.text();
 }
 
-/** A read's failure reason as the end of a sentence: whitespace collapsed, and a full stop added
- *  only when the reason does not already end in `.`, `?` or `!`. */
+/** A read's failure reason as the end of a sentence: on one line (`oneLine`), since the reason
+ *  can quote other authors' words, and a full stop added only when it does not already end in
+ *  `.`, `?` or `!`. */
 function failureSentence(reason: string): string {
-  const text = reason.replace(/\s+/g, " ").trim();
+  const text = oneLine(reason).trim();
   return /[.?!]$/.test(text) ? text : `${text}.`;
 }
 
-/** The line a request carries in place of the list when no list it could carry renders. */
+/** The line a request carries in place of the list when no list it could carry renders: one line,
+ *  whatever the reason holds (`oneLine`). */
 export function sessionAnswersFailureLine(reason: string): string {
-  return `${FAILURE_MARKER}${reason.replace(/\s+/g, " ").trim()}); run \`dispatch answers\`.]`;
+  return `${FAILURE_MARKER}${oneLine(reason).trim()}); run \`dispatch answers\`.]`;
 }
 
 /** The last list read for a session from one Dispatch, as memory and `answers.json` keep it. */

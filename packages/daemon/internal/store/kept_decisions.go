@@ -65,10 +65,19 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 	if !confirmed {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
-		select named.issue, named.ref, named.decision, named.actor, named.at, $1, $2
+	// The words go back with the row, read from the mark's own fields (record.ParkedDecision.Mark),
+	// the count of the rest a notice cut off them (rest) among them, so the resend names them as
+	// the first send did; a mark an older daemon wrote carries none, and its row goes back with none.
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, words, held_by_claim, held_by_delivery)
+		select named.issue, named.ref, named.decision, named.actor, named.at,
+			case when named.answer is not null or named.options is not null or named.answer_at is not null or named.more is not null
+				or named.rest is not null
+				then jsonb_strip_nulls(jsonb_build_object('text', named.answer, 'options', named.options, 'by', named.actor,
+					'at', named.answer_at, 'more', named.more, 'rest', named.rest))
+			end, $1, $2
 		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb))
-			as named (ref text, at timestamptz, issue text, decision text, actor text)
+			as named (ref text, at timestamptz, issue text, decision text, actor text, options jsonb, answer text, answer_at text, more boolean,
+				rest integer)
 		join issues owner on owner.key = named.issue
 		join claims holder on holder.token = $1 and holder.tree = owner.tree
 		where named.decision is not null and named.actor is not null

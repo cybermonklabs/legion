@@ -12,17 +12,17 @@
 // Step ask); the implementer's topic takes no such message, and the architect is told once, in a
 // checks-red notice naming merging and the merger. The merger's push of its merge lands, as a
 // synchronize to a new head made by the implement App, which the merger merges as: the merger is
-// told the merge landed and to merge only once the reviewer's approval of the new head is on the
-// pull request, and the reviewer is asked to read the merge with `git show --remerge-diff` and
-// approve the new head (R2). A required check that settles red on the new head is told to the
-// merger and the architect, and not to the implementer. GitHub's merge of the pull request closes
-// the issue. Throughout, the issue never enters implementing: every move the daemon logs for it goes
-// from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
-// and the daemon writes no in_progress status to Dispatch. Last, the merger's own
-// prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
-// hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
-// `-tags e2e`, owns the nats-server it runs against, and takes the PostgreSQL from
-// LEGION_TEST_PG_DSN, which it starts none of.
+// told the merge landed, in the landed's record, which names the new head as the approval owed and
+// whose reader's prompt has it merge only once the reviewer's approval of that head is on the pull
+// request, and the reviewer is asked to read the merge with `git show --remerge-diff` and approve
+// the new head (R2). A required check that settles red on the new head is told to the merger and
+// the architect, and not to the implementer. GitHub's merge of the pull request closes the issue.
+// Throughout, the issue never enters implementing: every move the daemon logs for it goes from
+// accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing, and
+// the daemon writes no in_progress status to Dispatch. Last, the merger's own prompt, as its launch
+// carries it, is printed beside what the daemon sent it, for a reader to hold the one against the
+// other. scripts/e2e/conflict-merger.sh builds this driver with `-tags e2e`, owns the nats-server
+// it runs against, and takes the PostgreSQL from LEGION_TEST_PG_DSN, which it starts none of.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
 // other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
@@ -68,7 +68,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +81,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -262,7 +262,7 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	r.note("read back: %s is in %s, status %s", r.key, retro.Phase, retro.Status)
 
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
-	prompt := r.imp.takeTask("Phase: retro")
+	prompt := r.imp.takeTask("\nphase: " + string(phase.Retro))
 	r.note("read back: the implementer was launched, registered and prompted its retro task (%s)", firstLine(prompt.Message))
 	r.published(r.key)
 	if asked := r.loggedFor(conflictAskedLine, r.key); len(asked) != 0 {
@@ -302,10 +302,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
 		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
-	if told[0].Message != ask.Message(r.key, record.PullRequest{Repo: liveRepo}) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
-		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, record.PullRequest{Repo: liveRepo}))
+	if !r.toldRecord(told[0], ask, record.PullRequest{Repo: liveRepo}) {
+		t.Fatalf("the merger was told %q with %s, want the merge forward's ask to the merger %s", told[0].Message, told[0].Payload, r.recordOf(ask, record.PullRequest{Repo: liveRepo}))
 	}
-	r.note("read back: one message on the merger's role topic — %s", told[0].Message)
+	r.note("read back: one message on the merger's role topic — %s: %s", told[0].Message, told[0].Payload)
 	checksRed := func() ([]record.Notice, []record.Notice) {
 		var red, other []record.Notice
 		for _, notice := range r.architectNoticesSince() {
@@ -322,13 +322,14 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 		red, other = checksRed()
 		return len(red) > 0
 	})
-	if len(red) != 1 || red[0].Phase != phase.Merging || !strings.Contains(red[0].Reason, "the merger is asked to merge "+conflictBase+" forward") {
-		t.Fatalf("the architect was told the checks-red notices %+v on the move into merging, want one naming merging and the merger", red)
+	if len(red) != 1 || red[0].Phase != phase.Merging || red[0].Asked != claim.RoleMerger || red[0].Why != string(record.ConflictMergeNext) ||
+		red[0].Reason != "" {
+		t.Fatalf("the architect was told the checks-red notices %+v on the move into merging, want one naming merging and the merger asked", red)
 	}
-	r.note("read back: one checks-red notice on the architect's role topic, naming %s — %s", red[0].Phase, red[0].Reason)
+	r.note("read back: one checks-red notice on the architect's role topic, naming %s, the %s asked, why %s", red[0].Phase, red[0].Asked, red[0].Why)
 
 	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
-	task := r.merger.takeTask("Phase: merging")
+	task := r.merger.takeTask("\nphase: " + string(phase.Merging))
 	r.note("read back: the merger registered and was prompted its merging task — %s", task.Message)
 	r.published(r.key)
 	time.Sleep(liveSettle)
@@ -351,12 +352,13 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 
 // Step 3. The merger pushes its merge of the base, a new head, and GitHub's synchronize arrives,
 // sent by the implement App the merger pushes as: the merge forward landed (workflow's
-// mergeForwardLanded). The merger, the worker of merging, is told so on its role topic, with both
-// heads, how to read what the merge changed and to merge the new head only once the reviewer's
-// approval of it is on the pull request; the reviewer is asked on its own to read the merge with
-// `git show --remerge-diff` and approve the new head or request changes. The record holds the
-// merge forward asked of the merger, landed at the new head, with the reviewer's review asked. The
-// merger's connection is sent nothing, and the issue stays in merging.
+// mergeForwardLanded). The merger, the worker of merging, is told so on its role topic, in the
+// landed's record naming both heads, whose reader's prompt has it read the merge and merge the new
+// head only once the reviewer's approval of it is on the pull request; the reviewer is asked on its
+// own, in the review's record, to read the merge (`git show --remerge-diff`, as its prompt says)
+// and approve the new head or request changes. The record holds the merge forward asked of the
+// merger, landed at the new head, with the reviewer's review asked. The merger's connection is
+// sent nothing, and the issue stays in merging.
 func (r *conflictMergerLive) mergerMergeLands() {
 	t := r.t
 	r.github.conflicts(false)
@@ -368,21 +370,20 @@ func (r *conflictMergerLive) mergerMergeLands() {
 		Landed: mergerMergeHead, Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 2, bound)
 	// The landing asked the reviewer, since the issue's task has a reviewer step, so the merger's
-	// landing holds its merge to that approval (MergeForward.ReviewAsked).
+	// landing holds its merge to that approval (MergeForward.ReviewAsked): its record names the new
+	// head as the approval owed.
 	landedPR := record.PullRequest{Repo: liveRepo, MergeForward: &record.MergeForward{Landed: mergerMergeHead, ReviewAsked: true}}
-	if told[1].Message != landed.Message(r.key, landedPR) ||
-		!strings.Contains(told[1].Message, "only once the reviewer's approval of that head is on the pull request") {
-		t.Fatalf("the merger was told %q, want the landing %q", told[1].Message, landed.Message(r.key, landedPR))
+	if !r.toldRecord(told[1], landed, landedPR) || !strings.Contains(told[1].Payload, `"approval_owed":"`+mergerMergeHead+`"`) {
+		t.Fatalf("the merger was told %q with %s, want the landing %s", told[1].Message, told[1].Payload, r.recordOf(landed, landedPR))
 	}
-	r.note("read back: the merger's role topic took the landing — %s", told[1].Message)
+	r.note("read back: the merger's role topic took the landing — %s: %s", told[1].Message, told[1].Payload)
 	review := landed
 	review.Role, review.Step = claim.RoleReviewer, record.MergeForwardReview
 	asked := r.awaitHeard(claim.RoleReviewer, 1, bound)
-	if asked[0].Message != review.Message(r.key, landedPR) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
-		!strings.Contains(asked[0].Message, mergerAcceptedHead) {
-		t.Fatalf("the reviewer was told %q, want the review of the merge %q", asked[0].Message, review.Message(r.key, landedPR))
+	if !r.toldRecord(asked[0], review, landedPR) {
+		t.Fatalf("the reviewer was told %q with %s, want the review of the merge %s", asked[0].Message, asked[0].Payload, r.recordOf(review, landedPR))
 	}
-	r.note("read back: the reviewer's role topic took the review ask — %s", asked[0].Message)
+	r.note("read back: the reviewer's role topic took the review ask — %s: %s", asked[0].Message, asked[0].Payload)
 	logged := r.awaitLogged("workflow: the merge forward landed", r.key, bound)
 	r.note("read back: the daemon logged %q for %s: head %v, landed %v, phase %v", logged.Message, r.key, logged.Attrs["head"], logged.Attrs["landed"], logged.Attrs["phase"])
 	pr := r.pullRequest()
@@ -415,13 +416,18 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 	r.publishSettlementOf(r.number, mergerMergeHead, 1, nil, []string{conflictRequiredCheck})
 	r.note("drove CI's settlement of #%d at %s: %s failed", r.number, mergerMergeHead, conflictRequiredCheck)
 	bound := testwait.Bounded(t, time.Minute, time.Second)
-	prefix := fmt.Sprintf("Pull request #%d: ", r.number)
 	for _, role := range []claim.Role{claim.RoleMerger, claim.RoleArchitect} {
 		told := r.awaitHeard(role, 1, bound)
-		if !strings.HasPrefix(told[0].Message, prefix) || !strings.Contains(told[0].Message, strconv.Quote(conflictRequiredCheck)) {
-			t.Fatalf("the %s was told %q after the settlement, want the settled checks of #%d naming %s", role, told[0].Message, r.number, conflictRequiredCheck)
+		var settled texts.CISettledRecord
+		if err := json.Unmarshal([]byte(told[0].Payload), &settled); err != nil {
+			t.Fatalf("decode the %s's message %q: %v", role, told[0].Payload, err)
 		}
-		r.note("read back: the %s's role topic took — %s", role, told[0].Message)
+		if told[0].Message != noticeSummary(texts.CISettled, r.key) || settled.Head != mergerMergeHead ||
+			!slices.ContainsFunc(settled.NotPassed, func(red texts.CheckConclusion) bool { return red.Check == conflictRequiredCheck }) {
+			t.Fatalf("the %s was told %q with %s after the settlement, want the ci-settled record of #%d at %s naming %s not passed",
+				role, told[0].Message, told[0].Payload, r.number, mergerMergeHead, conflictRequiredCheck)
+		}
+		r.note("read back: the %s's role topic took — %s: %s", role, told[0].Message, told[0].Payload)
 	}
 	r.published(r.key)
 	time.Sleep(liveSettle)

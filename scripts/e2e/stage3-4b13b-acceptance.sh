@@ -529,7 +529,20 @@ reviewer_approved() {
 # never main), testers, reviewers, retro, and a hold for each merger until its merge scenario is set
 # up. It also retargets any proof pull request whose base is not the scratch base, and logs it.
 # Planners and architects are instructed by the script, where each scenario needs them.
-assigned_in() { jq -e -s --arg a "Issue: $2. Phase: $3." 'any(.[]; .type == "message" and .message.role == "user" and ([.message.content[]? | .text? // empty] | join(" ") | contains($a)))' "$1" >/dev/null; }
+# assigned_in FILE ISSUE PHASE: a user message of the session FILE holds the daemon's task of ISSUE's
+# PHASE. The task is a record that opens with its kind and issue on two lines of their own,
+# `kind: phase-assignment` (or `kind: phase-resume`) and `issue: <ISSUE>`, then its `title` and
+# `phase: <PHASE>` lines; a note the delivery puts in front of the task is a record of another kind.
+assigned_in() {
+  jq -e -s --arg issue "$2" --arg phase "$3" '
+    def task_of:
+      split("\n") as $l | any(range(0; $l | length);
+        ($l[.] | IN("kind: phase-assignment", "kind: phase-resume"))
+          and $l[. + 1] == "issue: " + $issue and $l[. + 3] == "phase: " + $phase);
+    any(.[]; .type == "message" and .message.role == "user"
+      and (.message.content | if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end
+        | task_of))' "$1" >/dev/null
+}
 instruction_for() {
   local issue=$1 role=$2 phase=$3
   case "$role:$phase" in
@@ -1065,7 +1078,9 @@ printf '%s\n' "$tester_own" >"$evidence/tester-own-summary-head-$root1.txt"
 instructed "$root1" tester testing || note "$root1's tester was not instructed before it completed; its summary is its own"
 [ -n "$planner_line" ] || soft "no planning phase-finished notice reached $root1's architect"
 grep -qF 'verdict:' <<<"$planner_line" && soft "the planner's phase-finished notice carries a verdict"
-note "tester notice: $({ grep -o 'summary: \\"TESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / $(grep -o 'verdict: [a-z]*' <<<"$tester_line" || true)"
+# The tester's summary is the worker's own words, so the card carries them in a `<summary …>` block
+# after its fields; the session line holds the card as a JSON string, where each line break is `\n`.
+note "tester notice: $({ grep -o '<summary[^>]*>\\nTESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / $(grep -o 'verdict: [a-z]*' <<<"$tester_line" || true)"
 note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$planner_line" || true)"
 pass
 
@@ -1212,10 +1227,18 @@ until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
 reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')
 note "$root3's gate closed on spec version $reclosed while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
+# gate_told ISSUE ROLE GATE VERSION: the claim's session holds an entry, one line of its JSONL (a task
+# or an Envoy card), that carries the fields of the gate's move as the daemon writes them: `gate:
+# GATE` beside `version: VERSION`, the field of a gate-moved message or the `gate_version` of a
+# design-news record. Both in one entry tie the move to that version.
+gate_told() {
+  { claim_session_text "$1" "$2" || true; } | grep -F -- "gate: $3" | grep -qE -- "version: $4([^0-9]|\$)"
+}
+# gate_card_told ISSUE ROLE GATE VERSION is gate_told for an Envoy delivery alone: the role message.
+gate_card_told() { notice_line "$1" "$2" "gate: $3" | grep -qE -- "version: $4([^0-9]|\$)"; }
 # The closed role message comes first: an instruction that reached the merger before it would be
 # answered as an open gate allows, and its WAITING line, if any, would be for another reason.
-closed="The design gate of $root3 closed"
-until_true 600 "the closed message of $root3's gate to reach its merger" session_contains "$root3" merger "$closed"
+until_true 600 "the closed message of $root3's gate to reach its merger" gate_told "$root3" merger closed "$reclosed"
 marker_gate="GATED-MERGE-$stamp"
 send_agent "$root3" merger "Acceptance merge operation ($marker_gate): merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Where your instructions say to wait first, wait as they say: this operation still stands when the wait ends."
 # merger_waits_after MARKER: $root3's merger session holds, after the first entry carrying MARKER
@@ -1242,10 +1265,9 @@ note "$root3's merger ended its turn on a WAITING line, and $repo#${pr_of[$root3
 dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
 until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' --argjson v '$reclosed' '.issues[\$issue].designGate.approvedVersion == \$v'"
-opening="The design gate of $root3 opened: a person approved version $reclosed"
-until_true 600 "the opening of version $reclosed to reach $root3's merger" session_contains "$root3" merger "$opening"
+until_true 600 "the opening of version $reclosed to reach $root3's merger" gate_told "$root3" merger open "$reclosed"
 how="a task"
-! notice_delivered "$root3" merger "$opening" || how="the opened role message"
+! gate_card_told "$root3" merger open "$reclosed" || how="the opened role message"
 await_merger_merge "$repo" "${pr_of[$root3]}"
 wait_for_phase "$root3" "done" 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true

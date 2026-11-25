@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -78,8 +78,8 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", writes, want)
 		}
 		if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing ||
-			!strings.Contains(starts[0].Task, "Reason: the issue was set to todo while its phase was held.") {
-			t.Fatalf("start rows = %+v, want one implementer start of implementing whose task carries the daemon's own reason", starts)
+			!hasLines(starts[0].Task, "phase: "+string(phase.Implementing), "retried: "+workflow.RetriedByTodo) {
+			t.Fatalf("start rows = %+v, want one implementer start of implementing whose task says a todo retried it", starts)
 		}
 		assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	})
@@ -164,7 +164,10 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		if writes := writesOf(t, pool, child); !reflect.DeepEqual(writes, []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "todo", "")}) {
 			t.Fatalf("status writes of %s after its promotion = %+v, want the one in_progress over todo", child, writes)
 		}
-		want := []record.Notice{{Kind: "held", Role: claim.RoleTester, Phase: phase.Testing, Reason: string(record.HoldEscalated)}}
+		want := []record.Notice{{
+			Kind: texts.Held, Issue: child, Role: claim.RoleTester, Phase: phase.Testing,
+			Hold: texts.HoldCarried, Reason: string(record.HoldEscalated),
+		}}
 		if held := heldNoticesOf(t, pool, child); !reflect.DeepEqual(held, want) {
 			t.Fatalf("held notices of %s after its promotion = %+v, want %+v", child, held, want)
 		}

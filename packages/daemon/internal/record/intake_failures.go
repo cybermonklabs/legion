@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // giveUpNoticeDelay is how long the intake-gave-up notice a give-up opens waits for its publish,
@@ -459,7 +460,9 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 // leased row is being published, and a row the outbox gave back to retry may have reached the
 // controller in the attempt that failed, while its retry publishes under the same key (OutboxKey),
 // which Envoy does not deliver twice. So with no row left to join it opens one on the project
-// key, due giveUpNoticeDelay after now, counting and naming giveUp.
+// key, due giveUpNoticeDelay after now, counting and naming giveUp. Either way the row's notice
+// is the record of its kind (GaveUpNotice), so a row an older daemon opened, which names no
+// issue, names the project key once a give-up joins it.
 func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project string, giveUp NoticeGiveUp, now time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.intake_give_up_notice:' || $1::text))`, project); err != nil {
 		return 0, fmt.Errorf("lock %s's intake-gave-up notice: %w", project, err)
@@ -468,7 +471,11 @@ func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3 and lease_until is null and attempts = 0
 		order by id limit 1 for update`, string(OutboxKindControllerNotice), project, string(IntakeGaveUpNotice)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		opened, err := NewOutboxRow(project, ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}, now.Add(giveUpNoticeDelay))
+		notice, err := ControllerNoticeOf(GaveUpNotice(project, 1, []NoticeGiveUp{giveUp}))
+		if err != nil {
+			return 0, fmt.Errorf("open %s's intake-gave-up notice: %w", project, err)
+		}
+		opened, err := NewOutboxRow(project, notice, now.Add(giveUpNoticeDelay))
 		if err != nil {
 			return 0, fmt.Errorf("open %s's intake-gave-up notice: %w", project, err)
 		}
@@ -481,10 +488,14 @@ func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 	if err != nil {
 		return 0, fmt.Errorf("read %s's intake-gave-up notice: %w", project, err)
 	}
-	notice, _ := payload.(ControllerNotice)
-	notice.Count++
-	if len(notice.GiveUps) < giveUpNoticeNames {
-		notice.GiveUps = append(notice.GiveUps, giveUp)
+	joined, _ := payload.(ControllerNotice)
+	giveUps := joined.GiveUps
+	if len(giveUps) < giveUpNoticeNames {
+		giveUps = append(giveUps, giveUp)
+	}
+	notice, err := ControllerNoticeOf(GaveUpNotice(project, joined.Count+1, giveUps))
+	if err != nil {
+		return 0, fmt.Errorf("count a give-up in %s's intake-gave-up notice %d: %w", project, row.ID, err)
 	}
 	counted, err := NewOutboxRow(row.Issue, notice, row.NextAt)
 	if err != nil {
@@ -494,6 +505,13 @@ func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 		return 0, fmt.Errorf("count a give-up in %s's intake-gave-up notice %d: %w", project, row.ID, err)
 	}
 	return row.ID, nil
+}
+
+// GaveUpNotice is project's intake-gave-up notice, as the record of its kind
+// (texts.IntakeGaveUpRecord): its issue is the project key, as a tick's is, and it counts count
+// give-ups and names giveUps, the first of them, at most giveUpNoticeNames (countIntakeGiveUp).
+func GaveUpNotice(project string, count int, giveUps []NoticeGiveUp) texts.IntakeGaveUpRecord {
+	return texts.IntakeGaveUpRecord{NoticeHead: texts.NoticeHead{Kind: texts.IntakeGaveUp, Issue: project}, Count: count, GiveUps: giveUps}
 }
 
 // ClearIntakeFailure deletes project's open failure of the message consumer delivered at

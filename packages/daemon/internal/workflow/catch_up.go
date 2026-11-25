@@ -3,8 +3,8 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // claimReady tells an architect at each launch the issues it owns. For a child's own architect it
@@ -53,12 +54,12 @@ import (
 // once for the row that wrote it. A launch's own ready takes none, since the launch took its turn
 // at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
 //
-// A launch's ready that carries the sentence of what the last let-go of the architect's process
-// ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
-// of a relaunched architect can be this catch-up's rather than its prompt's, and the
-// architect then reads that its subagent died before it reads its issues. A prompt the claim's
-// machine sends tells the same record and is what marks it told, so a catch-up that is held,
-// superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
+// A launch's ready that carries what the last let-go of the architect's process ended
+// (intake.ClaimReady.Relaunch) has its catch-up carry it (QueueCatchUp): the first turn of a
+// relaunched architect can be this catch-up's rather than its prompt's, and the architect then
+// reads that its subagent died with its issues. A prompt the claim's machine sends tells the same
+// record and is what marks it told, so a catch-up that is held, superseded or never queued here
+// costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
@@ -98,13 +99,12 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // issue's own architect and to no other (the daemon's noticeArchitect): a child's catch-up that
 // reached the architect above it would be read there as that architect's own state.
 //
-// relaunch is the sentence of what the last let-go of the architect's process ended, which a
-// launch's ready carries while the claim's record of it is untold (intake.ClaimReady.Relaunch),
-// and "" from every other caller. The notice's reason — the text the architect reads of the
-// catch-up — opens with it, so the architect reads what died with its last process before it
-// reads its issues. The copy tells nothing: the record is the claim's, and it is told at the
-// confirmation of a prompt the claim's machine sends that tells the same record (supervise's
-// confirm, Delivery.message), which the outbox's publish of this notice does not see.
+// relaunch is what the last let-go of the architect's process ended, which a launch's ready
+// carries while the claim's record of it is untold (intake.ClaimReady.Relaunch), and nil from
+// every other caller; the notice carries it beside the tree. The copy tells nothing: the record is
+// the claim's, and it is told at the confirmation of a prompt the claim's machine sends that tells
+// the same record (supervise's confirm, Delivery.message), which the outbox's publish of this
+// notice does not see.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
@@ -114,8 +114,12 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // a live lease: that row may be publishing now, and the decisions the catch-up claims are that
 // telling's to settle, so this one names only what nobody claims. A child's names no decision: what
 // a person decided while nobody could hear it is kept for the tree (ParkedDecisionTask keys it by
-// tree) and stays the root architect's, so a child's catch-up carries no Decided and no Kept. The
-// notice goes through the outbox like any other, so it is held and re-held as they are.
+// tree) and stays the root architect's, so a child's catch-up carries no Kept. Each decision it
+// names carries the person's words cut to texts.OneAct where it carries the words of one decision
+// and to texts.EachOfSeveral each where it carries those of several (keptFacts, keptBound), named
+// in the words object by their path with the person and the time; the row keeps them whole. A
+// kept approval names its document as a dispatch:// link (stepRef), as the gates do.
+// The notice goes through the outbox like any other, so it is held and re-held as they are.
 //
 // paced is the moment the daemon's wake pacing reserved for this catch-up, which is both the
 // notice row's next_at and the moment the notice itself carries (record.Notice.PacedAt): the zero
@@ -126,8 +130,9 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
-func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
+func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,
+	relaunch *texts.RelaunchFacts, now, paced time.Time) error {
+	catchUp, err := treeCatchUp(ctx, tx, store, steps, issue)
 	if err != nil {
 		return err
 	}
@@ -135,8 +140,8 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if err := store.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
 		return err
 	}
+	told := texts.CatchUpRecord{NoticeHead: texts.NoticeHead{Kind: texts.CatchUp, Issue: issue.Key}, CatchUp: &catchUp, Relaunch: relaunch}
 	var kept *record.KeptDecisions
-	reason := fmt.Sprintf("the issues under %s, which you own, at generation %d as the daemon records them now; start or resume your issue as your role says", issue.Key, issue.Generation)
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		// A decision kept since the start's task was written (one a person made while the tree's
 		// architect claim had ended, before this relaunch), and one a start or catch-up that
@@ -144,26 +149,55 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		// start or catch-up claims (a start still queued keeps its own), and claims what it names
 		// in this transaction; its publish forgets those rows (the outbox's notice), and a
 		// catch-up a newer one supersedes hands them to a fresh catch-up (HandOverKept).
-		var decided string
-		if decided, kept, err = ParkedDecisionTask(ctx, tx, store, steps, issue); err != nil {
+		if kept, err = keptOwed(ctx, tx, store, steps, issue.Key); err != nil {
 			return err
 		}
-		catchUp.Decided, catchUp.Kept = decided, kept
-		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
+		if kept != nil {
+			catchUp.Kept, told.Words = keptFacts(*kept)
+			if kept.Approved > 0 {
+				catchUp.Kept.Document = stepRef(issue.Key, kept.Step.OrSpec())
+			}
+		}
 	}
-	if len(awaiting) > 0 {
-		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
-	}
-	if relaunch != "" {
-		reason = relaunch + "\n\n" + reason
+	notice, err := record.NoticeOf(told)
+	if err != nil {
+		return err
 	}
 	at := now
-	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
 	if !paced.IsZero() {
 		at = paced
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+}
+
+// keptFacts is kept as a catch-up names it: each decision with the person's words cut to the bound
+// keptBound gives, as the kept-decisions task cuts them (KeptDecisionsOf), and the words object
+// that names each one by its path with the person, the time they wrote it and the count of the
+// rest, or that more follows than the act's event carried. A kept approval names its step as the
+// kept-decisions task does: the spec where an older daemon kept the approval with no step.
+// QueueCatchUp names the approval's document, which the root's key gives.
+func keptFacts(kept record.KeptDecisions) (*texts.KeptFacts, map[string]texts.WordsMeta) {
+	facts := &texts.KeptFacts{}
+	if kept.Approved > 0 {
+		facts.KeptApproval = texts.KeptApproval{Step: string(kept.Step.OrSpec()), Approved: kept.Approved, Latest: kept.Latest}
+	}
+	bound := keptBound(kept.Decisions)
+	var words map[string]texts.WordsMeta
+	for i, mark := range kept.Decisions {
+		named := texts.DecisionMark{Ref: mark.Ref, At: mark.At, Issue: mark.Issue, Decision: string(mark.Decision), Actor: mark.Actor,
+			Options: mark.Options, AnswerAt: mark.AnswerAt, More: mark.More}
+		if mark.Answer != "" {
+			carried := mark.Carry(bound)
+			named.Answer, named.More = carried.Text, carried.More
+			if words == nil {
+				words = map[string]texts.WordsMeta{}
+			}
+			words[fmt.Sprintf("catch_up.kept.decisions[%d].answer", i)] = texts.WordsMeta{By: mark.Actor, At: mark.AnswerAt, Rest: carried.Rest, More: carried.More}
+		}
+		facts.Decisions = append(facts.Decisions, named)
+	}
+	return facts, words
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
@@ -299,46 +333,56 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
-// whether its old root's gate came with it, each design-gate step the root must hold open and how
-// it stands, and every issue of the tree in key order. The steps are the ones the tree is gated on
-// (classify.TreeSteps), so a criteria row the architect registered beside a deployment that gates
-// spec and not criteria is listed after the spec, gated as the spec is. A child's architect owns
-// the child and every issue whose recorded parent chain reaches it (record.Beneath), listed in key
-// order at the child's own generation: a child registers no gate and no hand-over creates one, so
-// its catch-up states no step and is neither handed over nor carried.
+// whether its old root's gate came with it, and each design-gate step the root must hold open, its
+// document (stepDocuments, the start task's reading of the same rows: a dispatch:// link on the
+// issue whose document the step's row is bound to, the old root's for a row a carried gate
+// brought, or the bare artifact reference where the record does not say that issue, which the
+// outbox names from Dispatch when it publishes the catch-up, NameCatchUpDocuments) and
+// how it stands. The steps are the ones the tree is gated on (classify.TreeSteps), so a criteria
+// row the architect registered beside a deployment that gates spec and not criteria is listed
+// after the spec, gated as the spec is. A child's architect owns the child and every issue whose
+// recorded parent chain reaches it (record.Beneath), at the child's own generation: a child
+// registers no gate and no hand-over creates one, so its catch-up states no step and is neither
+// handed over nor carried.
 //
-// With it come the keys, in key order, of the listed issues waiting for this architect's
+// Of the issues it owns, in key order, each one that is not done is named with its fields, and
+// each done one by its key alone. Beside them come the children not yet released whole
+// (unreleasedChildren), and the keys, in key order, of the issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
 // that moved an issue there went to the architect that owned the issue then: a root's ends
 // undelivered while the root's architect claim has failed (the outbox's notice), and a child's
 // went past its failed architect to the architect above it (the owner walk). So an architect that
-// comes back learns of the wait from its catch-up alone; the reason names these keys so that the
-// catch-up, which a revived architect reads as its issues already running, says what is the
+// comes back learns of the wait from its catch-up alone, and the list says what is the
 // architect's own to do.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, error) {
-	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
+func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (texts.CatchUpFacts, error) {
+	catchUp := texts.CatchUpFacts{Generation: issue.Generation, Gates: []texts.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		handed, err := ArchitectCarried(ctx, tx, store, issue)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return texts.CatchUpFacts{}, err
 		}
 		if handed != nil {
 			catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 		}
 		gates, err := store.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
-			return record.CatchUp{}, nil, err
+			return texts.CatchUpFacts{}, err
+		}
+		documents, err := stepDocuments(ctx, tx, store, gates)
+		if err != nil {
+			return texts.CatchUpFacts{}, err
 		}
 		gated := classify.TreeSteps(steps, gates)
 		required := classify.RequiredSteps(gated)
-		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
+		catchUp.Gates = make([]texts.CatchUpGate, 0, len(required))
 		for _, step := range required {
-			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
+			stated := texts.CatchUpGate{Step: string(step), Gated: slices.Contains(gated, step), Document: stepRef(issue.Key, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 				if recorded.ApprovedVersion != nil {
 					stated.Approved = *recorded.ApprovedVersion
 				}
+				stated.Document = documents[step]
 			} else {
 				stated.Unregistered = true
 			}
@@ -347,19 +391,23 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	members, err := store.TreeIssues(ctx, tx, issue.Tree)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return texts.CatchUpFacts{}, err
 	}
 	owned := map[string]bool{issue.Key: true}
 	for _, under := range record.Beneath(issue, members) {
 		owned[under.Key] = true
 	}
-	catchUp.Issues = make([]record.CatchUpIssue, 0, len(owned))
+	catchUp.Issues = make([]texts.CatchUpIssue, 0, len(owned))
 	var accepting []record.Issue
 	for _, member := range members {
 		if !owned[member.Key] {
 			continue
 		}
-		listed := record.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
+		if member.Phase == phase.Done && member.Status == record.DoneStatus {
+			catchUp.Done = append(catchUp.Done, member.Key)
+			continue
+		}
+		listed := texts.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
 		if member.Parent != nil {
 			listed.Parent = *member.Parent
 		}
@@ -368,11 +416,151 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			accepting = append(accepting, member)
 		}
 	}
-	awaiting, err := awaitingAcceptance(ctx, tx, store, issue, accepting)
-	if err != nil {
-		return record.CatchUp{}, nil, err
+	if catchUp.Unreleased, err = unreleasedChildren(ctx, tx, store, issue.Project, owned, members); err != nil {
+		return texts.CatchUpFacts{}, err
 	}
-	return catchUp, awaiting, nil
+	if catchUp.Accepting, err = awaitingAcceptance(ctx, tx, store, issue, accepting); err != nil {
+		return texts.CatchUpFacts{}, err
+	}
+	return catchUp, nil
+}
+
+// stepDocuments is the document each of rows, a root's design gate rows by step, is bound to, by
+// step: the step's dispatch:// link (stepRef) on the issue whose document the row's artifact is.
+// That is the issue the row records (record.DesignGate.DocumentIssue), which a root's own
+// registration and a carry that knew it write, and, for a row that records none (one a daemon
+// before the column wrote, a carry of a row whose issue nothing said), the issue the store's rows
+// on the same artifact say (record.Store.DocumentIssues): the document's own registration, the
+// row of an issue that is no root carried in with its gate, and any row that records it. A row
+// neither says, a carried copy whose old root's rows are gone (a re-admission of that root
+// cleared them) or were a copy themselves, names the bare artifact reference
+// (texts.ArtifactReference) rather than a document that may be another issue's, and the daemon
+// names it from Dispatch when the outbox runs the start row and queues the task (and when rootTask
+// writes a queued task again at its send), when the outbox publishes the catch-up, and when the
+// claim sends a task of news (NameStartDocuments, NameCatchUpDocuments, NameNewsDocuments). The
+// architect-start task (ArchitectStartOf), the catch-up (treeCatchUp) and the news of an approved
+// design (GateDocuments) all read it, so they name one document for one row whatever daemon wrote
+// the row.
+func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
+	var unnamed []string
+	for _, row := range rows {
+		if row.DocumentIssue == "" {
+			unnamed = append(unnamed, row.ArtifactID)
+		}
+	}
+	var issues map[string]string
+	if len(unnamed) > 0 {
+		var err error
+		if issues, err = store.DocumentIssues(ctx, tx, unnamed); err != nil {
+			return nil, err
+		}
+	}
+	documents := make(map[record.DesignStep]string, len(rows))
+	for step, row := range rows {
+		issue := row.DocumentIssue
+		if issue == "" {
+			issue = issues[row.ArtifactID]
+		}
+		if issue == "" {
+			documents[step] = texts.ArtifactReference(row.ArtifactID)
+			continue
+		}
+		documents[step] = stepRef(issue, step)
+	}
+	return documents, nil
+}
+
+// GateDocuments is stepDocuments for a text the daemon builds outside the workflow: the news of an
+// approved design, which the daemon's send reads in its own transaction (the daemon's
+// readNewsAtSend). So the news names a gate row's document by the one rule the architect-start
+// task and the catch-up name it by, and the bare artifact reference that rule gives is named from
+// Dispatch where the daemon sends the task (NameNewsDocuments).
+func GateDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
+	return stepDocuments(ctx, tx, store, rows)
+}
+
+// NameCatchUpDocuments names, in catchUp, a catch-up as QueueCatchUp queued it, each gate step's
+// document that it gives as the bare artifact reference (stepDocuments) as the step's document of
+// the issue issueOf answers holds the artifact, where it answers one (namedDocument), as
+// NameStartDocuments names the start task's. issueOf is the outbox's read of Dispatch when it
+// publishes the catch-up, outside any transaction; a step it answers nothing for keeps the bare
+// reference.
+func NameCatchUpDocuments(catchUp *record.CatchUp, issueOf func(artifact string) (string, bool)) {
+	for i, gate := range catchUp.Gates {
+		catchUp.Gates[i].Document = namedDocument(gate.Document, gate.Step, issueOf)
+	}
+}
+
+// NameNewsDocuments names, in documents, a tree's gate documents as GateDocuments read them for
+// the news of an approved design (News.Documents), each one it gives as the bare artifact
+// reference as the step's document of the issue issueOf answers holds the artifact, where it
+// answers one (namedDocument), as the catch-up's are named (NameCatchUpDocuments). issueOf is the
+// daemon's read of Dispatch where it sends the task (the daemon's designNews), outside any
+// transaction; a step it answers nothing for keeps the bare reference.
+func NameNewsDocuments(documents map[record.DesignStep]string, issueOf func(artifact string) (string, bool)) {
+	for step, document := range documents {
+		documents[step] = namedDocument(document, step, issueOf)
+	}
+}
+
+// namedDocument is document, the document of a gate row of step as stepDocuments gives it, named as
+// step's document of the issue issueOf answers holds its artifact where it is the bare artifact
+// reference and issueOf answers one, and as it is otherwise: the catch-up's naming
+// (NameCatchUpDocuments) and the news's (NameNewsDocuments) are this one.
+func namedDocument(document string, step record.DesignStep, issueOf func(artifact string) (string, bool)) string {
+	artifact, bare := texts.ArtifactOfReference(document)
+	if !bare {
+		return document
+	}
+	if issue, ok := issueOf(artifact); ok {
+		return stepRef(issue, step)
+	}
+	return document
+}
+
+// unreleasedChildren is each child the Dispatch mirror shows under an issue of owned, the issues
+// an architect owns, that its architect filed and has not released: the daemon holds no record of
+// it, in this tree or any other, and it still holds work (record.ChildOpen of a child with no
+// record), with its parent and its Dispatch status, in key order within each parent. A child of
+// members, the tree's records, is released; the mirror's other children are read by key, once.
+func unreleasedChildren(ctx context.Context, tx pgx.Tx, store record.Store, project string, owned map[string]bool,
+	members []record.Issue) ([]texts.UnreleasedChild, error) {
+	parents := slices.Sorted(maps.Keys(owned))
+	children, err := store.DispatchChildren(ctx, tx, project, parents)
+	if err != nil {
+		return nil, err
+	}
+	recorded := make(map[string]bool, len(members))
+	for _, member := range members {
+		recorded[member.Key] = true
+	}
+	var unrecorded []string
+	for _, parent := range parents {
+		for _, child := range children[parent] {
+			if !recorded[child.Key] {
+				unrecorded = append(unrecorded, child.Key)
+			}
+		}
+	}
+	if len(unrecorded) == 0 {
+		return nil, nil
+	}
+	elsewhere, err := store.IssuesOf(ctx, tx, project, unrecorded)
+	if err != nil {
+		return nil, err
+	}
+	for _, other := range elsewhere {
+		recorded[other.Key] = true
+	}
+	var unreleased []texts.UnreleasedChild
+	for _, parent := range parents {
+		for _, child := range children[parent] {
+			if !recorded[child.Key] && record.ChildOpen(child, nil) {
+				unreleased = append(unreleased, texts.UnreleasedChild{Key: child.Key, Parent: parent, Status: child.Status})
+			}
+		}
+	}
+	return unreleased, nil
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that

@@ -76,6 +76,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -87,13 +88,6 @@ const (
 	subArchitectCap = 6
 	// subArchitectGate is the root's approved design document, which lets its children start.
 	subArchitectGate = "7d2e4f6a-8b1c-4e3d-9a5f-0c2b4d6e8f1a"
-	// subArchitectOwnership is the sentence every child-status notice of a child's start ends
-	// with (workflow.ChildStartedNotice): the child's own architect owns it while that architect
-	// holds its role, so the architect told hears only what goes above that architect.
-	subArchitectOwnership = "Its own architect starts with it and owns it while that architect holds its role: its " +
-		"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-		"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-		"holdsRole decides"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the
@@ -238,12 +232,9 @@ func (r *subArchitectLive) releaseStep() {
 		t.Fatalf("the daemon's line for %s's catch-up names %s, want %s", c, got, want)
 	}
 	started := r.waitTold(r.tree, "the child-status notice that "+c+" started", func(n record.Notice) bool {
-		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, c+" starts planning under "+r.tree)
+		return n.Kind == "child-status" && n.Issue == c && n.Change == texts.ChangeStarted && n.Tree == r.tree
 	})
-	if !strings.HasSuffix(started.Reason, ". "+subArchitectOwnership) {
-		t.Fatalf("%s's architect was told that %s started as %q, want it to end %q", r.tree, c, started.Reason, subArchitectOwnership)
-	}
-	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, started.Reason)
+	r.note("read back: a child-status notice on %s's architect topic — %s %s in %s", r.tree, started.Issue, started.Change, started.Tree)
 }
 
 // grandchild: C's architect files G under C and releases it with its own grant. G starts planning
@@ -268,10 +259,10 @@ func (r *subArchitectLive) grandchildStep() {
 	}
 	r.note("read back: the daemon records %s under %s in the tree of %s", g, c, r.tree)
 	startsG := func(n record.Notice) bool {
-		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, g+" starts planning under "+r.tree)
+		return n.Kind == "child-status" && n.Issue == g && n.Change == texts.ChangeStarted && n.Tree == r.tree
 	}
 	told := r.waitTold(c, "the child-status notice that "+g+" started", startsG)
-	r.note("read back: a child-status notice on %s's architect topic — %s", c, told.Reason)
+	r.note("read back: a child-status notice on %s's architect topic — %s %s in %s", c, told.Issue, told.Change, told.Tree)
 	if root := slices.IndexFunc(r.told(r.tree), startsG); root >= 0 {
 		t.Fatalf("%s's architect topic was also told that %s started; want it told to %s's architect alone", r.tree, g, c)
 	}
@@ -366,12 +357,12 @@ func (r *subArchitectLive) blockerStep() {
 	r.note("drove a person's close of %s: an issue.updated envelope, status done", b)
 	r.startsWithItsArchitect(e)
 	told := r.waitTold(r.tree, "the child-status notice that "+e+" started", func(n record.Notice) bool {
-		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, e+" starts planning under "+r.tree)
+		return n.Kind == "child-status" && n.Issue == e && n.Change == texts.ChangeStarted && n.Tree == r.tree
 	})
-	if want := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", e, r.tree, b); !strings.HasPrefix(told.Reason, want) {
-		t.Fatalf("%s's architect was told that %s started as %q, want it to begin %q", r.tree, e, told.Reason, want)
+	if !slices.Equal(told.WaitedOn, []string{b}) {
+		t.Fatalf("%s's architect was told that %s started having waited on %v, want on %s", r.tree, e, told.WaitedOn, b)
 	}
-	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, told.Reason)
+	r.note("read back: a child-status notice on %s's architect topic — %s %s in %s, waited on %v", r.tree, told.Issue, told.Change, told.Tree, told.WaitedOn)
 }
 
 // failure: C's architect's process is reported gone and the runtime refuses every relaunch of it,
@@ -404,14 +395,13 @@ func (r *subArchitectLive) failureStep() {
 	r.rt.allowResumes(architect)
 	r.note("read back: %s is failed after %d refused relaunches, %d launch failures of %d, session %s kept",
 		architect, r.rt.refused(architect), failed.Budgets.LaunchFailures, r.cfg.LaunchFailureLimit, failed.Session)
-	diedReason := c + "'s own architect failed"
 	died := r.waitTold(r.tree, "the worker-died of "+c+"'s architect", func(n record.Notice) bool {
-		return n.Kind == "worker-died" && n.Role == claim.RoleArchitect && strings.HasPrefix(n.Reason, diedReason)
+		return n.Kind == "worker-died" && n.Role == claim.RoleArchitect && n.Issue == c && n.Failure != nil
 	})
 	if slices.ContainsFunc(r.told(c), func(n record.Notice) bool { return n.Kind == "worker-died" && n.Role == claim.RoleArchitect }) {
 		t.Fatalf("%s's own topic was told its architect's worker-died, want it told to the architect above", c)
 	}
-	r.note("read back: a worker-died notice about the architect on %s's architect topic, none on %s's — %s", r.tree, c, died.Reason)
+	r.note("read back: a worker-died notice about the architect on %s's architect topic, none on %s's — cause %s", r.tree, c, died.Failure.Cause)
 
 	mark := len(r.rt.Calls())
 	plannerToken := r.token(c, claim.RolePlanner)
@@ -425,15 +415,14 @@ func (r *subArchitectLive) failureStep() {
 	r.note("drove the end of %s's process, as for the architect, its session file found in no store at the relaunch", plannerToken)
 	fresh := r.launchSince(plannerToken, mark)
 	r.rt.allowResumes(plannerToken)
-	lostReason := fmt.Sprintf("The %s of %s lost the session it recorded", claim.RolePlanner, c)
 	lost := r.waitTold(r.tree, "the session-lost notice of "+c+"'s planner", func(n record.Notice) bool {
-		return n.Kind == "session-lost" && n.Role == claim.RolePlanner && strings.HasPrefix(n.Reason, lostReason)
+		return n.Kind == "session-lost" && n.Role == claim.RolePlanner && n.Issue == c && n.Detail != ""
 	})
 	if slices.ContainsFunc(r.told(c), func(n record.Notice) bool { return n.Kind == "session-lost" }) {
 		t.Fatalf("%s's own failed architect was told its planner's session-lost, want it told to the architect above", c)
 	}
 	r.note("read back: the planner relaunched fresh (launch %d, empty resume file %q); its session-lost notice on %s's architect topic, none on %s's — %s",
-		fresh.Generation, fresh.ResumeSessionFile, r.tree, c, firstLine(lost.Reason))
+		fresh.Generation, fresh.ResumeSessionFile, r.tree, c, firstLine(lost.Detail))
 	if launches := launchesSince(r.rt.Runtime, architect, mark); len(launches) != 0 {
 		t.Fatalf("%s's architect was launched %v before its child's next phase start, want nothing", c, launches)
 	}
@@ -674,9 +663,8 @@ func (r *subArchitectLive) catchUpNames(key string, told record.Notice, want ...
 		r.t.Fatalf("%s's architect was told a catch-up of %v at generation %d with gates %+v, want %v at %s's generation %d and no gate",
 			key, keys, told.CatchUp.Generation, told.CatchUp.Gates, want, key, generation)
 	}
-	reason, _, _ := strings.Cut(told.Reason, ";")
-	r.note("read back: a catch-up on %s's architect topic, launch %d, generation %d, no gate, issues %v — %s",
-		key, told.CatchUp.Launch, told.CatchUp.Generation, keys, reason)
+	r.note("read back: a catch-up on %s's architect topic, launch %d, generation %d, no gate, issues %v, done %v, accepting %v",
+		key, told.CatchUp.Launch, told.CatchUp.Generation, keys, told.CatchUp.Done, told.CatchUp.Accepting)
 	return told
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The log lines of the merge-forward executor (mergeForwardMessage) these tests read.
@@ -98,7 +100,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		publisher.setAbsent()
 		drainAt(t, runner, 10*time.Minute, "the row's attempt once the session holds the role")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
+		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != noticeSummary(texts.MergeForwardAsk, "LEGION-208") ||
+			!reflect.DeepEqual(delivered[0].payload, ask.Record("LEGION-208", record.PullRequest{Repo: "acme/widgets"})) || delivered[0].urgency != texts.Med ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, topic)
 		}
@@ -161,7 +164,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 		drainAt(t, runner, 0, "the row's attempt")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != told.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
+		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != noticeSummary(texts.MergeForwardLanded, "LEGION-208") ||
+			!reflect.DeepEqual(delivered[0].payload, told.Record("LEGION-208", record.PullRequest{Repo: "acme/widgets"})) || delivered[0].urgency != texts.Med ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the landed once to %s under its row's key", delivered, tester)
 		}
@@ -200,12 +204,13 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 			drainAt(t, runner, 0, "the row's attempt")
 			_, delivered := publisher.snapshot()
-			if len(delivered) != 1 || delivered[0].topic != merger {
+			if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != noticeSummary(texts.MergeForwardLanded, "LEGION-208") {
 				t.Fatalf("delivered %+v, want the landed once to %s", delivered, merger)
 			}
-			const wait = "only once the reviewer's approval of that head is on the pull request"
-			if waits := strings.Contains(delivered[0].message, wait); waits != tc.reviewAsked {
-				t.Fatalf("the merger was told %q; want the wait for the reviewer's approval: %t", delivered[0].message, tc.reviewAsked)
+			// The wait is the record's approval_owed, naming the new head (texts.MergeForwardLandedRecord).
+			got, isLanded := delivered[0].payload.(texts.MergeForwardLandedRecord)
+			if waits := got.ApprovalOwed == "sha-2"; !isLanded || waits != tc.reviewAsked || (!waits && got.ApprovalOwed != "") {
+				t.Fatalf("the merger was told %+v; want the wait for the reviewer's approval of sha-2 (approval_owed): %t", delivered[0].payload, tc.reviewAsked)
 			}
 		})
 	}
@@ -248,7 +253,8 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 
 		drainAt(t, runner, 0, "the row's attempt")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != toMerger.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
+		if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != noticeSummary(texts.MergeForwardAsk, "LEGION-208") ||
+			!reflect.DeepEqual(delivered[0].payload, toMerger.Record("LEGION-208", record.PullRequest{Repo: "acme/widgets"})) || delivered[0].urgency != texts.Med ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, merger)
 		}

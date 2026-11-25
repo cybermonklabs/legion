@@ -1,0 +1,50 @@
+kind: Changed
+body: |-
+  A card carries no reply procedure and states nothing twice: the sender's session, title, time and
+  roles each appear once, and a direct card reads `to: you`. Another author's words (a person's, a
+  session's, a worker's summary, a suggested replacement) come in a block of their own after the
+  card's fields, which those words can neither open nor close, and which nothing before them, the
+  card's own fields included, opens or closes. A notice's `words` key draws a block only where it is
+  the path of a field the notice holds, under a tag of its own; a notice whose keys break that shows
+  its fields with no block. A block names its author, its time and that more follows only where the
+  object that holds its field does not, so a catch-up's kept decision whose words were cut says
+  `more` once, in its row. A Dispatch card keeps its reply command, and the `envoy_send`
+  description says how to reply to any other card. Each plugin notice states only the fields of
+  its kind, and the gap notice tells its cause by them (`retention_hours` or `previous_stream`).
+  A notice field may hold a list, which the notice states as a list (`noticeText`), and the
+  topics-refused notice names its topics so (`topics[2]: <topic>,<topic>`), beside its `reason`.
+  The `envoy_inbox` and `envoy_whoami` descriptions give the step a reader takes on each of Envoy's
+  own notices, by its kind, and each notice's kind names the tool whose description holds its step
+  (`notice: messages may be missing (envoy_inbox)`): Oh My Pi shows the model only the first line
+  of a tool's description until the model opens the tool's device.
+  The list of what people wrote to a session (`renderSessionAnswers`, which every model request
+  carries, and `dispatch answers`) draws each item's words the same way. The ask's question
+  (`question`), the options an answer chose (`selected`, one to a line), Dispatch's words beside a
+  decline (`dispatch_words`) and the person's own words (`text`) each come in a block of their own
+  after the item's two lines (the time, the person and the relation, then the reference). No words
+  close their block or stand as one of the list's own lines, and each block's tag also steps past
+  the tags in everything before it in the list. An issue's title or a token's name stays on its
+  line, because each run of white space in it, a new line included, prints as one space.
+  The open-asks list (`formatOpenAsksSummary`, which claude-envoy's SessionStart hooks print into
+  the session's context) keeps each ask on its row: each run of white space in an issue's title, a
+  document's name or a question prints as one space. So does each run in a picture's name and in
+  the reason a picture is not shown, on the `Pictures:` lines Pi appends after a delivered card.
+  `cutDrawn` cuts a card to its first N characters with no block left open: a block the cut falls
+  in closes after the words that fit, and its `rest` counts the characters cut off. No cut splits a
+  character outside the Basic Multilingual Plane (`headUnits`), and neither does the head of an
+  event's text (`textHead`). The sender's title on a card's `from:` line, and a document's name and
+  its editors on an `edit:` line, stay on that line: each run of white space in them, NEXT LINE
+  (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). Every
+  other value among a card's fields, such as a comment's quote, an ask's option labels or an
+  issue's new title, stays on its line too: each NEXT LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR
+  in it prints as one space, a new line stays escaped, and the words in a block keep all three. So
+  does each field of a plugin notice, such as a message-not-shown notice's summary: a notice and a
+  card's fields are written by one encode (`encodeFields`). A block's attribute writes each of the
+  three as a character reference, which the block's reader reads back, so a cut (`cutDrawn`) never
+  puts one on a tag's line. A daemon card whose payload is nested too deep to lay out shows that
+  payload as text, as any other card does, also where the payload holds `words`. A card whose body
+  the plugin reads again from Dispatch states an edit or a delete of that post as fields
+  (`edited_at`, or `deleted_at` and `deleted_by`), and the post's body block holds the author's
+  words alone, none for a deleted post. A delivery Dispatch aims at the session names the same
+  message or comment, attempt, mode and broadcast after that read, a deleted post's included, with
+  the body read whole (empty for a deleted post).

@@ -14,17 +14,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // heldParentChild is the child of LEGION-208 that its parent's hold before its retro waits for.
 const heldParentChild = "LEGION-209"
 
-// heldParentReason is the reason of the retro-held notice LEGION-208 gets while heldParentChild is
-// in the workflow beneath it: it ends with the daemon's sentence on a status not taken yet and its
-// rules for ending a child, as the pr-merged notice does.
-const heldParentReason = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
-	record.StatusNotTakenYet + " " + record.EndChildRule
+// heldParentNotice is the retro-held notice LEGION-208 gets while heldParentChild is in the
+// workflow beneath it: the retro and its implementer, the issue the retro waits for, and the
+// daemon's sentence on a status not taken yet and its rules for ending a child, each a field of its
+// own, as the pr-merged notice carries them. The rest of main's reason ("A parent is accepted only
+// once no issue beneath it is still in the workflow. ...") is the architect's prompt's.
+var heldParentNotice = record.Notice{Kind: texts.RetroHeld, Issue: "LEGION-208", Role: claim.RoleImplementer, Phase: phase.Retro,
+	WaitingFor: []string{heldParentChild}, StatusNotTakenYet: record.StatusNotTakenYet, EndChildRule: record.EndChildRule}
 
 // approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
 // reviewer's phases row as the round left it, with the handoff the retro's task names written to
@@ -171,7 +173,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if got := statusWrites(t, pool, "LEGION-208"); len(got) != len(statuses) {
 			t.Fatalf("the approval queued the status writes %+v, want none: a hold has no status", got[len(statuses):])
 		}
-		want := []record.Notice{{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro, Reason: heldParentReason}}
+		want := []record.Notice{heldParentNotice}
 		if got := noticesOf(t, pool, "LEGION-208", "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
@@ -227,7 +229,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if ancestor := record.AcceptedAncestor(*issueRecord(t, pool, heldParentChild), treeByKey(t, pool, "LEGION-208")); ancestor != "" {
 			t.Fatalf("the accepted ancestor of %s = %q, want none: nothing of the held parent is accepted", heldParentChild, ancestor)
 		}
-		if got := noticesOf(t, pool, "LEGION-208", "retro-held"); len(got) != 1 || got[0].Reason != heldParentReason {
+		if got := noticesOf(t, pool, "LEGION-208", "retro-held"); len(got) != 1 || !reflect.DeepEqual(got[0], heldParentNotice) {
 			t.Fatalf("the retro-held notices = %+v, want the one naming %s", got, heldParentChild)
 		}
 		childLeavesDone(t, pool, engine)
@@ -298,7 +300,7 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		if got := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(got) != 0 {
 			t.Fatalf("the approval wrote the retro's starts %+v, want none", got)
 		}
-		want := []record.Notice{{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro, Reason: heldParentReason}}
+		want := []record.Notice{heldParentNotice}
 		if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
@@ -313,9 +315,7 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		if len(starts) != 1 {
 			t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
 		}
-		if !strings.Contains(starts[0].Task, "Handoff: review version 1") || strings.Contains(starts[0].Task, "Handoff: implement") {
-			t.Fatalf("the retro's start = %+v, want it told Handoff: review version 1 and no Handoff: implement", starts[0])
-		}
+		toldHandoff(t, "retro", starts[0], phase.Retro, "review", "1")
 		if got := noticesOf(t, pool, root.Key, "retro-held"); len(got) != 1 {
 			t.Fatalf("the release told %d more retro-held notices, want none", len(got)-1)
 		}

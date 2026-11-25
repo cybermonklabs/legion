@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // podlessKeptLine is what the replacement by issue logs where its own read of the claims keeps
@@ -258,7 +259,7 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 				}
 				notices := rig.notices()
 				switch {
-				case tc.told && (len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended")):
+				case tc.told && (len(notices) != 1 || notices[0].Holds != texts.HoldsOperator):
 					t.Errorf("the controller was told %+v, want once of the operator's suspension that holds the round past its bound", notices)
 				case !tc.told && len(notices) != 0:
 					t.Errorf("the controller was told %+v, want nothing", notices)

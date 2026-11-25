@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+  A `low` card of the Legion daemon, or of a Dispatch event whose envelope says `low`, goes into the
+  session's stored context with no turn and is read at the next turn, whatever starts it, under file
+  and SQL session storage alike. A card that comes during a turn is held until the session is idle,
+  and the session records it in its transcript and answers its frame `done` at once, so held cards
+  stop no later card and, once the session's store holds them, survive a stop of the session.
+  Dispatch's live view shows such a card as the session stores it, before the turn that reads it.
+  A late BTW, an inert card that starts no turn, is held, recorded and answered `done` the same way
+  when it comes during a turn, and a restore hands it again as an inert card. Every other card
+  starts a turn as before. The list of
+  what people wrote, which every model request carries, puts each item's words in blocks of their
+  own, which those words can neither close nor imitate.
+  The plugin's own notices state only the fields of their kind, and the `envoy_whoami` and
+  `envoy_inbox` descriptions give the step their reader takes. Each notice's kind names that tool
+  (`notice: session id changed (envoy_whoami)`, `notice: unread messages (envoy_inbox)`), since Oh
+  My Pi shows the model only the first line of a tool's description until the model opens its
+  `xd://` device.
+  AskGate's reviewers read each transcript message's later lines opened by `> `, which escaped text
+  never holds, so a tool result that quotes `**user**: ...` on a line of its own reads as part of
+  that result and not as the person's message. The `Pictures:` lines after a delivered card keep
+  each picture's name on that picture's line, and each value among a delivered card's fields, such
+  as a comment's quote or an ask's option labels, stays on its line: NEXT LINE (U+0085), LINE
+  SEPARATOR and PARAGRAPH SEPARATOR in it print as one space.
+  A delivery Dispatch aims at the session (an issue message, a comment mention) whose post its
+  author deleted before the session read its body whole shows no card and starts no turn, in the
+  session it names or in one the host moved to during the read; nothing is accepted or answered,
+  the attempt keeps the state Dispatch recorded for it, and its frame is answered `done`.

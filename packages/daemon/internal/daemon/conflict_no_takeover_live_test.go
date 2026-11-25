@@ -195,7 +195,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
+	prompt := r.test.takeTask("\nphase: " + string(phase.Testing))
 	r.note("read back: the tester was launched, registered and prompted its testing task (%s)", firstLine(prompt.Message))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
@@ -273,25 +273,29 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	pull := record.PullRequest{Repo: liveRepo}
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
 		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
-	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, pull) {
-		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, pull))
+	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); !r.toldRecord(told[0], ask, pull) {
+		t.Fatalf("the implementer was told %q with %s, want the merge forward's ask %s", told[0].Message, told[0].Payload, r.recordOf(ask, pull))
 	}
-	r.note("read back: one message on the implementer's role topic — %s", ask.Message(r.key, pull))
+	r.note("read back: one message on the implementer's role topic — %s: %s", noticeSummary(ask.Kind(), r.key), r.recordOf(ask, pull))
 	hold := ask
 	hold.Role, hold.Step = claim.RoleTester, record.MergeForwardHold
-	if told := r.awaitHeard(claim.RoleTester, 1, bound); told[0].Message != hold.Message(r.key, pull) {
-		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, pull))
+	if told := r.awaitHeard(claim.RoleTester, 1, bound); !r.toldRecord(told[0], hold, pull) {
+		t.Fatalf("the tester was told %q with %s, want the merge forward's hold %s", told[0].Message, told[0].Payload, r.recordOf(hold, pull))
 	}
-	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, pull))
+	r.note("read back: one message on the tester's role topic — %s: %s", noticeSummary(hold.Kind(), r.key), r.recordOf(hold, pull))
 	var notices []record.Notice
 	testwait.WithinPolling(t, bound, testwait.Poll, "the architect's notice of the merge forward", func() bool {
 		notices = r.architectNoticesSince()
 		return len(notices) > 0
 	})
-	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing {
-		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing", notices)
+	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing || notices[0].Head != conflictFirstHead ||
+		notices[0].ConflictsWith != conflictBase || notices[0].Why != string(record.ConflictCheckNotGreen) || notices[0].Asked != claim.RoleImplementer ||
+		notices[0].Reason != "" {
+		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing, %s conflicting with %s and %s, the implementer asked, and no reason",
+			notices, conflictFirstHead, conflictBase, record.ConflictCheckNotGreen)
 	}
-	r.note("read back: one notice on the architect's role topic, checks-red naming %s — %s", notices[0].Phase, notices[0].Reason)
+	r.note("read back: one notice on the architect's role topic, checks-red naming %s, head %s, base %s, why %s",
+		notices[0].Phase, notices[0].Head, notices[0].ConflictsWith, notices[0].Why)
 
 	r.test.silent(liveSettle)
 	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown, no prompt", liveSettle)
@@ -328,10 +332,10 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 	// The tester's landed reads nothing of the record but the repository it holds the pull request under.
 	pull := record.PullRequest{Repo: liveRepo}
 	told := r.awaitHeard(claim.RoleTester, 2, testwait.Remaining(t))
-	if told[1].Message != landed.Message(r.key, pull) {
-		t.Fatalf("the tester was told %q, want the merge forward's landing %q", told[1].Message, landed.Message(r.key, pull))
+	if !r.toldRecord(told[1], landed, pull) {
+		t.Fatalf("the tester was told %q with %s, want the merge forward's landing %s", told[1].Message, told[1].Payload, r.recordOf(landed, pull))
 	}
-	r.note("read back: the tester's role topic took the landing — %s", landed.Message(r.key, pull))
+	r.note("read back: the tester's role topic took the landing — %s: %s", noticeSummary(landed.Kind(), r.key), r.recordOf(landed, pull))
 	r.heldOn("the landing")
 
 	status, failure := r.test.complete("tested it", conflictFirstHead, "pass", r.test.handoff("test"))

@@ -1,26 +1,53 @@
 import type { DedupeIdentity, DeliveryClaim } from "@legion/envoy-client/delivery";
 import { ledgerIdentity } from "@legion/envoy-client/delivery-ledger";
 import type { ContentBlock } from "@legion/pi-shared/pi-types";
-import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
+import type { CardMode } from "./card-wake";
+import { type HeldReplayNotice, type HeldStoredCard, writtenCardIdentity } from "./missed-messages";
 
 /**
  * How a card is handed to the host: `card` and `aside` each go as an aside that starts a turn when
  * the host is idle (`CardWake.deliveryFor`; `aside` is a targeted Aside, which the wake never
- * covers), or `inert`, a steer that starts no turn (`triggerTurn: false`). An idle host writes an
- * inert card at once and runs nothing for it; one handed while a turn streams is steered into
- * that turn, and the agent loop runs another model turn for it (measured on omp 18.12.2). So an
- * inert card is handed only to a settled host (`UnwrittenFramesHost.settled`): one sent while the
- * host is busy is held until the first settled heartbeat (`handBackWithdrawn`), as is a replay
- * notice (`sendNotice`), which is handed the same way. A card handed again keeps its delivery.
+ * covers); `inert`, a steer that starts no turn (`triggerTurn: false`); or `stored`, a `low` card
+ * (`lowCard`), as `nextTurn` with no turn. An idle host writes an inert card at once and runs
+ * nothing for it; one handed while a turn streams is steered into that turn, and the agent loop
+ * runs another model turn for it (measured on omp 18.12.2). So an inert card is handed only to a
+ * settled host (`UnwrittenFramesHost.settled`): one sent while the host is busy is held until the
+ * first settled heartbeat (`handBackWithdrawn`), as is a replay notice (`sendNotice`), which is
+ * handed the same way. A card handed again keeps its delivery.
+ *
+ * An idle host appends a stored card to the context and to the session's store at once, starting no
+ * turn and emitting no `message_end`. A host that streams keeps it in memory only, where a turn
+ * that a card starts does not take it and a process that ends loses it. So a stored card too is
+ * handed only to a settled host, and not while a card handed to start a turn has not started it
+ * (`runStarted`). One sent while the host is busy is held, and handed at the first settled check
+ * (`storedCheck`, which the extension runs on the chain of checks that `checkStoredCards` arms in
+ * extensions/envoy.ts, where the moments that arm it are listed) or right before a card that starts
+ * a turn. A held stored card holds back no other card. With no
+ * `message_end`, a stored card is written once the session's store holds its entry
+ * (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is never handed again.
+ *
+ * A stored card that waits for the store, held or handed, is recorded in the session's transcript
+ * (`UnwrittenFramesHost.recordStored`), and its frame's claim settles once that record is written.
+ * So is an inert card held while the host is busy, such as a late BTW (`relayed.late` in
+ * extensions/envoy.ts), with the record saying it is handed inert. Once the session's store holds
+ * the record (Oh My Pi stores a new session only from its first assistant message, so before that
+ * the record is in memory alone), it holds the card across a restart (`requeueStored`). So the
+ * card's frame keeps no place in the relay while the card waits: an edge listener's relay holds at
+ * most 16 frames of a session in flight (`relayEdgeInFlight` in
+ * packages/envoy/cmd/listener/session_relay.go), and 16 frames held through a long turn would stop
+ * every later card. A card whose record cannot be written keeps its claim until the host writes
+ * it: a stored card until the session's store holds it, an inert card until its `message_end`.
  */
-export type CardDelivery = "card" | "aside" | "inert";
+export type CardDelivery = CardMode | "inert";
 
 /**
  * A frame handed to the host that the host has not written to the session's transcript yet. Oh
  * My Pi holds a card or a user turn sent while a turn streams in memory until the turn takes it,
  * and writes it, emitting its `message_end`, only then (measured on omp 18.8.9, idle and mid-turn
  * alike); a process that ends first loses it. Until then the frame's claim stays pending, so the
- * frame is answered no `done`, the stream keeps its copy, and nothing records it shown.
+ * frame is answered no `done`, the stream keeps its copy, and nothing records it shown. The claim
+ * of a stored card, and of an inert card held while the host is busy, settles before that, once
+ * the card's record is written (`CardDelivery`).
  */
 interface Unwritten {
   /** The session it was handed to: written once the host is on another, it records nothing. */
@@ -50,6 +77,11 @@ interface UnwrittenCard extends Unwritten {
    * card held, never handed, which the next settled moment hands.
    */
   readonly handedAt: number | undefined;
+  /** Its record in the session's transcript (`STORED_CARD_ENTRY`) holds it across a restart once
+   *  the session's store holds the record: a stored card or a held inert card whose record was
+   *  written, or one held again from its record (`requeueStored`). Its frame was answered `done`
+   *  then, so the card has no claim. */
+  readonly recorded: boolean;
 }
 
 /** A person's turn waiting to be written; a `pi.sendUserMessage` turn is found by its text. */
@@ -96,10 +128,17 @@ export interface UnwrittenFramesHost {
   hostIsOn(id: string): boolean;
   /**
    * Whether the host is settled: idle, holding no message, not shutting down, and on the session
-   * this instance serves. Only a settled host is handed an inert card or a replay notice, or
-   * handed back what an interrupt withdrew.
+   * this instance serves. Only a settled host is handed an inert card, a stored card or a replay
+   * notice, or handed back what an interrupt withdrew.
    */
   settled(): boolean;
+  /** Every entry of the session this instance serves, on every branch of its tree, in the order
+   *  the host recorded them, once Oh My Pi's store holds that session (`storeHoldsSession`, or
+   *  its file on disk under file storage); undefined before that (Oh My Pi stores no session
+   *  before its first assistant message), for a session the host stores nowhere, or while the
+   *  host is on another session. A stored card is written once an entry here names its frame
+   *  (`writtenCardIdentity`), on whatever branch the host stored it. */
+  storedEntries(): readonly unknown[] | undefined;
   /** Records a frame the host wrote in the ledger of `sessionID`, the session it was shown in
    *  (`DeliveryLedger.recordDeliveredFor`). The write binds to that session and records nothing
    *  once it is not the one this process writes its transcript to, so the caller makes no
@@ -138,6 +177,16 @@ export interface UnwrittenFramesHost {
   noticeHanded(id: string): void;
   /** A held notice's record could not be written: it is held in this process only. */
   recordNoticeFailed(error: unknown): void;
+  /** Records a card held for a settled host in the transcript of `sessionID`, the session the
+   *  card is for (`STORED_CARD_ENTRY`): a stored card that waits for the session's store, held or
+   *  handed, or an inert card held while the host is busy. A restart that cuts the wait short
+   *  holds it again once the session's store holds the record (`requeueStored`), and hands it as
+   *  `card.deliverAs` says; a throw means it was not recorded. */
+  recordStored(sessionID: string, card: HeldStoredCard): void;
+  /** A held card's record could not be written: its frame's claim waits until the host writes
+   *  the card (a stored card once the session's store holds it), so the stream keeps its copy
+   *  until then. */
+  recordStoredFailed(identity: DedupeIdentity, error: unknown): void;
 }
 
 /**
@@ -156,21 +205,54 @@ export function unwrittenCardKeys(identity: {
 }
 
 /**
+ * Whether Oh My Pi's store holds every entry of `entries`, all the entries of a session the host
+ * stores (one that names a session file), on every branch of its tree, as they tell it: one of
+ * them is an assistant message. The host stores no session before its first assistant message,
+ * whichever branch holds it. When it records that message it hands the store the whole session,
+ * every branch, and from then on it hands the store each entry as it records it, on whatever
+ * branch the leaf is (`SessionManager` `#shouldHaveSessionFile`, whose
+ * `#historyContainsAssistantMessage` reads every entry, and `#recordEntry`, at the pinned build).
+ * So a card stored on a branch with no reply, once another branch holds one, is stored. That is so
+ * under file storage, and under `OMP_SESSION_STORAGE=sql`, where the session is rows of a database
+ * and the file the host names is never on disk; there the store takes each entry at once and
+ * writes it to the database right after, as it does every entry.
+ */
+export function storeHoldsSession(entries: readonly unknown[]): boolean {
+  return entries.some((entry) => {
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) return false;
+    if (entry.type !== "message" || !("message" in entry)) return false;
+    const { message } = entry;
+    return (
+      typeof message === "object" &&
+      message !== null &&
+      "role" in message &&
+      message.role === "assistant"
+    );
+  });
+}
+
+/**
  * The cards (`unwrittenCardKeys`) and the person's turns (by Dispatch message id) handed to the
  * host and not yet written (`Unwritten`), and the inert cards held until the host is settled,
  * each under the claim of its frame. This owns each claim from the hand-off on: the claim
  * settles, and the replay ledger records the frame, once the host writes it (`written`,
  * `turnHandled`, `textTurnsEnded`), or at once for a frame nothing waits on (`sendCard`,
- * `awaitTurn`); it is released, recording nothing, when the card was for a session the host does
- * not have open, or the host refused the card, or an inert card held had nothing to wait under
- * (`sendCard`), or the host dropped the frame unwritten (a session change,
- * `releaseOtherSessions`; a person's turn an interrupt withdrew,
- * `handBackWithdrawn`), so the frame is answered no `done` and the stream keeps its copy.
+ * `awaitTurn`); the claim of a stored card, and of an inert card held while the host is busy,
+ * settles once its record is written, and the ledger records its frame once the host writes the
+ * card (`CardDelivery`, `storedCheck`, `written`). A claim is
+ * released, recording nothing, when the card was for a session the host does not have open, or
+ * the host refused the card, or an inert card held had nothing to wait under (`sendCard`), or the
+ * host dropped the frame unwritten (a session change, `releaseOtherSessions`; a person's turn an
+ * interrupt withdrew, `handBackWithdrawn`), so the frame is answered no `done` and the stream
+ * keeps its copy.
  *
  * It also holds the replay notices (`sendNotice`) sent while the host is not settled, in order,
  * until the first settled moment hands them. A notice names no frame and has no claim: nothing
  * waits on its write. A held notice is recorded in the session's transcript, and marked handed
- * there once it is, so a restart that cuts the hold short holds it again (`requeueNotices`).
+ * there once it is, so a restart that cuts the hold short holds it again (`requeueNotices`). A
+ * stored card that waits, and an inert card held, are recorded there too, so a restart or a
+ * session change holds them again (`requeueStored`). Each holds only once the session's store
+ * holds the record: Oh My Pi stores a new session only from its first assistant message.
  */
 export class UnwrittenFrames {
   readonly #host: UnwrittenFramesHost;
@@ -187,6 +269,11 @@ export class UnwrittenFrames {
   // The moments the host had to queue or write a card handed before it: each heartbeat, and each
   // run that ended aborted (`handBackWithdrawn`, `runAborted`).
   #moments = 0;
+  // The moment a card that starts a turn was handed to a settled host, until that turn starts
+  // (`runStarted`) or the host writes a card that starts one (a fold writes it with no run), or
+  // a whole moment has passed: the host reads idle until it starts that turn, after its own
+  // awaits, and a stored card handed in between would find it streaming and stay in its memory.
+  #turnStartingAt: number | undefined;
 
   constructor(host: UnwrittenFramesHost) {
     this.#host = host;
@@ -210,10 +297,20 @@ export class UnwrittenFrames {
    * sent again to the session it names. Every caller is answered this, so none has to
    * read the session for itself.
    *
-   * An inert card sent while the host is not settled is not handed: it waits, `queued`, and the
-   * first settled moment hands it (`handBackWithdrawn`). One whose frame the ledger keeps nothing
-   * of has nothing to wait under, so its claim is released and the listener sends the frame
-   * again.
+   * An inert or a stored card sent while the host is not settled is not handed: it waits,
+   * `queued`, and the first settled moment hands it (`handBackWithdrawn`, `storedCheck`, and for a
+   * stored card a card that starts a turn, which hands it first). One whose frame the ledger keeps
+   * nothing of has nothing to wait under, so its claim is released and the listener sends the
+   * frame again. A stored card is held as well while a card that starts a turn is on its way to the
+   * host (`#turnStarting`).
+   *
+   * A stored card that waits, held or handed, and an inert card held, are recorded
+   * (`UnwrittenFramesHost.recordStored`), and the claim settles once the record is written. One
+   * whose record cannot be written keeps its claim until the host writes it
+   * (`recordStoredFailed`). A stored or inert card of a frame whose recorded card of that delivery
+   * waits for `session` already is that card: one held again from the transcript
+   * (`requeueStored`) while the stream relays its frame again. Nothing more is handed or recorded,
+   * and its claim settles at once.
    */
   sendCard(
     session: string,
@@ -228,8 +325,29 @@ export class UnwrittenFrames {
       claim?.release();
       return "closed";
     }
-    const hand = deliverAs !== "inert" || this.#host.settled();
     const keys = identity === undefined ? [] : unwrittenCardKeys(ledgerIdentity(identity));
+    if (
+      keys.some((key) => {
+        const waiting = this.#cards.get(key);
+        return (
+          waiting?.recorded === true &&
+          waiting.deliverAs === deliverAs &&
+          waiting.sessionID === session
+        );
+      })
+    ) {
+      claim?.settle();
+      return "queued";
+    }
+    const settled = this.#host.settled();
+    const startsTurn = (deliverAs === "card" || deliverAs === "aside") && settled;
+    const hand =
+      deliverAs === "stored" ? settled && !this.#turnStarting() : deliverAs !== "inert" || settled;
+    // The stored cards held while the host was busy go first, in the order they came, so the
+    // turn this card starts, or the next turn after this stored card, reads them before it.
+    if ((startsTurn || (deliverAs === "stored" && hand)) && !this.#turnStarting()) {
+      this.#handHeldStored();
+    }
     const card: UnwrittenCard | undefined =
       identity === undefined || keys.length === 0
         ? undefined
@@ -242,10 +360,14 @@ export class UnwrittenFrames {
             deliverAs,
             dispatchMessageId,
             handedAt: hand ? this.#moments : undefined,
+            recorded: false,
           };
     if (card !== undefined) this.#awaitWrite(card);
     if (!hand) {
+      // Only a stored or an inert card is held: either is recorded, so its claim holds no place
+      // in the relay while the host is busy.
       if (card === undefined) claim?.release();
+      else this.#recordStored(card);
       return "queued";
     }
     try {
@@ -255,15 +377,28 @@ export class UnwrittenFrames {
       claim?.release();
       throw error;
     }
-    if (card !== undefined) return "queued";
-    // The ledger keeps nothing of the frame, so there is nothing to record.
-    claim?.settle();
-    return "shown";
+    if (startsTurn) this.#turnStartingAt = this.#moments;
+    if (card === undefined) {
+      // The ledger keeps nothing of the frame, so there is nothing to record.
+      claim?.settle();
+      return "shown";
+    }
+    if (deliverAs === "stored") this.#recordStored(card);
+    return "queued";
   }
 
   /** Whether a card of the frame `identity` waits to be written: that card shows it. */
   waitsOnCard(identity: DedupeIdentity): boolean {
     return unwrittenCardKeys(ledgerIdentity(identity)).some((key) => this.#cards.has(key));
+  }
+
+  /** Whether a stored card of the session this instance serves waits, held for a settled host or
+   *  handed and not yet in the session's store (`storedCheck`). */
+  waitsOnStored(): boolean {
+    const sessionID = this.#host.sessionID();
+    return [...this.#cards.values()].some(
+      (card) => card.sessionID === sessionID && card.deliverAs === "stored"
+    );
   }
 
   /**
@@ -315,6 +450,36 @@ export class UnwrittenFrames {
   }
 
   /**
+   * Holds again, for the session this instance serves now, the cards its transcript records as
+   * waiting and shows no write of (`heldStoredCards`), after those held already, each to be handed
+   * as its record says: a stored card at the first settled check (`storedCheck`), an inert card at
+   * the first settled moment (`handBackWithdrawn`). Each frame was answered `done` once its card
+   * was recorded, so no claim goes with the card, and its record stands. One of a frame whose card
+   * waits here already is passed over, so a restore that reads the same transcript twice holds
+   * each once. One recorded for another session is held for this one too: a fork's transcript
+   * copies the entries of the session it forked from, whose hold a session change drops
+   * (`releaseOtherSessions`).
+   */
+  requeueStored(cards: readonly HeldStoredCard[]): void {
+    const sessionID = this.#host.sessionID();
+    for (const { identity, content, dispatchMessageId, deliverAs } of cards) {
+      const keys = unwrittenCardKeys(ledgerIdentity(identity));
+      if (keys.length === 0 || keys.some((key) => this.#cards.has(key))) continue;
+      this.#awaitWrite({
+        sessionID,
+        identity,
+        claim: undefined,
+        keys,
+        content,
+        deliverAs,
+        dispatchMessageId,
+        handedAt: undefined,
+        recorded: true,
+      });
+    }
+  }
+
+  /**
    * A person's turn `messageID` was handed to the host, which writes it as a user message. A turn
    * of a frame with no identity gives the ledger nothing to record, so nothing waits on its write:
    * its claim settles at once.
@@ -359,6 +524,11 @@ export class UnwrittenFrames {
       .map((key) => this.#cards.get(key))
       .find((found) => found !== undefined);
     if (waiting !== undefined) {
+      // A card that starts a turn is written once that turn takes it, or once the host folds it
+      // with no turn: either way no turn is on its way any more.
+      if (waiting.deliverAs === "card" || waiting.deliverAs === "aside") {
+        this.#turnStartingAt = undefined;
+      }
       this.#stopAwaitingWrite(waiting);
       await this.#recordWritten(waiting);
     }
@@ -371,6 +541,45 @@ export class UnwrittenFrames {
    *  end are looked at by the next `handBackWithdrawn`. */
   runAborted(): void {
     this.#moments += 1;
+  }
+
+  /** A run started (`agent_start`): a card handed to start a turn has started it, or another run
+   *  took its place, and a stored card held for it waits for that run's end. */
+  runStarted(): void {
+    this.#turnStartingAt = undefined;
+  }
+
+  /**
+   * Hands the stored cards held while the host was busy once the host is settled, in the order
+   * they came, and records as written each stored card of this session whose entry the session's
+   * store holds (`UnwrittenFramesHost.storedEntries`): the host emits no `message_end` for a
+   * stored card, so that store is its one witness. The store holds a session from its first
+   * assistant message on, so a stored card handed before that waits for it. A card is the newest
+   * entry the host records when it stores it, so the entries are read from their end, and only
+   * until each handed card is found. Answers whether a stored card of this session still waits,
+   * held or handed, so the caller checks again later.
+   */
+  async storedCheck(): Promise<boolean> {
+    if (this.#host.settled() && !this.#turnStarting()) this.#handHeldStored();
+    const sessionID = this.#host.sessionID();
+    const handed = [...new Set(this.#cards.values())].filter(
+      (card) =>
+        card.sessionID === sessionID && card.deliverAs === "stored" && card.handedAt !== undefined
+    );
+    const entries = handed.length === 0 ? undefined : this.#host.storedEntries();
+    if (entries !== undefined) {
+      const unfound = new Set(handed);
+      for (let at = entries.length - 1; at >= 0 && unfound.size > 0; at -= 1) {
+        const keys = unwrittenCardKeys(writtenCardIdentity(entries[at]) ?? {});
+        for (const card of unfound) {
+          if (card.keys.some((key) => keys.includes(key))) unfound.delete(card);
+        }
+      }
+      const written = handed.filter((card) => !unfound.has(card));
+      for (const card of written) this.#stopAwaitingWrite(card);
+      for (const card of written) await this.#recordWritten(card);
+    }
+    return this.waitsOnStored();
   }
 
   /**
@@ -388,8 +597,8 @@ export class UnwrittenFrames {
 
   /**
    * Counts a host moment (each heartbeat tick) and, when the host is settled
-   * (`UnwrittenFramesHost.settled`), hands the inert cards and the replay notices held while the
-   * host was busy (`sendCard`, `sendNotice`) and hands back what an interrupt withdrew.
+   * (`UnwrittenFramesHost.settled`), hands the inert and stored cards and the replay notices held
+   * while the host was busy (`sendCard`, `sendNotice`) and hands back what an interrupt withdrew.
    *
    * Oh My Pi withdraws every card a streaming turn holds, writing none and restoring none, when
    * the person interrupts the turn (Escape; RPC `abort_and_restore_queue`), and is idle with an
@@ -398,10 +607,12 @@ export class UnwrittenFrames {
    * aborted run's `agent_end`). So a card still unwritten while the host is idle and holds no
    * message was withdrawn: it is handed again, as it was, its claim kept. One handed since the
    * host's last moment is left alone, as it may still be on its way into the queue:
-   * `pi.sendMessage` returns before the host queues the card or starts its run. A held inert card
-   * was never handed, so any settled moment hands it, and so is each held notice, once. A card or
-   * a notice that cannot be handed keeps waiting as it was (`handBackFailed`, `handNoticeFailed`),
-   * and the next settled moment tries again.
+   * `pi.sendMessage` returns before the host queues the card or starts its run. A held inert or
+   * stored card was never handed, so any settled moment hands it (a stored card not while a card
+   * that starts a turn is on its way), and so is each held notice, once. A stored card handed is
+   * left alone: no `message_end` comes for it, and the session's store is what says it was written
+   * (`storedCheck`). A card or a notice that cannot be handed keeps waiting as it was
+   * (`handBackFailed`, `handNoticeFailed`), and the next settled moment tries again.
    *
    * The interrupt withdraws a person's turn the same way: a typed input (`pi.sendUserInput`,
    * answered `handled: "prompt"`) or a `pi.sendUserMessage` turn the streaming turn held goes back
@@ -422,19 +633,15 @@ export class UnwrittenFrames {
     if (!this.#host.settled()) return;
     this.#handNotices();
     const sessionID = this.#host.sessionID();
+    const stores = !this.#turnStarting();
     for (const card of new Set(this.#cards.values())) {
       if (card.sessionID !== sessionID) continue;
-      if (card.handedAt !== undefined && card.handedAt >= since) continue;
-      const again: UnwrittenCard = { ...card, handedAt: this.#moments };
-      this.#awaitWrite(again);
-      try {
-        this.#host.handCard(card.content, card.deliverAs, card.identity, card.dispatchMessageId);
-      } catch (error) {
-        // Still waiting as it was: the next settled moment hands it.
-        this.#stopAwaitingWrite(again);
-        this.#awaitWrite(card);
-        this.#host.handBackFailed(card.identity, error);
+      if (card.deliverAs === "stored") {
+        if (card.handedAt !== undefined || !stores) continue;
+      } else if (card.handedAt !== undefined && card.handedAt >= since) {
+        continue;
       }
+      this.#handAgain(card);
     }
     for (const [messageID, turn] of this.#turns) {
       if (turn.sessionID !== sessionID || turn.handedAt === undefined || turn.handedAt >= since) {
@@ -451,9 +658,12 @@ export class UnwrittenFrames {
    * longer waited on, since the host dropped it with the session (measured on omp 18.8.9: a card a
    * turn held when RPC `new_session` ran got no `message_end`). Its claim is released and nothing
    * records it, so the stream keeps its copy and the session's own consumer relays it again once
-   * the host is back on that session or resumes it, to be waited on anew. A notice held for the session it left is dropped:
-   * it concerns only the session it was raised for, whose transcript records it, so the restore
-   * once the host is back on that session holds it again (`requeueNotices`).
+   * the host is back on that session or resumes it, to be waited on anew. A stored card or a held
+   * inert card whose claim settled once it was recorded has no claim to release: the restore once
+   * the host is back on that session holds it again from its record (`requeueStored`). A notice
+   * held for the session it left is dropped: it concerns only the session it was raised for, whose
+   * transcript records it, so the restore once the host is back on that session holds it again
+   * (`requeueNotices`).
    */
   releaseOtherSessions(sessionID: string): void {
     for (const waiting of [this.#cards, this.#turns]) {
@@ -492,6 +702,71 @@ export class UnwrittenFrames {
         this.#host.recordNoticeFailed(error);
       }
     }
+  }
+
+  // Whether a card handed to start a turn may still be on its way to that turn (`#turnStartingAt`):
+  // until its run starts, the host writes it, or the next moment after the one it was handed in
+  // has passed, which bounds a hand-off the host dropped with no sign.
+  #turnStarting(): boolean {
+    return this.#turnStartingAt !== undefined && this.#moments - this.#turnStartingAt < 2;
+  }
+
+  // Hands the stored cards of this session held while the host was busy, in the order they came.
+  #handHeldStored(): void {
+    const sessionID = this.#host.sessionID();
+    for (const card of new Set(this.#cards.values())) {
+      if (
+        card.sessionID === sessionID &&
+        card.deliverAs === "stored" &&
+        card.handedAt === undefined
+      ) {
+        this.#handAgain(card);
+      }
+    }
+  }
+
+  // Hands a waiting card to the host as it was, from this moment on. One the host cannot be
+  // handed keeps waiting as it was, and the next settled moment tries again.
+  #handAgain(card: UnwrittenCard): void {
+    const again: UnwrittenCard = { ...card, handedAt: this.#moments };
+    this.#awaitWrite(again);
+    try {
+      this.#host.handCard(card.content, card.deliverAs, card.identity, card.dispatchMessageId);
+    } catch (error) {
+      this.#stopAwaitingWrite(again);
+      this.#awaitWrite(card);
+      this.#host.handBackFailed(card.identity, error);
+    }
+  }
+
+  // Records a stored card that waits for the session's store, or an inert card held while the
+  // host is busy, in the transcript of the session it is for, with how it is handed, and settles
+  // its claim once the record is written: the frame is answered `done`, and once the session's
+  // store holds the record, it holds the card across a restart (`requeueStored`). A card with no
+  // claim is not recorded: a card held again from its record has none, and so has a replayed card
+  // of a frame the dedupe let go of, which holds no place in the relay. One whose record cannot be
+  // written keeps its claim until the host writes it (`storedCheck` for a stored card, `written`
+  // for an inert one).
+  #recordStored(card: UnwrittenCard): void {
+    if (card.claim === undefined || card.deliverAs === "card" || card.deliverAs === "aside") {
+      return;
+    }
+    try {
+      this.#host.recordStored(card.sessionID, {
+        identity: card.identity,
+        content: card.content,
+        dispatchMessageId: card.dispatchMessageId,
+        deliverAs: card.deliverAs,
+      });
+    } catch (error) {
+      this.#host.recordStoredFailed(card.identity, error);
+      return;
+    }
+    const recorded: UnwrittenCard = { ...card, claim: undefined, recorded: true };
+    for (const key of card.keys) {
+      if (this.#cards.get(key) === card) this.#cards.set(key, recorded);
+    }
+    card.claim.settle();
   }
 
   // The host wrote what it was handed: the record of the frame is asked for under the session

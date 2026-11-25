@@ -1,4 +1,5 @@
 import { decode, encode } from "@toon-format/toon";
+import { drawnBlocks } from "./words-block";
 
 /**
  * A card `renderInbound` (`./delivery`) wrote, read back from its text: who sent it, whether it
@@ -14,15 +15,19 @@ export interface InboundCard {
    *  where it happened. */
   readonly dispatch: boolean;
   /**
-   * The words its sender wrote, and the index of the card's line that holds them: an Envoy
-   * message's `message` when that is text, else its `summary` when the card carries no `message`
-   * (`renderInbound` drops a payload that says no more than its summary), or a Dispatch message's
-   * `body`. Undefined on any other card: a structured message, one whose words are empty, or a
-   * Dispatch event that is no message.
+   * The words its sender wrote, the index of the card's line where they start, and how many lines
+   * of the card they take: one for a field, each line of the words for a block. They are an Envoy
+   * message's `message` when that is text, a field where the card writes the payload as one
+   * (`renderInbound`) and a block of its own where another session sent it (`wordsBlocks`), else
+   * its `summary` when the card carries no `message`; or a Dispatch message's `body`, a block of
+   * its own. Undefined on any other card: a structured message (JSON text of an object or a list,
+   * in a session's block), one whose words are empty, or a Dispatch event that is no message.
    */
-  readonly words: { readonly text: string; readonly line: number } | undefined;
-  /** The card's `note`: that its body names a session other than its sender
-   *  (`body names session <id>; the sender is <id>`). */
+  readonly words:
+    | { readonly text: string; readonly line: number; readonly lines: number }
+    | undefined;
+  /** The card's `note`: that its words name a session other than its sender
+   *  (`body names session <id>`). */
   readonly note: string | undefined;
   /** The card's `body_note`: that the event carried its body in part, or not at all. */
   readonly bodyNote: string | undefined;
@@ -40,13 +45,25 @@ function fieldOf(value: unknown, key: string): unknown {
     : undefined;
 }
 
+/** Whether `words` is JSON text of an object or a list: a structured message, which a session's
+ *  card holds in its `message` block as it was sent (`renderInbound`). */
+function structured(words: string): boolean {
+  try {
+    const value: unknown = JSON.parse(words);
+    return typeof value === "object" && value !== null;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reads `text`, a card's text as the host holds it, back into what it says. The card's TOON block
- * is its first line, `envoy:`, and every indented line after it: what follows is no TOON, such as
- * a person's edit's diff after a blank line, the line a card published while the session was away
- * ends with (`storedText`), or a picture's placeholder. Undefined for text that opens with no such
- * block, which is no card `renderInbound` wrote as TOON: one of the plugin's own notices, or a
- * plain sentence such as a subscription's removal.
+ * is its first line, `envoy:`, and every indented line after it; the blocks of other authors'
+ * words follow it (`wordsBlocks`). What follows those is no part of the card, such as a person's
+ * edit's diff after a blank line, the line a card published while the session was away ends with
+ * (`storedText`), or a picture's placeholder. Undefined for text that opens with no such block,
+ * which is no card `renderInbound` wrote as TOON: one of the plugin's own notices, or a plain
+ * sentence such as a subscription's removal.
  */
 export function readInboundCard(text: string): InboundCard | undefined {
   const lines = text.split("\n");
@@ -71,21 +88,38 @@ export function readInboundCard(text: string): InboundCard | undefined {
     }
     if (value === "") return undefined;
     const line = lines.indexOf(`${TOON_INDENT.repeat(depth)}${encode({ [key]: value })}`, 1);
-    return line < 1 || line >= end ? undefined : { text: String(value), line };
+    return line < 1 || line >= end ? undefined : { text: String(value), line, lines: 1 };
+  };
+  // The words of the card's first block under `name` (`drawnBlocks`), the line they start on, the
+  // line after the block's opening tag, and how many lines they take; an empty block holds no
+  // words.
+  const blockWords = (name: string): InboundCard["words"] | null => {
+    const block = drawnBlocks(text).find((found) => found.name === name);
+    if (block === undefined) return null;
+    if (block.text === "") return undefined;
+    let line = 1;
+    for (
+      let at = text.indexOf("\n");
+      at >= 0 && at < block.start;
+      at = text.indexOf("\n", at + 1)
+    ) {
+      line += 1;
+    }
+    return { text: block.text, line, lines: block.text.split("\n").length };
   };
   let words: InboundCard["words"];
   if (dispatch !== undefined) {
     const type = fieldOf(dispatch, "type");
     words =
       typeof type === "string" && type.startsWith("message.")
-        ? wordsAt(3, "body", fieldOf(fieldOf(dispatch, "payload"), "body"))
+        ? (blockWords("body") ?? undefined)
         : undefined;
   } else {
     const message = fieldOf(envoy, "message");
-    words =
-      message === undefined
-        ? wordsAt(1, "summary", fieldOf(envoy, "summary"))
-        : wordsAt(1, "message", message);
+    const sent = message === undefined ? blockWords("message") : null;
+    if (message !== undefined) words = wordsAt(1, "message", message);
+    else if (sent === null) words = wordsAt(1, "summary", fieldOf(envoy, "summary"));
+    else words = sent === undefined || structured(sent.text) ? undefined : sent;
   }
   const note = fieldOf(envoy, "note");
   const bodyNote = fieldOf(envoy, "body_note");

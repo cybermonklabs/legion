@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { cutDrawn } from "@legion/envoy-client/words-block"
 
 /**
  * The two things the Codex plugin asks of Codex itself: put a message into a running
@@ -117,12 +118,16 @@ export function queueMessage(
 /** The longest message `codex queue` is handed as its argument. Linux refuses a single argument
  *  over 128 KiB (`MAX_ARG_STRLEN`) and the spawn would fail on every resend of the frame. */
 const QUEUE_ARGUMENT_MAX_BYTES = 96 * 1024
-/** How much of a longer message is quoted before the line naming the file holding all of it. */
+/** How much of a longer message is quoted before the line naming the file holding all of it: its
+ *  first this many UTF-16 units, cut so that it leaves no block of a card open (`cutDrawn`). */
 const QUEUE_HEAD_CHARS = 8_000
 
 /**
  * `text` as one argument `codex queue` can take: itself, or, past the bound, its start and a line
- * naming a file under `spillDirectory` that holds the whole of it. Throws when it is too long and
+ * naming a file under `spillDirectory` that holds the whole of it. A card that long is long for
+ * its words, so the cut falls inside one of its blocks; `cutDrawn` closes that block after the
+ * words that fit. The card's words, a copy of the file line among them, then stay inside their
+ * blocks, and the line after the last block is the plugin's own. Throws when it is too long and
  * there is nowhere to put it.
  */
 export function fitArgument(text: string, spillDirectory: string | undefined): string {
@@ -133,7 +138,7 @@ export function fitArgument(text: string, spillDirectory: string | undefined): s
   mkdirSync(spillDirectory, { mode: 0o700, recursive: true })
   const file = join(spillDirectory, `${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
   writeFileSync(file, text, { mode: 0o600 })
-  return `${text.slice(0, QUEUE_HEAD_CHARS)}\n\n[This message is ${Buffer.byteLength(text)} bytes long; the whole of it is in ${file}.]`
+  return `${cutDrawn(text, QUEUE_HEAD_CHARS)}\n\n[This message is ${Buffer.byteLength(text)} bytes long; the whole of it is in ${file}.]`
 }
 
 /** How long a side question may run before it is abandoned. */

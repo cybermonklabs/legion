@@ -243,9 +243,9 @@ func (p *liveProof) waitProcessed(eventID string) {
 }
 
 // architectNotices is every notice of kind the daemon has published to the role topic of key's
-// architect, each payload replaced by the notice's reason. Every notice a live proof reads is one
-// an architect is told, so the topic is derived here, from the run's own project, and a step names
-// only the issue it drove.
+// architect, each with its payload, the notice's record as the daemon published it. Every notice
+// a live proof reads is one an architect is told, so the topic is derived here, from the run's own
+// project, and a step names only the issue it drove.
 func (p *liveProof) architectNotices(key, kind string) []listenerPublish {
 	p.t.Helper()
 	architect, err := claim.NewToken(p.project, key, claim.RoleArchitect)
@@ -255,14 +255,12 @@ func (p *liveProof) architectNotices(key, kind string) []listenerPublish {
 	var got []listenerPublish
 	for _, published := range p.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
 		var payload struct {
-			Kind   string `json:"kind"`
-			Reason string `json:"reason"`
+			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
 			p.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
 		}
 		if payload.Kind == kind {
-			published.Payload = payload.Reason
 			got = append(got, published)
 		}
 	}

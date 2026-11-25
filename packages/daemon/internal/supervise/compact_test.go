@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // compactInstructions stands for what the API sends with every compaction: Oh My Pi writes a
@@ -23,7 +24,7 @@ const ladderSends = providerErrorRunTold
 func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := workingClaim(t, append([]func(*Deps){func(d *Deps) {
-		d.ProviderErrorRunReached = func(Claim, string) { *notices++ }
+		d.ProviderErrorRunReached = func(Claim, texts.ProviderErrorsRecord) { *notices++ }
 	}}, set...)...)
 	for turn := range providerErrorRunTold {
 		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

@@ -41,6 +41,10 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./notice-fields": {
+      "types": "./src/notice-fields.ts",
+      "bun": "./src/notice-fields.ts"
+    },
     "./process-bounds": {
       "types": "./src/process-bounds.ts",
       "bun": "./src/process-bounds.ts"

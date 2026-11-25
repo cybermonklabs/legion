@@ -27,10 +27,11 @@
 #                                the relaunched process's first prompt names the subagent and the
 #                                death, and the claim row's ended_work records it
 #   relaunch-subagent-architect  the same for a root architect, holding no task and then holding
-#                                one in its turn, with the catch-up notice opening with the sentence
+#                                one in its turn, with the catch-up notice carrying the same facts
+#                                in its `relaunch` field
 #   relaunch-task                a worker dies in its task's turn with an `async` bash job running:
 #                                the claim row records the turn and the job, and the task is sent
-#                                again behind the sentence naming both
+#                                again behind the relaunch note naming both
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), awk, bash, tar, bun and python3, as
@@ -63,8 +64,8 @@
 # any exit), this checkout's driver file is laid over it, `bun install --frozen-lockfile` gives it
 # node_modules of its own, and the same run is made there: the driver, `legion` and both plugins
 # are built from that tree. The driver names no Go symbol the base lacks — it reads the new claim
-# column through SQL and the relaunch sentence as literals — so it builds there. The control passes
-# when that run fails and each of five steps fails at the assertion it names: busy-late-turn at
+# column through SQL and the relaunch note's lines as literals — so it builds there. The control
+# passes when that run fails and each of five steps fails at the assertion it names: busy-late-turn at
 # stale-result (the base drops the late turn's result and sends the task again), newer-task at
 # accepted (`a delivery is already pending`), relaunch-subagent-worker and
 # relaunch-subagent-architect at sentence (the base names no work in what it sends a relaunched

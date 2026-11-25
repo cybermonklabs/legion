@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
+# The live proof that a Legion phase worker whose task names a stale plan-handoff pointer
 # builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038).
 # `--tasks` chooses one of two stagings and `--mid-approval` one of two watcher shapes. Each
 # staging is run twice, as two arms that differ in one thing: the implementer's role prompt. The
@@ -54,7 +54,7 @@
 #   2. the staged issue, seeded through packages/dispatch/e2e/api.ts: a spec, a `plan.md` at eight
 #      versions carrying the first three designs above, six `plan` handoff records, the first
 #      citing plan.md version 1 and the sixth version 8, and the plan review's approvals of
-#      version 1 and version 6. The seed writes the session's task line too, from its own
+#      version 1 and version 6. The seed writes the session's task too, from its own
 #      constants and its own list of the staged tasks. With --tasks 2 the first task's file
 #      carries `note: <call>` and the second `adopt: <call>`. The second is the file the row
 #      scores, because a worker that reads the plan again between the two tasks reads it before
@@ -66,8 +66,8 @@
 #      `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
 #      variable of this shell unset, `OMP_SESSION_STORAGE=file`, an empty `GH_CONFIG_DIR` of the
 #      run's own, and the staged server as its own Dispatch. Its task is an ordinary implementing
-#      assignment whose `Handoff:` line is the one the daemon renders
-#      (packages/daemon/internal/workflow/effects.go), naming plan version 1 and nothing else: it
+#      assignment whose `handoff_phase` and `handoff_version` fields are the ones the daemon
+#      renders (texts.PhaseAssignmentRecord), naming plan version 1 and nothing else: it
 #      asks for each task of the plan, each one's line written to a file of the run's own, and for
 #      the round's `implement` handoff body, written to one more file, which a worker with no
 #      workspace can all do and which the role prompt reads the plan again before;
@@ -83,7 +83,7 @@
 #      wrote that file, and it is the first of these five words that holds:
 #
 #        approved    the file names the newest approved design, which the rule asks for;
-#        pointer     it names the design of the plan.md version the task line's handoff record
+#        pointer     it names the design of the plan.md version the task's handoff record
 #                    cites, which is the build the rule forbids;
 #        stale       it names an approved design that is neither the newest approved one nor the
 #                    pointer's, which is lag;
@@ -130,12 +130,12 @@
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
-# TMPDIR is kept either way, and printed, since the transcripts, prompts, task lines and rows in
+# TMPDIR is kept either way, and printed, since the transcripts, prompts, tasks and rows in
 # it are the evidence; only the base tree it extracted is removed. Every process the run starts -
 # each Dispatch server, each watcher, each session - is stopped by the same teardown.
 #
-# What it does not cover: no daemon runs, so nothing here proves the task line this drive writes
-# is the line the daemon sends, which the daemon's own tests own; the session holds no `legion`
+# What it does not cover: no daemon runs, so nothing here proves the task this drive writes
+# is the task the daemon sends, which the daemon's own tests own; the session holds no `legion`
 # tool, no jj workspace and no GitHub, so it completes no phase and opens no pull request; Envoy
 # is an address nothing listens on, so no role topic and no message reach the session; and
 # `skills/legion-worker/SKILL.md` is the one this box has installed for a session's `skill://`
@@ -465,10 +465,10 @@ run_attempt() {
   pass
 
   begin "$run task"
-  # The task line is the seed's own (taskText, scripts/e2e/plan-pointer-drive.ts), written from
+  # The task is the seed's own (taskText, scripts/e2e/plan-pointer-drive.ts), written from
   # the driver's constants and its list of the staged tasks. The shell prints it and writes none
   # of it, so one change cannot make the row print a version the session was never told.
-  [ -s "$run_dir/task.txt" ] || fail "the seed wrote no task line to $run_dir/task.txt"
+  [ -s "$run_dir/task.txt" ] || fail "the seed wrote no task to $run_dir/task.txt"
   note "task: $(cat "$run_dir/task.txt")"
   pass
 

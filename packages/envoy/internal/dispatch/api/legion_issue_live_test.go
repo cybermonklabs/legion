@@ -368,7 +368,7 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		ID: uuid.NewString(), Issue: "LIVE-1", Project: new("LIVE"), Task: new("default"), Place: new(3),
 		Kind: new(workflowstore.StepKindStep), Role: new("tester"), Type: new("testing"),
 		Agent: new("legion-live-live-1-tester"), Generation: new(int64(1)), StartedAt: new(stepStart),
-	}, model.Actor{Kind: "session", ID: legionDaemonSessionPrefix + "LIVE"}, time.Now()); err != nil {
+	}, model.Actor{Kind: "session", ID: model.LegionDaemonSessionPrefix + "LIVE"}, time.Now()); err != nil {
 		t.Fatalf("L-12: write run A: %v", err)
 	}
 	putStepOK(t, rig.handler, "LIVE-1", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))

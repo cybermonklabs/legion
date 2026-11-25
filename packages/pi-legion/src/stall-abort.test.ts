@@ -3,6 +3,7 @@ import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
 import {
   createStallWatchdog,
+  restartMessage,
   type StallCall,
   type StallStepRecord,
   type StallWatchdog,
@@ -75,9 +76,20 @@ test("the message the worker sends itself is steered, starts a turn and is no us
     },
   });
 
-  await aborter.sendMessage(
-    "Your turn was ended because its `bash` call (toolu_stuck) had no result."
+  const text = restartMessage(
+    {
+      toolCallId: "toolu_stuck",
+      toolName: "bash",
+      input: {},
+      startedAt: START,
+      deadlineMs: undefined,
+      step: 1,
+      steppedAt: undefined,
+      told: undefined,
+    },
+    { rule: { kind: "bound", boundMs: 20 * MINUTE }, openMs: 21 * MINUTE, pastMs: MINUTE }
   );
+  await aborter.sendMessage(text);
 
   expect(sent).toEqual([
     {
@@ -85,7 +97,7 @@ test("the message the worker sends itself is steered, starts a turn and is no us
         // Its own custom type: a `role: "user"` message is what the phase check reads as a new
         // assignment, so a worker restarting itself would reset that check's own count.
         customType: STALL_RESTART_MESSAGE,
-        content: "Your turn was ended because its `bash` call (toolu_stuck) had no result.",
+        content: text,
         display: true,
       },
       // Steered, and triggering a turn: the session is idle once the abort has ended the turn,
@@ -238,8 +250,8 @@ test("the second step ends the turn and sends the session a message naming the e
   expect(rig.sent).toHaveLength(1);
   const message = rig.sent[0]?.message as { customType: string; content: string };
   expect(message.customType).toBe(STALL_RESTART_MESSAGE);
-  expect(message.content).toContain("toolu_stuck");
-  expect(message.content).toContain("`bash`");
+  expect(message.content).toContain("call_id: toolu_stuck");
+  expect(message.content).toContain("call_tool: bash");
   expect(rig.sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: true });
 
   // A turn the abort ended never reaches the exit: the call's record went with the turn.

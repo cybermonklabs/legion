@@ -7,7 +7,7 @@
 // rest registered again.
 
 import type { ConsumerDelivery, InboundUnavailable } from "./consumer-delivery";
-import { envoyNoticeText } from "./delivery-ledger";
+import { noticeKind, noticeText } from "./notice-text";
 import { registrationTopics } from "./stream-topics";
 import { type DeliveryRequest, EnvoyApiError, expandSubscriptionTopics } from "./transport";
 
@@ -57,18 +57,21 @@ export interface RelayRegistration<Result> {
 }
 
 /**
- * What a session is told of the topics an edge listener refused for the projects of its token
- * (`reason`, `topic_not_in_project` or `repository_not_in_project`), worded once for every host:
- * it no longer follows them, and every other topic it follows stays.
+ * The notice a session gets of the topics an edge listener refused for the projects of its token:
+ * `topics`, a list of the refused topics as the registration carried them (`topics[n]: …`), and
+ * `reason`, the listener's (`topic_not_in_project` or `repository_not_in_project`). The session no
+ * longer follows them, and every other topic it follows stays. The step its reader takes is in
+ * `envoy_inbox`'s description (`tool-contract.ts`), which its kind names (`notice-text.ts`).
  */
+export const TOPICS_REFUSED_NOTICE = noticeKind("envoy", "Envoy topics refused (envoy_inbox)", [
+  "topics",
+  "reason",
+]);
+
+/** The topics-refused notice for `topics` and the listener's `reason`, built once for every
+ *  host. Each host shows it where it shows an outage, once. */
 export function refusedTopicsNoticeText(topics: readonly string[], reason: string): string {
-  return envoyNoticeText({
-    notice: "Envoy topics refused",
-    topics: topics.join(", "),
-    reason,
-    detail:
-      "The listener delivers to this session only the topics of its token's projects, so it refused these, and this session no longer follows them. Every other topic it follows stays followed and goes on being delivered.",
-  });
+  return noticeText(TOPICS_REFUSED_NOTICE, { topics, reason });
 }
 
 /** The reasons an edge listener refuses a registration for a topic of no project of the session's

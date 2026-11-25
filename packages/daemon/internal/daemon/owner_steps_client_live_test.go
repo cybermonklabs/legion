@@ -151,12 +151,12 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		register := l.client(l.root, implementer, "register_plan", map[string]any{"issue": planned, "artifactId": plan, "version": 1}, nil)
 		stop := l.client(l.root, implementer, "stop_task", map[string]any{"issue": planned, "task": "a"}, nil)
 		for what, outcome := range map[string]clientOutcome{"register_plan": register, "stop_task": stop} {
-			if err := refused(outcome, http.StatusForbidden, "ARCHITECT_REQUIRED"); err != nil {
+			if err := apiRefused(outcome, http.StatusForbidden, "ARCHITECT_REQUIRED"); err != nil {
 				t.Fatalf("%s with the implementer's grant: %v", what, err)
 			}
 			l.note("%s with the implementer's grant: %s", what, outcome)
 		}
-		if err := refused(architectRegistered, http.StatusForbidden, "ARCHITECT_REQUIRED"); err == nil {
+		if err := apiRefused(architectRegistered, http.StatusForbidden, "ARCHITECT_REQUIRED"); err == nil {
 			t.Fatalf("control: the check of ARCHITECT_REQUIRED passed on the architect's own register_plan, %s", architectRegistered)
 		} else {
 			l.note("control: the same check on the architect's register_plan fails: %v", err)
@@ -193,7 +193,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		tester := l.worker(claim.RoleTester)
 		tester.take()
 		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "verdict": "fail", "return_to": 2}, l.report(tester))
-		if err := refused(outcome, http.StatusConflict, "RETURN_REFUSED"); err != nil {
+		if err := apiRefused(outcome, http.StatusConflict, "RETURN_REFUSED"); err != nil {
 			t.Fatalf("return_to 2, the tester's own place: %v", err)
 		}
 		if got := phase.Phase(l.d.state().Issues[returnRefused].Phase); got != phase.Testing {
@@ -251,7 +251,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		}
 		l.waitHeld(older, "task-stopped")
 		late := l.client(l.oldTree, tester, "complete", map[string]any{"summary": "every criterion holds", "verdict": "pass"}, l.report(tester))
-		if err := refused(late, http.StatusConflict, "TASK_STOPPED"); err != nil {
+		if err := apiRefused(late, http.StatusConflict, "TASK_STOPPED"); err != nil {
 			t.Fatalf("the older tester's report of its stopped task: %v", err)
 		}
 		l.note("contract %d client handoffComplete after the owner's stop: %s", l.oldContract, late)
@@ -298,11 +298,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l.check("client-stopped-report-refused", func() {
 		tester := l.worker(claim.RoleTester)
 		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds", "verdict": "pass"}, l.report(tester))
-		if err := refused(outcome, http.StatusConflict, "TASK_STOPPED"); err != nil {
+		if err := apiRefused(outcome, http.StatusConflict, "TASK_STOPPED"); err != nil {
 			t.Fatalf("the stopped task's report: %v", err)
 		}
 		l.note("executePhaseOp handoff_complete of the stopped task's tester: %s", outcome)
-		if err := refused(taken, http.StatusConflict, "TASK_STOPPED"); err == nil {
+		if err := apiRefused(taken, http.StatusConflict, "TASK_STOPPED"); err == nil {
 			t.Fatalf("control: the check of TASK_STOPPED passed on a report of a task nobody stopped, %s", taken)
 		} else {
 			l.note("control: the same check on %s's taken pass fails: %v", returnRefused, err)
@@ -503,8 +503,8 @@ func stopTaken(outcome clientOutcome) error {
 	return nil
 }
 
-// refused says whether outcome is the client's LegionDaemonApiError with status and code.
-func refused(outcome clientOutcome, status int, code string) error {
+// apiRefused says whether outcome is the client's LegionDaemonApiError with status and code.
+func apiRefused(outcome clientOutcome, status int, code string) error {
 	if outcome.OK || outcome.Error != "LegionDaemonApiError" || outcome.Status != status || outcome.Code != code {
 		return fmt.Errorf("the client %s, want LegionDaemonApiError %d %s", outcome, status, code)
 	}

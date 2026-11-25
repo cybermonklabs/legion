@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,13 +15,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// The round every case below asks for, the pod it was opened over, and the text the sweep built.
+// The round every case below asks for, the pod it was opened over, and its drift as the sweep
+// queued it: the image by its short digest and two settings by their keys. olderAskText is the
+// whole ask as an older daemon's sweep built it, which a row that daemon queued carries in place
+// of the facts.
 const (
-	askedRound = "pod:9d3f0c7a"
-	askedPod   = "9d3f0c7a"
-	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
+	askedRound   = "pod:9d3f0c7a"
+	askedPod     = "9d3f0c7a"
+	askedImage   = "7e3a9c1b5d2f"
+	olderAskText = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
+)
+
+// askedSettings are the settings the round's drift names, and askedEnd the moment it ends.
+var (
+	askedSettings = []string{"resources", "account"}
+	askedEnd      = time.Date(2026, 11, 18, 12, 30, 0, 0, time.UTC)
 )
 
 // The five lines the executor writes, one for each way a row ends without an error. The first
@@ -48,19 +62,21 @@ func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]s
 	return &outbox{project: "legion", notices: publisher, supervisor: sup, log: jsonLogger(logs)}, logs
 }
 
-// askRow is the ask of askedRound to role, as row id.
+// askRow is the ask of askedRound to role, as row id, with the round's facts.
 func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 	t.Helper()
-	row := mustOutboxRow(t, "LEGION-208", record.UpdateAsk{Role: role, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
+	row := mustOutboxRow(t, "LEGION-208", record.UpdateAsk{Role: role, Round: askedRound, Pod: askedPod,
+		Images: []string{askedImage}, Settings: askedSettings, EndsAt: askedEnd}, time.Now())
 	row.ID = id
 	return row
 }
 
 // The ask reaches the role it names on that role's own topic, a worker and the architect alike,
-// since the architect's process runs in the pod too. The message is the sweep's text unchanged,
-// under the row's own key, so a retried row is one delivery. When the publisher has taken it, the
-// executor writes the one line the production check greps for, with the row, the issue, the round,
-// the pod, the claim, the role and the topic.
+// since the architect's process runs in the pod too. It goes as its kind's record, an object
+// whose fields are the round's facts (record.UpdateAsk.Record), under the summary
+// `update-ask on <KEY>` and the row's own key, so a retried row is one delivery. When the
+// publisher has taken it, the executor writes the one line the production check greps for, with
+// the row, the issue, the round, the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	t.Parallel()
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
@@ -77,8 +93,28 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			if len(published) != 1 {
 				t.Fatalf("publishes = %#v, want the one ask", published)
 			}
-			if got := published[0]; got.topic != topic || got.message != askedText || got.payload != any(askedText) || got.key != record.OutboxKey(row.ID) {
-				t.Fatalf("the ask went as %#v, want %q on %s under %s", got, askedText, topic, record.OutboxKey(row.ID))
+			got := published[0]
+			if got.topic != topic || got.message != "update-ask on LEGION-208" || got.key != record.OutboxKey(row.ID) {
+				t.Fatalf("the ask went as %#v, want the summary %q on %s under %s", got, "update-ask on LEGION-208", topic, record.OutboxKey(row.ID))
+			}
+			// The publisher encodes the payload as the listener's body carries it (json.Marshal);
+			// a text would encode as a JSON string, the record as an object.
+			payload, err := json.Marshal(got.payload)
+			if err != nil || !strings.HasPrefix(string(payload), "{") {
+				t.Fatalf("the ask's payload is %T %s (%v), want the record as an object", got.payload, payload, err)
+			}
+			var ask texts.UpdateAskRecord
+			decoder := json.NewDecoder(strings.NewReader(string(payload)))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&ask); err != nil {
+				t.Fatalf("decode the ask's payload %s as its record: %v", payload, err)
+			}
+			if ask.Kind != texts.UpdateAsk || ask.Issue != "LEGION-208" || ask.Round != askedRound || ask.Pod != askedPod ||
+				!slices.Equal(ask.Images, []string{askedImage}) || !slices.Equal(ask.Settings, askedSettings) || ask.Reasons != "" ||
+				!ask.EndsAt.Equal(askedEnd) || ask.PushTo != "legion/LEGION-208" || ask.BackgroundWork != texts.UpdateBackgroundStep ||
+				ask.Answer != texts.UpdateAnswerOp || ask.EveryAnswerBringsItForward != texts.UpdateEarlyEnd ||
+				!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld {
+				t.Errorf("the ask's record is %+v, want the round's facts and the facts every ask gives", ask)
 			}
 			lines := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`)
 			if len(lines) != 1 {
@@ -95,6 +131,24 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			}
 			t.Logf("the %s was asked on %s: %v", role, topic, lines[0])
 		})
+	}
+}
+
+// A row an older daemon queued carries the whole ask that daemon's sweep built, and no facts. It
+// goes as that text, unchanged, under the summary every update ask goes under
+// (`update-ask on <KEY>`), at the kind's urgency.
+func TestPodUpdateAskAnOlderDaemonQueuedGoesAsItsText(t *testing.T) {
+	publisher := &outboxPublisher{}
+	runner, _ := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})
+	row := mustOutboxRow(t, "LEGION-208", record.UpdateAsk{Role: claim.RoleTester, Round: askedRound, Pod: askedPod, Text: olderAskText}, time.Now())
+	row.ID = 79
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("run the older daemon's ask: %v", err)
+	}
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].message != "update-ask on LEGION-208" || published[0].payload != any(olderAskText) ||
+		published[0].urgency != texts.Med {
+		t.Fatalf("publishes = %#v, want the older daemon's text as the payload under update-ask on LEGION-208 at med", published)
 	}
 }
 
@@ -232,7 +286,8 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig.runner.log = jsonLogger(logs)
 	resumes := len(rig.rt.CallsOf("Resume"))
 
-	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
+	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod,
+		Images: []string{askedImage}, Settings: askedSettings, EndsAt: askedEnd}, time.Now())
 	row.ID = 81
 	if err := rig.runner.execute(ctx, row); err != nil {
 		t.Fatalf("the ask to a released role = %v, want the row finished", err)

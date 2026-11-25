@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -210,8 +211,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		told := rig.told(t, issue)
-		if strings.Contains(told, "could not read") {
-			t.Fatalf("the merger was told %q, want no word of a failed read: GitHub answered the read", told)
+		if told.Unread {
+			t.Fatalf("the merger was told %+v, want no failed read: GitHub answered the read", told)
 		}
 		rig.readsWere(t, issue, reads, 1)
 		rig.wokenOnce(t, issue)
@@ -261,8 +262,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
-		if told := rig.told(t, issue); !strings.Contains(told, "could not read the pull request") {
-			t.Fatalf("the merger was told %q, want it told that the daemon could not read the pull request", told)
+		if told := rig.told(t, issue); !told.Unread {
+			t.Fatalf("the merger was told %+v, want it told that the daemon could not read the pull request", told)
 		}
 		rig.readsWere(t, issue, reads, mergeStateLadderReads)
 		rig.wokenOnce(t, issue)
@@ -850,21 +851,25 @@ func (r *dequeueRig) nothingPublished(t *testing.T, issue dequeueIssue) {
 	}
 }
 
-// told is the one message delivered to issue's merger, which it holds names the pull request, its
-// repository and the head, and says that the event names no reason.
-func (r *dequeueRig) told(t *testing.T, issue dequeueIssue) string {
+// told is the one message delivered to issue's merger, under the summary
+// `merge-queue-removal on <KEY>`, which it holds is the kind's record naming the pull request as
+// owner/name#n and the head.
+func (r *dequeueRig) told(t *testing.T, issue dequeueIssue) texts.MergeQueueRemovalRecord {
 	t.Helper()
 	delivered := r.listener.accepted(issue.topic)
 	if len(delivered) != 1 {
 		t.Fatalf("the merger's topic was delivered %d messages %v, want exactly one", len(delivered), delivered)
 	}
-	message := delivered[0].Message
-	for _, want := range []string{fmt.Sprintf("pull request %s#%d", startedAgainRepo, issue.number), "at head " + issue.head, "names no reason"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("the merger was told %q, want it to say %q", message, want)
-		}
+	var told texts.MergeQueueRemovalRecord
+	if err := json.Unmarshal([]byte(delivered[0].Payload), &told); err != nil {
+		t.Fatalf("the merger was told %q, which is no merge-queue-removal record: %v", delivered[0].Payload, err)
 	}
-	return message
+	if delivered[0].Message != "merge-queue-removal on "+issue.key || told.Kind != texts.MergeQueueRemoval || told.Issue != issue.key ||
+		told.PullRequest != texts.PullRequestRef(startedAgainRepo, issue.number) || told.Head != issue.head {
+		t.Fatalf("the merger was told %q with %+v, want merge-queue-removal on %s naming %s and head %s",
+			delivered[0].Message, told, issue.key, texts.PullRequestRef(startedAgainRepo, issue.number), issue.head)
+	}
+	return told
 }
 
 // wokenOnce holds that issue's released merger was resumed through one wake: one delivery wake of

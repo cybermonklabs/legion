@@ -65,8 +65,8 @@ func TestAPendingsNamedWakeStartsTheNextLookAtThatTimeAndNoEarlier(t *testing.T)
 				t.Fatalf("the check_wake row is due %s, want the %s the report named", row.nextAt, wake)
 			}
 			due := decodeWake(t, row)
-			if due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || due.Reason != "the deploy has not carried the merge" {
-				t.Fatalf("the check_wake row = %+v, want look 1 of the check opened at the merge, with the report's summary as its reason", due)
+			if due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || due.Reason != "the deploy has not carried the merge" || !due.Pending || due.Retry {
+				t.Fatalf("the check_wake row = %+v, want look 1 of the check opened at the merge, with the report's summary as its reason, marked as the agent's own wake alone", due)
 			}
 			bounds := issueOutboxOf(t, rig.pool, "LEGION-209", "check_bound")
 			if len(bounds) != 1 || bounds[0].nextAt.Before(wake) {
@@ -81,7 +81,7 @@ func TestAPendingsNamedWakeStartsTheNextLookAtThatTimeAndNoEarlier(t *testing.T)
 			}
 
 			rig.clock.now = wake
-			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge"})
+			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge", Pending: true})
 			check = productionCheck(t, rig.pool, "LEGION-209")
 			if check.Looks != 2 || !check.LookOpen || check.Last || check.WakeAt != nil ||
 				check.LastWakeKind != wakeNamed || check.LastWakeDetail != "the deploy has not carried the merge" || !check.LastWakeAt.Equal(wake) {
@@ -158,7 +158,7 @@ func TestAWakeUnderAMinuteOutStartsTheNextLookAMinuteAfterTheReport(t *testing.T
 			}
 
 			rig.clock.now = floor
-			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy is running now"})
+			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy is running now", Pending: true})
 			if check := productionCheck(t, rig.pool, "LEGION-209"); check.Looks != 2 || !check.LookOpen {
 				t.Fatalf("the check at the floor = %+v, want look 2 open a minute after the report", check)
 			}
@@ -194,12 +194,12 @@ func TestAnUnreportedLookNamesTheNextLookALookBoundOutAndItStarts(t *testing.T) 
 				t.Fatalf("the check_wake row is due %s, want the retry at %s", row.nextAt, retry)
 			}
 			due := decodeWake(t, row)
-			if due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || !strings.HasPrefix(due.Reason, "the retry of a look nobody reported") {
-				t.Fatalf("the check_wake row = %+v, want look 1's retry as its reason", due)
+			if due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || !strings.HasPrefix(due.Reason, "the retry of a look nobody reported") || !due.Retry || due.Pending {
+				t.Fatalf("the check_wake row = %+v, want look 1's retry as its reason, marked as a retry alone", due)
 			}
 
 			rig.clock.now = retry
-			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: due.Look, OpenedAt: due.OpenedAt, Reason: due.Reason})
+			rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: due.Look, OpenedAt: due.OpenedAt, Reason: due.Reason, Retry: due.Retry, Pending: due.Pending})
 			check = productionCheck(t, rig.pool, "LEGION-209")
 			if check.Looks != 2 || !check.LookOpen || check.WakeAt != nil {
 				t.Fatalf("the check at its retry = %+v, want look 2 open with no wake standing", check)
@@ -280,7 +280,7 @@ func TestAPendingOnAnIssueBackInTheWorkflowNamesItsWakeAndSuspendsNobody(t *test
 
 	rig.clock.now = wake
 	starts := len(superviseRowsOf(t, rig.pool, "LEGION-208", "start"))
-	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-208", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge"})
+	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-208", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge", Pending: true})
 	check = productionCheck(t, rig.pool, "LEGION-208")
 	deferred := wake.Add(CheckLookBound)
 	if check.Looks != 1 || check.LookOpen || check.WakeAt == nil || !check.WakeAt.Equal(deferred) {
@@ -290,7 +290,7 @@ func TestAPendingOnAnIssueBackInTheWorkflowNamesItsWakeAndSuspendsNobody(t *test
 	if len(rows) != 2 || !rows[1].nextAt.Equal(deferred) {
 		t.Fatalf("check_wake rows = %+v, want the wake queued again at %s", rows, deferred)
 	}
-	if due := decodeWake(t, rows[1]); due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || due.Reason != "the deploy has not carried the merge" {
+	if due := decodeWake(t, rows[1]); due.Look != 1 || !due.OpenedAt.Equal(checkOpened) || due.Reason != "the deploy has not carried the merge" || !due.Pending || due.Retry {
 		t.Fatalf("the queued row = %+v, want the agent's own wake kept", due)
 	}
 	if got := len(superviseRowsOf(t, rig.pool, "LEGION-208", "start")); got != starts {
@@ -306,7 +306,7 @@ func TestAWakeRowWithNoLookToStartStartsNoneAndIsNotQueuedAgain(t *testing.T) {
 	t.Run("a closed check", func(t *testing.T) {
 		rig := childCheckRig(t)
 		rig.apply("pass", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pass", Summary: "driven in production"})
-		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the agent's own wake"})
+		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the agent's own wake", Pending: true})
 	})
 
 	t.Run("a check a later merge replaced", func(t *testing.T) {
@@ -324,7 +324,7 @@ func TestAWakeRowWithNoLookToStartStartsNoneAndIsNotQueuedAgain(t *testing.T) {
 		rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 		rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "the deploy has not carried the merge",
 			WakeAt: new(checkOpened.Add(time.Hour))})
-		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: first, Reason: "the first check's wake"})
+		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: first, Reason: "the first check's wake", Pending: true})
 	})
 
 	t.Run("a look the check has left", func(t *testing.T) {
@@ -337,9 +337,9 @@ func TestAWakeRowWithNoLookToStartStartsNoneAndIsNotQueuedAgain(t *testing.T) {
 			t.Fatalf("the check at its bound = %+v, want look 2 open", check)
 		}
 		// Look 1's own wake row, left over when the bound started look 2.
-		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the agent's own wake"})
+		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the agent's own wake", Pending: true})
 		// And a row of the look the check stands at, which is already open.
-		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 2, OpenedAt: checkOpened, Reason: "the agent's own wake"})
+		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 2, OpenedAt: checkOpened, Reason: "the agent's own wake", Pending: true})
 	})
 }
 

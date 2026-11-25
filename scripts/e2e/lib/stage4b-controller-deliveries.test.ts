@@ -16,23 +16,25 @@ const scriptPath = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(scriptPath);
 const dir = temporaryDirectory("stage4b-controller-deliveries-test");
 
-/** A delivery's session line: pi-envoy's custom message, its TOON card as the content. */
-const delivery = (id: string, summary: string, kind: string) =>
+/** A delivery's session line: pi-envoy's custom message, its TOON card as the content: the head
+ *  `summary: <kind> on <issue>`, and the notice's record under `message:`, its kind and issue
+ *  first. */
+const delivery = (id: string, kind: string, issue: string) =>
   JSON.stringify({
     type: "custom_message",
     customType: "envoy-message",
     id,
-    content: `Envoy message\n  summary: ${summary}\n  message:\n    kind: ${kind}`,
+    content: `envoy:\n  from: agent\n  urgency: med\n  summary: ${kind} on ${issue}\n  message:\n    kind: ${kind}\n    issue: ${issue}`,
   });
 /** What the agent itself said, holding a needle's text: never a delivery. */
 const said = JSON.stringify({
   type: "message",
   message: { role: "assistant", content: [{ type: "text", text: "summary: tick on LEGSMOKE" }] },
 });
-const aTick = delivery("a-1", "tick on LEGSMOKE", "tick");
-const aHeld = delivery("a-2", "held on LEGSMOKE-3", "held");
-const bHeld = delivery("b-1", "held on LEGSMOKE-3", "held");
-const bTick = delivery("b-2", "tick on LEGSMOKE", "tick");
+const aTick = delivery("a-1", "tick", "LEGSMOKE");
+const aHeld = delivery("a-2", "held", "LEGSMOKE-3");
+const bHeld = delivery("b-1", "held", "LEGSMOKE-3");
+const bTick = delivery("b-2", "tick", "LEGSMOKE");
 const profile = join(dir, "profile");
 const bare = join(dir, "bare");
 beforeAll(() => {

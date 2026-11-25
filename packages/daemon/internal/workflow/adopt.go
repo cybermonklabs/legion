@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // AdoptionRefusal says why issue cannot join tree for what its own record says, nil when it can. A
@@ -108,6 +109,22 @@ func (e *Engine) closedTreesMember(ctx context.Context, tx pgx.Tx, member record
 // back, though it never took a slot. Only a labelled root that never left a tree and never ran
 // (one a person made a child of a live tree) is adopted.
 func (e *Engine) RanAsRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	why, err := e.staysOwn(ctx, tx, issue)
+	return ranAsRoot[why], err
+}
+
+// ranAsRoot is the sentence RanAsRoot gives for each word of why a root stays a tree of its own
+// (staysOwn), which a refusal and the message on the issue carry.
+var ranAsRoot = map[string]string{
+	texts.StaysOwnOperator:   "the operator runs a tree under its key",
+	texts.StaysOwnRan:        "it ran as a tree of its own",
+	texts.StaysOwnCarriesRun: "it carries a run handed over to it as a root of its own",
+	texts.StaysOwnHandedOver: "it was handed over as a root of its own",
+}
+
+// staysOwn is why issue stays a tree of its own, as one of the texts.StaysOwn words a
+// child-status notice of a re-parented root names, "" when it never ran as one (RanAsRoot).
+func (e *Engine) staysOwn(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
@@ -118,15 +135,15 @@ func (e *Engine) RanAsRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (
 	}
 	if found {
 		if lifecycle.HeldByOperator() {
-			return "the operator runs a tree under its key", nil
+			return texts.StaysOwnOperator, nil
 		}
-		return "it ran as a tree of its own", nil
+		return texts.StaysOwnRan, nil
 	}
 	if issue.CarriesRun() || issue.TakenBack {
-		return "it carries a run handed over to it as a root of its own", nil
+		return texts.StaysOwnCarriesRun, nil
 	}
 	if issue.HandedOverFrom != "" {
-		return "it was handed over as a root of its own", nil
+		return texts.StaysOwnHandedOver, nil
 	}
 	return "", nil
 }
@@ -166,10 +183,11 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	if fact.Parent == "" || fact.Parent == issue.ToldParent || !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return nil
 	}
-	ran, err := e.RanAsRoot(ctx, tx, *issue)
-	if err != nil || ran == "" {
+	why, err := e.staysOwn(ctx, tx, *issue)
+	if err != nil || why == "" {
 		return err
 	}
+	ran := ranAsRoot[why]
 	parent, err := e.store.Issue(ctx, tx, fact.Parent)
 	if err != nil || parent == nil || parent.Tree == issue.Tree {
 		return err
@@ -193,7 +211,15 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	}
 	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree", "issue", issue.Key,
 		"parent", fact.Parent, "tree", root.Key, "reason", ran)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+	return e.notice(ctx, tx, root.Key, ReparentedNotice(root.Key, issue.Key, fact.Parent, why))
+}
+
+// ReparentedNotice is the child-status notice on tree, the root of a live tree, that child, a root
+// that ran, is now a child of parent in Dispatch and stays a tree of its own for why (a
+// texts.StaysOwn word) (texts.ChangeReparented).
+func ReparentedNotice(tree, child, parent, why string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: tree}, Change: texts.ChangeReparented,
+		Child: child, Parent: parent, StaysOwn: why}
 }
 
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into
@@ -228,7 +254,7 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, joinedTheTree(issue.Key, root.Key, "the admission queue")); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, JoinedTheTreeNotice(issue.Key, root.Key, "")); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a queued root joined a live tree", "issue", issue.Key, "tree", root.Tree, "generation", issue.Generation+1)
@@ -302,15 +328,15 @@ func (e *Engine) StopLeftTree(ctx context.Context, tx pgx.Tx, left record.Issue)
 	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree), "")
 }
 
-// joinedTheTree is the child-status notice an adoption sends about an issue a tree takes: the owner
-// walk starts at that issue's parent, so the architect that owns the parent reads that the issue
-// joined and where it came from. Both routes send it, each naming its own from: a queued root with
-// its own tree's members (Adopt) comes from the admission queue, and the one member of a closed
-// tree a release takes (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its
-// old root.
-func joinedTheTree(issue, root, from string) record.Notice {
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s joined the tree of %s from %s", issue, root, from)}
+// JoinedTheTreeNotice is the child-status notice an adoption sends about an issue a tree takes:
+// the owner walk starts at that issue's parent, so the architect that owns the parent reads that
+// the issue joined root's tree and where it came from. Both routes send it: a queued root with its
+// own tree's members (Adopt) comes from the admission queue, and names no tree it came from; the
+// one member of a closed tree a release takes (AdoptMember, C4 of dispatch://INFRA-3107) names
+// that closed tree's old root (from).
+func JoinedTheTreeNotice(issue, root, from string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue}, Change: texts.ChangeJoined,
+		Tree: root, FromTree: from}
 }
 
 // catchUpOnWhatTheTreeIsOwed writes root's architect a catch-up when a person's decision is kept
@@ -351,9 +377,9 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // release may name a child Dispatch shows in triage, backlog or icebox (api's releasableChild),
 // and a record at admitted carrying such a status would be an issue in the live tree that no
 // list of the state names and nothing starts. The architect that owns its parent is told with a
-// child-status notice (joinedTheTree), and the tree root's architect is written a catch-up where a
-// person's decision on the member is kept for it (catchUpOnWhatTheTreeIsOwed). Everything is
-// written in the caller's transaction.
+// child-status notice (JoinedTheTreeNotice), and the tree root's architect is written a catch-up
+// where a person's decision on the member is kept for it (catchUpOnWhatTheTreeIsOwed).
+// Everything is written in the caller's transaction.
 func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
 	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err
@@ -361,7 +387,7 @@ func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, member.Key, joinedTheTree(member.Key, root.Key, "the closed tree of "+member.Tree)); err != nil {
+	if err := e.notice(ctx, tx, member.Key, JoinedTheTreeNotice(member.Key, root.Key, member.Tree)); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a closed tree's member joined a live tree", "issue", member.Key,

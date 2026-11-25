@@ -2,10 +2,12 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -38,26 +40,20 @@ func queuedRoot(key, parent, rank string, seq int64) record.Issue {
 		Parent: record.ParentOf(parent), Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: rank, HandedOver: true, LastDispatchSeq: seq}
 }
 
-// joinedNotices is the reason of every child-status notice queued on child.
+// joinedNotices is every child-status notice queued on child, as its facts: the change, the tree
+// it runs under, the phase a start begins (the first step of its plan, main's "starts planning
+// under"), the closed tree it came from and every issue it waited on.
 func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 	t.Helper()
-	var reasons []string
+	var told []string
 	for _, got := range effects(t, pool) {
 		if notice, ok := got.payload.(record.Notice); ok && got.issue == child && notice.Kind == "child-status" {
-			reasons = append(reasons, notice.Reason)
+			told = append(told, fmt.Sprintf("%s %s tree=%s phase=%s from=%s waited_on=%s", notice.Issue, notice.Change, notice.Tree, notice.Phase,
+				notice.FromTree, strings.Join(notice.WaitedOn, ",")))
 		}
 	}
-	return reasons
+	return told
 }
-
-// childStartedOwnership is how every child-status notice of a child's start ends, after its
-// reason: the child's own architect starts with it and owns it while that architect holds its
-// role, so the architect it tells hears only what goes above that architect
-// (workflow.ChildStartedNotice).
-const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
-	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-	"holdsRole decides"
 
 // assertJoinedAndPlanning asserts child left admission's queue for tree's run: recorded in tree
 // at generation and, once an admission pass with a slot to spare has read it, planning there on
@@ -102,8 +98,8 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 	if starts := architectStarts(t, pool, child); starts != 1 {
 		t.Fatalf("%s has %d architect starts queued, want one: its own architect starts with its first phase", child, starts)
 	}
-	if want := []string{child + " joined the tree of " + tree + " from the admission queue",
-		child + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot" + childStartedOwnership}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
+	if want := []string{child + " joined tree=" + tree + " phase= from= waited_on=",
+		child + " started tree=" + tree + " phase=planning from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
 		t.Fatalf("child-status notices of %s = %q, want %q", child, joinedNotices(t, pool, child), want)
 	}
 	assertWaiting(t, pool, nil)
@@ -250,8 +246,8 @@ func TestNestedQueuedRootsJoinTheLiveTreeAtTheTop(t *testing.T) {
 		if got.Tree != tree || got.Generation != 2 || got.Phase != phase.Planning {
 			t.Fatalf("%s = %#v, want it planning in the tree of %s at generation 2", key, got, tree)
 		}
-		want := []string{key + " joined the tree of " + tree + " from the admission queue",
-			key + " starts planning under " + tree + ": it reached the front of the waiting line and took an admission slot" + childStartedOwnership}
+		want := []string{key + " joined tree=" + tree + " phase= from= waited_on=",
+			key + " started tree=" + tree + " phase=planning from= waited_on="}
 		if !reflect.DeepEqual(joinedNotices(t, pool, key), want) {
 			t.Fatalf("child-status notices of %s = %q, want %q", key, joinedNotices(t, pool, key), want)
 		}
@@ -284,7 +280,7 @@ func TestAQueuedRootThatWaitsOnAnUnfinishedIssueJoinsTheLiveTreeAndIsHeldThere(t
 	if got := issue(t, pool, root); got.Tree != tree || got.Generation != 2 || got.Phase != phase.Admitted {
 		t.Fatalf("%s = %#v, want it held admitted in the tree of %s at generation 2", root, got, tree)
 	}
-	if want := []string{root + " joined the tree of " + tree + " from the admission queue"}; !reflect.DeepEqual(joinedNotices(t, pool, root), want) {
+	if want := []string{root + " joined tree=" + tree + " phase= from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, root), want) {
 		t.Fatalf("child-status notices of %s = %q, want %q", root, joinedNotices(t, pool, root), want)
 	}
 	assertWaiting(t, pool, nil)

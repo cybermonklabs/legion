@@ -580,13 +580,17 @@ until_true 120 "the issue message's card" has_card "$issue_body"
 note "a card on $issue, no user message"
 pass
 
-notice_body="phase-finished on UT-1 ($run)"
+notice_body="phase-finished on UT-1"
 begin a-legion-notice-gets-a-card
-# The Go daemon's notice, as notify.HTTPPublisher publishes it to an architect's role topic.
+# The Go daemon's notice, as notify.HTTPPublisher publishes it to an architect's role topic: the
+# summary `<kind> on <KEY>`, the kind's record as the payload, the reviewer's own words in it named
+# by its `words` object, and the urgency of that kind for the architect (a reviewer's approval that
+# moved the issue to accepting is `med`, so the card goes as a card with a turn).
 role="legion-ut-ut-1-architect-$run"
 listener -X POST "http://127.0.0.1:$envoy_port/v1/roles/set" -d "$(jq -nc --arg s "$session_id" --arg r "$role" '{session_id: $s, role: $r}')" >/dev/null
 listener -X POST "http://127.0.0.1:$envoy_port/v1/messages/publish" -d "$(jq -nc --arg t "notifications.role.$role" --arg m "$notice_body" --arg k "legion-outbox:$run" \
-  '{topic: $t, message: $m, dedupe_key: $k, payload: ({kind: "phase-finished", role: "implementer", phase: "implementing", summary: "Pushed."} | tojson)}')" >/dev/null
+  '{topic: $t, message: $m, dedupe_key: $k, urgency: "med", payload: ({kind: "phase-finished", role: "reviewer", phase: "reviewing",
+    issue: "UT-1", to: "accepting", summary: "Approved.", words: {summary: {by: "reviewer", at: "2026-09-30T00:00:00Z"}}} | tojson)}')" >/dev/null
 until_true 120 "the Legion notice's card" has_card "$notice_body"
 [ "$(user_mentions "$notice_body")" = 0 ] || fail "the Legion notice became a user message"
 note "role $role: a card, no user message"

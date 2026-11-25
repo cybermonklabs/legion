@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -11,7 +11,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
+
+// toldHandoff fails unless the task of start names the handoff word version version (handoff_phase
+// and handoff_version), which is the report of the step before it, and no other.
+func toldHandoff(t *testing.T, who string, start record.SuperviseRequest, at phase.Phase, word, version string) {
+	t.Helper()
+	told := readTaskOf(t, start.Task).fields
+	if start.Phase != at || told["handoff_phase"] != word || told["handoff_version"] != version {
+		t.Fatalf("the %s's start = %+v, want %s, told handoff_phase %s and handoff_version %s", who, start, at, word, version)
+	}
+}
 
 // reportsHandoff writes on role's phases row of key the handoff record a completion of its step
 // names, version version, at the pull request's head, as the completion route leaves it.
@@ -70,9 +81,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		}
 		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		start := lastStartOf(t, pool, root.Key, claim.RoleReviewer)
-		if start.Phase != phase.Reviewing || !strings.Contains(start.Task, "Handoff: implement version 3") || strings.Contains(start.Task, "Handoff: review") {
-			t.Fatalf("the reviewer's start = %+v, want reviewing, told Handoff: implement version 3 and no Handoff: review", start)
-		}
+		toldHandoff(t, "reviewer", start, phase.Reviewing, "implement", "3")
 		// Accepting holds no slot and reviewing keeps one, so the reviewer's start waits for one.
 		if !start.NeedsSlot {
 			t.Fatalf("the reviewer's start after the sign-off waits for no slot: %+v", start)
@@ -109,10 +118,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
 		}
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 4})
-		start := lastStartOf(t, pool, root.Key, claim.RoleTester)
-		if start.Phase != phase.Testing || !strings.Contains(start.Task, "Handoff: review version 2") || strings.Contains(start.Task, "Handoff: implement") {
-			t.Fatalf("the tester's start = %+v, want testing, told Handoff: review version 2 and no Handoff: implement", start)
-		}
+		toldHandoff(t, "tester", lastStartOf(t, pool, root.Key, claim.RoleTester), phase.Testing, "review", "2")
 	})
 
 	t.Run("the twin: the default steps' sign-off starts the retro told the review", func(t *testing.T) {
@@ -126,10 +132,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		if result := signsOff(t, pool, engine, "LEGION-208"); result.Refusal != nil {
 			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
 		}
-		start := lastStartOf(t, pool, "LEGION-208", claim.RoleImplementer)
-		if start.Phase != phase.Retro || !strings.Contains(start.Task, "Handoff: review version 2") || strings.Contains(start.Task, "Handoff: implement") {
-			t.Fatalf("the retro's start = %+v, want retro, told Handoff: review version 2 and no Handoff: implement", start)
-		}
+		toldHandoff(t, "retro", lastStartOf(t, pool, "LEGION-208", claim.RoleImplementer), phase.Retro, "review", "2")
 	})
 
 	t.Run("c: a planner after the implementer moves the task on into its retro", func(t *testing.T) {
@@ -159,15 +162,12 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		firstStep(t, pool, engine, "LEGION-209")
 		firstStep(t, pool, engine, "LEGION-210")
 
-		// The notice goes on to say what the child's own architect owns (ChildStartedNotice); its
-		// first sentence is the one that names the phase.
-		for child, first := range map[string]string{
-			"LEGION-209": "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
-			"LEGION-210": "LEGION-210 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
-		} {
-			got := noticesOf(t, pool, child, "child-status")
-			if len(got) != 1 || got[0].Kind != "child-status" || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
-				t.Fatalf("the child-status notices of %s = %+v, want one to the architect whose reason starts %q", child, got, first)
+		// The notice names the phase of the child's first step (phase), and that the child waited
+		// on no issue: it reached the front of the waiting line and took an admission slot.
+		for child, first := range map[string]phase.Phase{"LEGION-209": phase.Implementing, "LEGION-210": phase.Planning} {
+			want := record.Notice{Kind: texts.ChildStatus, Issue: child, Change: texts.ChangeStarted, Tree: "LEGION-208", Phase: first}
+			if got := noticesOf(t, pool, child, "child-status"); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+				t.Fatalf("the child-status notices of %s = %+v, want the one %+v", child, got, want)
 			}
 		}
 	})

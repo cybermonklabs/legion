@@ -102,7 +102,8 @@ func TestAPersonsAnswerOnAParkedTreeGoesToTheController(t *testing.T) {
 		}
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-ROOT", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice"}}}
+		Kind: record.ParkedDecisionNotice, Issue: "LEGION-ROOT", Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice",
+		At: fixedNow}}}
 	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
 	}
@@ -163,7 +164,8 @@ func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
 		t.Fatalf("apply the reply: %v", err)
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-KID", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice"}}}
+		Kind: record.ParkedDecisionNotice, Issue: "LEGION-KID", Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice",
+		At: fixedNow}}}
 	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
 	}
@@ -210,8 +212,7 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 	readmitRoot(t, pool, admission)
 	starts := architectStartRows(t, pool)
 	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT",
-		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-			"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue.") {
+		keptDecisionsTask("dispatch://LEGION-ROOT/ask/ask-1", record.DecisionAskAnswered)) {
 		t.Fatalf("architect starts %#v, want one naming dispatch://LEGION-ROOT/ask/ask-1", starts)
 	}
 	if kept := starts[0].Kept; kept == nil || len(kept.Decisions) != 1 || kept.Decisions[0].Ref != "dispatch://LEGION-ROOT/ask/ask-1" ||
@@ -258,8 +259,7 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 		Status: "backlog", Title: "LEGION-BUSY", Rank: "A", HandedOver: true}, admission.engine)
 	tasks := architectStartTasks(t, pool)
 	if len(tasks) != 1 || tasks[0] != architectStart(t, pool, admission, "LEGION-ROOT",
-		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-			"dispatch://LEGION-ROOT/comment/c-1 (ask-reply by user:alice). Read each before you continue.") {
+		keptDecisionsTask("dispatch://LEGION-ROOT/comment/c-1", record.DecisionAskReply)) {
 		t.Fatalf("architect starts' tasks %q, want one naming dispatch://LEGION-ROOT/comment/c-1", tasks)
 	}
 }
@@ -335,16 +335,15 @@ func TestAFirstAdmissionStartsItsArchitectWithItsOwnTaskAlone(t *testing.T) {
 }
 
 // Whatever shape of first task a root's record gives it, what a person decided on its tree while
-// nobody in it could hear them leads that task: the decided text, a blank line, then the shape's
-// own words (workflow.ArchitectStartTask). A root whose earlier generation ended in no phase of
-// its own and whose architect never claimed it owes the whole first act, so it reads as a tree
-// nobody has architected; one whose architect ran at the generation before is told that its tree
-// ran then and that re-admission cleared the old design gate. Both carry the first-task
-// instruction, which a narrowing of a decision that leaves the tree keeps, since the start is of
-// the entry its promotion raised (workflow.NarrowRootTask).
+// nobody in it could hear them leads that task: the kept-decisions task, a blank line, then the
+// start of the shape (workflow.ArchitectStartTask). A root whose earlier generation ended in no
+// phase of its own and whose architect never claimed it owes the whole first act, so it has the
+// shape of a tree nobody has architected; one whose architect ran at the generation before has the
+// shape of a tree that ran at an earlier generation. Both carry the first-task instruction, which a
+// narrowing of a decision that leaves the tree keeps, since the start is of the entry its promotion
+// raised (workflow.NarrowRootTask).
 func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) {
-	const decided = "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: " +
-		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue."
+	decided := keptDecisionsTask("dispatch://LEGION-ROOT/ask/ask-1", record.DecisionAskAnswered)
 	for _, tc := range []struct {
 		name  string
 		ran   bool
@@ -372,7 +371,7 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 			if len(tasks) != 1 || !strings.HasPrefix(tasks[0], decided+"\n\n") {
 				t.Fatalf("architect start tasks %q, want one led by %q", tasks, decided)
 			}
-			if !strings.Contains(tasks[0], tc.label) {
+			if !hasLines(tasks[0], tc.label) {
 				t.Fatalf("the start's task %q, want the shape labelled %q", tasks[0], tc.label)
 			}
 		})
@@ -494,20 +493,22 @@ func TestEveryStartsArchitectTaskIsTheDerivationOverItsRecord(t *testing.T) {
 // start, which leaves it kept until it is delivered. With the gate open at its latest version
 // there is nothing to request, and under gates.design off no person approves anything.
 func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
-	const versions = " The primary document is approved at version 3 and is now at version 4: request approval of version 4, " +
-		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
-	const decided = "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: dispatch://LEGION-ROOT/spec (design-approved by user:alice). Read each before you continue."
+	decided := []record.DecisionMark{{Ref: "dispatch://LEGION-ROOT/spec", At: fixedNow, Issue: "LEGION-ROOT",
+		Decision: record.DecisionDesignApproved, Actor: "user:alice"}}
+	versions := record.KeptApproval{Step: record.DesignStepSpec, Approved: 3, Latest: 4}
 	for _, tc := range []struct {
 		name     string
 		approved int
 		gate     config.DesignGate
 		decision bool
-		want     string
+		// want is what the start names of what the tree is owed: the relayed decision, and the
+		// approved version with the latest one, whose approval the architect requests.
+		want record.KeptDecisions
 	}{
-		{"an approval of an older version, relayed", 3, config.DesignGateRootIssues, true, decided + versions},
-		{"an approval of an older version, found by the walk", 3, config.DesignGateRootIssues, false, strings.TrimPrefix(versions, " ")},
-		{"an approval of the latest version", 4, config.DesignGateRootIssues, true, decided},
-		{"gates.design off", 3, config.DesignGateOff, true, decided},
+		{"an approval of an older version, relayed", 3, config.DesignGateRootIssues, true, record.KeptDecisions{Decisions: decided, KeptApproval: versions}},
+		{"an approval of an older version, found by the walk", 3, config.DesignGateRootIssues, false, record.KeptDecisions{KeptApproval: versions}},
+		{"an approval of the latest version", 4, config.DesignGateRootIssues, true, record.KeptDecisions{Decisions: decided}},
+		{"gates.design off", 3, config.DesignGateOff, true, record.KeptDecisions{Decisions: decided}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -531,18 +532,14 @@ func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
 			})
 			readmitRoot(t, pool, admission)
 			starts := architectStartRows(t, pool)
-			// tc.want is what the start names of what the tree is owed; the root's own first task
-			// carries it (workflow.ArchitectStartTask).
-			want := architectStart(t, pool, admission, "LEGION-ROOT", tc.want)
+			// tc.want is what the start names of what the tree is owed, in the kept-decisions task
+			// that leads the root's own first task (workflow.ArchitectStartTask).
+			want := architectStart(t, pool, admission, "LEGION-ROOT", workflow.KeptDecisionsTask("LEGION-ROOT", tc.want))
 			if len(starts) != 1 || starts[0].Task != want {
 				t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
 			}
-			named := 0
-			if strings.Contains(tc.want, "request approval") {
-				named = 3
-			}
-			if kept := starts[0].Kept; kept == nil || kept.Approved != named {
-				t.Fatalf("the start's kept record %#v, want the approval it named (%d)", kept, named)
+			if kept := starts[0].Kept; kept == nil || kept.Approved != tc.want.Approved || kept.Latest != tc.want.Latest {
+				t.Fatalf("the start's kept record %#v, want the approval it named (%d of %d)", kept, tc.want.Approved, tc.want.Latest)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
 				records := record.NewStore()
@@ -619,8 +616,8 @@ func TestAReadmissionKeepsOrDropsTheApprovalAnEarlierKept(t *testing.T) {
 // starts its architect naming both versions: the second re-admission finds no gate and keeps the
 // pair the first kept, which the undelivered start released.
 func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *testing.T) {
-	const versions = "The primary document is approved at version 3 and is now at version 4: request approval of version 4, " +
-		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
+	versions := workflow.KeptDecisionsTask("LEGION-ROOT", record.KeptDecisions{
+		KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 3, Latest: 4}})
 	ctx := context.Background()
 	pool := migratedPool(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,

@@ -1,0 +1,32 @@
+-- 20261122011615_production_check_reported_at.up.sql — a production check keeps when the daemon
+-- recorded the pending report that named its next look, so the look that report's wake starts
+-- names the time of the summary it carries (INFRA-3686).
+--
+-- A pending report of a look of a production check names when the checking role wants its next
+-- look (production_checks.wake_at) and gives a summary. The daemon writes one check_wake row due at
+-- that time, whose reason is the summary, and the look that row starts carries the summary in a
+-- block of its own by the checking role. Such a block names the author and the time where the
+-- text's own fields do not name them (dispatch://INFRA-3686/spec R1), and no field of the look's
+-- task gives the time of that report.
+--
+-- production_checks.reported_at is record.ProductionCheck.ReportedAt: when the daemon recorded the
+-- check's latest pending report, written in the transaction that records that report and writes
+-- its check_wake row (workflow.checkReported). A look nobody reported sets it to null, since the
+-- wake its end names is a retry that no report named (workflow.endLook). The look a check_wake row
+-- starts reads it, and its summary block names it as the time of the summary (workflow.CheckLook).
+-- A check that a later merge of the same issue opens in place of an earlier one starts with null.
+--
+-- Every check recorded before this migration takes null, which is what the record of those checks
+-- says: no report's time was kept. The look of such a check that a pending report's wake starts
+-- names the summary and its author and no time, as the release before this one did.
+--
+-- What an older daemon binary reads on this schema. Its production_checks reads and writes name the
+-- columns it knows, so it reads every check and ignores the time, and its writes leave the column
+-- as it stands: a pending report it records, and a look it ends with no report, keep the time of
+-- the check's earlier report, which this release's next named look would then name after a roll
+-- forward. docs/kubernetes.md ("Rolling back the release that carries a person's words in the
+-- daemon's texts") gives the statement that clears the column before that roll forward. This
+-- migration adds no key to an outbox payload.
+--
+-- There is no down file: migrations here are forward-only.
+alter table production_checks add column reported_at timestamptz;

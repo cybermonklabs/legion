@@ -56,7 +56,10 @@ const (
 // the row (apply): state when seq is newer than the row's Seq, turn ("" for none) when newer than
 // its WaitingOnSeq, and closer ("" when the event is no close) when newer than its ClosedSeq. The
 // facts of the ask (kind, artifact, byTree, a person's decline) and a person's acts (personAct's
-// answer and other) are kept from any event that carries them, however old.
+// answer and other) are kept from any event that carries them, however old. The words of a
+// person's act (words, the event's own) go with the act's sequence: an answer's with
+// PersonAnswerSeq, any other act's with PersonSeq, each only when the act is newer than the one
+// the row holds, so the row's words are always those of the act its sequence names.
 type askChange struct {
 	seq      int64
 	kind     string
@@ -68,6 +71,7 @@ type askChange struct {
 	answer   bool
 	other    bool
 	decline  *record.AskDecline
+	words    *record.ActWords
 }
 
 // apply merges the change into row.
@@ -84,11 +88,11 @@ func (c askChange) apply(row *record.RootAsk) {
 	if row.Decline == nil {
 		row.Decline = c.decline
 	}
-	if c.answer {
-		row.PersonAnswerSeq = max(row.PersonAnswerSeq, c.seq)
+	if c.answer && c.seq > row.PersonAnswerSeq {
+		row.PersonAnswerSeq, row.PersonAnswerWords = c.seq, c.words
 	}
-	if c.other {
-		row.PersonSeq = max(row.PersonSeq, c.seq)
+	if c.other && c.seq > row.PersonSeq {
+		row.PersonSeq, row.PersonWords = c.seq, c.words
 	}
 	if c.state != askStateUnsaid && c.seq > row.Seq {
 		row.Open, row.Seq = c.state == askOpen, c.seq
@@ -233,8 +237,9 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 
 // dispatchAskClosed applies the close to the ask's mirror row and the root's wait (closeAsk), and
 // relays a person's answer or resolution of a question on a tree Legion is not running to the
-// controller (relayParkedDecision): nobody inside such a tree hears it. An approval ask's answer
-// arrives again as the document's review, which the gate relays, so it is not relayed as an ask.
+// controller (relayParkedDecision): nobody inside such a tree hears it, so the kept decision
+// carries the close's words. An approval ask's answer arrives again as the document's review,
+// which the gate relays, so it is not relayed as an ask.
 //
 // A question can close more than once — Dispatch's settlement restores a retracted one — and every
 // close is kept under the one ref of its question, so the relay is the newest close's alone: a
@@ -258,7 +263,7 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 		decision = record.DecisionAskAnswered
 	}
 	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
-		Decision: decision, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
+		Decision: decision, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark), Words: fact.Words})
 }
 
 // decidedAt is the time a person's decision at mark is kept at among the decisions of its ref
@@ -274,9 +279,10 @@ func (e *Engine) decidedAt(mark record.EventMark) time.Time {
 
 // closeAsk closes the ask's mirror row, keeping the turn it last had, records who closed it
 // (closer), records a person's decline on the row as Dispatch recorded it, and records a person's
-// act personAct names, which answers the root's wait when it would answer one (answersWait,
-// personAnswered). A close by anyone else moves the wait when it takes an ask of the wait away
-// from the person (itemLeft): settlement's is a retraction, any other a close the resume names.
+// act personAct names with the close's words, which answers the root's wait when it would answer
+// one (answersWait, personAnswered). A close by anyone else moves the wait when it takes an ask of
+// the wait away from the person (itemLeft): settlement's is a retraction, any other a close the
+// resume names.
 //
 // A decline is a resolution by a person, so personAct already counts it among the acts that
 // answer a wait, and the close in hand is what says the answer was a decline (personAnswered).
@@ -293,7 +299,7 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 	}
 	answer, other := personAct(fact)
 	before, after, err := e.mirrorAsk(ctx, tx, *root, fact.Ask, askChange{seq: fact.Mark.Seq, kind: fact.Kind, artifact: fact.Artifact,
-		state: askClosed, closer: closer, answer: answer, other: other, decline: fact.Decline})
+		state: askClosed, closer: closer, answer: answer, other: other, decline: fact.Decline, words: fact.Words})
 	if err != nil {
 		return err
 	}
@@ -333,11 +339,11 @@ func (e *Engine) closer(ctx context.Context, tx pgx.Tx, root record.Issue, actor
 
 // dispatchAskReply applies the reply to the ask's mirror row and the root's wait (replyToAsk), and,
 // on a tree Legion is not running, relays a person's reply that leaves the turn with the agent, or
-// one under a closed ask, to the controller (relayParkedDecision): nobody inside such a tree hears
-// it. A reply that leaves the turn with the human asks the person again, so it is no decision of
-// theirs. A reply that names no comment is kept under its ask's ref, beside the ask's close, so
-// it is kept at Dispatch's time of the reply (decidedAt): one the daemon applies after a newer
-// decision on that ref takes nothing from it.
+// one under a closed ask, to the controller (relayParkedDecision), with the reply's words: nobody
+// inside such a tree hears it. A reply that leaves the turn with the human asks the person again,
+// so it is no decision of theirs. A reply that names no comment is kept under its ask's ref,
+// beside the ask's close, so it is kept at Dispatch's time of the reply (decidedAt): one the
+// daemon applies after a newer decision on that ref takes nothing from it.
 func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskReply) (intake.Result, error) {
 	if err := e.replyToAsk(ctx, tx, fact); err != nil || fact.WaitingOn == "human" {
 		return intake.Result{}, err
@@ -347,7 +353,7 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 		ref = itemRef(fact.Key, "comment", fact.Comment)
 	}
 	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: ref, Decision: record.DecisionAskReply,
-		Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
+		Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark), Words: fact.Words})
 }
 
 // replyToAsk applies a reply on an ask of the root, or Dispatch's hand-back of an approval
@@ -358,10 +364,10 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 // records none, as one on a closed ask never does: so a reply on a closed ask leaves the person's
 // turn, which is the turn the ask reopens on if Dispatch's settlement restores it. (Only a question
 // is ever restored; a closed approval request never reopens, so the moved-request rule that could
-// give it the agent's turn never applies here.) A person's act personAct names is recorded, and
-// answers the root's wait (personAnswered) — as the reply it is, never as a decline, which only a
-// close can be, so a person's reply in the thread of an ask they declined earlier resumes the
-// architect on that reply. A session of the root's own tree leaving a question that
+// give it the agent's turn never applies here.) A person's act personAct names is recorded with
+// the reply's words, and answers the root's wait (personAnswered) — as the reply it is, never as a
+// decline, which only a close can be, so a person's reply in the thread of an ask they declined
+// earlier resumes the architect on that reply. A session of the root's own tree leaving a question that
 // tree opened, or an approval request of the root's closed, armed design gate's document, with the
 // person hands it back (declare), unless a newer turn of the ask is already recorded (handsTurn). Any other reply that takes an ask of the root's wait away from the person —
 // a session's progress note handing it to the agent's turn — moves the wait (itemLeft).
@@ -377,7 +383,8 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		}
 	}
 	answer, other := personAct(fact)
-	change := askChange{seq: fact.Mark.Seq, kind: fact.Kind, artifact: fact.Artifact, state: askOpen, turn: fact.WaitingOn, answer: answer, other: other}
+	change := askChange{seq: fact.Mark.Seq, kind: fact.Kind, artifact: fact.Artifact, state: askOpen, turn: fact.WaitingOn, answer: answer, other: other,
+		words: fact.Words}
 	if fact.WaitingOn == "" {
 		change.state, change.turn = askClosed, "human"
 	}

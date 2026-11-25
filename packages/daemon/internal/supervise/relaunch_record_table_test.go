@@ -19,7 +19,7 @@ const olderCause = "an older let-go's cause"
 // the told record of an older let-go of a turn and its task: newHarnessOf seeds a claim's record
 // as relaunch_test.go's cases of a forgotten session do. Told, it stands in front of no prompt
 // (EndedWork.Tells), so a prompt that names its cause, or that says no cause was recorded, is a
-// task re-sent under a record that is not its own let-go's (Delivery.message, interruptedTask).
+// task re-sent under a record that is not its own let-go's (Delivery.message, CutTurnNote).
 func olderToldClaim() Claim {
 	c := queuedClaim()
 	c.EndedWork = EndedWork{At: epoch.Add(-time.Hour), Cause: olderCause, Turn: true, TaskTurn: true,
@@ -57,7 +57,7 @@ func (c *letGoCell) endCompaction(want error) {
 // claimState is one state a claim can be in when a let-go lands: its name, the background work
 // its process's own report names, read after the state's last turn began, and the setup that
 // puts a claim there reporting that work. The record keeps what the report names
-// (EndedWork.Background, Kinds) and the sentence names it (relaunchSentence).
+// (EndedWork.Background, Kinds) and the note names it (EndedWork.Facts).
 type claimState struct {
 	name  string
 	kinds []string
@@ -299,20 +299,24 @@ const (
 	// sentNothing is no prompt at all: the claim holds no task and no record that tells.
 	sentNothing firstPrompt = iota
 	// sentRecordAlone is the daemon's own delivery of the record to a claim holding no task
-	// (queueRelaunch), whose text is the record's sentence (RelaunchSentence).
+	// (queueRelaunch), whose text is the record's note (RelaunchNote).
 	sentRecordAlone
 	// sentTask is the task the claim holds, never taken back from a turn, behind the record's
-	// sentence (Delivery.message).
+	// note (Delivery.message).
 	sentTask
 	// sentTaskTakenBack is the task the let-go took back from the turn it cut off (interrupted),
-	// marked Interrupted, behind the record's sentence (Delivery.message).
+	// marked Interrupted, behind the record's note (Delivery.message).
 	sentTaskTakenBack
 )
+
+// saysNoTurn is a row whose note states no turn cut off: it has neither turn line (saysTurnCut,
+// saysTaskTurn).
+const saysNoTurn = ""
 
 // relaunchRecordRow is one cell of the table: a let-go kind landing on a claim in one state. A
 // row whose kind does not let the process go in that state names the state the claim keeps
 // instead. Every other row names what its let-go records, what the next process is sent first,
-// and the statement that prompt makes of the turn (saysNoTurn, saysTurnCut, saysTaskTurn).
+// and the turn that prompt's note states was cut off (saysNoTurn, saysTurnCut, saysTaskTurn).
 type relaunchRecordRow struct {
 	kind   letGoKind
 	state  claimState
@@ -366,9 +370,8 @@ func (row relaunchRecordRow) run(t *testing.T) {
 
 // wantFirstPrompt is the first of the prompts the next process was sent (sent), as the row says:
 // none at all, the daemon's own delivery of the record, or the task the claim holds, taken back
-// from the turn or not; and the sentence it reads: because the row's own cause, the row's
-// statement of the turn and no other, and the subagent the state's report named, or no
-// background work where the report named none.
+// from the turn or not; and the note it reads: the row's own cause, the row's turn and no other,
+// and the subagent the state's report named, or no background work where the report named none.
 func (row relaunchRecordRow) wantFirstPrompt(h *harness, sent []fake.Prompt) {
 	t := h.t
 	t.Helper()
@@ -379,7 +382,7 @@ func (row relaunchRecordRow) wantFirstPrompt(h *harness, sent []fake.Prompt) {
 		return
 	}
 	if len(sent) == 0 {
-		t.Fatal("the next process was sent nothing, want the sentence of the let-go's record")
+		t.Fatal("the next process was sent nothing, want the note of the let-go's record")
 	}
 	told, p := sent[0], h.pending()
 	if told.DeliveryID != p.ID {
@@ -393,20 +396,24 @@ func (row relaunchRecordRow) wantFirstPrompt(h *harness, sent []fake.Prompt) {
 	case sentTask, sentTaskTakenBack:
 		interrupted := row.sent == sentTaskTakenBack
 		if p.Relaunch() || p.Interrupted != interrupted || !strings.HasSuffix(told.Message, "\n\n"+p.Task) {
-			t.Errorf("the next process was sent %+v as %+v, want the task the claim holds, interrupted = %v, behind the record's sentence",
+			t.Errorf("the next process was sent %+v as %+v, want the task the claim holds, interrupted = %v, behind the record's note",
 				told, p, interrupted)
 		}
 	}
-	wantSays(t, told.Message, "ended because "+row.record.cause+".", row.says)
-	for _, other := range []string{saysNoTurn, saysTurnCut, saysTaskTurn} {
-		if other != row.says {
-			wantSaysNot(t, told.Message, other)
-		}
+	wantSays(t, told.Message, saysCause(row.record.cause))
+	switch row.says {
+	case saysTaskTurn:
+		wantSays(t, told.Message, saysTurnCut, saysTaskTurn)
+	case saysTurnCut:
+		wantSays(t, told.Message, saysTurnCut)
+		wantSaysNot(t, told.Message, saysTaskTurn)
+	default:
+		wantSaysNot(t, told.Message, saysTurnCut, saysTaskTurn)
 	}
 	if len(row.state.kinds) > 0 {
 		wantSays(t, told.Message, saysSubagentStopped)
 	} else {
-		wantSaysNot(t, told.Message, "stopped with that process")
+		wantSaysNot(t, told.Message, saysStopped, saysBackground)
 	}
 }
 
@@ -424,11 +431,11 @@ func (h *harness) wantOnlyTheOlderRecord() {
 // wantNoTaskSentInterruptedWithoutItsRecord is the rule the table holds, on every row's prompts
 // from its let-go on (sent). A task sent as interrupted goes behind the record of the let-go that
 // took it back: the claim's record is that let-go's own — its cause, and its launch (letGo) —
-// and the prompt says that the task's turn was interrupted and why. A row whose kind let no
+// and the prompt's note states that the task's turn was cut off and why. A row whose kind let no
 // process go, or whose let-go recorded nothing, has no cause, and a task it sends as interrupted
 // is that fault. And no prompt names the older let-go's cause (olderCause), nor says that the
-// daemon recorded none, which is what a task taken back with no record of its own let-go is told
-// (interruptedTask).
+// daemon recorded none, which is what the cut-turn note of a task taken back with no record of its
+// own let-go says (CutTurnNote).
 func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo uint64, sent []fake.Prompt) {
 	h.t.Helper()
 	held := h.claim()
@@ -441,7 +448,7 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 			h.t.Errorf("the task %s was sent as interrupted under the record %+v, want the record of this row's own let-go of launch %d, cause %q",
 				prompt.DeliveryID, ended, letGo, cause)
 		}
-		wantSays(h.t, prompt.Message, saysTaskTurn, "ended because "+cause+".")
+		wantSays(h.t, prompt.Message, saysTaskTurn, saysCause(cause))
 	}
 }
 

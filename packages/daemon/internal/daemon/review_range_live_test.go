@@ -31,7 +31,7 @@
 // tester's launch for the boot to relaunch.
 //
 // Each check reads the reviewer's task of its round, and first holds that it is that task: it says
-// `Phase: reviewing.` and names the tester's handoff of that round by its version. Without that, a
+// `phase: reviewing` and names the tester's handoff of that round by its version. Without that, a
 // check of a task naming no commit would pass on a task of another round.
 package daemon
 
@@ -127,20 +127,21 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 }
 
 // Check round-1-names-no-commit. The walked issue reaches reviewing, and the task the daemon prompts
-// the reviewer with names no reviewed commit: ` Last reviewed commit: none.` (namesNoCommit).
+// the reviewer with names no reviewed commit: its last line opens `Last reviewed commit: none.`
+// (namesNoCommit).
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
 	r.namesNoCommit("the reviewer's task of round 1", task)
-	r.note("the task names ` %s: none.` just before its entry", reviewround.CommitLabel)
+	r.note("the task's last line names `%s: none.` just before its entry", reviewround.CommitLabel)
 }
 
-// namesNoCommit fails the proof unless task, the reviewer's task named what, ends with the
-// daemon's sentence naming no commit, ` Last reviewed commit: none.`, and then the entry's, and
-// names the commit's label nowhere else: no review of this generation's reviewer has read a commit
-// yet, or its record was cleared.
+// namesNoCommit fails the proof unless task, the reviewer's task named what, ends with a line of
+// the daemon's two sentences, `Last reviewed commit: none.` and then the entry's
+// (reviewround.Ending), and names the commit's label nowhere else: no review of this generation's
+// reviewer has read a commit yet, or its record was cleared.
 func (r *reviewRangeLive) namesNoCommit(what, task string) {
 	r.t.Helper()
-	want := " " + reviewround.CommitLabel + ": none. " + reviewround.EntryLabel + ": " + strconv.FormatInt(r.entryNamedIn(task), 10) + "."
+	want := "\n" + reviewround.CommitLabel + ": none. " + reviewround.EntryLabel + ": " + strconv.FormatInt(r.entryNamedIn(task), 10) + "."
 	if !strings.HasSuffix(task, want) || strings.Count(task, reviewround.CommitLabel) != 1 {
 		r.t.Fatalf("%s = %q, want it to end with %q and to name %q once: its record holds no reviewed commit", what, task, want, reviewround.CommitLabel)
 	}
@@ -153,7 +154,7 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	issue := r.walked
 	r.requestChanges(issue)
 	task := r.roundTwo(issue)
-	want := " " + reviewround.CommitLabel + ": " + issue.first + "."
+	want := "\n" + reviewround.CommitLabel + ": " + issue.first + "."
 	if !strings.Contains(task, want) {
 		r.t.Fatalf("the reviewer's task of round 2 = %q, want it to hold %q, the head its review of round 1 read", task, want)
 	}
@@ -185,7 +186,7 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	r.note("cleared phases.reviewed_head of %s's reviewer; it now reads \"\"", issue.key)
 	task = r.roundTwo(issue)
 	r.namesNoCommit("the control's reviewer task of round 2", task)
-	r.note("the task names ` %s: none.` just before its entry", reviewround.CommitLabel)
+	r.note("the task's last line names `%s: none.` just before its entry", reviewround.CommitLabel)
 }
 
 // Check other-session-records-no-commit. The third issue walks the same first round; then the
@@ -227,10 +228,10 @@ func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
 // the reviewing task naming the tester's handoff of round 1, and keeps it as issue's task.
 func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 	issue.tester = r.claimant(claim.RoleTester, issue.key, "ses_"+issue.name+"_tester")
-	issue.tester.awaitPrompt("Phase: testing.", "Resume the existing phase work.")
+	issue.tester.awaitPrompt("kind: phase-resume", "\nphase: testing")
 	test := r.pass(issue, 1)
 	issue.reviewer = r.claimant(claim.RoleReviewer, issue.key, "ses_"+issue.name+"_reviewer")
-	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
+	issue.task = issue.reviewer.awaitPrompt("\nphase: reviewing", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 1: the reviewer's shim was prompted: %q", issue.task)
 	return issue.task
 }
@@ -252,8 +253,9 @@ func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
 }
 
 // entryNamedIn is the entry of the round task names, read as an agent reads it: the number of its
-// last sentence, ` Review entry: <n>.` (reviewround.EntryLabel). It fails the proof when task
-// does not end naming a positive entry, since a review written without one moves no commit.
+// last sentence, ` Review entry: <n>.` (reviewround.EntryLabel), on the task's last line. It fails
+// the proof when task does not end naming a positive entry, since a review written without one
+// moves no commit.
 func (r *reviewRangeLive) entryNamedIn(task string) int64 {
 	r.t.Helper()
 	label := " " + reviewround.EntryLabel + ": "
@@ -276,7 +278,7 @@ func (r *reviewRangeLive) entryNamedIn(task string) int64 {
 func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	t := r.t
 	implementer := r.claimant(claim.RoleImplementer, issue.key, "ses_"+issue.name+"_implementer")
-	implementer.awaitPrompt("Phase: implementing.")
+	implementer.awaitPrompt("\nphase: implementing")
 	r.pulls.head(issue.key, issue.second)
 	r.publishPushOf(issue.key, issue.first, issue.second)
 	r.publishSynchronizeOf(issue.number, issue.key, issue.second, "main", "the pull request of "+issue.key, time.Now())
@@ -292,9 +294,9 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	implementer.endTurn()
 	r.waitPhase(issue.key, phase.Testing)
 	r.note("the implementer completed at %s naming %s; read back: %s is in testing", issue.second, implement.line, issue.key)
-	issue.tester.awaitPrompt("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
+	issue.tester.awaitPrompt("\nphase: testing", handoffLine(issue.key, "implement", implement.version))
 	test := r.pass(issue, 2)
-	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
+	issue.task = issue.reviewer.awaitPrompt("\nphase: reviewing", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 2: the reviewer's shim was prompted: %q", issue.task)
 	return issue.task
 }

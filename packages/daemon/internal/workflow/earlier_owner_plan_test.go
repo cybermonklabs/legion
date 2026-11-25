@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The owner of an issue changes where an orphan is admitted again as a root of its own, and a plan
@@ -36,14 +37,20 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		mustTake(t, fmt.Sprintf("version %d of %s at generation %d by %s", version, key, generation, by), applyFacts(t, pool, engine)(planID(key, generation, version), fact))
 	}
 	// passedOver fails unless the first step logged the one line of a version passed over and told
-	// the one plan-not-taken notice whose reason is reason.
-	passedOver := func(t *testing.T, pool *pgxpool.Pool, logged string, line, reason string) {
+	// the one plan-not-taken notice that names the earlier owner's version 1 and the plan the first
+	// step runs: the default steps where runsBy is "", and otherwise version runsVersion that runsBy
+	// gave. The step that gives a plan again is the architect's prompt's.
+	passedOver := func(t *testing.T, pool *pgxpool.Pool, logged string, line string, runsVersion int, runsBy claim.Token) {
 		t.Helper()
 		if strings.Count(logged, notTaken) != 1 || !strings.Contains(logged, line) {
 			t.Fatalf("the log =\n%s\nwant the one line %s", logged, line)
 		}
-		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: reason}}
-		if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
+		want := record.Notice{Kind: texts.PlanNotTaken, Issue: "LEGION-209", Why: texts.PlanNotTakenEarlierOwner,
+			NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: planArtifact, GivenBy: string(earlier)}}, Runs: texts.PlanRunsDefault}
+		if runsBy != "" {
+			want.Runs, want.RunsVersion, want.RunsArtifact, want.RunsGivenBy = texts.PlanRunsOwner, runsVersion, planArtifact, string(runsBy)
+		}
+		if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, []record.Notice{want}) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
 		}
 	}
@@ -75,9 +82,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 			t.Fatalf("LEGION-209 after its first step stands in %s, want planning, the first of the default steps", got)
 		}
 		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own.")
+			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier), 0, "")
 		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 5} {
 			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want none of the old plan: the default steps alone, one version, one task, five steps", got)
 		}
@@ -97,9 +102,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 			t.Fatalf("LEGION-209 after its first step stands in %s, want planning, the first of the default steps", got)
 		}
 		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=1 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own.")
+			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=1 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier), 0, "")
 		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 5} {
 			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want none of the old plan: the default steps alone, one version, one task, five steps", got)
 		}
@@ -118,9 +121,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		assertWalksAt(t, pool, engine, "LEGION-209", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 		runs := "version 2 of document " + planArtifact + ", given by " + string(owner)
 		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="%s"`, notTaken, planArtifact, earlier, runs),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs "+runs+". To run a plan it did not take, give it again with register_plan as your own.")
+			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="%s"`, notTaken, planArtifact, earlier, runs), 2, owner)
 		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 2} {
 			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want the new owner's alone: one version, one task, two steps", got)
 		}
@@ -196,8 +197,8 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 
 	firstStep(t, pool, engine, "LEGION-209")
 
-	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document " +
-		planArtifact + ", given by " + string(earlier) + ". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."}}
+	want := []record.Notice{{Kind: texts.PlanNotTaken, Issue: "LEGION-209", Why: texts.PlanNotTakenEarlierOwner,
+		NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: planArtifact, GivenBy: string(earlier)}}, Runs: texts.PlanRunsDefault}}
 	if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v, the version named once", got, want)
 	}
@@ -236,9 +237,9 @@ func TestTwoVersionsOfAnEarlierOwnerAreBothNamed(t *testing.T) {
 
 	firstStep(t, pool, engine, "LEGION-209")
 
-	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document " +
-		planArtifact + ", given by " + string(earlier) + "; version 2 of document " + planArtifact + ", given by " + string(earlier) +
-		". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."}}
+	want := []record.Notice{{Kind: texts.PlanNotTaken, Issue: "LEGION-209", Why: texts.PlanNotTakenEarlierOwner,
+		NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: planArtifact, GivenBy: string(earlier)}, {Version: 2, Artifact: planArtifact, GivenBy: string(earlier)}},
+		Runs:     texts.PlanRunsDefault}}
 	if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v, both versions named in the order given", got, want)
 	}

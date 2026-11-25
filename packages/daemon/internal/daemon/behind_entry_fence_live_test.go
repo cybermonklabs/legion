@@ -203,7 +203,7 @@ func (r *behindEntryFenceLive) testerWorksItsEntry() {
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
+	prompt := r.test.takeTask("\nphase: " + string(phase.Testing))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
 		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
@@ -232,7 +232,7 @@ func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	r.note("drove POST /legion/v1/phase/backward for the tester, to implementing, from the turn it is in: 200")
 	r.test.endTurn()
 	r.note("the tester's turn on entry %d's task ended", r.served)
-	fix := r.imp.takeTask("Phase: implementing")
+	fix := r.imp.takeTask("\nphase: " + string(phase.Implementing))
 	r.note("read back: the implementer was prompted its implementing task once the tester's turn ended (%s)", firstLine(fix.Message))
 	r.test.startTurn("")
 	r.note("the tester began a turn of its own while the implementer works")
@@ -335,7 +335,7 @@ func (r *behindEntryFenceLive) reviewerMovesTheWorkBack() {
 	r.test.endTurn()
 	r.note("the tester's own turn ended")
 	r.review = r.claimant(claim.RoleReviewer, "ses_reviewer")
-	prompt := r.review.takeTask("Phase: reviewing")
+	prompt := r.review.takeTask("\nphase: " + string(phase.Reviewing))
 	r.note("the reviewer is registered, ready and working the review task the tester's pass started it with (%s)", firstLine(prompt.Message))
 	r.test.startTurn("")
 	r.note("the tester began another turn of its own while the reviewer reviews")

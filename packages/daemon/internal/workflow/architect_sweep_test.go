@@ -284,26 +284,29 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // resume of a person's answer wrote names the answer and no kept decision, and the answer is the
 // work that entry owes, so it is sent as written and claims nothing, whatever its text ends in.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
-	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
+	const resumed = "kind: root-resume\nissue: LEGION-208\nact: ask\nask: \"dispatch://LEGION-208/ask/ask-q\"\ngate_open: false\ngate_armed: true"
+	// freshTail is the last line of the task the derivation writes for this root, a tree nobody
+	// has architected.
+	const freshTail = "\nnothing_else_starts_it: true"
 	for _, tc := range []struct {
 		name     string
 		stored   string
 		verbatim bool
-		// tail is whether the stored text ends in the closing sentence of the shape the derivation
-		// writes for this root (freshClosing), which the cases cover both ways for each mark, so
-		// the send is shown to read the mark alone.
+		// tail is whether the stored text ends in the last line of the task the derivation writes
+		// for this root (freshTail), which the cases cover both ways for each mark, so the send is
+		// shown to read the mark alone.
 		tail bool
 	}{
-		{name: "an entry the derivation raised", stored: seededArchitectTask + freshClosing, tail: true},
+		{name: "an entry the derivation raised", stored: seededArchitectTask + freshTail, tail: true},
 		{name: "an entry the derivation raised for a root past admitted, what was decided alone",
 			stored: ArchitectStartTask(ArchitectStart{Root: rootAt(phase.Planning), Decided: decidedOnTheTree})},
 		{name: "an entry the upgrade gave no task", stored: ""},
 		{name: "an entry a resume raised", stored: resumed, verbatim: true},
-		{name: "an entry a resume raised whose text ends as the derivation's does", stored: resumed + freshClosing,
+		{name: "an entry a resume raised whose text ends as the derivation's does", stored: resumed + freshTail,
 			verbatim: true, tail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if strings.HasSuffix(tc.stored, freshClosing) != tc.tail {
+			if strings.HasSuffix(tc.stored, freshTail) != tc.tail {
 				t.Fatalf("the stored task %q ends in the closing sentence = %t, want %t: the case's premise", tc.stored, !tc.tail, tc.tail)
 			}
 			pool := migratedPool(t)

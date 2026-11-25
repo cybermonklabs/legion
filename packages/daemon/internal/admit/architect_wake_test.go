@@ -3,7 +3,6 @@ package admit
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -196,16 +195,16 @@ func putArchitectHandshake(t *testing.T, pool *pgxpool.Pool, token claim.Token, 
 }
 
 // architectWakes is every architect-stalled controller notice of root in the outbox, oldest
-// first, as the reason each carries.
-func architectWakes(t *testing.T, pool *pgxpool.Pool, root string) []string {
+// first.
+func architectWakes(t *testing.T, pool *pgxpool.Pool, root string) []record.ControllerNotice {
 	t.Helper()
-	var reasons []string
+	var wakes []record.ControllerNotice
 	for _, row := range controllerNotices(t, pool) {
 		if notice := row.payload.(record.ControllerNotice); row.issue == root && notice.Kind == record.ArchitectStalledNotice {
-			reasons = append(reasons, notice.Reason)
+			wakes = append(wakes, notice)
 		}
 	}
-	return reasons
+	return wakes
 }
 
 // architectWakeMarks is every arm root is marked told for, at generation, in arm order.
@@ -232,21 +231,17 @@ func architectWakeMarks(t *testing.T, pool *pgxpool.Pool, root string, generatio
 }
 
 // assertArchitectWakes reads root's wakes against the arms it must raise, in the order the pass
-// raises them, each wake beginning with the words of the arm that raised it
-// (record.ArchitectStallArm.Words).
+// raises them, each wake naming root, its architect and the arm that raised it, and as its reason
+// that arm in the words the controller's skill quotes it by (record.ArchitectStallArm.Words).
 func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []record.ArchitectStallArm, why string) {
 	t.Helper()
-	reasons := architectWakes(t, pool, root)
-	if len(reasons) != len(arms) {
-		t.Fatalf("the architect wakes of %s = %q, want one for each of %v: %s", root, reasons, arms, why)
+	wakes := architectWakes(t, pool, root)
+	if len(wakes) != len(arms) {
+		t.Fatalf("the architect wakes of %s = %+v, want one for each of %v: %s", root, wakes, arms, why)
 	}
 	for i, arm := range arms {
-		if !strings.HasPrefix(reasons[i], arm.Words()+":") {
-			t.Errorf("the wake %d of %s = %q, want it to begin with the words of the %s arm, %q: %s",
-				i, root, reasons[i], arm, arm.Words(), why)
-		}
-		if !strings.Contains(reasons[i], root) {
-			t.Errorf("the wake %d of %s = %q, want it to name the root it is about: %s", i, root, reasons[i], why)
+		if wakes[i].Arm != string(arm) || wakes[i].Issue != root || wakes[i].Role != claim.RoleArchitect || wakes[i].Reason != arm.Words() {
+			t.Errorf("the wake %d of %s = %+v, want the %s arm of the architect of %s, with the arm's words %q as its reason: %s", i, root, wakes[i], arm, root, arm.Words(), why)
 		}
 	}
 }
@@ -261,17 +256,16 @@ func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []
 //
 // The root with no architect claim at all is one the first pass also writes the start of its
 // architect for, before it reads the arms: the wake stands, since a root with no claim that long
-// is stalled whatever that pass writes, and its reason says the start was written in the same
-// transaction rather than that no start waits in the queue, which after that pass is false.
+// is stalled whatever that pass writes, and its notice says the start was written in the same
+// transaction (start_written).
 func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		arm    record.ArchitectStallArm
 		change func(*architectWakeFixture)
 		why    string
-		// says is a phrase the wake's reason must carry, and never one it must not, where the
-		// case names one.
-		says, never string
+		// startWritten is whether the wake says the pass wrote the start of the root's architect.
+		startWritten bool
 	}{
 		{
 			name: "the architect took nothing", arm: record.ArchitectTookNothing,
@@ -293,9 +287,8 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 				f.claimed, f.task = false, false
 				f.raisedAt = fixedNow.Add(-pastTheHandshake)
 			},
-			why:   "the work of its entry has stood past the bound and no claim was ever created for it, and the first pass wrote the start of its architect again",
-			says:  "the daemon wrote the start of its architect again in the same transaction as this wake",
-			never: "no start of one queued in the last",
+			why:          "the work of its entry has stood past the bound and no claim was ever created for it, and the first pass wrote the start of its architect again",
+			startWritten: true,
 		},
 		{
 			name: "the root is slow before its gate", arm: record.ArchitectSlowBeforeGate,
@@ -328,16 +321,13 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); !slices.Equal(marks, []record.ArchitectStallArm{tc.arm}) {
 				t.Fatalf("the arms %s is marked told for = %v, want the one %s: %s", root, marks, tc.arm, tc.why)
 			}
-			reason := architectWakes(t, pool, root)[0]
-			if tc.says != "" && !strings.Contains(reason, tc.says) {
-				t.Fatalf("the wake of %s = %q, want it to say %q: %s", root, reason, tc.says, tc.why)
+			wake := architectWakes(t, pool, root)[0]
+			if wake.StartWritten != tc.startWritten {
+				t.Fatalf("the wake of %s = %+v, want start_written %t: %s", root, wake, tc.startWritten, tc.why)
 			}
-			if tc.never != "" && strings.Contains(reason, tc.never) {
-				t.Fatalf("the wake of %s = %q, want it not to say %q: %s", root, reason, tc.never, tc.why)
-			}
-			if tc.says != "" {
+			if tc.startWritten {
 				if starts := architectStartsOf(t, pool, root); len(starts) != 1 {
-					t.Fatalf("the architect starts of %s = %+v, want the one the first pass wrote: the reason says it wrote one", root, starts)
+					t.Fatalf("the architect starts of %s = %+v, want the one the first pass wrote: the notice says it wrote one", root, starts)
 				}
 			}
 		})
@@ -503,7 +493,7 @@ func TestAnArchitectWakeIsNotRaisedForARootThatCannotHearItsEntry(t *testing.T) 
 	applySweep(t, pool, admission, "cannot-hear")
 
 	if reasons := architectWakes(t, pool, deaf); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of the root in backlog = %q, want none: a root out of the workflow hears nothing a controller does", reasons)
+		t.Fatalf("the architect wakes of the root in backlog = %+v, want none: a root out of the workflow hears nothing a controller does", reasons)
 	}
 	assertArchitectWakes(t, pool, heard, []record.ArchitectStallArm{record.ArchitectTookNothing},
 		"this root differs from the quiet one in its Dispatch status alone, so the status is what the first arm reads")
@@ -548,7 +538,7 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 			applySweep(t, pool, admission, "quiet-2")
 
 			if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-				t.Fatalf("the architect wakes of %s = %q, want none: %s", root, reasons, tc.why)
+				t.Fatalf("the architect wakes of %s = %+v, want none: %s", root, reasons, tc.why)
 			}
 		})
 	}
@@ -614,9 +604,9 @@ func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsR
 			if len(tc.want) == 0 {
 				return
 			}
-			if ready := tc.lastReady.UTC().Format(time.RFC3339); !strings.Contains(architectWakes(t, pool, root)[0], ready) {
-				t.Fatalf("the wake of %s = %q, want it to name %s, the relaunched agent's ready the arm counted from",
-					root, architectWakes(t, pool, root)[0], ready)
+			if wake := architectWakes(t, pool, root)[0]; !wake.Interrupted || !wake.Since.Equal(tc.lastReady) {
+				t.Fatalf("the wake of %s = %+v, want it interrupted, counting from %s, the relaunched agent's ready the arm counted from",
+					root, wake, tc.lastReady.UTC().Format(time.RFC3339))
 			}
 		})
 	}
@@ -672,9 +662,8 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 			if len(tc.want) == 0 {
 				return
 			}
-			reason := architectWakes(t, pool, root)[0]
-			if first := tc.first.UTC().Format(time.RFC3339); !strings.Contains(reason, "first queued to the architect's claim of "+root+" at "+first) {
-				t.Fatalf("the wake of %s = %q, want it to name %s, when the entry's task was first queued", root, reason, first)
+			if wake := architectWakes(t, pool, root)[0]; !wake.QueuedAt.Equal(tc.first) || wake.Entry != seededEntry {
+				t.Fatalf("the wake of %s = %+v, want it to name entry %d first queued at %s", root, wake, seededEntry, tc.first.UTC().Format(time.RFC3339))
 			}
 		})
 	}
@@ -707,8 +696,8 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 // of this one, so it quiets neither.
 //
 // A root waiting on a person is in the workflow, so a failed or a retired claim of it with no
-// start queued is a claim the arm names, and the reason says the root waits: the daemon queues
-// the next start of its architect only when that wait is answered
+// start queued is a claim the arm names, and the notice says the root waits (awaits_person): the
+// daemon queues the next start of its architect only when that wait is answered
 // (workflow.Engine.ResumeAwaitedRoot). Stranded leaves such a root out, which is a different
 // question again: the answer will start the claim, so something will.
 func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunchesTheClaim(t *testing.T) {
@@ -731,32 +720,29 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 		// architect with a start of its own (workflow.Engine.ResumeAwaitedRoot).
 		awaiting *record.Awaiting
 		woken    bool
-		// says is what the wake's reason states of the queue, where the arm wakes the controller.
-		says     string
+		// failing is whether the wake says the start of its run ran against the claim and left it
+		// failed (relaunch_failing), where the arm wakes the controller.
+		failing  bool
 		stranded bool
 		why      string
 	}{
 		{name: "a retired claim with a start of its run queued", state: supervise.StateRetired, queued: architectWakeGeneration,
 			why: "the queued start relaunches the retired claim on its kept session"},
 		{name: "a retired claim with no start queued", state: supervise.StateRetired, woken: true, stranded: true,
-			says: "no start of its run queued in the last 10m0s waits to relaunch it",
-			why:  "nothing the daemon has queued will relaunch the retired claim"},
+			why: "nothing the daemon has queued will relaunch the retired claim"},
 		{name: "a retired claim with a start of an earlier run queued", state: supervise.StateRetired, queued: architectWakeGeneration - 1,
-			woken: true, stranded: true, says: "no start of its run queued in the last 10m0s waits to relaunch it",
+			woken: true, stranded: true,
 			why: "a start of the run before reaches no claim of this run"},
 		{name: "a failed claim with a start of its run queued", state: supervise.StateFailed, queued: architectWakeGeneration,
 			why: "the queued start relaunches the failed claim on its kept session"},
 		{name: "a failed claim with no start queued", state: supervise.StateFailed, woken: true, stranded: true,
-			says: "no start of its run queued in the last 10m0s waits to relaunch it",
-			why:  "nothing the daemon has queued will relaunch the failed claim"},
+			why: "nothing the daemon has queued will relaunch the failed claim"},
 		{name: "a retired claim of a root waiting on a person", state: supervise.StateRetired,
 			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)}, woken: true,
-			says: "The root waits on a person, and the daemon queues the next start of its architect when that wait is answered.",
 			why: "the root is in the workflow and no start the daemon has queued relaunches the retired claim, while workflow.Stranded " +
 				"leaves the claim out because the answer to the wait will start it"},
 		{name: "a failed claim of a root waiting on a person", state: supervise.StateFailed,
 			awaiting: &record.Awaiting{Ask: "ask-q", Since: seqMark(10)}, woken: true,
-			says: "The root waits on a person, and the daemon queues the next start of its architect when that wait is answered.",
 			why: "the root is in the workflow and no start the daemon has queued relaunches the failed claim, while workflow.Stranded " +
 				"leaves the claim out because the answer to the wait will start it"},
 		{name: "a retired claim whose start is in its first run against it", state: supervise.StateRetired,
@@ -773,12 +759,12 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			why: "a lane holds the start under a live lease, so the outbox is relaunching the claim now, whatever the earlier run that waited added to its attempts"},
 		{name: "a failed claim whose own start has run against it and left it failed", state: supervise.StateFailed,
 			queued: architectWakeGeneration, ran: true, attempts: 3, woken: true,
-			says: "The start of its run has run against it and left it failed",
+			failing: true,
 			why: "the outbox only runs that start again on its backoff, which cures nothing, so the arm wakes the controller, " +
 				"while Stranded leaves the claim out because that start will run again"},
 		{name: "a failed claim whose own start left it failed, under the lapsed lease of a lane that died", state: supervise.StateFailed,
 			queued: architectWakeGeneration, ran: true, attempts: 3, lease: -5 * time.Minute, woken: true,
-			says: "The start of its run has run against it and left it failed",
+			failing: true,
 			why: "a lapsed lease holds nothing, as the outbox's own due predicate reads it, so that start is one the outbox only runs " +
 				"again on its backoff, which cures nothing; Stranded leaves the claim out because that start will run again"},
 	} {
@@ -851,7 +837,7 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			applySweep(t, pool, admission, "unreachable-1")
 			if !tc.woken {
 				if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-					t.Fatalf("the architect wakes of %s = %q, want none in the pass that reads the queued start: %s", root, reasons, tc.why)
+					t.Fatalf("the architect wakes of %s = %+v, want none in the pass that reads the queued start: %s", root, reasons, tc.why)
 				}
 				if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 0 {
 					t.Fatalf("the arms %s is marked told for = %v, want none: a mark spent now would keep a later failure of the "+
@@ -861,8 +847,14 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 			}
 			applySweep(t, pool, admission, "unreachable-2")
 			assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectClaimUnreachable}, tc.why)
-			if reasons := architectWakes(t, pool, root); !strings.Contains(reasons[0], tc.says) {
-				t.Errorf("the wake of %s = %q, want it to say %q: %s", root, reasons[0], tc.says, tc.why)
+			wake := architectWakes(t, pool, root)[0]
+			bound := workflow.StrandedReleaseWake.String()
+			if tc.failing {
+				bound = ""
+			}
+			if wake.ClaimState != string(tc.state) || wake.RelaunchFailing != tc.failing || wake.AwaitsPerson != (tc.awaiting != nil) || wake.Bound != bound {
+				t.Errorf("the wake of %s = %+v, want claim state %s, relaunch failing %t, awaiting a person %t, bound %q: %s",
+					root, wake, tc.state, tc.failing, tc.awaiting != nil, bound, tc.why)
 			}
 		})
 	}
@@ -922,7 +914,7 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedForAStartQueuedPastTheBoundThat
 			applySweep(t, pool, admission, "owed-2")
 			if !tc.woken {
 				if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-					t.Fatalf("the architect wakes of %s = %q, want none while a start queued inside the bound has still to run", root, reasons)
+					t.Fatalf("the architect wakes of %s = %+v, want none while a start queued inside the bound has still to run", root, reasons)
 				}
 				return
 			}
@@ -994,7 +986,7 @@ func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T)
 	applySweep(t, pool, admission, "handover-2")
 
 	if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of the carried root = %q, want none: the gate arm reads a root standing at admitted", reasons)
+		t.Fatalf("the architect wakes of the carried root = %+v, want none: the gate arm reads a root standing at admitted", reasons)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
@@ -1022,7 +1014,7 @@ func TestTheGateArchitectWakeReadsTheLaterOfTheAdmissionAndTheEntryRaised(t *tes
 
 	applySweep(t, pool, admission, "answered-1")
 	if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of the answered root = %q, want none: its resume raised the entry inside the bound, and that is the later moment", reasons)
+		t.Fatalf("the architect wakes of the answered root = %+v, want none: its resume raised the entry inside the bound, and that is the later moment", reasons)
 	}
 
 	// The resume's own 90 minutes pass: the entry the answer raised moves past the bound, and
@@ -1059,7 +1051,7 @@ func TestTheArchitectWakeOpensTheEntrySweepsGateUntilItIsTold(t *testing.T) {
 	assertArchitectWakes(t, pool, stalled, []record.ArchitectStallArm{record.ArchitectTookNothing},
 		"the pass the gate opened for reads the arm and tells the controller")
 	if reasons := architectWakes(t, pool, moving); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of %s = %q, want none: its architect took the task it was sent", moving, reasons)
+		t.Fatalf("the architect wakes of %s = %+v, want none: its architect took the task it was sent", moving, reasons)
 	}
 	if entrySweepGateOpens(t, pool, admission) {
 		t.Fatalf("the gate after the wake of %s was told answers yes: the sweep would apply a fact a minute for a stall already told", stalled)
@@ -1089,7 +1081,7 @@ func TestAnArchitectWakeWaitsForARegisteredController(t *testing.T) {
 	applySweep(t, pool, admission, "unregistered-1")
 	applySweep(t, pool, admission, "unregistered-2")
 	if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of %s = %q, want none: no controller is registered to read one", root, reasons)
+		t.Fatalf("the architect wakes of %s = %+v, want none: no controller is registered to read one", root, reasons)
 	}
 	if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 0 {
 		t.Fatalf("the arms %s is marked told for = %v, want none: a mark written while no controller ran would keep the arm "+

@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const (
@@ -296,7 +298,7 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 			t.Fatalf("at %s the implementer = round %q in pod %q, want the round open over the pod it runs in", rig.clock.Now(), c.UpdateRound, podOf(c.Locator))
 		}
 	}
-	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended") {
+	if notices := rig.notices(); len(notices) != 1 || notices[0].Holds != texts.HoldsOperator {
 		t.Fatalf("the controller was told %+v, want one notice naming the operator's suspension", notices)
 	}
 
@@ -381,7 +383,7 @@ func TestPodUpdateSuspensionOfTheOnlyClaimHoldsThePodPastTheBound(t *testing.T) 
 		t.Fatalf("the suspended claim's round = %q, want it still open: only the operator's resume ends this wait", c.UpdateRound)
 	}
 	notices := rig.notices()
-	if len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended") {
+	if len(notices) != 1 || notices[0].Holds != texts.HoldsOperator {
 		t.Fatalf("the controller was told %+v, want one notice naming the operator's suspension", notices)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
@@ -513,10 +515,8 @@ func TestPodUpdateTellsAPodlessRoundAnOperatorHoldsOncePastItsBound(t *testing.T
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times of a podless round an operator holds, want once: %+v", podUpdateBound, len(notices), notices)
 	}
-	for _, want := range []string{"No claim of this issue records a process in a pod", "An operator suspended", string(claim.RoleImplementer)} {
-		if !strings.Contains(notices[0].Reason, want) {
-			t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
-		}
+	if notices[0].Holds != texts.HoldsOperator || notices[0].Update == nil || notices[0].Update.Pod != "" {
+		t.Errorf("the notice is %+v with round %+v, want an operator's suspension holding a round no claim records a pod of", notices[0], notices[0].Update)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
 
@@ -700,10 +700,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
 		}
-		for _, want := range []string{"The runtime refused the pod replacement", refused.Error()} {
-			if !strings.Contains(notices[0].Reason, want) {
-				t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
-			}
+		if notices[0].Holds != texts.HoldsRuntimeRefused || !strings.Contains(notices[0].Refusal, refused.Error()) {
+			t.Errorf("the notice is %+v, want the runtime's refusal and the error the runtime gave, %q", notices[0], refused)
 		}
 		if notices[0].Update == nil || notices[0].Update.Pod != podUpdatePod {
 			t.Errorf("the notice carries %+v, want the round's pod %s", notices[0].Update, podUpdatePod)
@@ -729,8 +727,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 // nothing: no pod is replaced, the round stays open, and the next sweep reads the pod again. So a
 // runtime that keeps failing that read holds the round past its bound, and only a person can find
 // out why. A minute before the bound the controller is told nothing, since the bound may still
-// end the round. From the bound on it is told once over three sweeps, with the reason that names
-// the unread pod.
+// end the round. From the bound on it is told once over three sweeps, with the word that names
+// the unread pod (texts.HoldsPodUnread).
 //
 // An operator's suspension of a claim of the same round is told in the unread pod's place: one
 // round is told once, and a notice of the unread pod would hide a hold that only the operator can
@@ -800,14 +798,24 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 			rig.s.reconcilePodUpdates(rig.ctx, group)
 		}
 	}
+	// unreadPod holds the notice to the unread pod as what holds the round.
+	unreadPod := func(t *testing.T, notice record.ControllerNotice) {
+		t.Helper()
+		if notice.Holds != texts.HoldsPodUnread || notice.Refusal != "" {
+			t.Errorf("the notice is %+v, want it to name the pod the runtime cannot read", notice)
+		}
+	}
 	// heldInstead holds the notice to the operator's suspension of role rather than the unread
-	// pod.
+	// pod: what holds the round is the operator's suspension, and role is listed suspended.
 	heldInstead := func(t *testing.T, notice record.ControllerNotice, role claim.Role) {
 		t.Helper()
-		for _, want := range []string{"An operator suspended", string(role)} {
-			if !strings.Contains(notice.Reason, want) {
-				t.Errorf("the notice says %q, want it to say %q: the operator's hold is told in the unread pod's place", notice.Reason, want)
-			}
+		if notice.Holds != texts.HoldsOperator || notice.Refusal != "" {
+			t.Errorf("the notice is %+v, want it to name the operator's suspension: the operator's hold is told in the unread pod's place", notice)
+		}
+		if notice.Update == nil || !slices.ContainsFunc(notice.Update.Waiting, func(w record.UpdateWaiting) bool {
+			return w.Role == role && w.State == string(supervise.StateSuspended)
+		}) {
+			t.Errorf("the notice lists %+v, want the %s suspended among it", notice.Update, role)
 		}
 	}
 
@@ -816,9 +824,7 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig.rt.FailPodDrift(unread)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
-		if notice.Reason != unreadPodReason {
-			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
-		}
+		unreadPod(t, notice)
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
 	})
 
@@ -836,9 +842,7 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig, sweep := withNoProcess(t, supervise.SuspendedByDaemon)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
-		if notice.Reason != unreadPodReason {
-			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
-		}
+		unreadPod(t, notice)
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})
 	})
 
@@ -863,7 +867,7 @@ type podUnreadAfterTheDriftRead struct {
 	reads atomic.Int64
 }
 
-func (r *podUnreadAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+func (r *podUnreadAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]runtime.Drift, error) {
 	if r.reads.Add(1) == 1 {
 		return r.Runtime.PodDrift(ctx, k)
 	}
@@ -911,9 +915,7 @@ func (r *podUpdateRig) wantAsked(deploy time.Time, want map[claim.Role]int) {
 	asked := map[claim.Role]int{}
 	for _, ask := range r.asks() {
 		asked[ask.Role]++
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace)); ask.Text != text {
-			r.t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-		}
+		wantAskOf(r.t, ask, nil, nil, podUpdateDrift, deploy.Add(podUpdateGrace))
 	}
 	for role, n := range want {
 		if asked[role] != n {
@@ -928,9 +930,10 @@ func (r *podUpdateRig) wantAsked(deploy time.Time, want map[claim.Role]int) {
 //
 // With the migration's reset, the round starts its bound at the deploy: the first sweeps publish
 // the ask to each role, once, naming the deploy plus pod_update_grace_minutes as the end, and
-// replace nothing. The control keeps the clock the earlier release left: the first sweep finds
-// the round past its bound and replaces the pod, and no role is ever asked, because each claim
-// already holds the mark this release reads as its ask.
+// replace nothing. The round recorded its drift as text alone, so the ask names that text as its
+// reasons. The control keeps the clock the earlier release left: the first sweep finds the round
+// past its bound and replaces the pod, and no role is ever asked, because each claim already
+// holds the mark this release reads as its ask.
 func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
 	t.Parallel()
 	deploy := podUpdateStart.Add(3 * time.Hour)

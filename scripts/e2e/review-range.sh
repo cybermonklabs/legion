@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The live proof that a later review round is told the commit the review before it read: the task
-# the daemon prompts the reviewer with in its second review round holds ` Last reviewed commit:
-# <sha>.`, the head the reviewer's own deciding review of the first round named, a review whose
+# the daemon prompts the reviewer with in its second review round holds `Last reviewed commit:
+# <sha>.` on its last line, the head the reviewer's own deciding review of the first round named, a review whose
 # Legion footer names the entry of that round, and the first round's task holds none. The driver
 # (packages/daemon/internal/daemon/review_range_live_test.go, which this script builds with
 # `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy on a
@@ -11,20 +11,21 @@
 # /legion/v1/handoff/complete, and publishes the review App's review, the implementer's push and
 # GitHub's synchronize as Envoy relays GitHub's webhooks. Each check reads the task the daemon
 # prompted the reviewer's shim with, and first holds that it is the reviewing task of its round:
-# it says `Phase: reviewing.` and names the tester's handoff of that round by its version. Each
+# its `phase` field reads `reviewing`, and its handoff fields name the tester's handoff of that
+# round by its version. Each
 # check prints `== <name>`, what it observed and `ok <name>`; the first that fails ends the run
 # non-zero, naming it:
 #   - round-1-names-no-commit: an issue the tester passes reaches reviewing, and the reviewer's
-#     task ends with ` Last reviewed commit: none.` and then its ` Review entry: <n>.`;
+#     task ends with the line `Last reviewed commit: none. Review entry: <n>.`;
 #   - round-2-names-the-commit-of-round-1: the reviewer requests changes at the pull request's head
 #     X, its footer naming the session its claim registered and the entry its task ended with
-#     (` Review entry: <n>.`, read from the task the daemon delivered, as an agent reads it); the
+#     (`Review entry: <n>.`, read from the task the daemon delivered, as an agent reads it); the
 #     implementer pushes a new head and completes at it, and the tester passes; the reviewer's task
-#     holds ` Last reviewed commit: X.`;
+#     holds `Last reviewed commit: X.`;
 #   - control-no-record-no-commit: on a second issue, after the same first round and review, the
 #     driver reads that phases.reviewed_head of the reviewer's row holds the head the review read,
 #     clears it in the daemon's database, and the reviewer's task of round 2 ends with
-#     ` Last reviewed commit: none.` and its entry. The check before it is the same run with the
+#     `Last reviewed commit: none.` and its entry. The check before it is the same run with the
 #     clear left out, so the control can fail;
 #   - other-session-records-no-commit: on a third issue, after the same first round, the review
 #     App's request for changes at the head comes from a session the reviewer's claim did not

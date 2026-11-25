@@ -275,6 +275,15 @@ reaches you as a follower, an author or the issue's route arrives once.
 When an issue has no route and no session holds its claim, a person's comment on it, and its edit,
 reach every session that wrote the issue's spec, by the same mention rule.
 
+A person's reply in a thread answers that thread. On an issue with no route and no session that
+holds its claim, the reply and its edit reach only the thread when a session of the thread is live
+or unresponsive in Envoy's registry. The thread's sessions are the sessions that wrote a comment in
+it, or the sessions that follow the ask whose thread it is. The reply then does not reach a session
+that only wrote the spec or the document the thread is on. A session that the reply names and
+whose mention failed still gets it directly. When every session of the thread is gone or stopped,
+or Dispatch cannot read Envoy's registry, the reply reaches the sessions of the spec and of the
+document.
+
 Two exceptions. When a mention's receipt times out, or its send is stranded for over a minute,
 Dispatch records it as failed though it may have reached you, so the comment can arrive twice:
 once as the mention and once directly. Treat the second copy as the same comment. And while a new

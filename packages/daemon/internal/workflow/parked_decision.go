@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // relayParkedDecision hands a person's answer, resolution or reply on ask of key to the one rule
@@ -28,7 +28,7 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
+	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, e.cfg.Steps)
 	if err != nil {
 		return err
 	}
@@ -64,8 +64,9 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 
 // ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's
 // decision on an issue of its tree while nobody in the tree could hear it (relayParkedDecision,
-// the outbox's parkDecision): each decision's ref, kind and author, newest first, so the architect
-// reads what brought it back, as ResumeAwaitedRoot names an answered root's answer. Admission's
+// the outbox's parkDecision): each decision's ref, kind, author and words, newest first, so the
+// architect reads what brought it back, as ResumeAwaitedRoot names an answered root's answer
+// (KeptDecisionsTask). Admission's
 // start carries it as its task; every later launch's ready (claimReady: a relaunch, `legion claims
 // retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
 // approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
@@ -87,49 +88,97 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
 // zero when there was nothing.
 func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
-	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
-	if err != nil {
+	kept, err := keptOwed(ctx, tx, store, steps, root.Key)
+	if err != nil || kept == nil {
 		return "", nil, err
+	}
+	return taskText(KeptDecisionsOf(root.Key, *kept)), kept, nil
+}
+
+// keptOwed is what tree is owed now and nothing claims (Store.UnclaimedKept), as a start's task
+// (ParkedDecisionTask) and a root's catch-up (QueueCatchUp) name it: each kept decision, and the
+// approval a re-admission kept where the design gate asks a person (steps). It is nil where
+// nothing is kept.
+func keptOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string) (*record.KeptDecisions, error) {
+	decisions, approval, err := store.UnclaimedKept(ctx, tx, tree)
+	if err != nil {
+		return nil, err
 	}
 	var kept record.KeptDecisions
 	for _, d := range decisions {
-		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue,
-			Decision: d.Decision, Actor: d.Actor})
+		kept.Decisions = append(kept.Decisions, d.Mark())
 	}
 	if approval.Approved > 0 && len(steps) > 0 {
 		kept.KeptApproval = approval
 	}
-	task := KeptDecisionsTask(root.Key, kept)
-	if task == "" {
-		return "", nil, nil
+	if len(kept.Decisions) == 0 && kept.Approved == 0 {
+		return nil, nil
 	}
-	return task, &kept, nil
+	return &kept, nil
 }
 
-// KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
-// task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
-// when an issue it names leaves that tree while the task waits to be sent (supervise's
-// Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
-// root's own, so it is named whenever kept carries one — the gate was read where it was first
-// kept — and it is named on the document of its own step (record.DesignStep.Document), which is
-// the document the person reviewed and the one whose approval the architect requests again.
+// KeptDecisionsTask is the task that names kept to the architect of root's tree (KeptDecisionsOf):
+// the task a start names its tree's kept decisions with (ParkedDecisionTask), and the one a held
+// task is written back to when an issue it names leaves that tree while the task waits to be sent
+// (supervise's Deps.RootTask, the daemon's rootTask). A task whose decisions have all left, with
+// no approval kept, is written back to "", which is a task that names nothing and is retired
+// rather than sent.
 func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
-	var parts []string
-	if len(kept.Decisions) > 0 {
-		named := make([]string, 0, len(kept.Decisions))
-		for _, d := range kept.Decisions {
-			named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
+	if len(kept.Decisions) == 0 && kept.Approved == 0 {
+		return ""
+	}
+	return taskText(KeptDecisionsOf(root, kept))
+}
+
+// KeptDecisionsOf is the kept-decisions task of root's tree, as the record of its kind: each
+// decision a person made on the tree while nobody in it could hear it, with its reference, the
+// issue it was made on, what the person did, who and when (the act's own time where the decision
+// carries its words, else the time the daemon kept it), the options an answer chose, and the
+// person's words in a block of their own, as the act's event carried them (record.DecisionMark):
+// cut to the bound keptBound gives, with the count of the rest or the mark that more follows where
+// the event did not carry them all (record.DecisionMark.Carry). The approval is the root's own, so
+// it is named whenever kept carries one — the gate was read where it was first kept — by its step,
+// its document as a dispatch:// link (stepRef), the version a person approved and the version the
+// document has reached since, which the architect requests approval of.
+func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisionsRecord {
+	task := texts.KeptDecisionsRecord{TaskHead: texts.TaskHead{Kind: texts.KeptDecisions, Issue: root}}
+	bound := keptBound(kept.Decisions)
+	for _, mark := range kept.Decisions {
+		decided := texts.KeptDecision{Ref: mark.Ref, Issue: mark.Issue, Decision: string(mark.Decision), By: mark.Actor,
+			At: mark.At.UTC(), Options: strings.Join(mark.Options, ", ")}
+		if !mark.AnswerAt.IsZero() {
+			decided.At = mark.AnswerAt.UTC()
 		}
-		parts = append(parts, fmt.Sprintf("While nobody in %s's tree could hear it, a person decided on the tree: %s. Read each before you continue.",
-			root, strings.Join(named, "; ")))
+		if mark.Answer != "" || mark.More {
+			words := mark.Carry(bound)
+			decided.Answer = &words
+		}
+		task.Kept = append(task.Kept, decided)
 	}
 	if kept.Approved > 0 {
-		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
-			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
-			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
+		step := kept.Step.OrSpec()
+		task.ApprovalStep, task.ApprovalDocument, task.Approved, task.Latest = string(step), stepRef(root, step), kept.Approved, kept.Latest
 	}
-	return strings.Join(parts, " ")
+	return task
+}
+
+// keptBound is the bound of each decision's words where a text names decisions: texts.OneAct
+// where it carries the words of one decision at most, and texts.EachOfSeveral where it carries
+// those of several (dispatch://INFRA-3686/spec R1). Only a decision whose words the text carries
+// counts, one with an answer: an approval carries none, and neither does an act whose event
+// carried no words (a payload_omitted stand-in, More alone), as the resume counts its blocks
+// (eachOfSeveral).
+func keptBound(decisions []record.DecisionMark) int {
+	worded := 0
+	for _, mark := range decisions {
+		if mark.Answer == "" {
+			continue
+		}
+		if worded++; worded > 1 {
+			return texts.EachOfSeveral
+		}
+	}
+	return texts.OneAct
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
@@ -227,7 +276,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], nil, now, time.Time{}); err != nil {
 			return err
 		}
 	}
@@ -282,18 +331,48 @@ func stepRef(key string, step record.DesignStep) string {
 
 // ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer
 // the changes request the gate of its document records as told, issue's gates being gates: the
-// gate records another (record.DesignGate.ToldChangesVersion and ToldChangesReason). The gate
-// records every changes request it applies as told (applyArtifact), and tells one a newer review
-// already replaced without recording it, as the person's words, when no approval followed it; so a
-// notice the gate's record does not match is of a request the person has since replaced. The
-// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
-// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
-// gate that records no request, or no gate of the notice's document, says nothing against it.
+// gate records another (record.DesignGate.ToldChangesVersion, ToldChangesReason and
+// ToldChangesMark). The gate records every changes request it applies as told (applyArtifact), and
+// tells one a newer review already replaced without recording it, as the person's words, when no
+// approval followed it; so a notice the gate's record does not match is of a request the person
+// has since replaced. The outbox's parkDecision relays no such notice to the controller: kept, it
+// would take the place of the newer decision kept under the same document's ref, and of the claim
+// a start holds on it. A gate that records no request, or no gate of the notice's document, says
+// nothing against it.
+//
+// The notice names the time of its review (record.Notice.At, from the review's mark), and the
+// gate the told review's place (ToldChangesMark), so where both carry a time a notice of another
+// time, read at the microseconds the store keeps a time at, is of another review: two changes
+// requests on one version whose reasons share their first texts.OneAct units carry the same cut
+// reason, and only their times tell them apart. The gate records the whole reason. A notice this
+// release cut carries the reason's head at texts.OneAct and counts the units the cut left off in
+// its words object (ChangesRequestedNotice, the reason's Rest), so it is of the told request where
+// its reason is the told reason's head at that bound and its count is what that bound leaves off
+// the told reason. Any other notice carries its reason whole: one this release did not cut, and a
+// row an older daemon queued, which carries no words object and no time. It is of the told request
+// only where its reason is the whole told reason, so an older request whose whole reason is the
+// head of a newer, longer one is not read as that newer one. A notice or a gate with no time, such
+// as a row an older daemon queued, is read by its version and its reason alone.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
 	for step, gate := range gates {
-		if stepRef(issue, step) == notice.Ref {
-			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)
+		if stepRef(issue, step) != notice.Ref {
+			continue
 		}
+		switch {
+		case gate.ToldChangesVersion == nil:
+			return false
+		case *gate.ToldChangesVersion != notice.Version:
+			return true
+		case !notice.At.IsZero() && !gate.ToldChangesMark.At.IsZero() &&
+			!notice.At.Truncate(time.Microsecond).Equal(gate.ToldChangesMark.At.Truncate(time.Microsecond)):
+			return true
+		}
+		cut := notice.Words["reason"].Rest
+		if cut == 0 {
+			return notice.Reason != gate.ToldChangesReason
+		}
+		head, rest := texts.Bound(gate.ToldChangesReason, texts.OneAct)
+		return notice.Reason != head || cut != rest
 	}
 	return false
 }

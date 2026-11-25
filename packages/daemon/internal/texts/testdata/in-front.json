@@ -1,0 +1,155 @@
+{
+  "description": "The cases of one rule: a drawn text's blocks drawn again behind the parts put in front of it, each under the first tag of its name that nothing in what is sent holds as <tag or </tag and no earlier block took. Three readers each give every case's sent for its parts and its text: Go's texts.InFront (packages/daemon/internal/texts/words.go; TestInFrontGivesWhatTheSharedCasesSay in words_test.go), the TypeScript inFront of @legion/envoy-client/words-block (src/__tests__/words-block.test.ts) and the mod's copy of it in claude-envoy (hooks/words-in-front.ts; tests/words-in-front.test.ts). A line opens a block only where no attribute value holds a raw \", < or >, since the writers of both languages escape all three.",
+  "cases": [
+    {
+      "label": "no parts: the text as it is",
+      "parts": [],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>"
+    },
+    {
+      "label": "a text with no block",
+      "parts": ["<answer by='x'>"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered",
+      "sent": "<answer by='x'>\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered"
+    },
+    {
+      "label": "parts that hold no tag",
+      "parts": ["one", "two"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "one\n\ntwo\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>"
+    },
+    {
+      "label": "an empty part",
+      "parts": [""],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>"
+    },
+    {
+      "label": "a part that opens the tag",
+      "parts": ["<answer by='x'>"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "<answer by='x'>\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-1>"
+    },
+    {
+      "label": "a part that only begins like the tag",
+      "parts": ["see <answers"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "see <answers\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-1>"
+    },
+    {
+      "label": "parts that hold suffixed tags: <answer-12 holds 1 and 12",
+      "parts": ["</answer-1 and <answer-12", "<answer-0"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "</answer-1 and <answer-12\n\n<answer-0\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-2 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-2>"
+    },
+    {
+      "label": "a suffix with a leading zero holds the bare name alone",
+      "parts": ["<answer-0 and <answer-01"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "<answer-0 and <answer-01\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-1>"
+    },
+    {
+      "label": "blocks of one name and of two, one name held",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer>\n<answer-1>\nNo.\n</answer-1>\n<reason more=\"true\">\n\n</reason>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1>\nYes.\n</answer-1>\n<answer-2>\nNo.\n</answer-2>\n<reason more=\"true\">\n\n</reason>"
+    },
+    {
+      "label": "two names, the other one held",
+      "parts": ["</reason>"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer>\n<reason more=\"true\">\n\n</reason>",
+      "sent": "</reason>\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer>\n<reason-1 more=\"true\">\n\n</reason-1>"
+    },
+    {
+      "label": "a block whose words hold a step of its tag",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-2>\nYes.\n<answer-1 by='y'>\n</answer-2>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-2>\nYes.\n<answer-1 by='y'>\n</answer-2>"
+    },
+    {
+      "label": "a stepped tag whose steps the fields hold keeps its tag",
+      "parts": ["no tag here"],
+      "text": "envoy:\n  question: \"<answer> or <answer-1>?\"\n<answer-2>\nYes.\n</answer-2>",
+      "sent": "no tag here\n\nenvoy:\n  question: \"<answer> or <answer-1>?\"\n<answer-2>\nYes.\n</answer-2>"
+    },
+    {
+      "label": "a stepped tag nothing holds any more takes its name again",
+      "parts": ["one"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1>\nYes.\n</answer-1>",
+      "sent": "one\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer>"
+    },
+    {
+      "label": "text after the blocks that holds a tag",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>\nPublished while the connection was down; it said </answer-1 too.",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-2 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-2>\nPublished while the connection was down; it said </answer-1 too."
+    },
+    {
+      "label": "a block at the start",
+      "parts": ["<answer"],
+      "text": "<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "<answer\n\n<answer-1 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-1>"
+    },
+    {
+      "label": "a run of blocks that ends at a line opening none",
+      "parts": ["one"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer>\n<reason> is no line of a block\n<answer-1>\nNo.\n</answer-1>",
+      "sent": "one\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-2>\nYes.\n</answer-2>\n<reason> is no line of a block\n<answer-1>\nNo.\n</answer-1>"
+    },
+    {
+      "label": "a line that opens no block",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by='x'> is no block\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by='x'> is no block\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>"
+    },
+    {
+      "label": "a block that never closes",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes."
+    },
+    {
+      "label": "a closing tag with text after it on its line",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer> and more",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer>\nYes.\n</answer> and more"
+    },
+    {
+      "label": "an attribute value that holds > opens no block",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a>b\">\nYes.\n</answer>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a>b\">\nYes.\n</answer>"
+    },
+    {
+      "label": "an attribute value that holds < opens no block",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a<b\">\nYes.\n</answer>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a<b\">\nYes.\n</answer>"
+    },
+    {
+      "label": "an attribute value that holds a raw double quote opens no block",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a\"b\">\nYes.\n</answer>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a\"b\">\nYes.\n</answer>"
+    },
+    {
+      "label": "escaped attribute values are kept as written",
+      "parts": ["<answer"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"a &lt;b&gt; &quot;c&quot; &amp; d&#10;e\" more=\"true\">\nYes.\n</answer>",
+      "sent": "<answer\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"a &lt;b&gt; &quot;c&quot; &amp; d&#10;e\" more=\"true\">\nYes.\n</answer-1>"
+    },
+    {
+      "label": "words in several scripts",
+      "parts": ["Grüße, <answer 😀"],
+      "text": "envoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"José\">\nJa, gerne — 好的 😀\n</answer>",
+      "sent": "Grüße, <answer 😀\n\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"José\">\nJa, gerne — 好的 😀\n</answer-1>"
+    },
+    {
+      "label": "a label line in front of the card",
+      "parts": ["Envoy delivered a message.", "<answer by='x'>"],
+      "text": "[fence] An Envoy message delivered to this session:\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer>",
+      "sent": "Envoy delivered a message.\n\n<answer by='x'>\n\n[fence] An Envoy message delivered to this session:\nenvoy:\n  from: dispatch\n  id: evt-1\n  dispatch:\n    type: ask.answered\n<answer-1 by=\"user:bob\" at=\"2026-11-14T20:03:00Z\">\nYes, ship it.\n</answer-1>"
+    }
+  ]
+}

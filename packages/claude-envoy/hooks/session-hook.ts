@@ -100,6 +100,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { oneLine } from "@legion/envoy-client/line-text"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -383,7 +384,10 @@ async function openAsks(raw: unknown): Promise<void> {
         `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url))}\n`,
       )
     } catch (error) {
-      process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)
+      // The failure can quote what Dispatch, or something in its place, answered: one line.
+      process.stdout.write(
+        `Dispatch authored-ask summary unavailable: ${oneLine(messageFor(error))}\n`,
+      )
     }
   } else if (dispatch.error !== null) {
     process.stdout.write(`Dispatch authored-ask summary unavailable: ${dispatch.error}\n`)

@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -33,19 +33,19 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 	const root, own = "LEGION-208", "LEGION-209"
 	stalledOn := func(t *testing.T, h *harness, issue string) []string {
 		t.Helper()
-		var reasons []string
+		var facts []string
 		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-			rows, err := tx.Query(context.Background(), `select payload->>'reason' from outbox
+			rows, err := tx.Query(context.Background(), `select `+stalledFacts+` from outbox
 				where issue = $1 and kind = 'notice' and payload->>'kind' = 'child-release-stalled' order by id`, issue)
 			if err != nil {
 				return err
 			}
-			reasons, err = pgx.CollectRows(rows, pgx.RowTo[string])
+			facts, err = pgx.CollectRows(rows, pgx.RowTo[string])
 			return err
 		}); err != nil {
 			t.Fatalf("read the stalled notices on %s: %v", issue, err)
 		}
-		return reasons
+		return facts
 	}
 	ownIssue := record.Issue{Key: own, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: new(root), Project: testProject, Title: own,
 		Phase: phase.Planning, Generation: 1, Status: "in_progress"}
@@ -81,8 +81,8 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 		sub := newLiveClaimIn(t, h, root, own, claim.RoleArchitect)
 		refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil),
 			http.StatusConflict, "CHILD_RELEASE_STALLED")
-		if got := stalledOn(t, h, own); len(got) != 1 || !strings.Contains(got[0], child+" is todo but its parent "+parent+" has not reached the daemon") {
-			t.Fatalf("stalled notices on %s = %q, want one naming %s and %s", own, got, child, parent)
+		if got, want := stalledOn(t, h, own), stalledFact(texts.StallAttemptsSpent, child, parent, "", "", "", "", maxChildReleaseAttempts); len(got) != 1 || got[0] != want {
+			t.Fatalf("stalled notices on %s = %q, want [%s]", own, got, want)
 		}
 		if got := stalledOn(t, h, root); len(got) != 0 {
 			t.Fatalf("stalled notices on the root %s = %q, want none: the release was %s's architect's", root, got, own)
@@ -99,8 +99,8 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 		if recorder := u.h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil); recorder.Code != http.StatusOK {
 			t.Fatalf("the sub-architect's release of %s = %d: %s, want it released", child, recorder.Code, recorder.Body)
 		}
-		if got := stalledOn(t, u.h, own); len(got) != 1 || !strings.Contains(got[0], "Release "+parent+" first, then release "+child+" again") {
-			t.Fatalf("stalled notices on %s = %q, want one telling it to release %s first", own, got, parent)
+		if got, want := stalledOn(t, u.h, own), stalledFact(texts.StallUnrecordedBlocker, child, parent, "", parent, "backlog", "zeta/tools", 0); len(got) != 1 || got[0] != want {
+			t.Fatalf("stalled notices on %s = %q, want [%s]: release %s first", own, got, want, parent)
 		}
 		if got := stalledOn(t, u.h, root); len(got) != 0 {
 			t.Fatalf("stalled notices on the root %s = %q, want none: the release was %s's architect's", root, got, own)

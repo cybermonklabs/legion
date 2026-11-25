@@ -1,20 +1,22 @@
 package record
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A task in another order than today's moves back by its own order, so a hook fires on a move
 // back that is a forward pair of phase.Order: the tester of `implementer reviewer tester` sends
 // the work back from testing to reviewing. The outbox takes that hook prompt, keeps it whole
-// through a stored row, and its message lists the count of that move. A phase paired with itself
-// is no move, and the outbox refuses it with its reason. The twin: a move back of today's line is
-// taken.
+// through a stored row, and its record counts that move (the counts field of its facts). A phase
+// paired with itself is no move, and the outbox refuses it with its reason. The twin: a move back
+// of today's line is taken.
 func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	for _, prompt := range []HookPrompt{
@@ -32,8 +34,12 @@ func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 			t.Fatalf("DecodeOutboxPayload(%s to %s): %v", prompt.From, prompt.To, err)
 		}
 		pair := phase.Pair(prompt.From, prompt.To)
-		if message := decoded.(HookPrompt).Message("LEGION-208"); !strings.Contains(message, "Counts by move: "+pair+"=1.") {
-			t.Fatalf("the message of a hook prompt of %s lists no count of it:\n%s", pair, message)
+		hook := decoded.(HookPrompt)
+		if counts := hook.Record("LEGION-208").Counts; !slices.Contains(counts, texts.MoveCount{Move: pair, Count: 1}) {
+			t.Fatalf("the record of a hook prompt of %s counts %+v, want %s counted once", pair, counts, pair)
+		}
+		if _, err := hook.Message("LEGION-208"); err != nil {
+			t.Fatalf("the message of a hook prompt of %s: %v", pair, err)
 		}
 	}
 	_, err := NewOutboxRow("LEGION-208", HookPrompt{Hook: "work-back", Role: claim.RoleTester, From: phase.Testing, To: phase.Testing,

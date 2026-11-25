@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // heldWork is one issue a path that resumes work is read against: a task its owner stopped, held
@@ -148,13 +149,13 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 				if err := applySilence(t, pool, testEngine(config.DesignGateRootIssues, nil), aSilenceOf(h.role(), 1)); err != nil {
 					t.Fatalf("apply the silence: %v", err)
 				}
-				rows, notices := silenceSuperviseRows(t, pool), noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
+				rows, notices := silenceSuperviseRows(t, pool), noticesOfKind(t, pool, silenceIssue, texts.WorkerSilent)
 				if h.held() && (len(rows) != 0 || len(notices) != 0) {
-					t.Fatalf("after the silence of its %s, %s has supervise rows %+v and %d %s notices, want none", h.role(), silenceIssue, rows, len(notices), workerSilentNotice)
+					t.Fatalf("after the silence of its %s, %s has supervise rows %+v and %d %s notices, want none", h.role(), silenceIssue, rows, len(notices), texts.WorkerSilent)
 				}
 				if !h.held() && (len(rows) != 1 || rows[0].op != "start" || rows[0].role != h.role() || rows[0].task == "" || len(notices) != 1) {
 					t.Fatalf("after the silence of its %s, %s has supervise rows %+v and %d %s notices, want its one start carrying its task and the one notice",
-						h.role(), silenceIssue, rows, len(notices), workerSilentNotice)
+						h.role(), silenceIssue, rows, len(notices), texts.WorkerSilent)
 				}
 			})
 		}

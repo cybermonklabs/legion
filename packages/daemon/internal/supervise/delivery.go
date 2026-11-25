@@ -8,14 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
-
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // CheckLook names one look of one production check: the look's number and the check instance the
@@ -98,9 +97,9 @@ type Delivery struct {
 	ConfirmedAt time.Time
 	// Interrupted says a turn of the task was running when the process the claim recorded was let
 	// go (interrupted) — a death, a displacement, a repoint, a stall, a stale plugin, a held
-	// suspension's stop — so the task is sent behind the sentence that says so from then on: the
-	// claim's untold record of that let-go while it tells, and interruptedTask after (message). The
-	// task text stays as the workflow wrote it.
+	// suspension's stop — so the task is sent behind the note that says so from then on: the
+	// claim's untold record of that let-go while it tells (RelaunchNote), and the cut-turn note
+	// after (CutTurnNote, message). The task text stays as the workflow wrote it.
 	Interrupted bool
 	// Prompted says the daemon has put a prompt of this task to the agent, whatever came of it —
 	// a refusal, a busy answer, an acknowledgement, a turn. It is set when the send goes out
@@ -114,8 +113,9 @@ type Delivery struct {
 	// (Delivery.Carried, unsentNews).
 	Prompted bool
 	// OutOfMemory says the end that cut a turn of this task off was its pod running out of memory
-	// (runtime.Observation.OutOfMemory), so the task is sent behind outOfMemoryTask as well as
-	// behind the sentence of its interruption from then on (message). The task text stays as the
+	// (runtime.Observation.OutOfMemory), so the task of a role of an issue pod is sent behind the
+	// out-of-memory note (texts.NewOutOfMemoryNote) as well as behind the note of its interruption
+	// from then on (message), and the controller's behind no such note. The task text stays as the
 	// workflow wrote it.
 	OutOfMemory bool
 	// SendFailures, LastSendFailureAt and LastSendError are the diagnosis record of this task's
@@ -197,11 +197,11 @@ type Delivery struct {
 	// middle of a ladder goes on climbing it rather than starting again at the first step. It is
 	// the task's own count, not the claim's: a new task starts at 0.
 	ProviderErrorRetries int
-	// ProviderErrorNote is the sentence such a task is sent behind, as an Interrupted task is
-	// sent behind the sentence of its interruption: what ended the previous turn, and that the
-	// daemon is sending the task again. It is built from structured fields alone — the HTTP
-	// status the provider answered, else nothing more than "a provider error" — because a
-	// refusal's own explanation is itself refused when it is sent back
+	// ProviderErrorNote is the provider-error note such a task is sent behind (ProviderErrorNote,
+	// rendered), as an Interrupted task is sent behind the cut-turn note: that a provider error
+	// ended the previous turn, which the kind says, and the daemon sends the task again. Its one
+	// field is structured — the HTTP status the provider answered, absent where it answered none —
+	// because a refusal's own explanation is itself refused when it is sent back
 	// (dispatch://INFRA-956/artifact/cause-evidence-md), so no provider text reaches a prompt.
 	// Empty for a task no provider error has taken back.
 	ProviderErrorNote string
@@ -259,60 +259,81 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
 }
 
-// sentences is which of the claim's two untold records a prompt carries the sentence of: the
-// session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
-// process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
+// sentences is which of the claim's two untold records a prompt carries the note of: the session
+// the claim abandoned (AbandonedSession, AbandonedSessionNote), and what the last let-go of its
+// process ended (EndedWork, RelaunchNote). Delivery.message answers it beside the prompt it
 // composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
 // confirmCarrying reads).
 type sentences struct{ abandoned, ended bool }
 
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
-// tells (sentences): its task, behind the sentences the claim's state gives it that say what
-// became of the agent's earlier work, and then the provider's. In order:
+// tells (sentences): its task, behind the notes the claim's state gives it that say what became
+// of the agent's earlier work, and then the provider's. Each note is a record of its kind,
+// rendered (texts.Render), and the parts are joined by a blank line. In order:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
-//     (abandonedTask), and says that everything of the old session is gone. A record that still
-//     tells beside it is one of the fresh session's own processes (forgetSession), and that
-//     record's sentence follows the abandoned session's (the next item): the prompt tells both.
-//     What the abandoned session's sentence stands in place of is the old session's turn: the
-//     note of an interruption (interruptedTask) and the out-of-memory note behind it, which a
-//     task taken back from a turn of the old session's process still carries. A turn of the
-//     fresh process that was cut off on this task is the fresh process's own, and the record
-//     that tells says so (EndedWork.TaskTurn): the let-go that wrote it took the task back from
-//     that turn and wrote its interruption anew (recordEnd, interrupted). So the record's
-//     sentence says that turn was interrupted, and the out-of-memory note follows it as it does
-//     where no session was abandoned.
+//     (AbandonedSessionNote). A record that still tells beside it is one of the fresh session's
+//     own processes (forgetSession), and that record's note follows the abandoned session's (the
+//     next item): the prompt tells both. What the abandoned session's note stands in place of is
+//     the old session's turn: the cut-turn note (CutTurnNote) and the out-of-memory note behind
+//     it, which a task taken back from a turn of the old session's process still carries. A turn
+//     of the fresh process that was cut off on this task is the fresh process's own, and the
+//     record that tells says so (EndedWork.TaskTurn): the let-go that wrote it took the task back
+//     from that turn and wrote its interruption anew (recordEnd, interrupted). So the record's
+//     note says that turn was cut off, and the out-of-memory note follows it as it does where no
+//     session was abandoned.
 //   - While the claim's record of what its last let-go ended is untold (EndedWork.Tells), every
-//     prompt carries that record's sentence in front of its task (relaunchSentence): the cause,
-//     the turn and the background work that let-go cut off, whatever the task. It also says what
-//     interruptedTask would say of a task taken back from that turn — it begins with the turn of
-//     this task being interrupted where the record says the claim's task was in it
-//     (EndedWork.TaskTurn) and this is the task that let-go took back (Interrupted) — so a task
-//     carries the one sentence and not both. In front of any other task, such as the new task of
-//     its phase that a retry of the stopped claim (endStopped's comment names each) gives a worker
-//     a stop cut off in its task's turn, it says instead that the turn the agent was in was
-//     interrupted (EndedWork.inFrontOf).
+//     prompt carries that record's note in front of its task (RelaunchNote): the cause, the turn
+//     and the background work that let-go cut off, whatever the task. It also states what the
+//     cut-turn note would say of a task taken back from that turn — task_turn, where the record
+//     says the claim's task was in it (EndedWork.TaskTurn) and this is the task that let-go took
+//     back (Interrupted) — so a task carries the one note and not both. In front of any other
+//     task, such as the new task of its phase that a retry of the stopped claim (endStopped's
+//     comment names each) gives a worker a stop cut off in its task's turn, it states instead
+//     that the turn the agent was in was cut off (EndedWork.inFrontOf).
 //   - A task taken back from a turn (Interrupted) whose record has been told, or that no record
-//     names, still says its turn was interrupted, under the cause the claim's record names
-//     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
-//     last death's words. With an abandoned session still to tell, that turn was the old
-//     session's, and the abandoned session's sentence stands in its place (the first item).
+//     names, carries the cut-turn note under the cause the claim's record names (CutTurnNote):
+//     the let-go that took it back, whichever path that was, rather than the last death's words.
+//     With an abandoned session still to tell, that turn was the old session's, and the
+//     abandoned session's note stands in its place (the first item).
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
-// Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
-// — the agent reads that its turn was interrupted, then why, then the task. A task a provider
-// error took back carries its own sentence last of all (ProviderErrorNote), so the agent reads
-// what the provider did and then the task; each of these says something the others do not.
+// Behind the interruption, when its end was the pod running out of memory, comes the
+// out-of-memory note (texts.NewOutOfMemoryNote) — the agent reads that its turn was cut off, then
+// why, then the task. The note is written for a role of an issue pod, as the one list names its
+// readers: it says that the container ran every role of the issue, that another role's work can
+// have filled the pod, and that an issue pod runs no heavy build. The controller runs alone in a
+// pod of its own and reads no worker guide, so its task carries no such note, whatever the
+// delivery's mark says (the runtime marks no end of the controller's pod: sandbox's outOfMemory).
+// A task a provider error took back carries its own note last of all
+// (ProviderErrorNote, as the delivery holds it rendered), so the agent reads what the provider
+// did and then the task; each of these says something the others do not.
+//
+// The notes go in front of a task the daemon drew joined by texts.InFront, which draws the task's
+// blocks of another author's words again under tags chosen against the notes as well: a note's
+// cause or reason quotes the runtime's or the provider's own words, which can carry a tail of the
+// role's own log, a line that opens a block's tag among it, and the task was drawn before any note
+// was. The notes stay word for word. A task that no record of this release drew is another
+// author's words, which go as that author wrote them, tags and all: an operator's task, and a task
+// an earlier release queued (a start row or a pending delivery main stored, which this release
+// runs or sends after the upgrade's restart, behind the relaunch's note or the cut-turn note),
+// whose prose can quote a role's summary as that role wrote it, a log in two `<details>` sections
+// among it. The notes go in front of it joined by texts.InFrontOfWords, which draws again any
+// block a note holds under a tag chosen against that text, and renames no line of it; the news
+// records this release drew after such a start (the daemon's followedBy) have their blocks drawn
+// again against the notes too. Which of the two a task is, is read from the text itself, never
+// from the run the task is of: a text this release drew opens with a record line (texts.Drawn),
+// and prose holds none, whereas a task an earlier release queued carries its issue's run as a task
+// of this release does. The controller's start message, a fixed sentence with no record line and
+// no block, goes as it is either way.
 //
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
-// its text is the record's sentence alone (RelaunchSentence), composed from the record as it
+// its text is the record's note alone (RelaunchNote with no task), composed from the record as it
 // stands when the prompt goes, so a let-go recorded after it was queued is told in it too. One
 // whose record no longer tells has nothing to say, and sendPending retires it rather than send it.
-// The abandoned session's sentence, the out-of-memory note and the provider's go in front of that
-// text as they go in front of a task, the abandoned session's without the task's instruction,
-// since there is no task to continue (abandonedTask); the record's sentence does not, because it
-// is the text.
+// The abandoned session's note, the out-of-memory note and the provider's go in front of that
+// text as they go in front of a task; the record's note does not, because it is the text.
 //
 // A task of the reviewer ends with the daemon's two sentences of its review round, the last two
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
@@ -320,12 +341,12 @@ type sentences struct{ abandoned, ended bool }
 // it. A task that says it ends with them (RoundNamed), as each task the workflow queues for the
 // reviewer does (workflow's queuedRow) and each the start executor names on a reviewer's start
 // queued for news alone (the daemon's newsForStart), is sent as it stands. A task of the reviewer
-// that does not say so is given them at its end, naming no commit and no entry: a start row or a
-// delivery the release before this one stored, whose text can end with words of the same shape
-// that no review recorded, or a task an operator wrote. Its reviewer reads the whole change and
-// keeps the entry of its round. It is the fact and never the task's text that tells the two
-// apart, since two such texts can be the same word for word. The relaunch's record is no task, and
-// is sent as it is.
+// that does not say so is given them at its end, on a line of their own (reviewround.Ending),
+// naming no commit and no entry: a start row or a delivery the release before this one stored,
+// whose text can end with words of the same shape that no review recorded, or a task an operator
+// wrote. Its reviewer reads the whole change and keeps the entry of its round. It is the fact and
+// never the task's text that tells the two apart, since two such texts can be the same word for
+// word. The relaunch's record is no task, and is sent as it is.
 //
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
@@ -334,36 +355,38 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
-		text, carried.ended = RelaunchSentence(c.EndedWork), true
+		text, carried.ended = partText(RelaunchNote(c.Issue, c.EndedWork, false)), true
 	}
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
-		text += reviewround.Sentences("", 0)
+		text = reviewround.Ending(text, "", 0)
 	}
-	var prefix string
+	var parts []string
 	if c.Abandoned.Tells() {
-		// The task's instruction ends the last sentence before the task, so the abandoned
-		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		parts = append(parts, partText(AbandonedSessionNote(c.Issue, c.Role, c.Abandoned.Session, c.Abandoned.Why)))
+		carried.abandoned = true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
-	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
-	// no record of the fresh process says the task was in a turn of its own.
+	// note stands in place of the notes of that turn: an abandoned session still tells, and no
+	// record of the fresh process says the task was in a turn of its own.
 	oldTurn := c.Abandoned.Tells() && !(c.EndedWork.Tells() && c.EndedWork.TaskTurn)
 	switch {
 	case relaunch:
-		// Its text is the record's sentence already.
+		// Its text is the record's note already.
 	case c.EndedWork.Tells():
-		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
+		parts, carried.ended = append(parts, partText(RelaunchNote(c.Issue, c.EndedWork.inFrontOf(d), true))), true
 	case d.Interrupted && !oldTurn:
-		prefix += interruptedTask(c.EndedWork.Cause)
+		parts = append(parts, partText(CutTurnNote(c.Issue, c.EndedWork.Cause)))
 	}
-	if d.Interrupted && d.OutOfMemory && !oldTurn {
-		prefix += outOfMemoryTask
+	if d.Interrupted && d.OutOfMemory && !oldTurn && c.Role != claim.RoleController {
+		parts = append(parts, partText(texts.NewOutOfMemoryNote(c.Issue)))
 	}
 	if d.ProviderErrorNote != "" {
-		prefix += d.ProviderErrorNote + "\n\n"
+		parts = append(parts, d.ProviderErrorNote)
 	}
-	return prefix + text, carried
+	if texts.Drawn(text) {
+		return texts.InFront(parts, text), carried
+	}
+	return texts.InFrontOfWords(parts, text), carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -1807,95 +1830,60 @@ func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error
 	return m.chargePrompt(ctx, why)
 }
 
-// interruptedTask begins a task taken back from a turn its process could no longer finish
-// (interrupted), once nothing untold stands in front of it: the claim's record of the let-go that
-// cut the turn off has been told, or no record names it (message). Oh My Pi does not continue an
-// interrupted turn when its session is resumed, and the resumed session already holds the task,
-// so the agent is told to carry on from where the turn stopped, not start over. It is the record's
-// own sentence for a task whose turn was cut off (relaunchSentence), under cause, the cause the
-// claim's record names (EndedWork.Cause): the let-go that took the task back, whichever path that
-// was — a death, a displacement, a repoint, a stall, a stale plugin, a suspension — rather than
-// the last death's words, which named a death for every one of them. It says what that end took
-// with it: a tool call in flight answered nobody, and the daemon cannot say which subagents and
-// background jobs went with the process, so it says that every one of them is gone, none of which
-// the resumed transcript shows as missing — a worker relaunched six times in an hour and told none
-// of this read its own transcript as work in progress (dispatch://INFRA-714 R6). A record with no
-// cause says so plainly rather than inventing one.
-func interruptedTask(cause string) string {
-	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
+// CutTurnNote is the cut-turn note of issue (texts.CutTurnNoteRecord): it begins a task taken
+// back from a turn its process could no longer finish (interrupted), once nothing untold stands
+// in front of it: the claim's record of the let-go that cut the turn off has been told, or no
+// record names it (Delivery.message). Oh My Pi does not continue an interrupted turn when its
+// session is resumed, and the resumed session already holds the task, so the agent is told to
+// carry on from where the turn stopped, not start over. cause is the cause the claim's record
+// names (EndedWork.Cause): the let-go that took the task back, whichever path that was — a death,
+// a displacement, a repoint, a stall, a stale plugin, a suspension — rather than the last death's
+// words, which named a death for every one of them. The note says what that end took with it: a
+// tool call in flight answered nobody, and the daemon cannot say which subagents and background
+// jobs went with the process, so it says that every one of them is gone, none of which the
+// resumed transcript shows as missing — a worker relaunched six times in an hour and told none of
+// this read its own transcript as work in progress (dispatch://INFRA-714 R6). A record with no
+// cause says so plainly rather than inventing one. dispatch://INFRA-3353's R2 keeps the note's
+// words as they were, so the record carries them whole (texts.CutTurnNoteRecord.Kept). The cause
+// can carry the runtime's own bytes, so it is made valid UTF-8 (validText), as RelaunchNote's is.
+func CutTurnNote(issue, cause string) texts.CutTurnNoteRecord {
+	return texts.CutTurnNoteRecord{TaskHead: texts.TaskHead{Kind: texts.CutTurnNote, Issue: issue}, Cause: validText(cause)}
 }
 
-// abandonedTask begins the first prompt given to the agent that replaced a session the claim
+// AbandonedSessionNote is the abandoned-session note of issue (texts.AbandonedSessionNoteRecord),
+// which begins the first prompt given to the agent of role that replaced a session the claim
 // abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded,
-// and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
-// last is whether this sentence is the last one before the task, and so ends in the task's own
-// instruction: in front of a task with no record's sentence after it. Where the record's sentence
-// follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
-// (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
-// task (Delivery.Relaunch), neither carries one (Delivery.message).
+// section). It names the session that was left behind and why, in the words the claim recorded,
+// and the issue's branch, which outlives a session. The controller is given no branch, since it
+// works no checkout. What the agent reads next, the handoff records among it, is its role prompt's.
 //
-// The reason can be far-side text read into an agent's prompt — a runtime's account of a death,
-// or the provider's own words in a failure an earlier daemon wrote — so it is quoted as a Go
-// string with %q, the way a check run's name is where the daemon reads one into a prompt
-// (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
-// escaped rather than ending the sentence that carries it, so no refusal text can read as an
-// instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
-func abandonedTask(c Claim, last bool) string {
-	read := "read the issue"
-	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
-			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+// The reason can be far-side text — a runtime's account of a death, or the provider's own words
+// in a failure an earlier daemon wrote — so it is a field of its own, which the renderer quotes
+// where it must (texts.Render): a newline or a quote inside it is escaped rather than read as a
+// line of the daemon's own. The abandoned session's id, which the agent's registration chose, is
+// a field of its own for the same reason.
+func AbandonedSessionNote(issue string, role claim.Role, session, why string) texts.AbandonedSessionNoteRecord {
+	note := texts.AbandonedSessionNoteRecord{
+		TaskHead: texts.TaskHead{Kind: texts.AbandonedSessionNote, Issue: issue},
+		Session:  validText(session),
+		Why:      validText(why),
 	}
-	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
-		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
-		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
-		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
-		c.Abandoned.Session, c.Abandoned.Why, read)
-	if last {
-		sentence += " Then continue the task."
+	if role != claim.RoleController {
+		note.Branch = claim.IssueBranch(issue)
 	}
-	return sentence + "\n\n"
+	return note
 }
-
-// handoffWords is every phase word an issue's handoff records are written under, in the
-// transition table's order: the records the replacement of an abandoned session is told to read.
-// It is built from the phases themselves (phase.All, phase.Handoff) rather than spelled here, so
-// a phase that gains a handoff later is named in this prompt without anyone remembering to come
-// back.
-func handoffWords() string {
-	names := make([]string, 0, len(phase.All))
-	for _, p := range phase.All {
-		if word, _, ok := phase.Handoff(p); ok {
-			names = append(names, word)
-		}
-	}
-	return strings.Join(names, ", ")
-}
-
-// outOfMemoryTask follows the sentence of a task's interruption on a task whose turn ended when
-// its pod ran out of memory. The agent cannot see why the kubelet ended its container, and the
-// heavy work that filled the pod is the thing it must stop doing there, so it is told what
-// happened and where the rule about work a pod does not run is written.
-const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the container that runs " +
-	"every role of this issue, with the reason OOMKilled, and that end is what stopped your turn. " +
-	"The work that filled the pod can be another role's, not yours. An issue pod runs no heavy " +
-	"build and no whole test suite, so read skill://legion-worker/references/tools.md before you " +
-	"run such work again, and send it to CI on the pull request or where your deployment's " +
-	"instructions say.\n\n"
 
 // interrupted takes back the pending task whose turn the claim's process can no longer finish — it
 // died, or a forced stop is about to end it — so the relaunched agent's ready sends it again: Oh My
 // Pi does not resume the turn itself. why names which, for the line it logs. The turn ran,
 // so the agent read the task and it keeps its read mark; it goes back unconfirmed under a new id
-// the new process's shim has no record of, marked Interrupted, so it is sent behind the sentence
-// of its interruption (message). outOfMemory says that end was the pod running out of memory,
-// which adds outOfMemoryTask to what is sent; it is written on every call, true or false, so a
+// the new process's shim has no record of, marked Interrupted, so it is sent behind the note of
+// its interruption (message). outOfMemory says that end was the pod running out of memory, which
+// adds the out-of-memory note to what is sent; it is written on every call, true or false, so a
 // second interruption of the same task for another reason clears a note that no longer
 // describes it.
 // The task is neither retired nor its run marked served, since the turn never finished. A task

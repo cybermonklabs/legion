@@ -301,9 +301,9 @@ func TestAPersonsReviewThatQuotesTheReviewersFooterDoesNotMoveItsCommit(t *testi
 }
 
 // reviewedPartOf is the part of a later round's task that names head as the commit the
-// reviewer's newest recorded review read.
+// reviewer's newest recorded review read: the start of the task's last line (reviewround.Ending).
 func reviewedPartOf(head string) string {
-	return " " + reviewround.CommitLabel + ": " + head + "."
+	return "\n" + reviewround.CommitLabel + ": " + head + "."
 }
 
 // endsNamingNoCommit says whether task ends with the daemon's sentence naming no commit,
@@ -319,8 +319,7 @@ func endsNamingNoCommit(task string, entry int64) bool {
 // the round before it.
 func readsReviewingTask(t *testing.T, round, task string, version int) {
 	t.Helper()
-	handoff := " Handoff: test version " + strconv.Itoa(version) + " ("
-	if !strings.Contains(task, " Phase: reviewing.") || !strings.Contains(task, handoff) {
+	if !hasLines(task, "kind: phase-assignment", "phase: reviewing", "handoff_phase: test", "handoff_version: "+strconv.Itoa(version)) {
 		t.Fatalf("%s's task = %q, want the reviewing task the tester's handoff version %d started", round, task, version)
 	}
 }
@@ -419,15 +418,14 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	if second.Entry <= first.Entry {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
-	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
+	want := reviewingAssignment(2) + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}
 
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		row := roleRow(t, pool, role)
-		if row.EntryTask == "" || !strings.Contains(row.EntryTask, " Phase: ") {
+		if row.EntryTask == "" || !strings.Contains(row.EntryTask, "\nphase: ") {
 			t.Fatalf("the %s's row holds the task %q, want the task round 2 started it with", role, row.EntryTask)
 		}
 		if strings.Contains(row.EntryTask, reviewround.CommitLabel) {
@@ -508,7 +506,7 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
-	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
+	resumeWant := reviewingResumeTask("root") + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
 		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
@@ -550,7 +548,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		outboxRan(t, pool)
 		apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
 		task := onlyReviewerStart(t, pool).Task
-		if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Pull request: #42. Reason: the claim failed."+reviewedPartOf(headOne)+reviewEntryPartOf(reviewerRow(t, pool).Entry)) {
+		if !hasLines(task, "phase: reviewing") || !strings.HasSuffix(task, "\nthe claim failed\n</reason>"+reviewedPartOf(headOne)+reviewEntryPartOf(reviewerRow(t, pool).Entry)) {
 			t.Fatalf("the retry's task = %q, want the reviewing task naming %s after the reason and before the entry", task, headOne)
 		}
 	})
@@ -677,7 +675,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
+		want := reviewingResumeTask("child") + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}

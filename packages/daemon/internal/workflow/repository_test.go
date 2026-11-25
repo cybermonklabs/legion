@@ -101,8 +101,8 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 			}
 			notices := outboxOf(t, pool, "notice")
 			if len(notices) != 1 || notices[0].issue != "LEGION-208" || notices[0].payload["kind"] != "child-not-recorded" ||
-				!strings.Contains(notices[0].payload["reason"].(string), tc.reason) {
-				t.Fatalf("notices = %#v, want one child-not-recorded on LEGION-208 naming %q", notices, tc.reason)
+				notices[0].payload["child"] != "LEGION-209" || notices[0].payload["refusal"] != tc.reason || notices[0].payload["reason"] != nil {
+				t.Fatalf("notices = %#v, want one child-not-recorded on LEGION-208 of LEGION-209 refused as %q", notices, tc.reason)
 			}
 		})
 	}

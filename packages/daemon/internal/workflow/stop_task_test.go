@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // ownersStop is the stop_task of task of issue by the architect of LEGION-208, the tree's root, as
@@ -82,8 +83,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("the last step record write = %+v (result %q), want the tester's end, stopped", end, resultOf(end))
 		}
 		notices := noticesOf(t, pool, root.Key, "task-stopped")
-		want := record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing, StoppedBy: stop.By,
-			Reason: stopsBy + ", the architect legion-legion-legion-208-architect"}
+		want := record.Notice{Kind: texts.TaskStopped, Issue: root.Key, Role: claim.RoleTester, Phase: phase.Testing, Task: "a",
+			Cause: texts.TaskStoppedByOwner, StoppedBy: stop.By}
 		if len(notices) != 1 || !reflect.DeepEqual(notices[0], want) {
 			t.Fatalf("the task-stopped notices = %+v, want the one %+v", notices, want)
 		}
@@ -172,8 +173,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			}
 		}
 		notices := noticesOf(t, pool, root.Key, "task-stopped")
-		want := record.Notice{Kind: "task-stopped", Role: claim.RoleArchitect, Phase: phase.Admitted, StoppedBy: stop.By,
-			Reason: stopsBy + ", the architect legion-legion-legion-208-architect"}
+		want := record.Notice{Kind: texts.TaskStopped, Issue: root.Key, Role: claim.RoleArchitect, Phase: phase.Admitted, Task: "a",
+			Cause: texts.TaskStoppedByOwner, StoppedBy: stop.By}
 		if len(notices) != 1 || !reflect.DeepEqual(notices[0], want) {
 			t.Fatalf("the task-stopped notices = %+v, want the one %+v", notices, want)
 		}

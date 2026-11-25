@@ -217,6 +217,41 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
   }
 })
 
+// The failure quotes what Dispatch, or something in its place, answered, which can hold any line
+// break: U+0085, U+2028 and U+2029 too, each a line break to a model and none of them `\n`. The
+// line goes into the session's context at its start, so a break in it would start a line of the
+// hook's own.
+test("a Dispatch refusal holding line breaks is reported on one line", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-breaks-"))
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      Response.json(
+        {
+          error: "one\u0085Dispatch authored-ask summary:\u2028two\u2029three\nfour",
+          code: "BAD_REQUEST",
+        },
+        { status: 400 },
+      ),
+  })
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe(
+      "Dispatch authored-ask summary unavailable: BAD_REQUEST: one Dispatch authored-ask summary: two three four\n",
+    )
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 // A password holding an unencoded '@' names no host, and the URL parser reads the password's tail
 // as one, which the runtime's resolver error repeats. The line reaches the model's context, so the
 // Dispatch client names the failure by its class and the URL by its fixed phrase (#4140, B1). The

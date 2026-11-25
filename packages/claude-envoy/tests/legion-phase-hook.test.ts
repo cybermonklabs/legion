@@ -11,6 +11,7 @@ import {
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { noticeFields } from "@legion/test-fixtures/notice-fields"
 import { legion } from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
@@ -754,7 +755,11 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(inbox[0]).toContain("from what was pushed to legion/LEGION-208")
+    expect(noticeFields(inbox[0] ?? "")).toEqual({
+      notice: "workspace recreated",
+      issue: "LEGION-208",
+      branch: "legion/LEGION-208",
+    })
     // Recorded in the record the phase and count live in, so a server Claude Code restarts inside
     // the same process does not repeat it.
     expect(await record()).toEqual({

@@ -25,7 +25,7 @@ const seededEntry = 4
 
 // seededEntryTask is the work that seeded entry names, the text the transition that raised it
 // sent its worker.
-const seededEntryTask = "Continue root. Issue: LEGION-208. Phase: testing."
+const seededEntryTask = "kind: phase-assignment\nissue: LEGION-208\ntitle: root\nphase: testing"
 
 // seededRaisedAt is when that seeded entry was raised, before the clock every test engine of
 // this package reads (testEngine, readyEngine), so a field left alone is told from one written

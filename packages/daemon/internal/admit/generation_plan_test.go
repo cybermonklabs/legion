@@ -252,12 +252,14 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 		Status: "todo", Title: "child", Parent: pathsRoot, Rank: "B"}, admission.engine)
 }
 
-// assertChildStarted fails unless the tree's architect was told the child runs again and that it
-// starts its first step, first.
+// assertChildStarted fails unless the tree's architect was told the child runs again under the
+// tree (`change: todo`) and that it starts its first step, first, having taken an admission slot
+// at the front of the waiting line, which a start that names no issue it waited on says
+// (`change: started` with no waited_on).
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
-	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
-		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
+	want := []string{pathsChild + " todo tree=" + pathsRoot + " phase= from= waited_on=",
+		pathsChild + " started tree=" + pathsRoot + " phase=" + string(first) + " from= waited_on="}
 	if got := joinedNotices(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
 	}

@@ -40,11 +40,10 @@ func TestADeadWorkerIsRestartedInItsSessionAndToldWhyItDied(t *testing.T) {
 		t.Fatalf("the restart was %+v, want a resume of the claim's own session %s", resumed.Spec, sessionFile)
 	}
 	prompt := h.wantPrompts(2)[1].Message
-	for _, want := range []string{detail, "tool calls in flight were never answered", "subagents and background jobs of that turn are gone", "implement the plan"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the restarted worker's first prompt is %q, want it to name %q", prompt, want)
-		}
+	if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "implement the plan"; prompt != want {
+		t.Errorf("the restarted worker's first prompt is %q, want the relaunch note and the task behind it, %q", prompt, want)
 	}
+	wantSays(t, prompt, saysCause(endDied(string(runtime.Gone)+": "+detail)), saysTurnCut, saysTaskTurn)
 	if got := h.claim().LastReady; !got.Equal(h.clock.Now()) {
 		t.Errorf("the relaunched claim's ready time is %s, want the moment its new agent said it was ready, %s", got, h.clock.Now())
 	}

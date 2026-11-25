@@ -56,11 +56,6 @@ var collaboratorEventReasons = map[string]collaboratorReason{
 // binds.
 var collaboratorEventTypes = slices.Sorted(maps.Keys(collaboratorEventReasons))
 
-// legionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
-// lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
-// conversation, so it is nobody to ask and never a collaborator.
-const legionDaemonSessionPrefix = "legion-daemon:"
-
 // Registry states the collaborators answer names.
 const (
 	legionRegistryOK          = "ok"
@@ -218,7 +213,7 @@ func (s *server) tallyCollaboratorEvents(
 				tallyOf(people, login).add(reason, &at)
 			}
 		case "session":
-			if id != "" && !strings.HasPrefix(id, legionDaemonSessionPrefix) {
+			if id != "" && !strings.HasPrefix(id, model.LegionDaemonSessionPrefix) {
 				tallyOf(sessions, id).add(reason, &at)
 			}
 		}

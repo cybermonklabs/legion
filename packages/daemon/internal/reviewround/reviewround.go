@@ -1,6 +1,6 @@
 // Package reviewround writes the two sentences that end each task a reviewer is given: the
 // commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
-// places write them, and both through Sentences: the workflow, onto each task of the reviewer it
+// places write them, and both through Ending: the workflow, onto each task of the reviewer it
 // queues (workflow's namingTheReviewRound) and onto a reviewer's start queued for news alone,
 // which the daemon's start executor names when it composes that task (workflow.ReviewerTask,
 // from the daemon's newsForStart); and the claim's send of a task that no such queue named, a
@@ -45,14 +45,32 @@ func Sentences(commit string, entry int64) string {
 	return " " + CommitLabel + ": " + commit + ". " + EntryLabel + ": " + named + "."
 }
 
-// Split is task cut before the two sentences Sentences writes at its very end: body, the text
-// before them, and sentences, the two exactly as they stand, with named true. It reads only that
-// form: a commit spelled as a head is (IsHead, the spelling a review's Legion footer must give
-// for the record to keep it) or `none`, an entry above 0 in digits or `none`, and nothing after
-// the entry's period. Any other task answers task whole, "" and false, so a task whose earlier
-// text quotes the words, a retry's reason among it, is never cut there.
+// Ending is task followed by the two sentences (Sentences) on a line of their own, the task's
+// last line, with no space in front of them. A task of the daemon is a record rendered as lines
+// of fields and blocks (texts.Render), so the sentences stand after everything else, a block of
+// another author's words included, and join no field. The two sentences stay word for word as
+// the reviewer's prompt names them, so ` Review entry: <n>.` is still the task's last sentence.
+// An empty task is the line alone.
+func Ending(task, commit string, entry int64) string {
+	line := strings.TrimPrefix(Sentences(commit, entry), " ")
+	if task == "" {
+		return line
+	}
+	return task + "\n" + line
+}
+
+// Split is task cut before the two sentences at its very end: body, the text before them, and
+// sentences, the two exactly as they stand with what joins them to body, with named true, so that
+// body and sentences together are task. It reads two forms: the line of their own Ending writes,
+// joined to body by its line break, or standing alone as the whole task with body ""; and the
+// form a task an earlier release stored ends with, Sentences after the task's prose, joined by
+// its space. Either way it reads only a commit spelled as a head is (IsHead, the spelling a
+// review's Legion footer must give for the record to keep it) or `none`, an entry above 0 in
+// digits or `none`, and nothing after the entry's period. Any other task answers task whole, ""
+// and false, so a task whose earlier text quotes the words, a retry's reason among it, is never
+// cut there.
 func Split(task string) (body, sentences string, named bool) {
-	label := " " + CommitLabel + ": "
+	label := CommitLabel + ": "
 	at := strings.LastIndex(task, label)
 	if at < 0 {
 		return task, "", false
@@ -75,10 +93,16 @@ func Split(task string) (body, sentences string, named bool) {
 	// The two sentences as Sentences writes them from what was read. An entry it never writes
 	// leaves the task whole: zero or below, which it writes `none`, and a number with a sign or a
 	// leading zero. A commit of `none` reads as no commit, which it writes `none` too.
-	if Sentences(commit, number) != task[at:] {
+	if strings.TrimPrefix(Sentences(commit, number), " ") != task[at:] {
 		return task, "", false
 	}
-	return task[:at], task[at:], true
+	switch {
+	case at == 0:
+		return "", task, true
+	case task[at-1] == '\n' || task[at-1] == ' ':
+		return task[:at-1], task[at-1:], true
+	}
+	return task, "", false
 }
 
 // IsHead says whether commit is spelled as GitHub spells every head it reports: exactly 40

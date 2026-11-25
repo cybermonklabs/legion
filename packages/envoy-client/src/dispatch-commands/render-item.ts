@@ -17,6 +17,7 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
+import { oneLine } from "../line-text";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
@@ -175,10 +176,16 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
- *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). The issue's title or the
+ *  document's name, and the question, are other authors' words on this one line, and the
+ *  SessionStart hooks of claude-envoy put the list in front of a model unasked, so the line is
+ *  made one line (`oneLine`): a line those words started could stand as another row or as a line
+ *  of the list's own. */
 function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
+  return oneLine(
+    `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`
+  );
 }
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`

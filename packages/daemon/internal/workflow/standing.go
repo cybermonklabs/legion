@@ -11,77 +11,67 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// Standing is the part of a start's task that names where the started worker's work stands, as
-// standingPart writes it, in two parts a task places apart. Its lines are the daemon's: the
-// working copy line for every start, and for an issue with plan rows the task, the worker's step
-// in it, the task's steps and the report of each earlier step, which a task places right after
-// its continue line. Its owners part is a step worker's alone: the text of the task's block, which
-// the owner of the issue wrote in a version of the plan document and which a task places last of
-// what it composes, after every line of the daemon's, inside a fence (ownersText), so a line of
-// that text shaped like one of the daemon's labels is never read as the daemon's; the queue adds
-// the two sentences of a reviewer's round after the fence (namingTheReviewRound, queuedRow). It has
-// a type of its own, so a caller of task passes the one writer's part and no other string in its
-// place. A package outside this one gets a value of it from WorkingCopy alone.
+// Standing is where a started worker's work stands, as standingPart reads it, in the two parts a
+// task places apart. Its facts are the daemon's (texts.Standing): the working copy for every
+// start, and for an issue with plan rows the task, the worker's step in it, the task's steps and
+// the report of each earlier step, which a task states as its fields. Its text is a step worker's
+// alone: the text of the task's block, which the owner of the issue wrote in a version of the plan
+// document, and which a task carries last, in a block of its own after its fields, by the architect
+// claim that gave that version (texts.PhaseAssignmentRecord.TaskText), so no line of that text is
+// read as the daemon's. It has a type of its own, so a caller of task passes the one reader's part
+// and no other value in its place. A package outside this one gets a value of it from WorkingCopy
+// or StandingOf alone.
 type Standing struct {
-	lines, owners string
+	facts texts.Standing
+	text  *texts.Words
 }
 
-// String is the standing as one text, its lines then its owners part: a task places the two
-// apart (task, resumeText), so this is for a reader that holds a standing alone, such as a
-// test of WorkingCopy.
-func (s Standing) String() string { return s.lines + s.owners }
+// Facts is the daemon's part of the standing, the fields a task states: for a reader that holds a
+// standing alone, such as a test of WorkingCopy.
+func (s Standing) Facts() texts.Standing { return s.facts }
 
-// WorkingCopy is the standing of a start of an issue with no plan rows, its working copy line
-// alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
-// issue (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is nil or gives
-// none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark names.
+// WorkingCopy is the standing of a start of an issue with no plan rows, its working copy alone:
+// the issue's branch (claim.IssueBranch), which its workspace's bookmark names, and the directory
+// dir gives the issue (Config.WorkspaceDir), none where dir is nil or gives none.
 func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
-	where := ""
+	at := texts.Standing{Branch: claim.IssueBranch(issue.Key)}
 	if dir != nil {
-		where = dir(issue)
+		at.Directory = dir(issue)
 	}
-	if where == "" {
-		return Standing{lines: fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key))}
-	}
-	return Standing{lines: fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, claim.IssueBranch(issue.Key), where)}
+	return Standing{facts: at}
 }
 
-// ownersText is the owners part of a step's standing (Standing), the text of its task's block as
-// a task places it, last: ` Task text: ` and one sentence that says the owner of the issue wrote
-// it (Legion's own text for the task default, record.PlanSourceDefault, which the sentence names
-// too), then the text between two fence lines, and a line end after the closing one. A fence is a
-// line of backticks one longer than the longest run of backticks the text holds, and three at the
-// least, so no line of the text closes it and stands after it as a line of the daemon's. The line
-// end puts what a task adds after the owner's part, the reviewer's round (namingTheReviewRound), on
-// a line of its own, since a line that holds more than backticks closes no fence.
-func ownersText(text string) string {
-	longest, run := 0, 0
-	for _, r := range text {
-		if r != '`' {
-			run = 0
-			continue
-		}
-		run++
-		longest = max(longest, run)
+// ownersText is the text part of a step's standing (Standing), the text of its task's block as the
+// owner of the issue wrote it in a version of its plan, carried whole in a block of its own by the
+// architect claim that gave that version, at the time it gave it (w.Version). Legion writes the
+// text of the task default itself (record.PlanSourceDefault), the same words for every such task,
+// which names its task (defaultTask) and its steps in its fields, so a run on the default steps
+// carries no text.
+func ownersText(w Walk) *texts.Words {
+	text := strings.TrimSpace(w.Text)
+	if w.Version.Source != record.PlanSourceOwner || text == "" {
+		return nil
 	}
-	fence := strings.Repeat("`", max(3, longest+1))
-	return " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
-		defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n" +
-		fence + "\n" + text + "\n" + fence + "\n"
+	words := texts.Words{Text: text, By: string(w.Version.GivenBy)}
+	if !w.Version.GivenAt.IsZero() {
+		words.At = w.Version.GivenAt.UTC()
+	}
+	return &words
 }
 
 // standingPart is where the work of a worker started in issue's phase stands, the part of its
-// task after the continue line (Standing). Every start names its working copy (WorkingCopy). An
-// issue with no plan rows names nothing else, so it is told today's task with that one line, and
-// the prompts read a task with no `Task:` line as such an issue's. An issue with plan rows
-// names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
-// steps (stepsLine) and the report of each step before its own (reportsBefore), and, last of its
-// task, the text of the task's block inside a fence (ownersText). The retro and the merge run no
-// step of the task, so their worker is told ` Task: <id>.` and the task's steps alone: the merger
-// reads from them whether the task has a review step, and each reads the runs of the steps and
-// their reports from Dispatch (`dispatch steps`), which keeps every run, the failed ones too.
+// task after the phase (Standing). Every start names its working copy (WorkingCopy). An issue
+// with no plan rows names nothing else, so it is told today's task with that one field, and the
+// prompts read a task with no task field as such an issue's. An issue with plan rows names its one
+// task: a step's worker is told the task, its step's place in it, the task's steps (stepsOf) and
+// the report of each step before its own (reportsBefore), and, last of its task, the text of the
+// task's block (ownersText). The retro and the merge run no step of the task, so their worker is
+// told the task and its steps alone: the merger reads from them whether the task has a review
+// step, and each reads the runs of the steps and their reports from Dispatch (`dispatch steps`),
+// which keeps every run, the failed ones too.
 //
 // The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
 // before it composes the task, and w is the walk of its run as the caller read it, after any move
@@ -99,8 +89,9 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return standingText(issue, e.cfg.WorkspaceDir, w, rows)
 }
 
-// standingText is standingPart's text for the worker of issue's phase, from the walk w of its
-// run, the directory dir gives its working copy, and its phases rows, which only a step's text reads.
+// standingText is standingPart's standing for the worker of issue's phase, from the walk w of its
+// run, the directory dir gives its working copy, and its phases rows, which only a step's standing
+// reads.
 func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, rows []record.PhaseRow) (Standing, error) {
 	at := WorkingCopy(issue, dir)
 	if !w.Stored {
@@ -110,44 +101,41 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 	if !ok {
 		return Standing{}, fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}
-	lines := at.lines + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
 	words := plan.Words(namedSteps(w.Steps))
+	at.facts.Task, at.facts.Steps = w.Task, words
 	if place.Kind != record.PlaceStep {
-		return Standing{lines: lines + stepsLine(words)}, nil
+		return at, nil
 	}
-	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
-	lines += stepsLine(words) + reportsBefore(rows, w, words, place.Position)
-	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
+	at.facts.Step = place.Position
+	at.facts.Reported = reportsBefore(rows, w, words, place.Position)
+	at.text = ownersText(w)
+	return at, nil
 }
 
-// stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`: each step of a
-// task by its place, words, the steps as its plan writes them (plan.Words), in the order they run,
-// each at its place from 1 (Walk.Steps), then the retro and the merge Legion runs after them.
-func stepsLine(words []string) string {
-	named := make([]string, len(words))
-	for i, word := range words {
-		named[i] = fmt.Sprintf("%d %s", i+1, word)
-	}
-	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
+// StandingOf is standingText for a reader outside this package that holds a walk and its phases
+// rows itself: internal/daemon's golden samples of a step's, a retro's and a merge's task, which
+// compose the standing the way standingPart does without a store.
+func StandingOf(issue record.Issue, dir func(record.Issue) string, w Walk, rows []record.PhaseRow) (Standing, error) {
+	return standingText(issue, dir, w, rows)
 }
 
-// reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
-// task before the step at place whose role's phases row holds a handoff record: the record that
-// role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
-// reads. Each step is named as its plan writes it, its word of words (plan.Words). A role runs at
-// most one step of an issue, so its row holds that step's facts, and each step before a running
-// one completed in the run that led to it: a step that runs again after a return writes its new
-// record on the row before the step after it starts. A step whose role writes no handoff (the
-// owner's acceptance) has no line.
-func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
-	var text strings.Builder
+// reportsBefore is one report for each step of w's task before the step at place whose role's
+// phases row holds a handoff record: the step's place, its word of words (plan.Words), as its plan
+// writes it, and the record that role's completion of that step named, by its phase word and its
+// version, which `dispatch handoff-read --phase <word> --version <v>` reads. A role runs at most
+// one step of an issue, so its row holds that step's facts, and each step before a running one
+// completed in the run that led to it: a step that runs again after a return writes its new record
+// on the row before the step after it starts. A step whose role writes no handoff (the owner's
+// acceptance) has no report.
+func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) []texts.StepReport {
+	var reports []texts.StepReport
 	for j := 1; j < place; j++ {
 		role := phase.RoleFor(w.Line[j-1])
 		for _, row := range rows {
 			if row.Role == role && row.HandoffRecord != "" {
-				fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, words[j-1], reportedLabel, handoffWord(role), row.HandoffVersion)
+				reports = append(reports, texts.StepReport{Step: j, Role: words[j-1], HandoffPhase: handoffWord(role), HandoffVersion: row.HandoffVersion})
 			}
 		}
 	}
-	return text.String()
+	return reports
 }

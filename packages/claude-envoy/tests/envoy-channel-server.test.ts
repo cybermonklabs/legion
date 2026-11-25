@@ -8,6 +8,7 @@ import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { splitWordsBlocks } from "@legion/envoy-client/words-block"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
@@ -94,13 +95,21 @@ test("writes each Envoy envelope into the session as the rendered card that name
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
 
-  expect(notifier.notifications).toEqual([
-    {
-      content:
-        'envoy:\n  to: you (ses_claude)\n  from: ses_sender\n  at: "2025-10-09T08:53:20Z"\n  id: evt-42\n  urgency: high\n  reply_with:\n    tool: envoy_send\n    args:\n      session_id: ses_sender\n      in_reply_to: evt-42\n      message: ...\n  summary: Use the channel',
-      eventId: "evt-42",
-    },
+  // The shared renderer's card: its fields, each once and with no reply command, then the
+  // sender's words in a block of their own.
+  expect(notifier.notifications).toHaveLength(1)
+  const [written] = notifier.notifications
+  expect(written?.eventId).toBe("evt-42")
+  const { head, blocks } = splitWordsBlocks(written?.content ?? "")
+  expect(head.split("\n")).toEqual([
+    "envoy:",
+    "  to: you",
+    "  from: ses_sender",
+    '  at: "2025-10-09T08:53:20Z"',
+    "  id: evt-42",
+    "  urgency: high",
   ])
+  expect(blocks).toEqual([{ tag: "message", name: "message", text: "Use the channel" }])
 })
 
 /** A comment event on CORE-1's owner topic, as Dispatch's outbox publishes it: `payload` is the
@@ -165,13 +174,18 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
 
   const [cut, deleted] = notifier.notifications.map((notification) => notification.content)
   expect(cut).toContain("type: comment.created")
-  expect(cut).toContain("body: The first paragraph.")
+  // The part the frame carried is the author's words, in the body's block after the card's fields.
+  expect(splitWordsBlocks(cut ?? "").blocks).toEqual([
+    { tag: "body", name: "body", text: "The first paragraph." },
+  ])
   expect(cut).toContain(
     "the body is its first part only; read it whole with GET /api/v1/comments/22222222-2222-4222-8222-222222222222",
   )
   expect(deleted).toContain("type: comment.deleted")
   expect(deleted).toContain('deleted_at: "2026-11-03T00:00:00Z"')
+  // A delete carries no body: no field of it and no block.
   expect(deleted).not.toContain("body:")
+  expect(splitWordsBlocks(deleted ?? "").blocks).toEqual([])
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {

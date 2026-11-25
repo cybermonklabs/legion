@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
@@ -23,11 +24,12 @@ import (
 // merger, whose merge it is (cybermonklabs/legion#4979). Outside implementing it also tells the
 // worker of that phase, when that is the tester or the reviewer, to stop writing the workspace the
 // roles share while the merge runs (record.MergeForwardHold), and the architect that owns the
-// issue one checks-red notice whose phase is the phase the issue stays in and whose reason names
-// the head, the base, why, the role asked and that the issue stays in its phase; the outbox routes
-// that notice to the owning architect, as every notice of the issue is routed. In implementing
-// only the ask goes: the implementer's own assignment and its completion stand, and the architect
-// is told nothing, since the work the conflict needs is already where the issue stands.
+// issue one checks-red notice whose phase is the phase the issue stays in, naming what holds the
+// issue where it is held, the head, the base, the pull request, why and the role asked
+// (ChecksRedNotice); the outbox routes that notice to the owning architect, as every notice of the
+// issue is routed. In implementing only the ask goes: the implementer's own assignment and its
+// completion stand, and the architect is told nothing, since the work the conflict needs is
+// already where the issue stands.
 //
 // It asks once for each head: the record keeps the ask (record.PullRequest.MergeForward), and a
 // later confirmed read, or a move into another phase, at the head it names sends nothing, so the
@@ -83,14 +85,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	if at != phase.Implementing {
 		// A held issue stands in held, not in the phase its hold came from (StandsAt), such as an
-		// issue held from testing whose conflict a read confirms (mergeability).
-		stays := "stays in " + string(at)
-		if issue.Phase == phase.Held {
-			stays = "stays held from " + string(at)
-		}
-		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the %s is asked to merge %s forward, and the issue %s",
-			pr.HeadSHA, pr.Base, why, asker, pr.Base, stays)
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: at, Reason: reason}); err != nil {
+		// issue held from testing whose conflict a read confirms (mergeability): the notice names the
+		// phase the hold came from and what holds it (ChecksRedNotice).
+		if err := e.notice(ctx, tx, issue.Key, ChecksRedNotice(issue, *pr, why)); err != nil {
 			return err
 		}
 	}
@@ -109,6 +106,43 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	e.logOnCommit(ctx, "workflow: merge forward asked", "issue", issue.Key, "tree", issue.Tree, "phase", at,
 		"pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 	return nil
+}
+
+// ChecksRedNotice is the checks-red notice mergeForward tells the architect of issue that owns it
+// when it asks for the merge forward of pr's head for why: the phase the issue stays in
+// (record.StandsAt), what holds the issue where it is held (holdWord), the base the head
+// conflicts with (none where pr's record holds no base, record.PullRequest.Base), the head, the
+// pull request, why, and the role asked (record.MergeForwardAsker of that phase: the implementer
+// before merging, and in merging the merger, cybermonklabs/legion#4979). A held issue stays in the
+// phase its hold came from, where no worker works, so the hold is what makes the notice med for
+// the architect (texts' checksRedUrgency). That the role asked merges the base forward and that the
+// issue stays in its phase is what every checks-red notice says, so the architect's prompt says it
+// (internal/prompts/go/architect-common.md).
+func ChecksRedNotice(issue record.Issue, pr record.PullRequest, why record.ConflictWhy) texts.ChecksRedRecord {
+	at := record.StandsAt(issue)
+	return texts.ChecksRedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChecksRed, Issue: issue.Key}, Phase: at,
+		Hold: holdWord(issue), ConflictsWith: pr.Base, Head: pr.HeadSHA, PullRequest: pullRequestRef(pr), Why: string(why),
+		Asked: record.MergeForwardAsker(at)}
+}
+
+// holdWord is what holds issue, in the words of a held notice: texts.HoldEscalation for a hold
+// its architect escalated (retryOrEscalate), texts.HoldStoppedTask for a task its owner or a failed
+// step stopped (record.HoldTaskStopped, stopTask), texts.HoldChildren for a parent held before its
+// retro for the issues beneath it (record.HoldForChildren, retroHeldNotice), and texts.HoldFailure
+// for every other, which is the hold a phase worker's failed claim puts the issue in
+// (claimFailed). It is empty for an issue that is not held.
+func holdWord(issue record.Issue) string {
+	switch {
+	case issue.Phase != phase.Held:
+		return ""
+	case record.HeldFor(issue, record.HoldEscalated):
+		return texts.HoldEscalation
+	case record.HeldFor(issue, record.HoldTaskStopped):
+		return texts.HoldStoppedTask
+	case record.HeldForChildren(issue):
+		return texts.HoldChildren
+	}
+	return texts.HoldFailure
 }
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once

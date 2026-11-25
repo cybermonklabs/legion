@@ -249,7 +249,7 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 			t.Fatalf("a slot stands free = false, want true: the waiting issue is no taker for the row it gave back, so the capacity it freed is the project's")
 		}
 		assertControllerNotices(t, pool, []effect{{kind: record.OutboxKindControllerNotice, issue: waiter,
-			payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}})
+			payload: record.ControllerNotice{Kind: record.SlotFreeNotice, Issue: waiter}}})
 	})
 
 	t.Run("an issue that waits and owes its next worker a start", func(t *testing.T) {

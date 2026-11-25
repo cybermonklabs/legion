@@ -484,7 +484,7 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
 
 		sent := h.prompts()[len(h.prompts())-1]
-		if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + queuedTask; sent.DeliveryID != "outbox:47" || sent.Message != want {
+		if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + queuedTask; sent.DeliveryID != "outbox:47" || sent.Message != want {
 			t.Fatalf("the task carrying news was sent as %+v, want %q under outbox:47", sent, want)
 		}
 		if len(answer.asked) != 1 {
@@ -509,8 +509,8 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 
 		ended := h.claim().EndedWork
 		sent := h.wantPrompts(before + 1)[before]
-		if !relaunchTask(sent.DeliveryID) || sent.Message != RelaunchSentence(ended) {
-			t.Fatalf("the send after the news-only task was retired = %+v, want the relaunch's record alone, %q", sent, RelaunchSentence(ended))
+		if !relaunchTask(sent.DeliveryID) || sent.Message != h.relaunchNote(ended, false) {
+			t.Fatalf("the send after the news-only task was retired = %+v, want the relaunch's record alone, %q", sent, h.relaunchNote(ended, false))
 		}
 		if p := h.pending(); p.ID != sent.DeliveryID {
 			t.Fatalf("the claim holds %+v, want the daemon's own delivery %s it was sent", p, sent.DeliveryID)

@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // providerErrorTaskText is the work the cases below give the claim, so a prompt's own sentence is
@@ -292,10 +294,12 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 
 // olderDaemonsLadderStep is the first step of the ladder an older daemon took over its own ask of
 // an update round, before the deploy replaced it: a turn of the ask ended in a provider error,
-// that daemon took the ask back unconfirmed, and its wait for the next send was that daemon's
-// timer, which went with it.
+// that daemon took the ask back unconfirmed with the sentence it wrote then, and its wait for the
+// next send was that daemon's timer, which went with it.
 func olderDaemonsLadderStep(d *Delivery) {
-	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
+	d.ProviderErrorRetries = 1
+	d.ProviderErrorNote = "Your previous turn on this task stopped because of a provider error (HTTP 529). " +
+		"Your work did not cause it. The daemon sends you the task again."
 }
 
 // A question an older daemon queued as a task and kept on the provider-error ladder is dropped
@@ -441,29 +445,29 @@ func TestAWaitLeftArmedForAnOlderTaskHoldsNothing(t *testing.T) {
 	}
 }
 
-// The sentence the re-sent prompt carries is built from structured fields alone. A refusal's own
-// explanation is itself refused when it is sent back
-// (dispatch://INFRA-956/artifact/cause-evidence-md), so none of the provider's words are in it.
+// The note the re-sent prompt carries is built from structured fields alone: its kind, its issue
+// and the HTTP status, where the provider answered one. A refusal's own explanation is itself
+// refused when it is sent back (dispatch://INFRA-956/artifact/cause-evidence-md), so none of the
+// provider's words are in it.
 func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		result StreamPromptResult
-		// contains is what the sentence says, and written is the provider's own text, which no
-		// prompt may carry.
-		contains string
-		written  string
+		// status is the status line the note holds, "" for none, and written is the provider's own
+		// text, which no prompt may carry.
+		status  string
+		written string
 	}{
 		{
-			name:     "an error with a status names it",
-			result:   StreamPromptResult{Error: "Overloaded: upstream capacity is gone", HTTPStatus: 529},
-			contains: "a provider error (HTTP 529)",
-			written:  "upstream capacity is gone",
+			name:    "an error with a status names it",
+			result:  StreamPromptResult{Error: "Overloaded: upstream capacity is gone", HTTPStatus: 529},
+			status:  "http_status: 529",
+			written: "upstream capacity is gone",
 		},
 		{
-			name:     "an error with none names only that the provider failed",
-			result:   StreamPromptResult{Error: "Refusal (reasoning_extraction): I will not help you extract that."},
-			contains: "a provider error.",
-			written:  "I will not help you extract that.",
+			name:    "an error with none names only that the provider failed",
+			result:  StreamPromptResult{Error: "Refusal (reasoning_extraction): I will not help you extract that."},
+			written: "I will not help you extract that.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -472,11 +476,15 @@ func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
 			h.errorTurn(tc.result)
 			message := h.climbs(1, 30*time.Second)
 
-			if !strings.Contains(message, tc.contains) {
-				t.Errorf("the prompt is %q, want it to name %q", message, tc.contains)
+			want := partText(ProviderErrorNote(h.claim().Issue, tc.result.HTTPStatus)) + "\n\n" + providerErrorTaskText
+			if message != want {
+				t.Errorf("the prompt is %q, want the provider-error note and the task behind it, %q", message, want)
 			}
-			if !strings.HasSuffix(message, "\n\n"+providerErrorTaskText) {
-				t.Errorf("the prompt is %q, want the task itself behind the sentence", message)
+			wantSays(t, message, "kind: "+string(texts.ProviderErrorNote), "issue: "+h.claim().Issue)
+			if tc.status != "" {
+				wantSays(t, message, tc.status)
+			} else {
+				wantSaysNot(t, message, "http_status")
 			}
 			if strings.Contains(message, tc.written) {
 				t.Errorf("the prompt carries the provider's own text %q: %q", tc.written, message)
@@ -544,11 +552,11 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	type told struct {
 		claim  Claim
-		reason string
+		notice texts.ProviderErrorsRecord
 	}
 	var notices []told
 	h := workingClaim(t, func(d *Deps) {
-		d.ProviderErrorRunReached = func(c Claim, reason string) { notices = append(notices, told{c, reason}) }
+		d.ProviderErrorRunReached = func(c Claim, notice texts.ProviderErrorsRecord) { notices = append(notices, told{c, notice}) }
 	})
 
 	sent := 1
@@ -568,15 +576,15 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	if notice.claim.Issue != "LEGION-209" || notice.claim.Role != claim.RoleImplementer {
 		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.claim.Role, notice.claim.Issue)
 	}
-	// The cause is what the error's own fields give, and a content filter's refusal carries no
+	// The facts are what the error's own fields give, and a content filter's refusal carries no
 	// status at all, so the notice names neither a status nor the filter's own words.
-	for _, want := range []string{"6 turns in a row", "claude-opus-4-8", "ended in a provider error"} {
-		if !strings.Contains(notice.reason, want) {
-			t.Errorf("the reason is %q, want it to name %q", notice.reason, want)
-		}
+	want := texts.ProviderErrorsRecord{NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: "LEGION-209"},
+		Role: claim.RoleImplementer, Turns: providerErrorRunTold, Model: "claude-opus-4-8", RetryEvery: promptRetryMax.String()}
+	if notice.notice != want {
+		t.Errorf("the notice is %+v, want %+v", notice.notice, want)
 	}
-	if strings.Contains(notice.reason, "reasoning_extraction") {
-		t.Errorf("the reason is %q, want none of the provider's own words", notice.reason)
+	if encoded, err := json.Marshal(notice.notice); err != nil || strings.Contains(string(encoded), "reasoning_extraction") {
+		t.Errorf("the notice is %s (%v), want none of the provider's own words", encoded, err)
 	}
 	if got := h.claim().ProviderErrorRun; got != 7 {
 		t.Errorf("the run of provider errors is %d, want 7: the notice bounds nothing", got)

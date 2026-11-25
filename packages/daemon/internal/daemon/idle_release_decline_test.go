@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -56,14 +56,39 @@ func (r *idleRig) sequenceValue(t *testing.T, table string) int64 {
 }
 
 // roleMessages is every message the outbox published to the topic of the rig's role.
-func roleMessages(publisher *outboxPublisher, token string) []string {
-	var messages []string
+func roleMessages(publisher *outboxPublisher, token string) []outboxPublish {
+	var messages []outboxPublish
 	for _, published := range publisher.publishes() {
 		if published.topic == notify.RoleTopicPrefix+token {
-			messages = append(messages, published.message)
+			messages = append(messages, published)
 		}
 	}
 	return messages
+}
+
+// declineTold is the idle-release-declined record that published carries to its role, published
+// under the summary of its kind and its issue at the urgency the list gives it, and false where
+// published is any other message.
+func declineTold(published outboxPublish) (*texts.IdleReleaseDeclinedRecord, bool) {
+	told, ok := published.payload.(*texts.IdleReleaseDeclinedRecord)
+	return told, ok && told.Kind == texts.IdleReleaseDeclined && published.urgency == texts.Med &&
+		published.message == noticeSummary(texts.IdleReleaseDeclined, told.Issue)
+}
+
+// namesTheWork says whether messages is the one message of a declined release of issue, a record
+// whose fields name the work the read found: the change of the working copy with its commit, and
+// the count and the ids of the commits that origin does not hold.
+func namesTheWork(messages []outboxPublish, issue string, work runtime.WorkspaceWork) bool {
+	if len(messages) != 1 {
+		return false
+	}
+	told, ok := declineTold(messages[0])
+	head := ""
+	if work.Changed {
+		head = work.Head
+	}
+	return ok && told.Issue == issue && told.Changed == work.Changed && told.Head == head && told.Commits == work.Count &&
+		slices.Equal(told.CommitIDs, work.Commits) && told.MoreCommitIDs == work.Count-len(work.Commits)
 }
 
 // A release whose check declines the pod asks the pod once. The decline holds the pod in the idle
@@ -113,9 +138,8 @@ func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 		if len(holds) != 1 || holds[0].Reason != workflow.IdleHoldUnpushedWork.String() {
 			t.Fatalf("holds = %+v, want the one %s", holds, workflow.IdleHoldUnpushedWork)
 		}
-		messages := roleMessages(publisher, string(rig.token))
-		if len(messages) != 1 || !strings.Contains(messages[0], idleRigUnpushed.Commits[0]) {
-			t.Fatalf("messages to %s = %q, want one naming the commit %s", rig.token, messages, idleRigUnpushed.Commits[0])
+		if messages := roleMessages(publisher, string(rig.token)); !namesTheWork(messages, rig.issue.Key, idleRigUnpushed) {
+			t.Fatalf("messages to %s = %+v, want one %s record naming the commit %s", rig.token, messages, texts.IdleReleaseDeclined, idleRigUnpushed.Commits[0])
 		}
 		if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
 			t.Fatalf("the claim = %s by %s, want it left running in the pod the decline kept", got.State, got.SuspendedBy)
@@ -214,7 +238,9 @@ func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 // before any role stops, so the pod, its disk and the workspace on it stay as they were: the
 // runtime takes no pod down and stops no process, the claim keeps the process it was running in
 // that pod, and the next turn of the role is a turn in that same pod, whose workspace still holds
-// the commit. The role is told which commit holds the release.
+// the commit. The role is told which commit holds the release, in an idle-release-declined record
+// that names the issue, whose branch, legion/<issue>, its prompt's passage on the kind tells it to
+// push to.
 func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -260,9 +286,9 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 	if records := rig.records(t); len(records.Releases) != 0 {
 		t.Fatalf("releases recorded = %+v, want none", records.Releases)
 	}
-	messages := roleMessages(publisher, string(rig.token))
-	if len(messages) != 1 || !strings.Contains(messages[0], idleRigUnpushed.Commits[0]) || !strings.Contains(messages[0], "legion/"+rig.issue.Key) {
-		t.Fatalf("messages to %s = %q, want one naming the commit %s and the issue's branch", rig.token, messages, idleRigUnpushed.Commits[0])
+	if messages := roleMessages(publisher, string(rig.token)); !namesTheWork(messages, rig.issue.Key, idleRigUnpushed) {
+		t.Fatalf("messages to %s = %+v, want one %s record naming the commit %s and the issue %s", rig.token, messages,
+			texts.IdleReleaseDeclined, idleRigUnpushed.Commits[0], rig.issue.Key)
 	}
 }
 
@@ -493,14 +519,17 @@ func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
 }
 
 // R5 of the release that keeps no saved workspace, its second test: the wake task of a role whose
-// clean pod was released says what the role's plugin notice says. The release's check reads no
-// work, its role stop and its teardown take the pod, and a message published to the role's topic
-// wakes it. The wake's start row carries the task, which tells the role of its workspace in the
-// words workflow.WorkspaceAfterRelease holds. That text is the data file the plugin's test reads
-// (workflow/workspace-after-release.txt) byte for byte, and the plugin's own notice
-// (packages/pi-shared/src/workspace-recreated.ts) carries its sentence about what the release
-// takes. Neither says the workspace's unpushed work was kept.
-func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
+// clean pod was released, as its prompt reads it, says what the role's plugin notice says, as its
+// prompt reads that. The release's check reads no work, its role stop and its teardown take the
+// pod, and a message published to the role's topic wakes it. The wake's start row carries the
+// task, a pod-wake record that names stopped_by: release and none of the words that unpushed work
+// was kept. What each reader's prompt then says is held by the passages' own checks: its passage
+// on that task with stopped_by: release says main's words of the workspace after a release, word
+// for word (TestEveryStepTakenOutOfATextIsInItsReadersPrompt), and says nothing of kept work
+// (workflow's TestTheReleasesWakeTaskNeverSaysUnpushedWorkWasKept), and its passage on the
+// plugin's workspace recreated notice says the same words and nothing of kept work either
+// (packages/pi-shared/src/workspace-recreated.test.ts).
+func TestAReleasedCleanPodsWakeTaskNamesTheReleaseAndNoKeptWork(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -528,35 +557,18 @@ func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
 		and payload->>'op' = 'start' and payload->>'role' = 'implementer' order by id desc limit 1`, rig.issue.Key).Scan(&task); err != nil {
 		t.Fatalf("read the wake's start row: %v", err)
 	}
-	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		workflow.WorkspaceAfterRelease + " Your session is as you left it. "
-	if !strings.HasPrefix(task, preamble) {
-		t.Fatalf("the wake's task = %q, want it to open with %q", task, preamble)
+	read := map[string]string{}
+	for _, line := range strings.Split(task, "\n") {
+		if key, value, ok := strings.Cut(line, ": "); ok {
+			read[key] = value
+		}
+	}
+	if read["kind"] != string(texts.PodWake) || read["wake"] != pods.WakeRoleMessage || read["stopped_by"] != texts.StoppedByRelease {
+		t.Fatalf("the wake's task = %q, want a %s record of wake %s that names stopped_by %s", task, texts.PodWake, pods.WakeRoleMessage, texts.StoppedByRelease)
 	}
 	for _, kept := range []string{"any work you had not pushed", "saved", "restored", "put back"} {
 		if strings.Contains(task, kept) {
 			t.Fatalf("the wake's task = %q, which says %q: the daemon keeps none of the workspace", task, kept)
-		}
-	}
-
-	data, err := os.ReadFile("../workflow/workspace-after-release.txt")
-	if err != nil {
-		t.Fatalf("read the shared text: %v", err)
-	}
-	if string(data) != workflow.WorkspaceAfterRelease+"\n" {
-		t.Fatalf("workspace-after-release.txt = %q, want the wake task's text %q and one newline", data, workflow.WorkspaceAfterRelease)
-	}
-	notice, err := os.ReadFile("../../../pi-shared/src/workspace-recreated.ts")
-	if err != nil {
-		t.Fatalf("read the plugin's notice: %v", err)
-	}
-	// The notice spells the text across string pieces; its first and last sentences each sit in one.
-	for _, said := range []string{
-		"such work stays in the pod.",
-		"A commit that no working copy and no bookmark reaches, such as one left on a side head with jj new, is not kept.",
-	} {
-		if !strings.Contains(workflow.WorkspaceAfterRelease, said) || !strings.Contains(string(notice), said) {
-			t.Fatalf("the wake task's text and the plugin's notice do not both say %q", said)
 		}
 	}
 }

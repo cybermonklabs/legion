@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // beneathRetro is the issues beneath issue still in the workflow (openBeneath) where issue moves
@@ -35,17 +35,17 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
-// issues beneath it still in the workflow, and what ends the hold: each of them run to done, or
-// ended by the owner's own status write in Dispatch. It carries that write's rules word for word
-// (record.EndChildRule) and the sentence on a write the daemon has not taken yet
-// (record.StatusNotTakenYet), as the pr-merged notice does (waitingForTree). It names the retro
-// and the implementer whose work the hold keeps, as the held notice of any hold names the phase it
-// is from (HeldNotice).
-func retroHeldNotice(parent string, beneath []string) record.Notice {
-	return record.Notice{Kind: "retro-held", Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, Reason: fmt.Sprintf(
-		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves.",
-		parent, strings.Join(beneath, ", ")) + " " + record.StatusNotTakenYet + " " + record.EndChildRule}
+// issues beneath it still in the workflow, which the retro waits for. The notice tells the owner
+// to end a child, so it carries that write's rules word for word (record.EndChildRule) and the
+// sentence on a write the daemon has not taken yet (record.StatusNotTakenYet), as the pr-merged
+// notice does (PRMergedNotice). It names the retro and the implementer whose work the hold keeps,
+// as the held notice of any hold names the phase it is from (HeldNotice). That a parent is accepted
+// only once no issue beneath it is still in the workflow, that the owner runs each to done or ends
+// it, and that Legion starts the retro when the last one leaves are the same for every such
+// notice, so the architect's prompt says them.
+func retroHeldNotice(parent string, beneath []string) texts.RetroHeldRecord {
+	return texts.RetroHeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.RetroHeld, Issue: parent}, Role: phase.RoleFor(phase.Retro),
+		Phase: phase.Retro, WaitingFor: beneath, StatusNotTakenYet: record.StatusNotTakenYet, EndChildRule: record.EndChildRule}
 }
 
 // heldParentWait is why parent, held before its retro for the issues beneath it
@@ -204,7 +204,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	if err := e.start(ctx, tx, parent, w, role, func(at Standing) string {
-		return task(parent, at, last, pr, "")
+		return task(parent, at, last, pr, PhaseMove{})
 	}, false); err != nil {
 		return err
 	}

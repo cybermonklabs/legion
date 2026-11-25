@@ -1,5 +1,6 @@
 import type { FinishedIssue, PlanRating, PlanRecord } from "@legion/contracts";
 import { LEGION_PLAN_RATING_MOST } from "@legion/contracts";
+import { UNESCAPED_LINE_BREAKS } from "../line-text";
 import type { CommandContext, DispatchToolResult } from "./context";
 import { optionalString, stringArg } from "./context";
 
@@ -12,16 +13,12 @@ function planText(plan: PlanRecord | null): string {
   return `plan ${plan.source} (${tasks.length} tasks: ${first.length === 0 ? "-" : first.join(" ")})`;
 }
 
-/** The characters other than a line feed and a carriage return that a reader splitting lines the
- *  Unicode way breaks a line at, and JSON leaves as they are: NEXT LINE, LINE SEPARATOR and
- *  PARAGRAPH SEPARATOR. (JSON escapes every other one, each below U+0020.) */
-const unescapedLineBreaks = /[\u0085\u2028\u2029]/g;
-
 /** `text` as a JSON string that holds no line break: JSON's own escapes, and the `\u` escape of
- *  each of `unescapedLineBreaks`, which reads back as the same string. */
+ *  each of `UNESCAPED_LINE_BREAKS`, which JSON leaves as they are (it escapes every other line
+ *  break, each below U+0020), and which reads back as the same string. */
 function oneLineJson(text: string): string {
   return JSON.stringify(text).replace(
-    unescapedLineBreaks,
+    UNESCAPED_LINE_BREAKS,
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
   );
 }

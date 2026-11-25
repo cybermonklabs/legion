@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -83,7 +84,7 @@ const (
 // settlement names carries one (intake's decodeChecks). Head is the head whose settlement named
 // the status: the pull request keeps the statuses of its checked head (PullRequest.Statuses),
 // and each text names only those stamped with the head it is about (workflow's settledChecks and
-// headChecks), since a daemon of an earlier release writes checked_head after a rollback and
+// headStatuses), since a daemon of an earlier release writes checked_head after a rollback and
 // leaves this list as it was. A settlement's own list (Settlement.Statuses) carries no stamp: the
 // settlement names its head, and the stamp is put on where the list is kept
 // (classify.ApplySettlement).
@@ -492,10 +493,29 @@ type ParkedDecision struct {
 	Decision DecisionKind
 	Actor    string
 	At       time.Time
+	// Words are the person's words of the decision, as its Dispatch event carried them: an
+	// answer's text and the options it chose, a reply's body, a resolution's note, a changes
+	// request's reason. They are on the row, not only on the fact, because the send-time rewrite
+	// of a start task builds the task again from what the rows named (DecisionMark). Their time
+	// is the act's own, where At is the time the daemon kept the decision. An approval and a
+	// carried gate's opening carry no words but that time and the person (the daemon's
+	// noticeWords). Nil for a decision whose event named no time, and for a row an older daemon
+	// kept.
+	Words *ActWords
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
 	HeldBy    DeliveryHold
+}
+
+// Mark is the decision as a start task or catch-up that names it records it (KeptDecisions): the
+// row's identity, what the person did and who, and the words of the act.
+func (d ParkedDecision) Mark() DecisionMark {
+	mark := DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor}
+	if words := d.Words; words != nil {
+		mark.Options, mark.Answer, mark.AnswerAt, mark.More, mark.Rest = words.Options, words.Text, words.At, words.More, words.Rest
+	}
+	return mark
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
@@ -821,12 +841,23 @@ type PhaseEntry struct {
 //
 // Refused is the daemon's own mark too, and the one case where a decision row holds no decision:
 // why the daemon set aside a review that would otherwise have decided the round (workflow's
-// refusesRound), which is what the stuck notice of a round nothing decided names
-// (workflow's undecidedReason). It is written only on a row that holds no deciding decision -
+// refusesRound), which is what the stuck notice of a round nothing decided names, and the task
+// of a reviewer restarted on that round (workflow's ReviewStuckNotice and StuckRound,
+// set_aside). It is written only on a row that holds no deciding decision -
 // State empty - so a refusal that follows an approval cannot erase it, and the clear every entry
 // into a phase makes of the role's row (workflow's clearHandoff) takes it with the decision, so
 // no round inherits the refusal of the round before it. The decision column is jsonb, so a row
 // an older daemon wrote simply has none.
+//
+// Author, Person, SubmittedAt, BodyCut and ID are the review's own facts that the next
+// implementer's task names beside its body (workflow's PhaseAssignment): the GitHub login that
+// wrote it, whether that login is a person's rather than the review App's (a person's body is cut
+// to texts.OneAct there, the reviewer's goes whole), when GitHub says it was submitted, whether
+// Envoy's normalizer cut its body before the daemon saw it, and GitHub's id of the review, which
+// is where the whole of a cut body is read (zero where the listener carried none). A decision an
+// older daemon wrote has none of them, and its body goes whole with no author, as it did; an
+// earlier release decodes the column with no refusal of a key it does not know (scanPhase), so
+// it reads a decision that names an id and drops the id at its next write of the row.
 type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
@@ -834,6 +865,11 @@ type ReviewDecision struct {
 	Refused        string     `json:"refused,omitempty"`
 	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
+	Author         string     `json:"author,omitempty"`
+	Person         bool       `json:"person,omitempty"`
+	SubmittedAt    time.Time  `json:"submittedAt,omitzero"`
+	BodyCut        bool       `json:"bodyCut,omitempty"`
+	ID             int64      `json:"id,omitempty"`
 }
 
 // ReviewOrder is where a review falls among the pull request's reviews: when it was submitted, then
@@ -917,7 +953,7 @@ type PullRequest struct {
 	// it with the check runs (the reopen step of a head run, Store.ClearGeneration), and a
 	// settlement of a new checked head puts back the statuses remembered for that head with its
 	// check runs (classify.SettlementFor). A move of the head leaves it stamped with the head it was
-	// of, so no text names it for the new head (workflow's headChecks).
+	// of, so no text names it for the new head (workflow's headStatuses).
 	Statuses []CommitStatus
 	// SettledHeads is what the pull request remembers of each of the last heads a CI settlement
 	// applied on: that head's fence as the last settlement applied on it left it, the head a
@@ -1472,8 +1508,13 @@ func (m MergeState) Mergeable() bool {
 // LastWakeDetail are what woke the latest look (the merge, the bound, the agent's own wake) and
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
-// stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// stands. ReportedAt is when the daemon recorded the check's latest pending report, in the
+// transaction that names that report's wake (workflow.checkReported, which writes the check_wake
+// row where the wake falls before the bound), and the look that wake starts names it as the time
+// of the report's summary (workflow.CheckLook). A look nobody reported clears it, since the wake
+// its end names is a retry no report named (workflow.endLook), and it is nil on a check an
+// earlier release recorded, whose named look names no time. Last marks the bound's look, after
+// which no look starts. A closed check has ClosedAt and its Outcome.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1497,6 +1538,7 @@ type ProductionCheck struct {
 	LastWakeDetail string
 	LastWakeAt     *time.Time
 	WakeAt         *time.Time
+	ReportedAt     *time.Time
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
@@ -1637,7 +1679,11 @@ type DesignGate struct {
 	ApprovedMark       EventMark
 	ToldChangesVersion *int
 	ToldChangesReason  string
-	ToldChangesMark    EventMark
+	// ToldChangesBy is who made that changes request, as Dispatch names its actor (<kind>:<id>),
+	// "" where the read that recorded it named nobody and on a row an older daemon wrote. The
+	// resume of a root that waited on the person names that person beside the reason.
+	ToldChangesBy   string
+	ToldChangesMark EventMark
 	// EverOpened records that the step has not held the tree's first release in this generation
 	// of the issue: a human approved the gate's document version at some point, whether or not
 	// the gate stands open now, or the step joined the tree after that release — a Verification
@@ -1652,6 +1698,32 @@ type DesignGate struct {
 	// re-admitted root's architect writes its spec again: the mark belongs to the generation
 	// whose release it records.
 	EverOpened bool
+	// DocumentIssue is the issue whose document ArtifactID is, which a person approves and by
+	// whose key Dispatch sends that document's events: Issue itself for a document its own
+	// architect registered (workflow's gateRegistered); for a row a hand-over carried onto a
+	// re-admitted orphan (admit's readmit), the issue of the old row's document as the store's
+	// rows on that document say it (Store.DocumentIssues), and none where they say none; and, on a
+	// carried row that records none, the issue that sent an approval of the document at or above
+	// the copy's version, of a step the deployment gates (workflow's applyArtifact and copyTakes).
+	// "" on such a row and on a row an older daemon wrote, where the migration that added the
+	// column did not fill it (20261122040952_design_gate_document_issue.up.sql). A text names the
+	// document of such a row from the store's rows on its artifact where they say its issue,
+	// else from Dispatch, asked when the outbox runs the start row and queues the task (and when
+	// the daemon's rootTask writes a queued task again at its send) and when it publishes the
+	// catch-up, else by the bare artifact reference (workflow's stepDocuments,
+	// texts.ArtifactReference).
+	DocumentIssue string
+}
+
+// DocumentOf is the issue whose document the gate row is bound to as the row records it
+// (DocumentIssue), its own issue where it records none: the gate-moved message's reading
+// (workflow's putGateTold), which every write of a carried row it can send records first
+// (workflow's applyArtifact).
+func (g DesignGate) DocumentOf() string {
+	if g.DocumentIssue != "" {
+		return g.DocumentIssue
+	}
+	return g.Issue
 }
 
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
@@ -1695,21 +1767,32 @@ func SpecGate(gates map[DesignStep]DesignGate) *DesignGate {
 // the question was closed with no answer, and no later event of that ask says otherwise, since
 // Dispatch refuses every transition of a resolved ask and its settlement restores a retracted
 // ask alone.
+//
+// PersonAnswerWords are the words of the person's answer at PersonAnswerSeq, and PersonWords the
+// words of the person's other act at PersonSeq: a reply in the ask's thread, or a resolution,
+// whose words are its note (a decline's note is its Decline's note too). Each is written with the
+// sequence it goes with, from the act's own event (workflow's askChange), so the words on the row
+// are always those of the act its sequence names, and an older act's event that arrives later
+// changes neither. The resume of a root that waits on the person (workflow's resumeTask) reads the
+// words of the act that answered the wait (PersonActSeq). Each is nil where the row records no
+// such act, and on a row an older daemon wrote, which kept no words.
 type RootAsk struct {
-	Issue           string
-	Ask             string
-	Kind            string
-	Artifact        string
-	Open            bool
-	Seq             int64
-	WaitingOn       string
-	WaitingOnSeq    int64
-	ClosedBy        string
-	ClosedSeq       int64
-	ByTree          bool
-	PersonSeq       int64
-	PersonAnswerSeq int64
-	Decline         *AskDecline
+	Issue             string
+	Ask               string
+	Kind              string
+	Artifact          string
+	Open              bool
+	Seq               int64
+	WaitingOn         string
+	WaitingOnSeq      int64
+	ClosedBy          string
+	ClosedSeq         int64
+	ByTree            bool
+	PersonSeq         int64
+	PersonAnswerSeq   int64
+	Decline           *AskDecline
+	PersonAnswerWords *ActWords
+	PersonWords       *ActWords
 }
 
 // AskDecline is a person's decline to answer an ask, which Dispatch records as the resolution
@@ -1722,6 +1805,50 @@ type RootAsk struct {
 type AskDecline struct {
 	Note  string
 	Words string
+}
+
+// ActWords are the words a person wrote in one act on Dispatch — the answer of an ask, a reply in
+// its thread, the note of a resolution, the reason of a changes request — as the act's own
+// Dispatch event carried them: Text whole, the options an answer chose, who wrote them (By, as
+// Dispatch names an actor, `<kind>:<id>`), when (At: the time the payload gives the act, else the
+// event's own), and More, that the event did not carry all of the act: it marked its body cut
+// (body_truncated), or it reached the daemon as a stand-in that left its long fields out
+// (payload_omitted), in which case Text holds what the stand-in kept, usually nothing. The item
+// itself, read through its reference, holds the rest.
+//
+// The words are never cut where they are kept: a text that carries them cuts them when it is
+// written (Carry), so an act read twice is kept equal. They travel whole, from the Dispatch event
+// (intake's DispatchAskClosed and DispatchAskReply) through the ask's mirror row (RootAsk) and the
+// kept decision (ParkedDecision, DecisionMark) to the text that carries them. One act reaches the
+// daemon only through a text of its own that cut it: a changes request's reason, which a
+// design-changes-requested notice carries (the daemon's noticeWords). Text is then what that
+// notice carried, and Rest the count of the UTF-16 units it cut off, which its words object gives;
+// Rest is 0 for words that are whole, and for words whose count is not known (More). The JSON is
+// the shape the store keeps them in (root_asks.person_answer_words and person_words,
+// parked_decisions.words).
+type ActWords struct {
+	Text    string    `json:"text,omitempty"`
+	Options []string  `json:"options,omitempty"`
+	By      string    `json:"by,omitempty"`
+	At      time.Time `json:"at,omitzero"`
+	More    bool      `json:"more,omitempty"`
+	Rest    int       `json:"rest,omitempty"`
+}
+
+// Carry is w as a text carries it, bounded to limit: texts.Carry of Text, with Rest added to the
+// count of the rest, since those units followed Text before any bound cut it.
+func (w ActWords) Carry(limit int) texts.Words {
+	return carryWords(w.Text, w.Rest, limit, w.More)
+}
+
+// carryWords is texts.Carry of text, whose own text had rest more UTF-16 units after it, which
+// the count of the rest adds where it is known (not more).
+func carryWords(text string, rest, limit int, more bool) texts.Words {
+	carried := texts.Carry(text, limit, more)
+	if !more {
+		carried.Rest += rest
+	}
+	return carried
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request
@@ -2324,6 +2451,16 @@ type Store interface {
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// DocumentIssues is the issue whose document each of artifacts is, as the gate rows the store
+	// holds on it say, for each artifact they say it of: the issue a row records
+	// (DesignGate.DocumentIssue), and the issue of the document's own registration, a row of an
+	// issue that is no root a hand-over created with its gate at the generation the issue stands
+	// at (HandedOverRoot), since register_gate refuses another issue's document and only that
+	// hand-over writes a copy. An artifact whose rows say none, or say more than one issue, has no
+	// entry: the daemon asks Dispatch for it when the outbox runs the start row and queues the
+	// task (and when its rootTask writes a queued task again at its send) and when the outbox
+	// publishes the catch-up (workflow's NameStartDocuments and NameCatchUpDocuments).
+	DocumentIssues(ctx context.Context, tx pgx.Tx, artifacts []string) (map[string]string, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error

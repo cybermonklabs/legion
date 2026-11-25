@@ -1101,6 +1101,10 @@ describe("resume point", () => {
 });
 
 describe("gaps", () => {
+  /** What each gap told names of the gap, without the sentence the host logs. */
+  const facts = (gaps: readonly ConsumerGapNotice[]) =>
+    gaps.map(({ message: _logged, ...told }) => told);
+
   test("a gap the answer reports is told once, not again by the frame after it", () => {
     const { delivery, gaps } = setup();
     delivery.answered({
@@ -1111,7 +1115,7 @@ describe("gaps", () => {
     });
     delivery.receive(relay({ seq: 1, gap: true }));
 
-    expect(gaps.map((notice) => notice.kind)).toEqual(["retention_gap"]);
+    expect(facts(gaps)).toEqual([{ kind: "retention_gap", stream: STREAM, retentionHours: 72 }]);
   });
 
   test("a frame's gap is told when no answer reported it", () => {
@@ -1119,7 +1123,7 @@ describe("gaps", () => {
     delivery.receive(relay({ seq: 1 }));
     delivery.receive(relay({ seq: 9, gap: true }));
 
-    expect(gaps.map((notice) => notice.kind)).toEqual(["retention_gap"]);
+    expect(facts(gaps)).toEqual([{ kind: "retention_gap", stream: STREAM, retentionHours: 72 }]);
   });
 
   test("an answer naming another stream than the resume point's is told once", () => {
@@ -1135,7 +1139,9 @@ describe("gaps", () => {
     delivery.answered(consumer);
     delivery.answered(consumer);
 
-    expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
+    expect(facts(gaps)).toEqual([
+      { kind: "stream_recreated", stream: STREAM, previousStream: "stream-old" },
+    ]);
     expect(delivery.resumePoint()).toBeUndefined();
   });
 
@@ -1156,7 +1162,9 @@ describe("gaps", () => {
 
     delivery.receive(relay({ seq: 1, streamID: "stream-new" }));
 
-    expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
+    expect(facts(gaps)).toEqual([
+      { kind: "stream_recreated", stream: "stream-new", previousStream: STREAM },
+    ]);
   });
 
   // The listener starts the relay before it writes the registration's answer, and the relay's
@@ -1177,7 +1185,9 @@ describe("gaps", () => {
     });
     delivery.receive(relay({ seq: 2, streamID: "stream-new" }));
 
-    expect(gaps.map((notice) => notice.kind)).toEqual(["stream_recreated"]);
+    expect(facts(gaps)).toEqual([
+      { kind: "stream_recreated", stream: "stream-new", previousStream: "stream-old" },
+    ]);
   });
 
   test("a frame from the resume point's own stream, before the answer, tells nothing", () => {

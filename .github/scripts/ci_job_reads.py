@@ -519,6 +519,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (f"{DAEMON}/internal/texts/testdata/in-front.json", "packages/claude-envoy/tests/words-in-front.test.ts:70 ('the mod's inFront gives what the cases it shares with the daemon's InFront say') reads the daemon's cases of texts.InFront by relative path, the file packages/daemon/internal/texts's TestInFrontGivesWhatTheSharedCasesSay reads, and holds the mod's copy of inFront to each"),
         (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's "
                                                                  "check of the packed tarball passes a listing longer than a pipe holds\" "
                                                                  "copies it into a root of its own and runs it over a long listing"),

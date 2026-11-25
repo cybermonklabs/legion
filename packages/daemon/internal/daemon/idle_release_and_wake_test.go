@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The issues of the rig, one pod each. Each subtest drives the pods it names and no other, so one
@@ -218,7 +217,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		})
 		idleRigKeptNothing(t, status, body, idleRigRoleLapsed)
 		rig.awaitResumed(issue, 2)
-		rig.awaitTask(issue, "The wake is a message somebody published to your role topic ("+token+")")
+		rig.awaitTask(issue, "\ntopic: "+notify.RoleTopicPrefix+token+"\n")
 		if prompts := rig.newPrompts(issue); len(prompts) != 1 {
 			t.Fatalf("the woken role was given %v, want exactly one task", idleRigTexts(prompts))
 		}
@@ -359,8 +358,8 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			t.Fatalf("the woken role of %s was given %d tasks after the restart, want exactly one: %v",
 				issue.key, len(prompts), idleRigTexts(prompts))
 		}
-		role := "The wake is a message somebody published to your role topic (" + token + ")"
-		agent := "The wake is a message somebody sent to your session (" + session + ")"
+		role := "\ntopic: " + notify.RoleTopicPrefix + token + "\n"
+		agent := "\nsession: " + session
 		if !strings.Contains(prompts[0].Text, role) && !strings.Contains(prompts[0].Text, agent) {
 			t.Errorf("the woken role of %s was given %q, want a task naming the role message or the direct message",
 				issue.key, prompts[0].Text)
@@ -383,8 +382,8 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	rig.kube.requireServed(t)
 }
 
-// idleRigWakePreamble is the sentence every wake's task opens with (workflow.WakeTask).
-var idleRigWakePreamble = workflow.WakeTask("", "", workflow.StoppedByRelease)[:len("Your issue's pod had been released while it was idle, and this wake brought it back.")]
+// idleRigWakePreamble is the line every wake's task opens with (workflow.PodWake).
+const idleRigWakePreamble = "kind: pod-wake"
 
 // idleRigDeliveredTask is the task the daemon has for the role of the delivery pod, which is R3
 // item 1's wake: the delivery is its own account of why the pod came back.
@@ -401,20 +400,22 @@ type idleRigWake struct {
 	task  string
 }
 
-// idleRigWakes is the five wakes with the task each gives, written once: the pass that drives
-// them waits for each of these tasks and the subtest that counts them reads the same words, so
-// neither can assert on a wording the other does not wait for. The role token and the session id
-// are the released process's, and a relaunched process registers the same of both (the session
-// is derived from the pod and the role, idleRigRoleProcess.register), so this reads the same
-// before a wake and after it.
+// idleRigWakes is the five wakes with a fact of the task each gives, written once: the pass that
+// drives them waits for each of these facts and the subtest that counts them reads the same
+// words, so neither can assert on a wording the other does not wait for. Each is a line the
+// woken role's task holds, written here by hand rather than by the builder of that task: the
+// wake's own topic for a role message and its session for an agent message. The role token and
+// the session id are the released process's, and a relaunched process registers the same of both
+// (the session is derived from the pod and the role, idleRigRoleProcess.register), so this reads
+// the same before a wake and after it.
 func idleRigWakes(rig *idleWakeRig) []idleRigWake {
 	checks, role, agent := rig.issue(idleRigChecks), rig.issue(idleRigRoleWake), rig.issue(idleRigAgentWake)
 	return []idleRigWake{
 		{rig.issue(idleRigDelivery), idleRigDeliveredTask},
-		{checks, "The wake is a CI settlement on your pull request's head: " + idleRigHead(checks.key)[:12] + " passed every check"},
-		{role, "The wake is a message somebody published to your role topic (" + string(rig.token(role)) + ")"},
-		{agent, "The wake is a message somebody sent to your session (" + rig.session(agent) + ")"},
-		{rig.issue(idleRigBackstop), "The wake is the release's backstop running out"},
+		{checks, "head: " + idleRigHead(checks.key)},
+		{role, "\nwake: " + pods.WakeRoleMessage + "\ntopic: " + notify.RoleTopicPrefix + string(rig.token(role)) + "\n"},
+		{agent, "\nwake: " + pods.WakeAgentMessage + "\nsession: " + rig.session(agent)},
+		{rig.issue(idleRigBackstop), "wake: " + pods.WakeBackstop},
 	}
 }
 
@@ -584,7 +585,7 @@ func idleRigKeptWakesAndReaches(t *testing.T, rig *idleWakeRig, issue idleRigIss
 	})
 	idleRigKept(t, status, body, reason)
 	rig.awaitResumed(issue, 2)
-	rig.awaitTask(issue, "The wake is a message somebody published to your role topic ("+token+")")
+	rig.awaitTask(issue, "\ntopic: "+notify.RoleTopicPrefix+token+"\n")
 	if prompts := rig.newPrompts(issue); len(prompts) != 1 {
 		t.Fatalf("the woken role of %s was given %v, want exactly one task", issue.key, idleRigTexts(prompts))
 	}

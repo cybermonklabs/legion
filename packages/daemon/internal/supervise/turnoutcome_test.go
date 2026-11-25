@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // report is one turn's outcome as its producer reports it, at the claim's current generation, for
@@ -87,7 +88,7 @@ func refusedUntilA400(t *testing.T) (*harness, int) {
 func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 	notices := 0
 	h := workingClaim(t, func(d *Deps) {
-		d.ProviderErrorRunReached = func(Claim, string) { notices++ }
+		d.ProviderErrorRunReached = func(Claim, texts.ProviderErrorsRecord) { notices++ }
 	})
 	spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
 	const turns = 25

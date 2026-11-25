@@ -6071,11 +6071,12 @@ func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testi
 // The lines a sweep ends on say what the sweep freed, and a sweep the roles outwrote, whose last
 // reading of the volume is above its first, freed nothing: the sweep's line says the volume grew
 // by that many bytes while the sweep ran, and the pause's line after it by that many points, as
-// the notice the daemon makes of its report says it (internal/workflow's volumeNoticeReason),
-// and neither says the sweep freed a negative number. The case sweeps a volume whose every
-// reading after the interval's own is half a point above it. The negative control is the two
-// lines as they stood at a3f5d0965f3f, which read `40 entries deleted, -250000000 B freed` and
-// `the sweep freed -0.50 points of the volume, under 1`.
+// the architect's prompt reads the negative freedBytes of the notice the daemon makes of its
+// report (internal/prompts/go/architect-common.md), and neither says the sweep freed a negative
+// number. The case sweeps a volume whose every reading after the interval's own is half a point
+// above it. The negative control is the two lines as they stood at a3f5d0965f3f, which read
+// `40 entries deleted, -250000000 B freed` and `the sweep freed -0.50 points of the volume,
+// under 1`.
 func TestTheLineOfASweepTheRolesOutwroteSaysTheVolumeGrew(t *testing.T) {
 	const grown = fixtureVolumeBytes / 200
 	f := newTrimFixture(t, 10)

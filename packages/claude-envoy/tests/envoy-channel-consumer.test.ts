@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { legacyAgentSubject } from "@legion/contracts"
+import { GAP_NOTICE } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -9,6 +10,7 @@ import {
   type SubscribeInput,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
+import { noticeFields } from "@legion/test-fixtures/notice-fields"
 import {
   type ChannelNotification,
   type ChannelNotifier,
@@ -577,7 +579,10 @@ test("a gap the registration reports is told once, through the notice path", asy
     // A notice of Envoy's own names no envelope; every other line written is a frame's.
     const notices = notifier.written.filter((written) => written.eventId === undefined)
     expect(notices).toHaveLength(1)
-    expect(notices[0]?.content).toContain("72 hours")
+    expect(noticeFields(notices[0]?.content ?? "")).toMatchObject({
+      notice: GAP_NOTICE.kind,
+      retention_hours: "72",
+    })
   } finally {
     for (const write of notifier.pending) write.resolve()
     await session.shutdown()

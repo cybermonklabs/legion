@@ -52,25 +52,27 @@ func OutOfWorkflow(status string) bool {
 }
 
 // EndChildRule is how an architect ends a child, in the short form that the daemon's refusals
-// and notices carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done,
-// backlog, icebox or triage on a child as it takes a person's move (workflow's
-// sessionStatusWrite). So the move is the architect's own status write in Dispatch, and no
-// operation of the legion tool makes it. Each thing the rule says stops a loss
-// that the move alone does not stop. A fold names its carrier, and the issues that wait on the
-// folded child wait on the carrier first, because done starts them. A running child's worker
-// pushes first, because done ends its turn and its pod at once. An open pull request leaves the
-// merge queue and closes unless its work should land, because the daemon changes no pull request.
-// Backlog and icebox are for a person's request or a restart, and finished work is done. A child
-// already done takes no status, because a move out of done ends its production check. And a read
-// back after each move finds a move that the daemon set back.
+// carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done, backlog, icebox
+// or triage on a child as it takes a person's move (workflow's sessionStatusWrite). So the move is
+// the architect's own status write in Dispatch, and no operation of the legion tool makes it. Each
+// thing the rule says stops a loss that the move alone does not stop. A fold names its carrier,
+// and the issues that wait on the folded child wait on the carrier first, because done starts
+// them. A running child's worker pushes first, because done ends its turn and its pod at once. An
+// open pull request leaves the merge queue and closes unless its work should land, because the
+// daemon changes no pull request. Backlog and icebox are for a person's request or a restart, and
+// finished work is done. A child already done takes no status, because a move out of done ends
+// its production check. And a read back after each move finds a move that the daemon set back.
 //
 // It lives here because two packages send it, and api does not import workflow: workflow's
-// refusals and notices over children still in the workflow, and api's refusals of close_root on a
-// child and of the removed child route. The architect prompts carry the same rules whole
-// (prompts/go/architect-common.md). The legion tool's description carries these words
-// (packages/pi-legion/src/tools.ts), and these tests hold the copies together:
-// TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to
-// packages/contracts/fixtures/daemon-api/end-child-rule.json, and
+// refusals over children still in the workflow and its notices that tell an architect to end a
+// child, which keep it word for word as R8 of dispatch://INFRA-3686 keeps INFRA-3178's R6
+// (PRMergedNotice of a close that waits, retroHeldNotice and ChildrenFirstNotice;
+// internal/daemon's goldenKept holds each to it), and api's refusals of close_root on a child and
+// of the removed child route.
+// The architect prompts carry the same rules whole (prompts/go/architect-common.md). The legion
+// tool's description carries these words (packages/pi-legion/src/tools.ts), and these tests hold
+// the copies together: TestTheEndChildRuleGolden in internal/api writes this constant and
+// StatusNotTakenYet to packages/contracts/fixtures/daemon-api/end-child-rule.json, and
 // packages/pi-legion/src/tools.test.ts holds the description to that file.
 const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
@@ -90,13 +92,15 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"After each move, read the child back (dispatch read --issue <KEY>). " +
 	"When the daemon set the move back, write it again."
 
-// StatusNotTakenYet is the sentence that each refusal and notice over children still in the
-// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst), the pr-merged notice
-// (workflow's waitingForTree) and the retro-held notice (workflow's retroHeldNotice). The daemon
-// reads the architect's status write on a child from that write's Dispatch event, and the event
-// consumer can deliver the event after the architect calls again. Until then the record holds the
-// child in the workflow and the refusal names it, so the architect waits for read_record to show
-// its move (dispatch://INFRA-3178 R1).
+// StatusNotTakenYet is the sentence that each refusal over children still in the workflow adds:
+// sign_off's and close_root's (workflow's endChildrenFirst). The pr-merged notice of a close that
+// waits and the retro-held notice keep it word for word too, as main's did (workflow's
+// PRMergedNotice and retroHeldNotice), and the architect prompts give it as well
+// (prompts/go/architect-common.md).
+// The daemon reads the architect's status write on a child from that write's Dispatch event, and
+// the event consumer can deliver the event after the architect calls again. Until then the record
+// holds the child in the workflow and the refusal names it, so the architect waits for
+// read_record to show its move (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
 // (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description

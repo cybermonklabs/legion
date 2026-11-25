@@ -770,8 +770,8 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	// which is the interval reading alone: an operator reading the pod's log counts the
 	// readings to see the trimmer is alive. A sweep whose last reading is above its first freed
 	// nothing, and this line and the pause's below say the volume grew by the difference while
-	// the sweep ran, as the notice of its report says it (internal/workflow's
-	// volumeNoticeReason).
+	// the sweep ran, as the architect's prompt reads a negative freedBytes in the notice of its
+	// report (internal/workflow's VolumeNearFullNotice).
 	freed := fmt.Sprintf("%d B freed", out.freed)
 	if out.freed < 0 {
 		// The magnitude as uint64, which holds it for every int64, the least one included.

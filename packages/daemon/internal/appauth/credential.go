@@ -237,8 +237,8 @@ func installedLayout(ctx context.Context, installations OwnerInstallations, appR
 //
 // Without it an owner whose lease cannot be minted costs the pod more than that owner:
 // no bundle holds the directory, so no pod projects it, while the comparison names it at every
-// sweep (sandbox's movedGhDirs), an update round asks every worker in the pod to do the steps of
-// its update message (supervise.UpdateTask), the pod is replaced, and its new bundle lacks the
+// sweep (sandbox's movedGhDirs), an update round asks every worker in the pod to push and answer
+// its update ask (supervise.UpdateTask), the pod is replaced, and its new bundle lacks the
 // directory again — for ever (INFRA-513).
 //
 // It is sticky, not timed: a directory stays recorded left out until a mint of it answers, which

@@ -275,13 +275,13 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			wantAgents: []string{"notifications.agent.session-claimant"},
 		},
 		{
-			// An edit reads which of its comment's mentions failed of that comment alone
-			// (lookup.mentionFallbackKeys), so the writer, which the comment names and no mention
-			// of it reached, takes the edit as well, and the editor, a credit of the document
-			// alone, does not. The edit's copy carries the event's own key, not the mention's:
-			// the keyed copy is a new comment's, read from the attempts the destination build
-			// itself holds (destinations.addSession, mentionDeliveries.fallbackKeys), and an edit
-			// holds none.
+			// An edit reads its comment's mentions for its credits filter alone
+			// (mentionDeliveries.editCreditCopyOf), so the writer, which the comment names and
+			// whose mention of it failed, takes the edit as well, and the editor, a credit of the
+			// document alone, does not. The edit's copy carries the event's own key, not the
+			// mention's: the keyed copy is a new comment's, read from the attempts the destination
+			// build itself holds (destinations.addSession, mentionDeliveries.fallbackKeys), and an
+			// edit holds none.
 			name:     "a credited author whose mention of the comment failed is reached by its edit on a claimed issue, under the event's own key",
 			claimant: "session-claimant",
 			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {

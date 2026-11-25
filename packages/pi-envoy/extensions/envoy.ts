@@ -61,8 +61,7 @@ import {
   closeReplayedRemoval,
   createDeliveryLedger,
   type DeliveryLedger,
-  envoyNoticeText,
-  failureNoticeFields,
+  failureNoticeText,
   ledgerIdentity,
   storedText,
 } from "@legion/envoy-client/delivery-ledger";
@@ -99,6 +98,7 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import type { InboundSubscription } from "@legion/envoy-client/inbound-connection";
+import { headUnits } from "@legion/envoy-client/line-text";
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
@@ -112,11 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -210,25 +206,28 @@ import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
-import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
 import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
-import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { CardWake, type EnvoyCardMarker, lowCard } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
+import { sessionIdChangedText } from "../src/envoy-notices";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
 import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
   heldReplayNotices,
+  heldStoredCards,
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
   rememberedSubjects,
   replaySnapshot,
+  STORED_CARD_ENTRY,
+  storedCardRecord,
 } from "../src/missed-messages";
 import { opensAsk } from "../src/opens-ask";
 import {
@@ -263,7 +262,7 @@ import {
   shellCommandShutdownReport,
   shellCommandWithheldReport,
 } from "../src/typed-shell";
-import { type CardDelivery, UnwrittenFrames } from "../src/unwritten-frames";
+import { type CardDelivery, storeHoldsSession, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -450,6 +449,11 @@ const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
 /** How long a delivery waits on the whole body of an item an event carried only in part before
  *  it goes out with that part and the note saying so. */
 const WHOLE_BODY_TIMEOUT_MS = 10_000;
+/** How often the check for stored cards runs while one waits (`checkStoredCards`), and how many
+ *  checks one arming runs at most: 10 s, after which the next run's end, a compaction's end
+ *  (automatic or asked for) or heartbeat checks. */
+const STORED_CHECK_MS = 100;
+const STORED_CHECKS = 100;
 /** The most BTW event ids an instance remembers, so a failure notice naming one stays inert. */
 const BTW_EVENTS_LIMIT = 1_000;
 /** The line a late BTW's card ends with: it runs nothing and asks for nothing. */
@@ -566,7 +570,7 @@ const ASK_SELF_CHECK_PROMPT = (asks: readonly Pick<OpenAsk, "question">[]): stri
             const question =
               firstLine.length <= questionLimit
                 ? firstLine
-                : `${firstLine.slice(0, questionLimit - 1)}…`;
+                : `${headUnits(firstLine, questionLimit - 1)}…`;
             return `- ${question}`;
           }),
           ...(asks.length > askLimit ? [`+${asks.length - askLimit} more`] : []),
@@ -1131,8 +1135,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // The delivery ledger, from every entry of the session file as handled attempts are: what
     // this session was shown, on any branch, with the cards the host wrote, and the topics it
     // follows. The notices it records held and not handed, which a
-    // restart or a session change cut short, are held again for the first settled heartbeat.
-    ledger?.restore(replaySnapshot(entries));
+    // restart or a session change cut short, are held again for the first settled heartbeat. The
+    // snapshot is read once: the held cards below are checked against the same ledger records.
+    const snapshot = replaySnapshot(entries);
+    ledger?.restore(snapshot);
     unwritten.requeueNotices(heldReplayNotices(entries));
     // The pictures the live context of the transcript the session is now on already shows (a
     // fork's, a handoff's, a resume's, a restart's) are in the history every request sends, so
@@ -1163,6 +1169,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         });
       }
     }
+    // The held cards the transcript records as waiting and shows no write of, which a restart or
+    // a session change cut short, are held again, each to be handed as its record says: a stored
+    // card at the first settled check, an inert card, such as a late BTW, at the first settled
+    // heartbeat. Their frames were answered `done` once they were recorded, and a copy the relay
+    // sends again is that held card (`UnwrittenFrames.sendCard`). This comes after the release
+    // above, so no card of the session left stands under a frame's keys.
+    unwritten.requeueStored(heldStoredCards(entries, snapshot.ledger));
+    if (unwritten.waitsOnStored()) checkStoredCards();
   };
 
   // Where this instance has read the `dispatch` command's ledger to (`results.jsonl` in the
@@ -1555,7 +1569,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // `envoyCard`, since the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
-  // records a startup card, which goes as a follow-up, before the host has it.
+  // records a startup card, which goes as a follow-up, before the host has it. A `low` card
+  // (`stored`) goes as `nextTurn` with no turn, which `UnwrittenFrames` hands only to a settled
+  // host: the host stores it with no event, so the check for stored cards looks for its write, and
+  // the card is recorded on the agent stream here, as it is handed, since no `message_end` records
+  // it there: Dispatch's live view shows it before the turn that reads it, as it shows every other
+  // card the session displays. A send that throws records nothing.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
@@ -1580,18 +1599,29 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       );
       return;
     }
-    const { details, ...options } = cardWake.deliveryFor(
-      deliverAs === "aside",
-      activeSessionContext
+    const { details, ...options } = cardWake.deliveryFor(deliverAs, activeSessionContext);
+    const card = {
+      customType: "envoy-message",
+      content,
+      display: true,
+      details: { ...known, ...details },
+    };
+    pi.sendMessage(card, options);
+    if (deliverAs !== "stored") return;
+    // Stamped as it is handed, before the host stamps any turn that reads it: the host stores the
+    // card after `pi.sendMessage` returns (its entry's time, at the pinned build, is some
+    // milliseconds later), so no entry of it is there yet to take a time from.
+    recordAgentStreamMessage(
+      { ...card, role: "custom", timestamp: Date.now() },
+      false,
+      hostSessionID()
     );
-    pi.sendMessage(
-      { customType: "envoy-message", content, display: true, details: { ...known, ...details } },
-      options
-    );
+    checkStoredCards();
   };
 
   // The host is idle, holds no message, is not shutting down, and is on the session this instance
-  // serves: only then is an inert card handed, or a withdrawn card handed back (`UnwrittenFrames`).
+  // serves: only then is an inert or a stored card handed, or a withdrawn card handed back
+  // (`UnwrittenFrames`).
   const hostSettled = (): boolean => {
     const hostContext = activeSessionContext;
     return (
@@ -1611,6 +1641,24 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // - is still that session's to be shown.
     hostIsOn: (card) => hostSessionID() === card,
     settled: hostSettled,
+    // Every entry of the session this instance serves, on every branch of its tree, once Oh My
+    // Pi's store holds that session, the one witness that a stored card reached it
+    // (`storedCheck`). The store holds a session from its first assistant message on, on any branch
+    // (`storeHoldsSession`), file storage and SQL storage alike, and from then on every entry the
+    // host records, so a card stored on a branch with no reply is in it too; under file storage, a
+    // session file on disk says so as well, as for a session the host wrote before that. Under
+    // `OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs
+    // (packages/daemon/internal/podsafety/podsafety.go), no file is ever on disk. A card stored
+    // before the store holds the session is lost with the process until then, and a session that
+    // names no file (`--no-session`) is stored nowhere.
+    storedEntries: () => {
+      const hostContext = activeSessionContext;
+      if (hostContext === undefined || hostSessionID() !== sessionID) return undefined;
+      const file = hostContext.sessionManager.getSessionFile();
+      if (file === undefined) return undefined;
+      const entries = hostContext.sessionManager.getEntries();
+      return existsSync(file) || storeHoldsSession(entries) ? entries : undefined;
+    },
     recordDelivered: async (card, identity) => {
       await ledger?.recordDeliveredFor(card, identity);
     },
@@ -1663,7 +1711,56 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         error: messageFor(error),
       });
     },
+    // A card held for a settled host (a stored card, or an inert card held while the host is
+    // busy) goes to the transcript of the session it is for, which is the session the host is on:
+    // `sendCard` hands or holds a card only for that session. The record says how the card is
+    // handed, so a restore hands it again the same way (`heldStoredCards`).
+    recordStored: (addressed, card) => {
+      if (hostSessionID() !== addressed) throw new Error("the host is on another session");
+      pi.appendEntry(STORED_CARD_ENTRY, storedCardRecord(card));
+    },
+    recordStoredFailed: (identity, error) => {
+      logger.warn(
+        "envoy: a held card could not be recorded in the session file; its frame waits until the host writes the card",
+        { eventID: identity.event_id, error: messageFor(error) }
+      );
+    },
   });
+
+  // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
+  // settles, when one held while it was busy is handed, nor its write to the session file. So a
+  // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
+  // stored card's coming and its hand-over, a run's end that no continuation follows, the end of a
+  // compaction (an automatic one, and one the session asked for), a restore that holds recorded
+  // cards again, and each heartbeat of a settled host, until no stored card waits or
+  // `STORED_CHECKS` checks have run. A run that starts in between holds the card again, as the
+  // host is not settled, and its end checks again; so does the next heartbeat for a session whose
+  // file Oh My Pi has not written yet. A new arming counts the checks again from the first. While
+  // one chain of checks is live (`storedCheckLive`) an arming starts no other, so two never run
+  // side by side, and a card that comes while a check awaits keeps the live chain going.
+  let storedChecksLeft = 0;
+  let storedCheckLive = false;
+  const checkStoredCards = (): void => {
+    storedChecksLeft = STORED_CHECKS;
+    if (storedCheckLive) return;
+    const step = async (): Promise<void> => {
+      let again = false;
+      try {
+        storedChecksLeft -= 1;
+        again =
+          !shuttingDown &&
+          ((await unwritten.storedCheck()) || unwritten.waitsOnStored()) &&
+          storedChecksLeft > 0;
+      } finally {
+        const hostContext = again ? activeSessionContext : undefined;
+        if (hostContext === undefined) storedCheckLive = false;
+        else hostContext.setTimeout(step, STORED_CHECK_MS);
+      }
+    };
+    if (activeSessionContext === undefined) return;
+    storedCheckLive = true;
+    activeSessionContext.setTimeout(step, STORED_CHECK_MS);
+  };
 
   // Shows `session` a card the delivery ledger asked for (a failure notice naming a frame the
   // session was never shown) under a claim of that frame, so a live copy arriving meanwhile is
@@ -2090,11 +2187,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // `session` is the session the frame is addressed to, which every answer to it names and is
   // signed as: the relay reads it off its owner, before anything here awaits, since every frame
   // reaches the session through its own consumer's relay. `subject` is the subject the frame
-  // was published on, and `relayed` the relay frame it came as. A relay frame is
-  // answered `done` once it is written, or skipped,
-  // suppressed, a repeat, or rejected (after the rejection reply is posted), and `nak` once the
-  // host dropped it unwritten. A BTW's side turn and every Dispatch reply run off the caller
-  // (`offWorker`), so the frames after one never wait on a model call or a reply.
+  // was published on, and `relayed` the relay frame it came as. A relay frame is answered `done`
+  // once it is written, or recorded as a stored card that waits (`UnwrittenFrames.sendCard`), or
+  // skipped, suppressed, a repeat, or rejected (after the rejection reply is posted), and `nak`
+  // once the host dropped it unwritten. A BTW's side turn and every Dispatch reply run off the
+  // caller (`offWorker`), so the frames after one never wait on a model call or a reply.
   const deliver = async (
     session: string,
     subject: string,
@@ -2137,9 +2234,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       return;
     }
     // A relay frame's claim answers the listener as the claim ends: `done` once it settles (the
-    // host wrote the frame, or handled it with nothing to write, the ledger recording it first),
-    // `nak` once it is released with nothing recorded (the host dropped the frame unwritten: a
-    // session change, an interrupt that withdrew a person's turn), so the listener sends it again.
+    // host wrote the frame, or handled it with nothing to write, the ledger recording it first, or
+    // the transcript records the held card that shows it, a stored card or an inert card held
+    // while the host is busy, which a restart holds again once the session's store holds that
+    // record), `nak` once it is released with nothing recorded (the host dropped the frame
+    // unwritten: a session change, an interrupt that withdrew a person's turn), so the listener
+    // sends it again.
     // A release while this call still runs answers only once the call returns: a throw is the
     // relay's own to count (its failure notice comes from `createConsumerDelivery`).
     let handing = true;
@@ -2181,6 +2281,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // after the receipt and after every drop above, so no acknowledgement waits on it and no
     // frame nobody sees costs a read. A switch landing in that read must not have this session
     // read one person's message as another conversation, with that conversation's credential.
+    let deletedSince = false;
     if (rendered.cutItem !== undefined) {
       const dispatch = await timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
       const body =
@@ -2188,14 +2289,28 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           ? undefined
           : await wholeCarriedBody(dispatch, rendered.cutItem, session);
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
+      deletedSince = body?.deleted_at !== undefined;
     }
+    // A delivery whose post that read, made as the session the frame names, found deleted since
+    // its event. The render still names the delivery the frame names (`renderInbound`), but none
+    // of the post is left to show, the part the event carried included, and no work is left for
+    // the agent, so the attempt is neither accepted nor answered here, and the inbox lists no
+    // summary of it. The attempt stays as Dispatch recorded it, as a card's attempt does: Dispatch
+    // records it `sent` or `queued` once the listener takes the frame, before this session reads
+    // it (`completeMessageDelivery`, `completeCommentDelivery`), and a delete fails only an attempt
+    // still `pending` (`queueDeletedPostSettlement`,
+    // `packages/envoy/internal/dispatch/api/post_history.go`), so it failed this one only where it
+    // caught the send in flight.
+    // Any other frame of a post deleted since is a card that names the delete (`deleted_at`,
+    // `deleted_by`) with no body.
+    const deletedDelivery = deletedSince ? rendered.delivery : undefined;
     const envelope = rendered.envelope;
     // The Dispatch message a card of this frame delivers to the session, which its `details` name
     // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
     // targeted comment is no message the session's message list holds.
     const deliveredMessage =
       rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
-    if (envelope !== undefined) noteInbox(envelope);
+    if (envelope !== undefined && deletedDelivery === undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
     // nothing waits on it. The record reaches the transcript of the session
@@ -2266,7 +2381,23 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       });
     };
     try {
-      if (rendered.rejectedDelivery !== undefined) {
+      if (deletedDelivery !== undefined) {
+        // No card and no turn of any mode, in the session the frame names or in one the host
+        // moved to during the read: the frame is settled on the session it names (`taken`), whose
+        // ledger records it while that session is the one open here, and the relay answers `done`,
+        // so the listener does not send it again.
+        logger.warn(
+          "envoy: a delivery's post was deleted before this session read it whole; nothing is shown",
+          {
+            addressed: session,
+            attempt: deletedDelivery.attempt,
+            eventID: envelope?.event_id,
+            id: deletedDelivery.id,
+            resource: deletedDelivery.resource,
+          }
+        );
+        await taken();
+      } else if (rendered.rejectedDelivery !== undefined) {
         scrubbedConsole.warn(
           `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );
@@ -2279,8 +2410,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         claim.settle();
       } else if (rendered.delivery?.mode === "btw" && relayed.late === true) {
         // A BTW that arrives late (delivered before, or stored before this connection's epoch
-        // began) never starts a side turn: it is one inert card, as a replayed BTW is, written to
-        // the transcript and done then. Its answer, if any, is on Dispatch.
+        // began) never starts a side turn: it is one inert card, as a replayed BTW is. Its answer,
+        // if any, is on Dispatch. A settled host writes the card at once, and its frame is done
+        // then. A busy host is handed it at its first settled heartbeat. Until then the card's
+        // record in the transcript holds it, and its frame is done once that record is written,
+        // so late BTWs held through a long turn hold no place in the relay (`UnwrittenFrames`).
         noteBtw(identity?.event_id);
         unwritten.sendCard(
           cardSession(),
@@ -2375,15 +2509,19 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // card is then for a session open nowhere here, so it is handed to nobody (`closed`)
           // and its pictures stay unshown, which is what the copy the relay sends that session
           // again carries. A frame that is no delivery has its card in the conversation the
-          // host moved to, the one that took it (`cardSession`).
+          // host moved to, the one that took it (`cardSession`). A `low` card is stored with no
+          // turn (`lowCard`), and one held while the host is busy is handed once it settles.
+          const mode =
+            rendered.delivery?.mode === "aside" ? "aside" : lowCard(rendered) ? "stored" : "card";
           const outcome = unwritten.sendCard(
             cardSession(),
             card.content,
-            rendered.delivery?.mode === "aside" ? "aside" : "card",
+            mode,
             identity,
             claim,
             deliveredMessage
           );
+          if (mode === "stored") checkStoredCards();
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
           const { turn } = accepted;
@@ -2683,7 +2821,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
 
   // Tells the session a gap notice: a card held until the host is settled
   // (`UnwrittenFrames.sendNotice`), which the transcript records held, so a restart holds it
-  // again.
+  // again once the session's store holds that record.
   const tellGapNotice = (notice: ConsumerGapNotice): void => {
     logger.warn(`envoy: ${notice.message}`);
     unwritten.sendNotice(gapNoticeText(notice));
@@ -2710,7 +2848,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             showFailureNotice: async (addressed, notice) => {
               const outcome = showReplayCard(
                 addressed,
-                envoyNoticeText(failureNoticeFields(notice)),
+                failureNoticeText(notice),
                 notice.envelope,
                 btwEvents.has(notice.eventId) ? "inert" : "card"
               );
@@ -3288,10 +3426,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   /** One of this session's messages, on its way to whoever has the session open, tagged with the
    *  Dispatch message a user message delivered when it matches a person's turn this extension sent
    *  in. Only the top-level instance publishes: a `task` subagent's instance never learns a session
-   *  id, and its work reaches the viewer as the parent's tool call anyway. `host` is the session
-   *  the host records the message under, read from the event's own context: this instance's
-   *  `sessionID` trails a move with no event (a rollback) until the next pass, and a message kept
-   *  under it would be replayed to a viewer of a session it is not part of. */
+   *  id, and its work reaches the viewer as the parent's tool call anyway. The host's message
+   *  events record each message, and `handCard` records a stored card, for which the host raises
+   *  no event. `host` is the session the host records the message under, read from the event's
+   *  own context, or the host's own id as a stored card is handed: this instance's `sessionID`
+   *  trails a move with no event (a rollback) until the next pass, and a message kept under it
+   *  would be replayed to a viewer of a session it is not part of. */
   const recordAgentStreamMessage = (message: unknown, streaming: boolean, host: string): void => {
     if (sessionID === "" || host === "") return;
     agentStreamOf(host).record(
@@ -3344,7 +3484,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // the compaction cut off are no longer in any request: the session's shown set becomes what its
   // new live context shows (`liveContext`), replaced rather than added to, so a later read or
   // delivery sends such a picture again. It is the set of the session that compacted, the id its
-  // own tool calls carry, which a task subagent's instance knows too.
+  // own tool calls carry, which a task subagent's instance knows too. A compaction the session
+  // asked for ends no run, so no run's end arms the stored-card check after it: its end arms the
+  // check while a stored card waits, as an automatic compaction's end does below, and a card held
+  // through it is handed once the host is next idle.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
@@ -3354,10 +3497,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       shown,
       transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
     );
+    if (unwritten.waitsOnStored()) checkStoredCards();
   });
+  // An automatic compaction keeps the host busy, and one after a run's end can outlast every check
+  // that end armed (`STORED_CHECKS`). So its end arms the check again while a stored card waits,
+  // and a card held through the compaction is handed once the host is next idle.
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
     refreshAgentStreamContext(eventSessionID(context));
+    if (unwritten.waitsOnStored()) checkStoredCards();
   });
   pi.on("auto_retry_end", async (event) => cardWake.autoRetryEnd(event));
 
@@ -3845,8 +3993,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       // once, since a title write that fails fails the same way at every tick.
       writeHeartbeatTitle(context);
       // A held inert card or notice, or a card the host withdrew unwritten, is handed first,
-      // while the host is settled (`hostSettled`).
+      // while the host is settled (`hostSettled`). A stored card is checked for too, on a settled
+      // host: one held, and one whose session file the host may have written since. A busy host
+      // is checked at its run's end (`agent_end`).
       unwritten.handBackWithdrawn();
+      if (hostSettled() && unwritten.waitsOnStored()) checkStoredCards();
       if (healing) {
         // A pass that has not settled holds the queue, and with it the registration refresh that
         // is its last step. The age is measured from the last registration accepted for the
@@ -4073,15 +4224,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     pi.sendMessage(
       {
         customType: "envoy-message",
-        content: encode({
-          envoy: {
-            notice: "session id changed",
-            previous_session_id: previous,
-            session_id: current,
-            detail:
-              "This conversation now lives under a new session id. Any identity you shared earlier (envoy_whoami output, session ids named in messages) is stale, and peers using the old id cannot reach you. Re-run envoy_whoami before identifying yourself and re-announce the new id to peers you already introduced yourself to.",
-          },
-        }),
+        content: sessionIdChangedText(previous, current),
         display: true,
         details: LOCAL_ENVOY_NOTICE,
       },
@@ -4969,6 +5112,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   pi.on("agent_start", async (_event, context) => {
     runSeq += 1;
     cardWake.agentStart();
+    unwritten.runStarted();
     runUnderAnnouncement =
       announced?.from === context.sessionManager.getSessionId() ? announced : undefined;
   });
@@ -5067,6 +5211,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     endInjectedUserTurns(sessionID);
     // A `pi.sendUserMessage` turn no longer looked for is done with now, found or not.
     await unwritten.textTurnsEnded();
+    // A stored card held while the run went is handed once the host settles, and a stored card
+    // handed before is written once the file holds it: a run that a continuation follows is not
+    // over, so the continuation's end checks instead.
+    if (event.willContinue !== true && unwritten.waitsOnStored()) checkStoredCards();
     // A run that started under a switch's announcement and ended with a reply it was not aborted
     // in, the host still on the session it announced leaving: that switch was cancelled. A fork's
     // run ends after the host moved, which keeps the announcement, and with it the parent's frames.

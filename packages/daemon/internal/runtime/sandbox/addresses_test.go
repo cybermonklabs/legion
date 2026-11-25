@@ -73,48 +73,48 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 		"nothing moved": {},
 		"the worker stream moved": {
 			launched: moveStream,
-			want:     &movedAddress{connectFlag, movedStreamURL, testOptions().StreamURL},
+			want:     &movedAddress{connectFlag, connectFlag, movedStreamURL, testOptions().StreamURL},
 		},
 		"the daemon's API moved": {
 			launched: func(o *Options) { o.DaemonURL = movedDaemonURL },
-			want:     &movedAddress{"LEGION_DAEMON_URL", movedDaemonURL, testOptions().DaemonURL},
+			want:     &movedAddress{"LEGION_DAEMON_URL", "LEGION_DAEMON_URL", movedDaemonURL, testOptions().DaemonURL},
 		},
 		"NATS moved": {
 			launched: func(o *Options) { o.NATSURLs = []string{"nats://192.0.2.9:4222", "nats://192.0.2.10:4222"} },
-			want:     &movedAddress{"ENVOY_NATS_URL", "nats://192.0.2.9:4222,nats://192.0.2.10:4222", "nats://192.0.2.250:4222"},
+			want:     &movedAddress{"ENVOY_NATS_URL", "ENVOY_NATS_URL", "nats://192.0.2.9:4222,nats://192.0.2.10:4222", "nats://192.0.2.250:4222"},
 		},
 		"Envoy moved": {
 			launched: func(o *Options) { o.EnvoyURL = "http://192.0.2.9:9020" },
-			want:     &movedAddress{"ENVOY_URL", "http://192.0.2.9:9020", testOptions().EnvoyURL},
+			want:     &movedAddress{"ENVOY_URL", "ENVOY_URL", "http://192.0.2.9:9020", testOptions().EnvoyURL},
 		},
 		"Dispatch moved": {
 			launched: func(o *Options) { o.DispatchURL = "https://dispatch-old.internal.example" },
-			want:     &movedAddress{"DISPATCH_URL", "https://dispatch-old.internal.example", testDispatchURL},
+			want:     &movedAddress{"DISPATCH_URL", "DISPATCH_URL", "https://dispatch-old.internal.example", testDispatchURL},
 		},
 		"the secrets broker moved": {
 			launched: func(o *Options) { o.AgentSecrets.URL = "https://secrets-old.internal.example" },
-			want:     &movedAddress{"AGENT_SECRETS_URL", "https://secrets-old.internal.example", testBrokerURL},
+			want:     &movedAddress{"AGENT_SECRETS_URL", "AGENT_SECRETS_URL", "https://secrets-old.internal.example", testBrokerURL},
 		},
 		"Dispatch configured only now": {
 			launched: func(o *Options) { o.DispatchURL, o.DispatchToken = "", "" },
-			want:     &movedAddress{"DISPATCH_URL", "(unset)", testDispatchURL},
+			want:     &movedAddress{"DISPATCH_URL", "DISPATCH_URL", "(unset)", testDispatchURL},
 		},
 		"the secrets broker no longer configured": {
 			now:  func(o *Options) { o.AgentSecrets = nil },
-			want: &movedAddress{"AGENT_SECRETS_URL", testBrokerURL, "(unset)"},
+			want: &movedAddress{"AGENT_SECRETS_URL", "AGENT_SECRETS_URL", testBrokerURL, "(unset)"},
 		},
 		"a path change is stale though both names are the same": {
 			launched: func(o *Options) { o.EnvoyURL = "http://192.0.2.9:9020/tenant/old" },
 			now:      func(o *Options) { o.EnvoyURL = "http://192.0.2.9:9020/tenant/new" },
-			want:     &movedAddress{"ENVOY_URL", "http://192.0.2.9:9020", "http://192.0.2.9:9020"},
+			want:     &movedAddress{"ENVOY_URL", "ENVOY_URL", "http://192.0.2.9:9020", "http://192.0.2.9:9020"},
 		},
 		"a moved address is named, never quoted": {
 			now:  func(o *Options) { o.DispatchURL = credentialed },
-			want: &movedAddress{"DISPATCH_URL", testDispatchURL, namedURL(credentialed)},
+			want: &movedAddress{"DISPATCH_URL", "DISPATCH_URL", testDispatchURL, namedURL(credentialed)},
 		},
 		"a moved NATS list is named entry by entry, never split on its commas": {
 			launched: func(o *Options) { o.NATSURLs = commas },
-			want:     &movedAddress{"ENVOY_NATS_URL", namedNATSURLs(commas), "nats://192.0.2.250:4222"},
+			want:     &movedAddress{"ENVOY_NATS_URL", "ENVOY_NATS_URL", namedNATSURLs(commas), "nats://192.0.2.250:4222"},
 		},
 		"an address the kubelet would expand, unmoved": {
 			launched: func(o *Options) { o.EnvoyURL = "http://192.0.2.250:9020/$(HOME)" },
@@ -171,7 +171,7 @@ func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 // An observation's detail names each moved address as `<variable> <held>, now <handed>`, one after
 // another (docs/kubernetes.md, "A pod whose address moved").
 func TestAMovedAddressIsDescribedAsItHoldsThenWhatItIsHandedNow(t *testing.T) {
-	moved := []movedAddress{{connectFlag, "tcp://192.0.2.5:13371", "tcp://192.0.2.7:13371"}, {"ENVOY_URL", "(unset)", "https://envoy.internal.example"}}
+	moved := []movedAddress{{connectFlag, connectFlag, "tcp://192.0.2.5:13371", "tcp://192.0.2.7:13371"}, {"ENVOY_URL", "ENVOY_URL", "(unset)", "https://envoy.internal.example"}}
 	want := "--connect tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371; ENVOY_URL (unset), now https://envoy.internal.example"
 	if got := describeMoved(moved); got != want {
 		t.Fatalf("describeMoved = %q, want %q", got, want)

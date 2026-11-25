@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -125,11 +127,12 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	if got := publisher.topics(); !slices.Equal(got, []string{topic}) {
 		t.Fatalf("the note was published to %q, want once to %q alone", got, topic)
 	}
-	message := publisher.publishes()[0].message
-	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
-		if !strings.Contains(message, part) {
-			t.Fatalf("the note %q does not name %q", message, part)
-		}
+	published := publisher.publishes()[0]
+	kill := memoryKillOf(t, published)
+	if published.message != "memory-kill on "+memoryGuardIssue || kill.Kind != texts.MemoryKill || kill.Issue != memoryGuardIssue ||
+		kill.Cause != texts.KillGuard || kill.Process != "python3" || kill.PID != 4242 ||
+		kill.Size != "812.40 MiB" || kill.PodMemory != "3.13 GiB" || kill.Limit != "4.00 GiB" {
+		t.Fatalf("the note %q carries %+v, want the guard's kill of python3 (pid 4242) at 812.40 MiB, the pod at 3.13 GiB of 4.00 GiB", published.message, kill)
 	}
 
 	// The guard's next kill is another fact, and another note.
@@ -146,10 +149,10 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // The holder applies a kill of the controller's pod as one fact under the kill's own identity, so
 // the same report sent twice is one fact and one controller notice; the outbox's run publishes
 // that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
-// no other topic. The notice's reason is the guard's note whole: the process, its pid, its size,
-// the pod's reading and the limit, then the advice, with no pointer to the controller's skill,
-// which has no section for this notice
-// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// no other topic. The notice names what stopped the process (the guard), the process by its
+// executable, its pid, its size, the pod's reading and the limit as fields, no role, which would
+// be its reader's own, and no reason: what the controller does then is its prompt's, since its
+// skill has no section for this notice (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -188,16 +191,23 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 		t.Fatalf("published %+v, want one notice on %s as memory-guard-kill on LEGION", published, topic)
 	}
 	notice, ok := published[0].payload.(record.Notice)
-	if !ok || notice.Kind != record.MemoryGuardKillNotice || notice.Role != claim.RoleController {
-		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice of the controller", published[0].payload)
+	if !ok || notice.Kind != record.MemoryGuardKillNotice {
+		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice", published[0].payload)
 	}
-	const reason = "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: " +
-		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
-		"Your session and the pod's other processes go on. " +
-		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
-		"or send heavy work where your deployment's instructions say."
-	if notice.Reason != reason {
-		t.Fatalf("the notice's reason is %q, want %q", notice.Reason, reason)
+	raw, err := json.Marshal(notice)
+	if err != nil {
+		t.Fatalf("encode the published notice: %v", err)
+	}
+	var kill texts.MemoryGuardKillRecord
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&kill); err != nil {
+		t.Fatalf("the published notice %s is no memory-guard-kill record: %v", raw, err)
+	}
+	want := texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: "LEGION"},
+		Cause: texts.KillGuard, Process: "python3", PID: 4242, Size: "812.40 MiB", PodMemory: "3.13 GiB", Limit: "4.00 GiB"}
+	if kill != want {
+		t.Fatalf("the published notice is %s, want the guard's kill of python3 (pid 4242) at 812.40 MiB, the pod at 3.13 GiB of 4.00 GiB: %+v", raw, want)
 	}
 }
 
@@ -236,11 +246,23 @@ func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *t
 	if err := runner.execute(ctx, rows[0]); err != nil {
 		t.Fatalf("run the note's row: %v", err)
 	}
-	message := publisher.publishes()[0].message
-	if !strings.HasPrefix(message, "The pod's kernel stopped one of your processes because the pod ran out of memory: `python3` (pid 4242)") ||
-		strings.Contains(message, "SIGKILL") {
-		t.Fatalf("the note is %q, want the kernel's note of `python3` (pid 4242), not the guard's", message)
+	if kill := memoryKillOf(t, publisher.publishes()[0]); kill.Cause != texts.KillKernel || kill.Process != "python3" || kill.PID != 4242 {
+		t.Fatalf("the note carries %+v, want the kernel's kill of python3 (pid 4242), not the guard's", kill)
 	}
+}
+
+// memoryKillOf is the memory-kill record a role message's publish carried.
+func memoryKillOf(t *testing.T, published outboxPublish) texts.MemoryKillRecord {
+	t.Helper()
+	raw, err := json.Marshal(published.payload)
+	if err != nil {
+		t.Fatalf("encode the published payload %#v: %v", published.payload, err)
+	}
+	var kill texts.MemoryKillRecord
+	if err := json.Unmarshal(raw, &kill); err != nil {
+		t.Fatalf("decode the published memory-kill %s: %v", raw, err)
+	}
+	return kill
 }
 
 // A holder the boot never bound has no fact path, and says so to the launcher session, which logs

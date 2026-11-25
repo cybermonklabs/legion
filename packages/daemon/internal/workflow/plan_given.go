@@ -215,7 +215,7 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if !written.started {
 		return e.waitForFirstStep(ctx, tx, issue, w, reason)
 	}
-	return e.restartTask(ctx, tx, issue, w, reason)
+	return e.restartTask(ctx, tx, issue, w, reason, PhaseMove{Restarted: RestartedByPlan, PlanVersion: fact.Plan.Version, StoppedTasks: written.stopped})
 }
 
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after

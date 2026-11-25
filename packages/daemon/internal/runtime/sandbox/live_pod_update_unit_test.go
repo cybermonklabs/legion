@@ -96,7 +96,7 @@ func TestTheMovedShapeDriftsByItsDiskAlone(t *testing.T) {
 			s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
 				Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
 			}}}
-			if drifted := podShapeDrift(s, held); !slices.Equal(drifted, []string{reason}) {
+			if drifted := reasonsOf(podShapeDrift(s, held)); !slices.Equal(drifted, []string{reason}) {
 				t.Fatalf("podShapeDrift of the moved shape = %q, want the one reason the check holds it to, %q", drifted, reason)
 			}
 		})
@@ -194,7 +194,7 @@ func TestOneMovedShapeDriftsEveryPodBuiltFromTheHeldOne(t *testing.T) {
 		s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
 			Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
 		}}}
-		if drifted := podShapeDrift(s, held); !slices.Equal(drifted, []string{reason}) {
+		if drifted := reasonsOf(podShapeDrift(s, held)); !slices.Equal(drifted, []string{reason}) {
 			t.Fatalf("%s's pod drifts by %q after the one change, want the one reason %q every pod of the fleet reads", issue, drifted, reason)
 		}
 	}
@@ -209,7 +209,7 @@ func TestOneMovedShapeDriftsEveryPodBuiltFromTheHeldOne(t *testing.T) {
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
 		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
 	}}}
-	if drifted := podShapeDrift(s, string(otherEncoded)); slices.Equal(drifted, []string{reason}) {
+	if drifted := reasonsOf(podShapeDrift(s, string(otherEncoded))); slices.Equal(drifted, []string{reason}) {
 		t.Fatalf("a pod built from another configuration reads the one fleet reason %q, so the check could not tell the two apart", reason)
 	}
 }

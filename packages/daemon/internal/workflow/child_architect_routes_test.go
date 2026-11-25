@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The CI message of a child goes to the architect that owns the child, as its phase's notices do
@@ -69,10 +70,14 @@ func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 			}
 
 			applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
-			body := toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")
-			want := []record.RoleMessage{{Role: token(tc.owner, claim.RoleArchitect), Body: body}}
+			settled := texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: child}, PullRequest: "sjawhar/legion#42",
+				Head: "head", Phase: tc.at, NotPassed: []texts.CheckConclusion{failed("unit")}, Passed: 1, ListPassed: "gh pr checks 42 --repo sjawhar/legion"}
+			told := func(issue string, role claim.Role) roleTold {
+				return roleTold{Role: token(issue, role), Urgency: texts.UrgencyOf(texts.CISettled, role, texts.Variant{Phase: tc.at}), Record: settled}
+			}
+			want := []roleTold{told(tc.owner, claim.RoleArchitect)}
 			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: token(child, role), Body: body})
+				want = append(want, told(child, role))
 			}
 			assertRoleMessages(t, pool, child, want)
 			assertRoleMessages(t, pool, root, nil)

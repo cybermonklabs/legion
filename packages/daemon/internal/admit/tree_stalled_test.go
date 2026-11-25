@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // minimalDeployment is the smallest legion.yaml that loads, under this package's own project
@@ -232,11 +233,13 @@ func settleMovements(t *testing.T, pool *pgxpool.Pool, keys ...string) time.Time
 	return settled
 }
 
-// stalledNotice is one tree-stalled notice as these tests read it: the root it names and the
-// reason it carries.
+// stalledNotice is one tree-stalled notice as these tests read it: the root it names, how long
+// its tree has been quiet, and each member with its phase, the role whose turn it is and its pull
+// request.
 type stalledNotice struct {
-	issue  string
-	reason string
+	issue    string
+	quietFor string
+	members  []texts.TreeMember
 }
 
 // stalledNotices is every tree-stalled notice in the outbox, oldest first. The other rows a
@@ -249,7 +252,10 @@ func stalledNotices(t *testing.T, pool *pgxpool.Pool) []stalledNotice {
 		if !isNotice || notice.Kind != record.TreeStalledNotice {
 			continue
 		}
-		told = append(told, stalledNotice{issue: row.issue, reason: notice.Reason})
+		if notice.Reason != "" {
+			t.Fatalf("the tree-stalled notice of %s carries the reason %q, want its facts alone", row.issue, notice.Reason)
+		}
+		told = append(told, stalledNotice{issue: row.issue, quietFor: notice.QuietFor, members: notice.Members})
 	}
 	return told
 }
@@ -343,19 +349,15 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 
 	tick(t, pool, admission, "stall-1")
 
-	toldOf := func(root string, hours float64, lines ...string) stalledNotice {
-		reason := fmt.Sprintf("%s has stopped. The tree has been quiet for %.1f hours. No agent of the tree is at work.", root, hours)
-		for _, line := range lines {
-			reason += "\n" + line
-		}
-		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
-			" You can ask a role what it waits on. You can park the tree."}
+	toldOf := func(root string, quiet time.Duration, members ...texts.TreeMember) stalledNotice {
+		return stalledNotice{issue: root, quietFor: quiet.String(), members: members}
 	}
 	want := []stalledNotice{
-		toldOf(stalledRootA, 7,
-			stalledRootA+" is in implementing. The implementer has the turn. Pull request 41 is open.",
-			stalledChildA+" is in merging. The merger has the turn. Pull request 42 is merged."),
-		toldOf(stalledRootB, 7, stalledRootB+" is in retro. The implementer has the turn. Pull request 43 is merged."),
+		toldOf(stalledRootA, 7*time.Hour,
+			texts.TreeMember{Key: stalledRootA, Phase: phase.Implementing, Turn: claim.RoleImplementer, PullRequest: "acme/widgets#41", PullRequestState: "open"},
+			texts.TreeMember{Key: stalledChildA, Phase: phase.Merging, Turn: claim.RoleMerger, PullRequest: "acme/widgets#42", PullRequestState: "merged"}),
+		toldOf(stalledRootB, 7*time.Hour,
+			texts.TreeMember{Key: stalledRootB, Phase: phase.Retro, Turn: claim.RoleImplementer, PullRequest: "acme/widgets#43", PullRequestState: "merged"}),
 	}
 	if got := stalledNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the controller was told %#v, want %#v", got, want)
@@ -411,8 +413,8 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	impatient.UseStalledTreeNotice(deploymentBound(t, "stalled_tree_notice_hours: 2\n"))
 	impatient.now = func() time.Time { return fourHoursQuiet }
 	tick(t, pool, impatient, "stall-6")
-	want = []stalledNotice{toldOf(movingRoot, 4,
-		movingRoot+" is in implementing. The implementer has the turn. The record holds no pull request.")}
+	want = []stalledNotice{toldOf(movingRoot, 4*time.Hour,
+		texts.TreeMember{Key: movingRoot, Phase: phase.Implementing, Turn: claim.RoleImplementer})}
 	if got := stalledNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the two-hour deployment was told %#v, want %#v: the bound is the deployment's own number", got, want)
 	}
@@ -870,15 +872,9 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		tick(t, deadPool, deadAdmission, "deadlocked")
 
-		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
-		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-			" You can park the tree."
 		wantDeadlocked := []stalledNotice{
-			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
-				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},
-			{issue: deadParent, reason: deadParent + " has stopped. " + stillness + "\n" + deadParent +
-				" is in admitted. No role works this phase. The record holds no pull request.\n" + deadChild +
-				" is in admitted. No role works this phase. The record holds no pull request." + decide},
+			{issue: deadAwaiting, quietFor: "7h0m0s", members: []texts.TreeMember{{Key: deadAwaiting, Phase: phase.AwaitingPerson}}},
+			{issue: deadParent, quietFor: "7h0m0s", members: []texts.TreeMember{{Key: deadParent, Phase: phase.Admitted}, {Key: deadChild, Phase: phase.Admitted}}},
 		}
 		if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
 			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named save one that waits on work outside it, and no member here does",

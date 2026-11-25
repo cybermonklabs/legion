@@ -1,12 +1,12 @@
 kind: Changed
 body: |-
-  The notice a resumed worker gets when its workspace was recreated says, in the daemon's own words,
-  that the idle release does not take a pod whose workspace holds a commit on a working copy or a
-  bookmark that no remote branch or tag holds, or a working-copy change; that a workspace made again
-  holds what was pushed to the issue's branch; and that a commit no working copy and no bookmark
-  reaches, such as a side head, is not kept. It no longer has a variant that says unpushed work was
-  saved and put back: the daemon keeps no copy of a workspace, and `LEGION_WORKSPACE_RESTORED` is no
-  longer read.
+  The notice a resumed worker gets when its workspace was recreated names the issue and its branch,
+  and the role prompt's passage on it says, in the daemon's own words, that the idle release does
+  not take a pod whose workspace holds a commit on a working copy or a bookmark that no remote
+  branch or tag holds, or a working-copy change; that a workspace made again holds what was pushed
+  to the issue's branch; and that a commit no working copy and no bookmark reaches, such as a side
+  head, is not kept. The notice no longer says whether unpushed work was saved and put back: the
+  daemon keeps no copy of a workspace, and `LEGION_WORKSPACE_RESTORED` is no longer read.
 time: 2026-11-21T16:00:02Z
 custom:
   Issue: idle-release-keeps-no-workspace

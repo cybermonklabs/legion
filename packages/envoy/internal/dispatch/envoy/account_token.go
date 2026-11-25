@@ -217,11 +217,18 @@ func (c *Client) presentsIdentity() bool {
 }
 
 // authorize sets the bearer a call presents: Dispatch's identity token (listenerIdentity), or the
-// shared token, or none; the shared token alone when shared is set (do's fallback). A failure is
-// ErrAccountToken, and the call is not made.
-func (c *Client) authorize(request *http.Request, shared bool) error {
+// shared token, or none; the shared token alone when shared is set (do's fallback). The identity
+// token is fetched within window, the deadline of the call's window (Client.window), where it is
+// not the zero time. A failure is ErrAccountToken, and the call is not made.
+func (c *Client) authorize(request *http.Request, shared bool, window time.Time) error {
 	if c.identity != nil && !shared {
-		token, err := c.identity.token(request.Context(), time.Now())
+		ctx := request.Context()
+		if !window.IsZero() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, window)
+			defer cancel()
+		}
+		token, err := c.identity.token(ctx, time.Now())
 		if err != nil {
 			return err
 		}

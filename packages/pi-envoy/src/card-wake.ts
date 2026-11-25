@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { daemonSent, type RenderInboundResult } from "@legion/envoy-client/delivery";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type {
   AutoCompactionEndEvent,
@@ -6,13 +7,15 @@ import type {
   PiApi,
   SessionContext,
 } from "@legion/pi-shared/pi-types";
+import { unreadMessagesText } from "./envoy-notices";
 
 /**
  * How an Envoy card is delivered, and the wake for a card the host folds into the context with no
  * turn.
  *
  * Every card goes as an aside with `triggerTurn`, busy host or idle, outside the startup phase
- * (below). The host takes every queued aside at its next step boundary (`IrcBridge.drainPending`),
+ * (below), apart from a `low` card (below). The host takes every queued aside at its next step
+ * boundary (`IrcBridge.drainPending`),
  * and an idle host starts a turn for a `triggerTurn` aside, in plan mode and after an earlier
  * interrupt too, unless the person interrupts after the send (Oh My Pi v18.12.2-sami.20261027 and
  * later, `agent-session.ts` `#dispatchCustomMessage`'s `turnRequested`); one that turned busy in
@@ -23,6 +26,20 @@ import type {
  * step. A steer handed to a host seen idle is no exception: the host reads `isIdle` here, at the
  * hand-off, and checks `isStreaming` only after its own awaits, so of several cards handed
  * together to an idle host the first starts the run and the rest join the steering queue.
+ *
+ * A `low` card (`lowCard`) is a card whose reader can act on it at its next turn: a card of the
+ * daemon (source `agent` and no `source_session`) or of a Dispatch event, whose envelope says
+ * `low`. A Dispatch event that Dispatch delivers to the session (a message or a mention, which
+ * carries `delivery`) is not one, and neither is an ask's event (`ask.*`). A `low` card starts no
+ * turn: it goes as `nextTurn` with no `triggerTurn`. An idle host appends such a card to the
+ * context and to the session file at once, with no turn and no `message_end` (`agent-session.ts`
+ * `sendCustomMessage`, its idle `nextTurn` branch). A busy host keeps it in memory only, and a turn
+ * that a card starts does not take it. So the extension hands a `low` card only to a settled host
+ * (`UnwrittenFrames`, the `stored` hand-over). The card's `details` record the urgency that the
+ * hand-over applied and the hand-over state `inert`, and carry no card id. No `message_end` arms a
+ * check for it, so it is in no startup set, it is owed no wake after a start turn, and
+ * `unreadCards` never counts it. A `low` card that comes while the session starts gets no wake.
+ * The next turn reads it, whatever starts that turn.
  *
  * The host folds an aside left over when a run settles (one taken after the run's last step,
  * during its post-run maintenance or auto-compaction) into the context with no turn when the
@@ -217,14 +234,45 @@ type EnvoyCardEntryMarker = {
  *  - `prompt-setup`: the host was busy with no run, setting a prompt up or settling after one, so
  *    the card is never woken;
  *  - `idle`: the host was idle with the startup phase over, so the card starts its own turn;
- *  - `inert`: an inert card (a replayed BTW, or a failure notice naming one), which the extension
- *    hands a settled host as a steer rather than through this module;
+ *  - `inert`: a card that starts nothing on a settled host: an inert card (a replayed BTW, or a
+ *    failure notice naming one), which the extension hands as a steer rather than through this
+ *    module, or a `low` card, which goes as `nextTurn` with no turn (`StoredCardMarker`);
  *  - `unknown`: the host's context reports no idle state, so no state of it can be read. */
 export type CardHandOver = "startup" | "run-active" | "prompt-setup" | "idle" | "inert" | "unknown";
 
 /** What a card this module hands over carries in its `details`: the marker above, and the host
  *  state at the hand-over, which every card handed over since that state was added has. */
 export type EnvoyCardMarker = EnvoyCardEntryMarker & { readonly handOver: CardHandOver };
+
+/** What a `low` card carries in its `details`: the hand-over state `inert`, since the extension
+ *  hands it only to a settled host, where it starts nothing, and the urgency that hand-over
+ *  applied, under a key of its own. No card id: no `message_end` comes for it, so the wake has
+ *  nothing to track. */
+export type StoredCardMarker = { readonly handOver: "inert"; readonly urgency: "low" };
+
+/** How a card goes to the host, as `UnwrittenFrames` names it (`inert` apart, which the
+ *  extension hands itself): `card`, a card; `aside`, a targeted Aside; `stored`, a `low` card. */
+export type CardMode = "card" | "aside" | "stored";
+
+/** Whether a rendered card is `low`: the daemon's (`daemonSent`: source `agent`, no session in
+ *  `source_session` or in the sender stamp) or a Dispatch event's that is no message or mention
+ *  Dispatch delivers to the session (no `delivery`) and no ask's (`ask.*`), with an envelope that
+ *  says `low`. Every other card is delivered whatever its urgency: one from another session, and an
+ *  ask's card, since a Dispatch that copies an ask's urgency onto its envelope must hold no answer
+ *  back. */
+export function lowCard(
+  card: Pick<RenderInboundResult, "envelope" | "delivery" | "dispatchType">
+): boolean {
+  const { envelope } = card;
+  if (envelope?.urgency !== "low") return false;
+  if (daemonSent(envelope)) return true;
+  return (
+    envelope.source === "dispatch" &&
+    card.delivery === undefined &&
+    card.dispatchType !== undefined &&
+    !card.dispatchType.startsWith("ask.")
+  );
+}
 
 /** The card marker a host message's or a branch entry's `details` carries; undefined for none. A
  *  record written before the hand-over state was added carries no `handOver`, so this reads none:
@@ -252,9 +300,9 @@ export interface CardWakeContext {
 
 /** How one card goes to the host: `pi.sendMessage`'s options, and the marker for its `details`. */
 export interface CardDelivery {
-  readonly deliverAs: "aside" | "followUp";
+  readonly deliverAs: "aside" | "followUp" | "nextTurn";
   readonly triggerTurn: boolean;
-  readonly details: EnvoyCardMarker;
+  readonly details: EnvoyCardMarker | StoredCardMarker;
 }
 
 export interface CardWakeDeps {
@@ -368,14 +416,24 @@ export class CardWake {
   }
 
   /**
-   * How to send a card that is a targeted Aside or not, given the context of the session it goes
-   * into. A startup card is recorded unseen here, before the host has it: a send that throws
-   * leaves an entry, which `STARTUP_CARD_CAP_MS` clears.
+   * How to send a card of `mode` (a card, a targeted Aside, or a `low` card to store), given the
+   * context of the session it goes into. A startup card is recorded unseen here, before the host
+   * has it: a send that throws leaves an entry, which `STARTUP_CARD_CAP_MS` clears. A `low` card
+   * is no startup card, in the startup phase or after it: it goes as `nextTurn` with no turn, which
+   * the host stores with no `message_end`, so the wake neither waits for it nor counts it.
    */
-  deliveryFor(targetedAside: boolean, context: CardWakeContext | undefined): CardDelivery {
+  deliveryFor(mode: CardMode, context: CardWakeContext | undefined): CardDelivery {
     const idle = context?.isIdle?.();
     // An idle host has no run, whatever end of it no extension was told of.
     if (idle === true) this.#runActive = false;
+    if (mode === "stored") {
+      return {
+        deliverAs: "nextTurn",
+        triggerTurn: false,
+        details: { handOver: "inert", urgency: "low" },
+      };
+    }
+    const targetedAside = mode === "aside";
     const startup =
       this.#startupPhase &&
       idle === true &&
@@ -577,14 +635,13 @@ export class CardWake {
     this.#owed.clear();
     this.#startupPhase = false;
     if (unread === 0) return;
-    // Worded for a session that has had no turn yet too: a startup card's wake may be its first.
+    // The count is the wake's one fact. The step the session takes on it is in envoy_inbox's
+    // description (`@legion/envoy-client/tool-contract`), as `./envoy-notices.ts` says, and a
+    // startup card's wake may be the session's first turn.
     this.#deps.sendMessage(
       {
         customType: "envoy-message",
-        content:
-          unread === 1
-            ? "1 Envoy message above arrived with no turn to read it: read it and act on it."
-            : `${unread} Envoy messages above arrived with no turn to read them: read them and act on them.`,
+        content: unreadMessagesText(unread),
         display: false,
         details: LOCAL_ENVOY_NOTICE,
       },

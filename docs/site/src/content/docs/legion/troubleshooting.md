@@ -520,7 +520,8 @@ JSON log names the issue and the root on each of these lines:
   `controller_told`): the root's status changed after a person approved its spec, so the approval
   queues nothing. `approval_seq` is the Dispatch event of the approval, and `status_change_seq` is
   the later event that changed the status. `controller_told=true` says that the controller also
-  got a parked decision whose reason says this. For a root the daemon does not record,
+  got a parked decision that says this in its fields (`not_queued`, `approval_seq`,
+  `status_change_seq`, `status`, `set_todo`). For a root the daemon does not record,
   `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
@@ -629,12 +630,13 @@ reaches six is told.
 **When the memory guard of the controller's own pod ends one of the controller's programs**, the
 controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
 `tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
-notice names the program by its executable, with none of its arguments, and its pid, the memory
-it held, the pod's reading and the pod's limit. The controller's session and the pod's other
+notice names, as fields, what stopped the program (`cause: guard`), the program by its executable,
+with none of its arguments (`process`), its `pid`, the memory it held (`size`), the pod's reading
+(`pod_memory`) and the pod's limit (`limit`). The controller's session and the pod's other
 processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
-sends twice is still one notice. The notice's own reason tells the controller what to do: not to
-run the same program again unchanged, but to bound its output or send heavy work where the
-deployment's instructions say. An `eval` cell of the controller that answered
+sends twice is still one notice. The controller's prompt tells it what to do: not to run the same
+program again unchanged, but to bound its output or send heavy work where the deployment's
+instructions say. An `eval` cell of the controller that answered
 `Kernel died during execution; completion is uncertain` at that moment is that kill.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
@@ -1067,11 +1069,12 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     phase twice.
   - **`suspendedBy: operator`, otherwise:** deliver its phase's resume task. An operator's
     delivery resumes the claim and hands it the task. The task is the one the workflow gives a
-    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them:
+    worker resuming its phase, a `phase-resume` record of one field to a line: its kind, then the
+    issue's key, title and phase as `legion state` shows them:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
-      --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
+      --task $'kind: phase-resume\nissue: WIDGETS-12\ntitle: <title>\nphase: implementing'
     ```
 
 - **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
@@ -1484,26 +1487,28 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   A suspension that lands over a process the daemon had already found gone, as a fresh session
   over a dead role does, records the death in the runtime's words, not the suspension. The claim
   records it (the `ended_work` column of its row), and the first prompt the next process is sent
-  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
-  none, alone
+  carries a `relaunch-note` naming it, a record of the `cause`, whether a turn was cut off
+  (`in_turn`, and `task_turn` where it was the task's turn), the background work that stopped
+  (`stopped`, `background`) and whether a report covers the last turn (`reported`): in front of
+  the task the claim holds, or, for a claim that holds none, alone
   in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
   daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
   newer task replaces while no prompt of it is outstanding). That delivery is also given when the
   claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
   an older daemon queued for an update round, or a root architect's held task names nothing any
   more. A root
-  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
-  in front of its start message. Every turn cut off is told that its subagents and background
-  jobs are gone. A process whose newest activity report is older than the start of its last
-  turn is told the background work that report named, and that the daemon has no report of what
-  that turn started. A process in no turn that has no report of its last turn (it left no report,
-  or only one older than that turn) is told that the daemon has no report of the background work
-  of its last turn, and so that every subagent and background job it started is gone. Nothing to
-  do; the agent checks what that work did before it repeats it.
+  architect's catch-up carries the same facts in its `relaunch` field, and the daemon-launched
+  controller reads the note in front of its start message. Every turn cut off is told that its
+  subagents and background jobs are gone. A process whose newest activity report is older than
+  the start of its last turn is told the background work that report named, and that the daemon
+  has no report of what that turn started. A process in no turn that has no report of its last
+  turn (it left no report, or only one older than that turn) is told that the daemon has no report
+  of the background work of its last turn, and so that every subagent and background job it
+  started is gone. Nothing to do; the agent checks what that work did before it repeats it.
 - **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
   **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
   at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
-  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  confirms a prompt that carried its note, and never when Oh My Pi only acknowledges the
   prompt, since it can acknowledge and then answer busy. Nothing to do.
 - **`supervise: the confirmation of the prompt that told the agent what became of its earlier
   work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
@@ -1512,13 +1517,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
   or the process ended in a turn that confirmed the task before the prompt's result came (while
   its send was in flight or it waited on its result), since only that result says the turn was
-  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  the prompt's. The record is untold again, and the next prompt carries the note. Nothing to
   do.
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,
   and the record of the old process's end is marked told with no prompt. A record written later,
-  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  of the fresh session's own process, is told after the abandoned session's note, in the
   same prompt. Nothing to do.
 - **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
   record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
@@ -1555,11 +1560,15 @@ These arrive as messages on the Dispatch issue:
   role's own topic, and posted this record of it. Nothing is held: the phase the move opened
   started its worker, and each role answers in its own turn. No hook writes to an architect: the
   daemon's own wake to an architect is a notice.
-- **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
-  conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
-  of the issue's current phase and the implementer, and judges none of them. Re-run a check that
-  failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
-  holds the merge under the base branch's own required checks.
+- **A red check.** Nothing moves for it. The daemon names each check that failed or was cancelled,
+  with the conclusion GitHub gave it, counts the checks that passed and names the `gh pr checks`
+  command that lists them, in one message each to the architect that owns the issue, the worker
+  of the issue's current phase and the implementer, and judges none of them. That message is `med`
+  for the worker that holds the issue's current phase, and `low` for each other reader, which
+  reads it at its next turn. Where no worker holds the phase (`admitted`, `accepting`, `held`,
+  `awaiting_person`), it is `med` for the architect. Re-run a check that failed on itself, have
+  the implementer fix code that is at fault, or leave it to GitHub, which holds the merge under
+  the base branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

@@ -570,30 +570,19 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 // and the task the sweep sends it names the phase it stands in now and the run that hand-over
 // carried it into (dispatch://INFRA-2614 R3, R5). The record holds no fact that says the root
 // still stands in the phase that came with it — the hand-over row names no phase
-// (workflow.ArchitectCarried) — so the task says what holds of a root in its carried phase and
-// of one that has moved on in that same run, and never that the phase it stands in is the one
-// the carry put it in. The gate clause is the hand-over row's own
-// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
-// its linger comes with no gate.
+// (workflow.ArchitectCarried) — so the task's phase is the one it stands in, whether that is the
+// phase that came with it or one it has moved on to in that same run. The gate is the hand-over
+// row's own (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was
+// reopened in its linger comes with no gate.
 func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		stands      phase.Phase
 		gateCarried bool
-		says        string
 	}{
-		{
-			name: "the phase that came with it", stands: phase.Implementing, gateCarried: true,
-			says: "stands in implementing, in the run a hand-over carried it into, with the design gate that hand-over brought.",
-		},
-		{
-			name: "a phase of that run it has moved on to", stands: phase.Testing, gateCarried: true,
-			says: "stands in testing, in the run a hand-over carried it into, with the design gate that hand-over brought.",
-		},
-		{
-			name: "a phase of that run it has moved on to, with no gate carried", stands: phase.Testing,
-			says: "stands in testing, in the run a hand-over carried it into, and that hand-over brought no design gate.",
-		},
+		{name: "the phase that came with it", stands: phase.Implementing, gateCarried: true},
+		{name: "a phase of that run it has moved on to", stands: phase.Testing, gateCarried: true},
+		{name: "a phase of that run it has moved on to, with no gate carried", stands: phase.Testing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -610,12 +599,8 @@ func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 				t.Fatalf("the architect starts of %s = %+v, want the one carrying the work of entry %d: a carried root is inside "+
 					"the reach in every phase of the run that carried it", root, starts, seededEntry)
 			}
-			if !strings.Contains(starts[0].task, tc.says) {
-				t.Fatalf("the task sent to %s = %q, want it to say %q", root, starts[0].task, tc.says)
-			}
-			if strings.Contains(starts[0].task, "the phase a hand-over carried it in at") {
-				t.Fatalf("the task sent to %s = %q; it names the phase it stands in as the phase the hand-over carried it in at, "+
-					"which the record does not say", root, starts[0].task)
+			if want := []string{workflow.ArchitectCarriedPhaseLabel, "phase: " + string(tc.stands), fmt.Sprintf("gate_carried: %t", tc.gateCarried)}; !hasLines(starts[0].task, want...) {
+				t.Fatalf("the task sent to %s = %q, want the lines %q", root, starts[0].task, want)
 			}
 		})
 	}

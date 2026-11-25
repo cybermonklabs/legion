@@ -58,7 +58,9 @@ const SAFE_CODE = /^[A-Z][A-Z0-9_]*$/;
  * The host state pi-envoy stamps on a card it hands the host, as the `handOver` field of the
  * `details` the host persists with the message. It is printed only in this shape, a lower-case
  * word of letters and hyphens, starting with a letter and at most 20 long, so no message text
- * ever is, and a state the plugin adds later prints as it stands.
+ * ever is, and a state the plugin adds later prints as it stands. A card handed with no turn is
+ * `inert`: a `low` card of the daemon or of a Dispatch event is one, which the plugin stores for
+ * the session's next turn, so its wait runs until something else starts a turn.
  */
 const SAFE_STATE = /^[a-z][a-z-]{0,19}$/;
 /**
@@ -95,7 +97,10 @@ arrivals no assistant message ever answered, which are no measured wait, and a v
 
 The plugin's own notices, and the wake it sends itself, are no Envoy message from another
 session: they are in no count and on no line, and no wait is measured for them. A card the
-plugin wrote before it stamped the host state prints that state as unstamped.
+plugin wrote before it stamped the host state prints that state as unstamped. A card the plugin
+handed with no turn prints inert: a low card of the daemon or of a Dispatch event is one, which
+the plugin stores for the session's next turn, so its wait runs until something else starts a
+turn.
 
 A wait runs from the message's own arrival, which its record's timestamp gives, to the first
 assistant message written after that record. Oh My Pi writes the record when the session folds
@@ -444,8 +449,9 @@ function report(measurement: Measurement, options: Options): string[] {
     "each line below: the wait, the arrival, the calls open at the arrival (the calls the " +
       "verdict turns on), the call that took the longest part of the wait, the host state when " +
       "the plugin handed the card over, and the session; the plugin's own notices and its own " +
-      "wake are in no count and on no line, and a card written before the plugin stamped the " +
-      "state prints unstamped",
+      "wake are in no count and on no line, a card written before the plugin stamped the " +
+      "state prints unstamped, and a card handed with no turn, a stored low card among them, " +
+      "prints inert",
   ];
   const groups = [
     [

@@ -430,14 +430,14 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.answered",
 			file:    "dispatch/ask-answered.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "human"},
-				Mark: mark(9, "2026-09-23T00:46:34Z")},
+				Mark: mark(9, "2026-09-23T00:46:34Z"), Words: &record.ActWords{By: "user:human", At: mark(9, "2026-09-23T00:46:34Z").At}},
 		},
 		{
 			name:    "Dispatch ask resolved (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.resolved",
 			file:    "dispatch/ask-resolved.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", Kind: "question", State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-architect"},
-				Mark: mark(10, "2026-09-23T00:46:35Z")},
+				Mark: mark(10, "2026-09-23T00:46:35Z"), Words: &record.ActWords{By: "session:session-architect", At: mark(10, "2026-09-23T00:46:35Z").At}},
 		},
 		// A hand-on moves which person's Inbox the ask sits in, and no root waits on a person,
 		// so the daemon reads the type by ignoring it (decode.go's default arm): no fact, no
@@ -454,6 +454,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/ask-resolved-declined.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "9f2b7c41-6d0a-4e3b-8c57-1ab2d3e4f506", Kind: "question", State: "resolved",
 				Decline: &record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords},
+				Words:   &record.ActWords{Text: "The vendor owns that date; I do not.", By: "user:human", At: mark(13, "2026-09-23T00:46:38Z").At},
 				Actor:   dispatch.Actor{Kind: "user", ID: "human"}, Mark: mark(13, "2026-09-23T00:46:38Z")},
 		},
 		{
@@ -461,14 +462,16 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			subject: "notifications.dispatch.issue.CAPTURE-4.comment.created",
 			file:    "dispatch/comment-ask-agent.json",
 			want: DispatchAskReply{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", WaitingOn: "agent", Actor: dispatch.Actor{Kind: "user", ID: "human"},
-				Mark: mark(7, "2026-09-23T00:46:32Z"), Comment: "4c4b2a5f-93df-4aeb-a2ca-b5c74187c8bf"},
+				Mark: mark(7, "2026-09-23T00:46:32Z"), Comment: "4c4b2a5f-93df-4aeb-a2ca-b5c74187c8bf",
+				Words: &record.ActWords{By: "user:human", At: mark(7, "2026-09-23T00:46:32Z").At}},
 		},
 		{
 			name:    "Dispatch ask reply leaving the turn with the human (hand-built)",
 			subject: "notifications.dispatch.issue.CAPTURE-4.comment.created",
 			file:    "dispatch/comment-ask-human.json",
 			want: DispatchAskReply{Key: "CAPTURE-4", Ask: "6c83cb7f-8f4e-4820-9e05-7c94fa725007", WaitingOn: "human", Actor: dispatch.Actor{Kind: "session", ID: "session-architect"},
-				Mark: mark(8, "2026-09-23T00:46:33Z"), Comment: "65f690c1-bd91-4a42-81aa-aaf136fcc51c"},
+				Mark: mark(8, "2026-09-23T00:46:33Z"), Comment: "65f690c1-bd91-4a42-81aa-aaf136fcc51c",
+				Words: &record.ActWords{By: "session:session-architect", At: mark(8, "2026-09-23T00:46:33Z").At}},
 		},
 		{
 			name:    "Dispatch issue claimed (hand-built)",
