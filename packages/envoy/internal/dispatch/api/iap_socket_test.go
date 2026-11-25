@@ -116,9 +116,7 @@ func (k iapSocketKeys) pastExpiry(t *testing.T, header http.Header) time.Time {
 // assertion expires. The sockets' read deadlines run on a fake no one moves (liveSocketClock), so
 // no pong the runner holds back ends a socket.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
-	// Not parallel: both sockets must answer the server's ping inside the 200 ms heartbeat's
-	// window to stay open, and among this package's parallel tests under the race detector a
-	// client read goroutine missed it and the control socket was cut with 1006.
+	t.Parallel()
 	database := storetest.Open(t)
 	judged := clocktest.New(time.Now())
 	iap := newIAPSocketKeys(t, database, judged)

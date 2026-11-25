@@ -282,8 +282,8 @@ func suggestionsBehindLock(
 	callDeps := deps
 	callDeps.Store = callStore
 	clock := clocktest.New(lockedCheckStart)
+	callDeps.Clock = clock
 	srv := directServer(callDeps)
-	srv.clock = clock
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
@@ -360,8 +360,8 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 
 // spentRelatedAllowance is the allowance a case gives the related-item check when its outcome is
 // that no check was made: one already spent, which relatedBounds ends before it returns
-// (boundedByClock), so the check reads nothing on any machine. A positive allowance, however
-// small, arms a timer instead, which races
+// (WithTimeoutCause, on either clock), so the check reads nothing on any machine. A positive
+// allowance, however small, arms a timer instead, which races
 // the check's first read on a machine whose clock moves in coarse steps, and whichever won would be
 // the machine's choice.
 const spentRelatedAllowance = -time.Nanosecond

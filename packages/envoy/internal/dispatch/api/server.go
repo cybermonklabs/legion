@@ -236,8 +236,11 @@ type Deps struct {
 	// windows (mentionLookupTimeout, the listener client's window), the take-over's tries
 	// (takeoverRetry), the related-item check's allowance (relatedBounds), an agent view's wait
 	// for its replay (agentStreamReplayTimeout) and the time each access-log line records
-	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. Nil, which every
-	// deployment leaves it, is clock.Real(); a test passes a clocktest.Fake and moves it.
+	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. One lookup does not
+	// run on it: roleHolderMayBe, the question whether a session may hold a role, arms
+	// mentionLookupTimeout on the wall clock (context.WithTimeout). Nil, which every deployment
+	// leaves it, is clock.Real(), for a server Register builds and for one built directly alike
+	// (server.clock); a test passes a clocktest.Fake and moves it.
 	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409
@@ -454,9 +457,7 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime context.Context
-	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
-	clock      clock.Clock
+	lifetime   context.Context
 	routeIndex []routeIndexEntry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
@@ -856,7 +857,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, clock: cmp.Or[clock.Clock](deps.Clock, clock.Real()), agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -924,7 +925,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
 		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock))
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -1033,7 +1034,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1053,7 +1054,7 @@ const liveSocketPattern = "/ws/live"
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock)
+			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1093,7 +1094,7 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		go func() {
 			// The heartbeat runs on the server's clock, so a test that drives a fake decides
 			// when the caller is resolved again rather than shortening the interval.
-			heartbeat := s.clock.NewTimer(s.deps.StreamHeartbeat)
+			heartbeat := s.clock().NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
@@ -2086,33 +2087,13 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 	s.storeEventDisplayTrees(ctx, events)
 }
 
-// boundedByClock is ctx ended d from now on the server's clock, with cause as the cause its end
-// carries (context.Cause), so the work behind it tells its own bound from the request that ran it
-// going away. The caller cancels it, as it would a context.WithTimeout's. It is the bound the
-// related-item check's allowance takes (relatedBounds): a test moves the server's own fake clock
-// to the deadline the code armed, and no real time decides the outcome. On the real clock, which
-// every deployment runs, it is context.WithTimeoutCause's, as before the clock seam: its end reads
-// context.DeadlineExceeded and it reports its Deadline.
-//
-// A d already spent (zero or less, which only a test sets - suggestionTimeout) ends the context
-// here, before this returns, so nothing behind it reads at all. A timer of zero or less runs its
-// function on a goroutine of its own, on the real clock as on the fake (clocktest's
-// placeLocked), and work that began before that goroutine ran would be the machine deciding the
-// outcome rather than the case (INFRA-3149).
-func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
-	if s.clock == clock.Real() {
-		return context.WithTimeoutCause(ctx, d, cause)
+// clock is the clock the server's timers run on: Deps.Clock, clock.Real() where that is nil, for
+// a server Register builds and for one built directly alike, so no server literal sets a clock.
+func (s *server) clock() clock.Clock {
+	if s.deps.Clock != nil {
+		return s.deps.Clock
 	}
-	bounded, end := context.WithCancelCause(ctx)
-	if d <= 0 {
-		end(cause)
-		return bounded, func() { end(context.Canceled) }
-	}
-	timer := s.clock.AfterFunc(d, func() { end(cause) })
-	return bounded, func() {
-		timer.Stop()
-		end(context.Canceled)
-	}
+	return clock.Real()
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

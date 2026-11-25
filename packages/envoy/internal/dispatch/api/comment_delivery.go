@@ -80,7 +80,7 @@ func (s *server) resolveMentionTarget(
 	lookup := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		lookup, cancel = s.clock.WithTimeout(ctx, timeout)
+		lookup, cancel = s.clock().WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)

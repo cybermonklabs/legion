@@ -481,7 +481,7 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // lifetime is context.Background(): a related-item check it runs starts a statistics refresh and
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
-	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
+	return &server{deps: deps, lifetime: context.Background()}
 }
 
 // awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
