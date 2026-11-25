@@ -316,7 +316,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment), bus.WithInboxPrefix(InboxPrefix))
 	if err != nil {
-		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", bus.NATSURLWithoutUserinfo(natsURL), err)
+		fmt.Fprintln(stderr, connectFailure(natsURL, err))
 		return 1
 	}
 	defer nc.Close()
@@ -466,7 +466,7 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, buckets []string, replicas int) int {
 	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets-break-glass"), bus.WithEnvironment(operatorEnvironment))
 	if err != nil {
-		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", bus.NATSURLWithoutUserinfo(natsURL), err)
+		fmt.Fprintln(stderr, connectFailure(natsURL, err))
 		return 1
 	}
 	defer nc.Close()
@@ -500,6 +500,19 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
 	}
 	return 0
+}
+
+// connectFailure is the line a failed connect to natsURL prints. A URL nats.go cannot parse fails
+// with a *url.Error, whose text quotes the whole URL, password included, and the command hands
+// nats.go any URL, since it sets bus.AllowRemoteEnvVar: that failure prints fixed text, naming no
+// part of the URL, not even the host. Any other failure names the server without the URL's user
+// info (bus.NATSURLWithoutUserinfo) and the error, which then quotes no URL.
+func connectFailure(natsURL string, err error) string {
+	var unparsed *url.Error
+	if errors.As(err, &unparsed) {
+		return "envoy-infra buckets: connect: the --nats URL does not parse, so no part of it is printed: percent-encode every `/`, `@` and `:` in its user and its password"
+	}
+	return fmt.Sprintf("envoy-infra buckets: connect to %s: %v", bus.NATSURLWithoutUserinfo(natsURL), err)
 }
 
 // fence is the proof that no writer of the buckets runs.

@@ -89,7 +89,7 @@ func TestFixturebucketsNamesItsServerWithoutTheURLsUserInfo(t *testing.T) {
 	})
 	t.Run("a URL it refuses", func(t *testing.T) {
 		// Off loopback with a password, path, query and fragment; a host that is credential text;
-		// and a URL that does not parse: one fixed refusal for each, holding no part of any.
+		// and a URL that does not parse: one fixed refusal for each, so it holds no part of any.
 		for _, refused := range []string{
 			withPassword(t, "nats://db.example:4222/a/path?q=1#frag"),
 			"nats://s3cret:4222",
@@ -98,12 +98,9 @@ func TestFixturebucketsNamesItsServerWithoutTheURLsUserInfo(t *testing.T) {
 		} {
 			var out bytes.Buffer
 			err := run([]string{"-url", refused}, &out)
-			const want = "fixturebuckets: the URL names no server on this machine's loopback that fixturebuckets can read (127.0.0.1, localhost or ::1): a fixture provisions only its own server"
-			if err == nil || "fixturebuckets: "+err.Error() != want || out.Len() > 0 {
+			const want = "the URL names no server on this machine's loopback that fixturebuckets can read (127.0.0.1, localhost or ::1): a fixture provisions only its own server"
+			if err == nil || err.Error() != want || out.Len() > 0 {
 				t.Fatalf("fixturebuckets answered %v and printed %q, want the refusal %q and nothing printed", err, out.String(), want)
-			}
-			if found := held(err.Error()); len(found) > 0 {
-				t.Fatalf("fixturebuckets' refusal %q holds %q of the URL it refused", err, found)
 			}
 		}
 	})

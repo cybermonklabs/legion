@@ -19,7 +19,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	neturl "net/url"
 	"os"
 	"strings"
 
@@ -40,7 +39,8 @@ func main() {
 // fixed text that names what was wrong and prints no part of the URL: a rig can hand it a URL an
 // operator gave, from which nats.go reads a password or a token, a rejected URL can hold such text
 // where the parser reads a host, and the rig keeps the output in a log and prints it on a failure.
-// The success line names the server by the host and port it checked was on loopback (hostPort).
+// The success line names the server by the host and port the loopback check read from the URL
+// (bus.LoopbackNATSServer, the one parse bus.LocalNATSURL makes), and nothing else of the URL.
 // The server is -url's, or FIXTUREBUCKETS_URL's when -url is not given.
 func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("fixturebuckets", flag.ContinueOnError)
@@ -62,7 +62,8 @@ func run(args []string, stdout io.Writer) error {
 	if strings.Contains(*url, ",") {
 		return fmt.Errorf("the URL names a list of servers (it holds a ','), and nats.go would dial any of them: a fixture provisions one server, its own, so give it that server alone")
 	}
-	if !bus.LocalNATSURL(*url) {
+	server, local := bus.LoopbackNATSServer(*url)
+	if !local {
 		return fmt.Errorf("the URL names no server on this machine's loopback that fixturebuckets can read (127.0.0.1, localhost or ::1): a fixture provisions only its own server")
 	}
 	conn, err := nats.Connect(*url, nats.Name("fixturebuckets"))
@@ -73,22 +74,6 @@ func run(args []string, stdout io.Writer) error {
 	if err := bustest.Provision(conn, *replicas); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "provisioned the server at %s: %v and %s\n", hostPort(*url), bus.CopiedBuckets(), bustest.MarkerStream)
+	fmt.Fprintf(stdout, "provisioned the server at %s: %v and %s\n", server, bus.CopiedBuckets(), bustest.MarkerStream)
 	return nil
-}
-
-// hostPort is the host and port of raw's authority, `<host>:<port>` as the URL writes them (the
-// host alone when it names no port), read as bus.LocalNATSURL reads it: a URL with no scheme is
-// read as nats://. run calls it only for a URL bus.LocalNATSURL read as loopback, so it names a
-// checked server and holds nothing else of raw: no user info, path, query or fragment.
-func hostPort(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if !strings.Contains(trimmed, "://") {
-		trimmed = "nats://" + trimmed
-	}
-	parsed, err := neturl.Parse(trimmed)
-	if err != nil || parsed.Hostname() == "" {
-		return ""
-	}
-	return parsed.Host
 }

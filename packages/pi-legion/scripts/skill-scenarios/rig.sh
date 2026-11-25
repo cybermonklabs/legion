@@ -964,18 +964,19 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
-# nats_endpoint URL prints the host and the port URL, a given NATS's, names, `<host> <port>`, and
-# succeeds when that host is on this machine's loopback as fixturebuckets reads it
-# (bus.LocalNATSURL): localhost, or a loopback address, read from the URL and never resolved, its
-# root dot dropped. The URL is read as Go's net/url reads it, which nats.go parses a server URL
-# with: a URL with no scheme is read as nats://, the authority ends at the first `/`, `?` or `#`,
-# the host follows its last `@`, so it never holds the URL's user info, and a URL with no port
-# names nats.go's 4222. A URL it cannot read, or that names no host, prints nothing and fails, and
-# so does a URL that holds a `,`: nats.go splits its URL on `,` into a list of servers and dials any
-# of them, so the one server read here would not be the one dialed. Every message and probe of the
-# batch's NATS takes this host and port, so one reading of the URL decides them all. python3 reads
-# the URL from its environment, never from its arguments: a given URL can carry a password or a
-# token, and every user of this machine reads a process's arguments.
+# nats_endpoint URL prints the host and the port URL, a given NATS's, names, `<host> <port>`, when
+# that host is on this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost,
+# or a loopback address, read from the URL and never resolved, its root dot dropped. A URL it
+# refuses prints nothing and fails: a host off loopback, a URL it cannot read or that names no
+# host, and a URL that holds a `,`, since nats.go splits its URL on `,` into a list of servers and
+# dials any of them, so the one server read here would not be the one dialed. It prints only after
+# the check passed, since a refused URL's host can be credential text. The URL is read as Go's
+# net/url reads it, which nats.go parses a server URL with: a URL with no scheme is read as
+# nats://, the authority ends at the first `/`, `?` or `#`, the host follows its last `@`, so it
+# never holds the URL's user info, and a URL with no port names nats.go's 4222. Every message and
+# probe of the batch's NATS takes this host and port, so one reading of the URL decides them all.
+# python3 reads the URL from its environment, never from its arguments: a given URL can carry a
+# password or a token, and every user of this machine reads a process's arguments.
 nats_endpoint() {
   NATS_ENDPOINT_URL=$1 python3 -c '
 import ipaddress, os, sys, urllib.parse
@@ -992,11 +993,13 @@ except ValueError:
     sys.exit(1)
 if not host:
     sys.exit(1)
-print(host, port)
 try:
-    sys.exit(0 if host == "localhost" or ipaddress.ip_address(host).is_loopback else 1)
+    loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
 except ValueError:
+    loopback = False
+if not loopback:
     sys.exit(1)
+print(host, port)
 '
 }
 
@@ -1070,8 +1073,8 @@ services_up() {
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     [[ $SKILL_SCENARIOS_NATS_URL != *,* ]] ||
       fail "SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone"
-    # The refusal is fixed text: a rejected URL can hold credential text where the parser reads a
-    # host, so it prints no part of the URL, not even the host nats_endpoint read from it.
+    # A URL nats_endpoint refuses prints nothing, and the refusal is fixed text: a rejected URL can
+    # hold credential text where the parser reads a host, so no part of it is printed.
     endpoint=$(nats_endpoint "$SKILL_SCENARIOS_NATS_URL") ||
       fail "SKILL_SCENARIOS_NATS_URL must name one server on this machine's loopback (127.0.0.1, localhost or ::1), and it names none the batch can read as one: the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
     nats_host=${endpoint% *} nats_port=${endpoint##* }

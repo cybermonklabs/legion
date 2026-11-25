@@ -434,6 +434,31 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 	}
 }
 
+// A --nats URL nats.go cannot parse fails the connect with a *url.Error, whose text quotes the
+// whole URL, password included; the command reaches nats.go with any URL, since it sets
+// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, print fixed text
+// for it: no part of the URL, not even the host. A password that holds `/` is such a URL. The
+// password and user are built at run time, so no literal reads as a URL's user info to a scan.
+func TestAConnectToAURLThatDoesNotParsePrintsNoPartOfIt(t *testing.T) {
+	at := string(rune(64))
+	unparsed := "nats://ops-user:pa/ss-word" + at + "db.example:4222"
+	for _, args := range [][]string{
+		{"create", "--nats", unparsed, "--this-machine"},
+		{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--nats", unparsed},
+	} {
+		code, stdout, stderr := runCommand(t, &world{}, nil, args...)
+		const want = "envoy-infra buckets: connect: the --nats URL does not parse, so no part of it is printed: percent-encode every `/`, `@` and `:` in its user and its password\n"
+		if code != 1 || !strings.Contains(stderr, want) {
+			t.Fatalf("%s with a URL that does not parse = %d, want 1 and %q\n%s%s", args[1], code, want, stdout, stderr)
+		}
+		for _, part := range []string{"ops-user", "pa/ss", "ss-word", "db.example"} {
+			if strings.Contains(stdout+stderr, part) {
+				t.Fatalf("%s printed %q of the URL it could not parse:\n%s%s", args[1], part, stdout, stderr)
+			}
+		}
+	}
+}
+
 // --this-machine queries the machine the command runs on with no ssh: the host query, run through
 // sh -c, judged as a host's. It refuses while a writer process runs, naming it under "this
 // machine", passes on a machine where none runs, and blocks on a query that failed, did not run to

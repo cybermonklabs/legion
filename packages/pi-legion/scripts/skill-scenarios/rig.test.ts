@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -93,9 +94,13 @@ function profileDir(): string {
   mkdirSync(path.join(dir, "home", ".omp"), { recursive: true });
   return dir;
 }
+/** A key file at mode, set after the write: a mode given to the write is reduced by the umask, so
+ * under umask 077 a file asked for at 0644 would start at 0600, and the row that wants it refused
+ * as readable by others would fail on the runner's umask, not on the code. */
 function keyFile(mode: number): string {
   const file = path.join(work, `key-${profiles}-${mode.toString(8)}`);
-  writeFileSync(file, "sk-ant-rig-test-0000000000000000\n", { mode });
+  writeFileSync(file, "sk-ant-rig-test-0000000000000000\n");
+  chmodSync(file, mode);
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
@@ -763,7 +768,8 @@ describe.skipIf(withoutPython)("nats_endpoint", () => {
   // Catches: a reading that keeps any part of a password or a token (a user name, which nats.go
   // reads as a token) under a lower-case, an upper-case or an absent scheme, or that reads its
   // host from past the authority: a `@` in the path, the query or the fragment. A URL with no port
-  // names nats.go's 4222.
+  // names nats.go's 4222. And a URL it refuses, off loopback or a list, prints nothing at all: its
+  // host can be credential text, so it is printed only once the loopback check passed it.
   test("nats_endpoint reads the host and port alone, from the URL's authority", () => {
     const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4223");
@@ -784,11 +790,14 @@ describe.skipIf(withoutPython)("nats_endpoint", () => {
         withToken.slice("nats://".length),
         ...["/", "?x=", "#"].map((cut) => `nats://127.0.0.1:4223${cut}${at}other:4222`),
         "nats://localhost",
+        "nats://db.example:4222",
+        "nats://s3cret:4222",
+        "nats://127.0.0.1:4222,db.example:4222",
       ]
     );
     expect({ code, stdout, stderr, leaked: stdout.includes(token) }).toEqual({
       code: 0,
-      stdout: `${"127.0.0.1 4223\nstatus 0\n".repeat(7)}localhost 4222\nstatus 0\n`,
+      stdout: `${"127.0.0.1 4223\nstatus 0\n".repeat(7)}localhost 4222\nstatus 0\n${"status 1\n".repeat(3)}`,
       stderr: "",
       leaked: false,
     });
@@ -811,8 +820,10 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   /** services_up given URL and the NATS nats, in a services directory of its own, with a psql
    * first on PATH that appends to psql.log each time it runs, and a go that answers
    * connections_needed's count. until_true runs its command once, so a URL that passed every
-   * check would reach psql at once. Answers services_up's status and standard error, whether psql
-   * ran, and what the services directory holds. */
+   * check would reach psql at once. owner_only is defined, as services_up writes every file
+   * through it, so a file written before a refusal shows by name in `written`, not as a missing
+   * function. Answers services_up's status and standard error, whether psql ran, and what the
+   * services directory holds. */
   function up(url: string, nats = "nats://127.0.0.1:4222") {
     const dir = freshDir("services-up");
     const bin = path.join(dir, "bin");
@@ -828,7 +839,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
         `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_endpoint")}\n${fn("connections_needed")}\n` +
-        `${fn("services_up")}\n` +
+        `${fn("owner_only")}\n${fn("services_up")}\n` +
         `until_true() { shift 2; "$@"; }\n` +
         `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, path.join(dir, "root"), services],
@@ -948,16 +959,18 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
    * fixturebuckets it builds, and a python3 first on PATH that runs the real one, append each
    * argument they were given to argv.log, one a line. Answers services_up's status, its output,
    * fixturebuckets.log, argv.log, ready.log and the services directory. */
-  function provision(natsUrl: string, provisions = false, stale = false) {
+  function provision(natsUrl: string, provisions = false) {
     const dir = freshDir("services-provision");
     const bin = path.join(dir, "bin");
     const services = path.join(dir, "services");
     mkdirSync(bin);
     mkdirSync(path.join(services, "logs"), { recursive: true });
-    // With stale, an earlier batch's credential files are there at 0644, as a write that kept a
-    // file's mode would leave them.
-    for (const name of stale ? credentialFiles : []) {
-      writeFileSync(path.join(services, name), "an earlier batch's\n", { mode: 0o644 });
+    // An earlier batch's credential files are there at 0644, as a write that kept a file's mode
+    // would leave them. The mode is set after the write, since a mode given to the write is
+    // reduced by the runner's umask, and nothing in services_up reads them before it writes.
+    for (const name of credentialFiles) {
+      writeFileSync(path.join(services, name), "an earlier batch's\n");
+      chmodSync(path.join(services, name), 0o644);
     }
     mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
     const argv = path.join(dir, "argv.log");
@@ -1032,8 +1045,8 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
 
   // Catches: a provisioning of a given NATS whose failure names its URL with the password in it.
   // The batch hands fixturebuckets SKILL_SCENARIOS_NATS_URL, which can carry one: the failure
-  // names the server as safe_url prints it, and fixturebuckets.log holds what fixturebuckets
-  // printed, which names no user info (fixturebuckets/main_test.go).
+  // names the server by the host and port nats_endpoint read, and fixturebuckets.log holds what
+  // fixturebuckets printed, which names no user info (fixturebuckets/main_test.go).
   test("a failed provisioning of a given NATS names it without its user info", () => {
     const { code, stdout, stderr, log, services } = provision(withPassword("127.0.0.1:4222"));
     expect({ code, stdout, stderr, log }).toEqual({
@@ -1090,7 +1103,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       ["no scheme", url.href.slice("nats://".length)],
     ]) {
       for (const provisions of [false, true]) {
-        const run = provision(nats, provisions, true);
+        const run = provision(nats, provisions);
         const where = `${shape}, ${provisions ? "provisioned" : "a failed provisioning"}`;
         // The files the run writes: the Postgres URL's before it provisions, the rest after.
         const written = provisions ? credentialFiles : ["postgres-url"];
