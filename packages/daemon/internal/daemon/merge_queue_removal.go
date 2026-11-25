@@ -81,7 +81,7 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	case failed == nil && pull.Merged:
 		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", pull.MergeCommitSHA)...)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-merged:%s:%d", row.Issue, row.ID),
-			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA, HeadSHA: pull.Head.SHA}, r.handlers...); err != nil {
+			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA, HeadSHA: pull.Head.SHA, MergedAt: pull.MergedAt.UTC()}, r.handlers...); err != nil {
 			return fmt.Errorf("apply the merge of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
 		return nil

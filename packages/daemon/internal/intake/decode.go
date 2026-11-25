@@ -819,7 +819,9 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
+			// A merged_at that is absent or does not parse is left zero (rawTimestamp).
+			mergedAt, _ := rawTimestamp(raw, "merged_at")
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha, MergedAt: mergedAt}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
 	case "dequeued":
