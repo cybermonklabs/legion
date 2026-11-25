@@ -20,11 +20,12 @@
 -- each row the release before inserts, since it names the column in no statement.
 --
 -- A phase-finished notice the release before queued names the tester's verdict under the key
--- verdict, which record.Notice no longer has, and the outbox decodes a row strictly
--- (record.DecodeOutboxPayload), so such a row would fail on every attempt and tell its architect
--- nothing. The update strips the key from every queued notice, which is then sent with the rest of
--- what it says: its kind, role, phase, summary and version. The release before decodes a notice
--- with no verdict, since its field is omitted when empty.
+-- verdict, which record.Notice no longer has. The update strips the key from every queued notice,
+-- which is then sent with the rest of what it says: its kind, role, phase, summary and version.
+-- The outbox, which decodes a row strictly (record.DecodeOutboxPayload), drops that key too, for a
+-- notice a daemon of the release before queues on the shared database during the roll, after this
+-- update ran. The release before decodes a notice with no verdict, since its field is omitted when
+-- empty.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists. The release before runs on this release's schema as it stands, so the way

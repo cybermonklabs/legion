@@ -2107,6 +2107,31 @@ func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 	return payload, nil
 }
 
+// releasedNotice is a notice as a build of the release before can write it: a Notice that may
+// name the tester's verdict under the key verdict, which Notice no longer has. Such a notice is
+// one queued before the upgrade, which migration 20261121074614_phase_verdict_gone strips; one a
+// daemon of the release before queues on the database the two share during a roll, after that
+// migration ran; or one a listener reports failed with the payload as it went out. Decoded into
+// this, the key is read and dropped, so each such notice is sent with the rest of what it says,
+// and every other key Notice does not have is still refused. Once no running build of the release
+// before queues or publishes a notice, Verdict can go.
+type releasedNotice struct {
+	Notice
+	Verdict json.RawMessage `json:"verdict"`
+}
+
+// DecodeNotice strictly decodes a notice's payload as the outbox decodes a queued one
+// (releasedNotice): the key verdict is dropped and any other key Notice does not have refuses it.
+func DecodeNotice(payload []byte) (Notice, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var value releasedNotice
+	if err := decoder.Decode(&value); err != nil {
+		return Notice{}, err
+	}
+	return value.Notice, nil
+}
+
 func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 	decoder := json.NewDecoder(bytes.NewReader(row.Payload))
 	decoder.DisallowUnknownFields()
@@ -2125,11 +2150,11 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindNotice:
-		value := Notice{}
+		value := releasedNotice{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
-		payload = value
+		payload = value.Notice
 	case OutboxKindControllerNotice:
 		value := ControllerNotice{}
 		if err := decoder.Decode(&value); err != nil {

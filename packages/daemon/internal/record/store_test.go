@@ -2573,10 +2573,10 @@ func TestResidentRolesMigrationDropsOnlyTheQueuedPhaseEndSuspends(t *testing.T) 
 const phaseVerdictGoneVersion = 20261121074614
 
 // A phase-finished notice the release before queued names the tester's verdict, which the notice
-// no longer has, and the outbox decodes rows strictly, so such a row would fail on every attempt.
-// The migration strips the key from each stored notice: the release before's notice with the
-// verdict pass and the same notice with none both decode after it, the first holding no verdict,
-// and each keeps its kind, role, phase, summary and version.
+// no longer has. The migration strips the key from each stored notice: the release before's notice
+// with the verdict pass and the same notice with none both decode after it, the first holding no
+// verdict, and each keeps its kind, role, phase, summary and version, and no stored notice holds
+// the key any more.
 func TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices(t *testing.T) {
 	ctx := context.Background()
 	st := emptyStore(t)
@@ -2761,6 +2761,47 @@ func TestTheReleaseBeforeReadsAndWritesThePhaseRowsOfThisRelease(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		if _, err := tx.Exec(ctx, releaseBeforeClearPhases, issue.Key); err != nil {
 			t.Fatalf("the release before's clear of a generation's phase rows: %v", err)
+		}
+	})
+}
+
+// During a roll a daemon of the release before runs on the database this release migrated, after
+// the migration stripped the verdict from every queued notice, and it still queues a phase-finished
+// notice naming the tester's verdict. This release's outbox, which decodes each row strictly, takes
+// that notice with the verdict dropped and the rest of what it says kept; a key no release ever
+// wrote is still refused.
+func TestANoticeTheReleaseBeforeQueuesAfterTheMigrationDecodesWithoutItsVerdict(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	queued := map[string]string{
+		"with a verdict":              `{"kind": "phase-finished", "role": "tester", "phase": "testing", "summary": "Every check passes.", "verdict": "pass", "version": 3}`,
+		"with a key no release wrote": `{"kind": "phase-finished", "role": "tester", "phase": "testing", "summary": "Every check passes.", "outcome": "pass", "version": 3}`,
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		for name, payload := range queued {
+			_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('notice', 'LEGION-208', $1, 0, now(), $2)`, payload, name)
+			must(t, err)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := NewStore().DueRows(ctx, tx, "LEGION", "", nil, time.Now().Add(time.Hour))
+		must(t, err)
+		if len(rows) != len(queued) {
+			t.Fatalf("%d notices due, want the %d queued", len(rows), len(queued))
+		}
+		for _, row := range rows {
+			payload, err := DecodeOutboxPayload(row)
+			switch row.LastError {
+			case "with a verdict":
+				want := Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Every check passes.", Version: 3}
+				if err != nil || !reflect.DeepEqual(payload, want) {
+					t.Fatalf("the notice the release before queued with a verdict decodes as %+v, %v; want %+v: the verdict dropped, the rest kept", payload, err, want)
+				}
+			default:
+				if err == nil || !strings.Contains(err.Error(), `"outcome"`) {
+					t.Fatalf("the notice with a key no release wrote decodes as %+v, %v; want it refused naming the key", payload, err)
+				}
+			}
 		}
 	})
 }

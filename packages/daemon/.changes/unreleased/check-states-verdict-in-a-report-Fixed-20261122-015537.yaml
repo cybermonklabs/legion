@@ -4,8 +4,11 @@ body: |-
   listener reports it could not forward after the upgrade, is queued again for its architect
   without the key, as migration `20261121074614_phase_verdict_gone` strips it from every queued
   notice. The daemon read the report's notice strictly and refused the key, so it dropped the
-  report as one about something else and the architect never got that notice. Any other key a
-  notice does not have still refuses the report.
+  report as one about something else and the architect never got that notice. The outbox reads a
+  queued notice the same way, so a `phase-finished` notice that a daemon of the release before
+  queues on the shared database during the roll, after that migration ran, is sent without the
+  key rather than failing on every attempt. Any other key a notice does not have still refuses
+  the report and the queued notice.
 time: 2026-11-22T01:55:37Z
 custom:
   Issue: check-states-verdict-in-a-report
