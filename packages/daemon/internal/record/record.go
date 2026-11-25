@@ -1046,8 +1046,8 @@ type PullRequest struct {
 	// classify.NullMergeableFloor, read to read, which is routine after a push, and tells the
 	// architect once a null read of the run comes at least that long after its first, or once the
 	// first is classify.NullMergeableTellAfter old by the clock, whichever comes first
-	// (classify.MergeOutcomeOf). Only a computed answer (MERGEABLE or CONFLICTING), or another
-	// head, sets both back to zero.
+	// (classify.MergeOutcomeOf). A computed answer (MERGEABLE or CONFLICTING), another head, or a
+	// reopen, sets both back to zero.
 	NullMergeableReads int
 	NullMergeableSince time.Time
 	// EvidenceReadAt is the StateReadAt of the read that wrote ReviewsRequested, HeadChecks and the

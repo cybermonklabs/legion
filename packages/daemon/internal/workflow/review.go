@@ -293,10 +293,11 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	// state it gives beside it (`blocked`, `unknown`): GitHub has not computed whether the head
 	// merges until it answers MERGEABLE or CONFLICTING, and a count that a null `unknown` read set
 	// back would let reads alternating `blocked` and `unknown` walk past both of the round's
-	// conditions for good (record.PullRequest.NullMergeableReads, classify.MergeOutcomeOf). Only a
-	// computed answer, or another head, starts the count again. The count, the rollup and the null
-	// reads speak of the read that writes them (record.PullRequest.EvidenceReadAt), and a run counts
-	// on only from evidence the record's last read wrote (classify.NullMergeableStanding).
+	// conditions for good (record.PullRequest.NullMergeableReads, classify.MergeOutcomeOf). A
+	// computed answer, another head, or a reopen (pullRequestOpened builds the record afresh)
+	// starts the count again. The count, the rollup and the null reads speak of the read that writes
+	// them (record.PullRequest.EvidenceReadAt), and a run counts on only from evidence the record's
+	// last read wrote (classify.NullMergeableStanding).
 	nulls, since := 0, time.Time{}
 	if fact.Mergeable == record.MergeabilityUnknown {
 		nulls, since = 1, stateReadAt
