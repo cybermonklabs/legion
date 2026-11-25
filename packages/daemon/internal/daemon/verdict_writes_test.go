@@ -1979,6 +1979,21 @@ func TestLegionVerdictEachCommitHasAReaderOnTheDefaultSteps(t *testing.T) {
 	})
 }
 
+// C2 and R4: the owner's acceptance reads a commit as each review step's approve does. On the
+// default steps, where the tester's claim records no session, the reviewer's own commit has one
+// reader, the owner, whose claim records a session that made none of the change; so the owner's
+// acceptance writes success on H.
+func TestLegionVerdictTheOwnersAcceptanceIsACommitsOnlyReader(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		acceptingAtCode(t, pool)
+		seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+	})
+	rig.github.mu.Lock()
+	rig.github.messages["code"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
+	rig.acceptedAndWritten(t)
+}
+
 // C2: a commit with no Omp-Session line has no agent maker, as a person's commit has none, so each
 // agent that reads at the head reads it: with the plan implementer reviewer the reviewer's approve
 // writes success. The reviewer also reads a commit whose line names a session that no claim records,
