@@ -78,10 +78,12 @@ import (
 // in all four of the head's steps, with up to 15 callers waiting (INFRA-592, tester round 38).
 const OutsideLimit = unadmittedConnections
 
-// OutsideQueueLimit is how much work may wait for a place at once: queueFactor times OutsideLimit,
-// 16, the shape of a lane's queue and of a class's standing queue, and fixed as a lane's is, with
-// no burst cap (queueFactor says why). Work that finds it full is refused at once (QueueFull).
-const OutsideQueueLimit = queueFactor * OutsideLimit
+// OutsideQueueLimit is how much work may wait for a place at once: ReadBurstFactor times
+// OutsideLimit, 176, the cap of every fifoGate at its own limit, as a heavy read's lane's is 22
+// times its own. It bounds the memory the waiters take, a goroutine and its request each, and
+// refuses nothing whose wait still has room: work that finds it full is refused at once
+// (QueueFull), and work below it waits its second.
+const OutsideQueueLimit = ReadBurstFactor * OutsideLimit
 
 // OutsideUser is a kind of work that takes a place of OutsideLimit, which the refusals are counted
 // by (OutsideStats.Refused).

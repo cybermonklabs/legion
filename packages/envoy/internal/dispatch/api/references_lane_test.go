@@ -15,19 +15,21 @@ import (
 // the one-hop read still runs to its statement timeout (INFRA-592, c-scale at e151d049), so each
 // such read holds its place for seconds, and a flood of it must be held to its lane rather than
 // take the read class from every other route. Here the lane is one place wide and its queue holds
-// two, and a lock on issues, which each references read's first statement (loadIssue) waits for,
-// holds the lane's read and the two queued behind it. A references read past those is refused at
-// once, 429 OVERLOADED naming the references lane, and the reads of another route sent while the
-// flood holds are admitted to the read units the lane left free and answered at once. Without the
-// lane the flood takes three of the read class's four units, the references reads past it take
-// the fourth or queue for it, and none of them is refused.
+// its cap, admission.ReadBurstFactor times the lane's limit, the bound on the queue's memory, and a
+// lock on issues, which each references read's first statement (loadIssue) waits for, holds the
+// lane's read and the 22 queued behind it. A references read past those is refused at once, 429
+// OVERLOADED naming the references lane, and the reads of another route sent while the flood holds
+// are admitted to the read units the lane left free and answered at once. Without the lane the
+// flood takes three of the read class's four units, the references reads past it take the fourth
+// or queue for it, and none of them is refused.
 func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t *testing.T) {
 	const (
 		readCap = 4
 		lane    = 1
-		// held is the lane's place and its queue, which holds twice the lane's limit.
-		held = 3 * lane
-		past = 2
+		// queue is the lane's queue at its cap, and held is the lane's place and that queue.
+		queue = admission.ReadBurstFactor * lane
+		held  = lane + queue
+		past  = 2
 	)
 	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: lane, ReadWait: 5 * time.Second})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
@@ -79,9 +81,9 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 		t.Fatalf("the reads of another route sent while the flood held its lane answered after %s, want at once",
 			took.Round(time.Millisecond))
 	}
-	if stats := referencesLane(t, limiter); stats.InFlight != lane || stats.Queued != 2*lane || stats.QueueFull != past {
+	if stats := referencesLane(t, limiter); stats.InFlight != lane || stats.Queued != queue || stats.QueueFull != past {
 		t.Fatalf("the references lane holds %d, queues %d and refused %d for a full queue, want %d, %d and %d",
-			stats.InFlight, stats.Queued, stats.QueueFull, lane, 2*lane, past)
+			stats.InFlight, stats.Queued, stats.QueueFull, lane, queue, past)
 	}
 	release()
 

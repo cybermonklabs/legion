@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A heavy read route's lane runs one request at a time where its limit is one: the second waits
@@ -65,8 +67,9 @@ func TestALaneRunsOneRequestAtATimeAndHoldsNoOtherRouteBehindIt(t *testing.T) {
 	}
 }
 
-// A lane whose queue is full refuses at once, 429 OVERLOADED with Retry-After, and the refusal
-// names the lane: nothing of the request ran, and the client is told which route is busy.
+// A lane whose queue is at its cap, ReadBurstFactor times its limit, the bound on its memory
+// (fifoGate), refuses at once, 429 OVERLOADED with Retry-After, and the refusal names the lane:
+// nothing of the request ran, and the client is told which route is busy.
 func TestAFullLaneRefusesWithTheLaneNamed(t *testing.T) {
 	limiter := New(Limits{Read: 8, Write: 8, HeavyReadLane: 1, ReadWait: 10 * time.Second})
 	ctx := context.Background()
@@ -75,15 +78,15 @@ func TestAFullLaneRefusesWithTheLaneNamed(t *testing.T) {
 		t.Fatalf("take the search lane: %v", err)
 	}
 	defer held()
-	// The queue holds queueFactor times the limit; fill it, then arrive one past it.
-	for range queueFactor {
+	// The queue holds ReadBurstFactor times the limit, its cap; fill it, then arrive one past it.
+	for range ReadBurstFactor {
 		go func() {
 			if leave, err := enterLane(ctx, limiter, Search); err == nil {
 				leave()
 			}
 		}()
 	}
-	waitForLane(t, limiter, Search, queueFactor)
+	waitForLane(t, limiter, Search, ReadBurstFactor)
 
 	leave, err := enterLane(ctx, limiter, Search)
 	if leave != nil {
@@ -203,6 +206,153 @@ func TestALaneRefusalCountsAgainstTheReadClassesLongestWait(t *testing.T) {
 	longest := classStats(limiter, Read).LongestRefusedWait
 	if longest < wait-150*time.Millisecond || longest > wait+250*time.Millisecond {
 		t.Fatalf("the read class records the longest refused wait as %v, want the %v the lane refused the read after", longest, wait)
+	}
+}
+
+// A lane full for less than its wait answers every waiter, however many wait in its queue below
+// its cap: with every place of a lane of 7 held (MaxHeavyReadLane, the width the cluster copy
+// runs), twice its limit and eight more heavy reads arrive at once - 22, past the 14 its queue
+// held before - and the places come back within their wait (DefaultReadWait): every one of them
+// takes the lane and then its read unit, and none is refused. Held to those 14 at any time, the
+// lanes refused such reads at once while they drained within the wait: 29 of the 150 refusals of
+// c-scale's step head-j-10x-5 at eb23d38e (ReadBurstFactor).
+func TestALaneFullForLessThanItsWaitAnswersEveryWaiter(t *testing.T) {
+	t.Parallel()
+	const lane = MaxHeavyReadLane
+	limiter := New(Limits{Read: MaxReadLimit, Write: 1, HeavyReadLane: lane})
+	ctx := testwait.Context(t)
+	places := make([]func(), lane)
+	for i := range places {
+		leave, err := enterLane(ctx, limiter, Search)
+		if err != nil {
+			t.Fatalf("take place %d of the search lane's %d: %v", i+1, lane, err)
+		}
+		places[i] = leave
+	}
+	arrivals := 2*lane + 8
+	answers := make(chan error, arrivals)
+	for range arrivals {
+		go func() {
+			// The order api.admitted takes them in: the arrival, then the lane, then the units.
+			arrival := limiter.Arrive(Read, 1)
+			leave, err := limiter.EnterLane(ctx, Search, arrival)
+			if err != nil {
+				answers <- err
+				return
+			}
+			ticket, err := arrival.Admit(ctx)
+			ticket.Release()
+			leave()
+			answers <- err
+		}()
+	}
+	stats := testwait.Until(t, "every heavy read queued in its lane or refused", func() (LaneStats, bool) {
+		stats := laneStatsOf(t, limiter, Search)
+		return stats, stats.Queued+int(stats.QueueFull)+int(stats.WaitExceeded) == arrivals
+	})
+	if stats.QueueFull != 0 {
+		t.Fatalf("%d of %d heavy reads arriving at a full lane were refused queue_full, below its cap of %d (%+v), want none: their wait had room",
+			stats.QueueFull, arrivals, ReadBurstFactor*lane, stats)
+	}
+	for _, leave := range places {
+		leave()
+	}
+	for range arrivals {
+		if err := testwait.Receive(t, "a heavy read's answer", answers); err != nil {
+			t.Fatalf("a heavy read whose lane gave a place back within its wait: %v, want it admitted", err)
+		}
+	}
+	if stats := laneStatsOf(t, limiter, Search); stats.InFlight != 0 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
+		t.Fatalf("the search lane's stats %+v once every heavy read was answered, want nothing held, queued or refused", stats)
+	}
+}
+
+// A lane full past its wait refuses a waiter at the wait and not before: with the lane's one place
+// held and never given back, a heavy read waits in its queue and is refused wait_exceeded, naming
+// the lane, once its whole wait (DefaultReadWait) has run, not at once, and the read class records
+// it as having waited that wait.
+func TestALaneFullPastItsWaitRefusesAtTheWait(t *testing.T) {
+	t.Parallel()
+	limiter := New(Limits{Read: 8, Write: 1, HeavyReadLane: 1})
+	held, err := enterLane(context.Background(), limiter, Search)
+	if err != nil {
+		t.Fatalf("take the search lane's only place: %v", err)
+	}
+	defer held()
+	answered := make(chan error, 1)
+	asked := time.Now()
+	go func() {
+		leave, err := enterLane(context.Background(), limiter, Search)
+		if err == nil {
+			leave()
+		}
+		answered <- err
+	}()
+	err = testwait.Receive(t, "the answer of a heavy read its lane never has room for", answered)
+	waited := time.Since(asked)
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Reason != WaitExceeded || refusal.Lane != Search {
+		t.Fatalf("a heavy read its lane never had room for: %v, want the search lane's wait_exceeded refusal", err)
+	}
+	if waited < DefaultReadWait {
+		t.Fatalf("the heavy read was refused %v after it asked, before its %v wait had run", waited, DefaultReadWait)
+	}
+	if stats := laneStatsOf(t, limiter, Search); stats.WaitExceeded != 1 || stats.QueueFull != 0 || stats.Queued != 0 {
+		t.Fatalf("the search lane's stats %+v, want one refusal at the wait and nobody queued", stats)
+	}
+	if longest := classStats(limiter, Read).LongestRefusedWait; longest < DefaultReadWait {
+		t.Fatalf("the read class records the refused heavy read as having waited %v, want its whole %v wait", longest, DefaultReadWait)
+	}
+}
+
+// A heavy read waiting for its lane holds no unit of the read class while it waits, so the reads of
+// the other routes are admitted beside it: EnterLane takes the lane before the class's units. With
+// the lane's one place held by a read that holds its unit too, a second heavy read waits in the
+// lane's queue while the read class counts the holder's unit alone in flight and nobody queued, and
+// a read of another route is admitted at once, with nobody ahead of it, to the unit the lane's
+// waiter left free. Once the place comes back the waiter takes it, and then its unit.
+func TestALaneWaiterHoldsNoReadUnitWhileItWaits(t *testing.T) {
+	t.Parallel()
+	limiter := New(Limits{Read: 2, Write: 1, HeavyReadLane: 1, ReadWait: time.Minute})
+	ctx := testwait.Context(t)
+	holder := limiter.Arrive(Read, 1)
+	leave, err := limiter.EnterLane(ctx, Search, holder)
+	if err != nil {
+		t.Fatalf("take the search lane's only place: %v", err)
+	}
+	holding, err := holder.Admit(ctx)
+	if err != nil {
+		t.Fatalf("the lane holder's read unit: %v", err)
+	}
+	answered := make(chan error, 1)
+	go func() {
+		arrival := limiter.Arrive(Read, 1)
+		leave, err := limiter.EnterLane(ctx, Search, arrival)
+		if err != nil {
+			answered <- err
+			return
+		}
+		ticket, err := arrival.Admit(ctx)
+		ticket.Release()
+		leave()
+		answered <- err
+	}()
+	testwait.Until(t, "the second heavy read queued for its lane", func() (LaneStats, bool) {
+		stats := laneStatsOf(t, limiter, Search)
+		return stats, stats.Queued == 1
+	})
+	if stats := classStats(limiter, Read); stats.InFlight != 1 || stats.Queued != 0 {
+		t.Fatalf("read stats %+v with a heavy read waiting for its lane, want the lane holder's one unit in flight and nobody queued: the waiter holds no unit", stats)
+	}
+	other := limiter.Arrive(Read, 1).AdmitNow()
+	if other == nil {
+		t.Fatalf("a read of another route was not admitted at once beside the heavy read waiting for its lane (%+v), want the unit the waiter left free", classStats(limiter, Read))
+	}
+	other.Release()
+	holding.Release()
+	leave()
+	if err := testwait.Receive(t, "the waiting heavy read's answer", answered); err != nil {
+		t.Fatalf("the heavy read that waited for its lane, once the place came back: %v, want it admitted", err)
 	}
 }
 

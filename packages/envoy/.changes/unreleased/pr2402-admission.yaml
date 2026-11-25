@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  Past what it can serve, Dispatch refuses a request at once rather than queueing it without end.
+  Past what it can serve, Dispatch refuses a request rather than queueing it without end.
   Every `/api/v1` route but the test hooks is admitted first: reads
   (GET, HEAD) up to 14 at once and writes up to 12 at once per CPU the server may use, at most 28
   reads and 24 writes (28 and 24 on two CPUs or more) and at most 40 units of the two together,
@@ -19,10 +19,9 @@ body: |-
   new decision blocks are now checked one after another rather than five at once, so one check's
   three reads are all the edit runs at once. Measured on two CPUs, fewer reads committed more
   events at ten times the load but refused 4-6% of the reads at the everyday load. A request that
-  finds no room waits in its class's queue, which takes up to its burst cap (616 reads, 96
-  writes) while it absorbs a burst and twice its class's limit once it has stood non-empty for a
-  whole wait, in the order the requests arrived at the server rather than the order they got
-  round to asking for
+  finds no room waits in its class's queue, which holds up to its cap (616 reads, 96 writes), the
+  bound on its memory, in the order the requests arrived at the server rather than the order they
+  got round to asking for
   room: a read waits at most 1 second there and a write at most 2, a burst of writes taking
   seconds to free a write unit while a refused write is sent again a second later anyway, so the
   longer wait serves the write where the shorter refused it. A request not admitted inside its

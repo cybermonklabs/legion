@@ -295,7 +295,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_limit", "Places of the request pool's share admission leaves: the pool's connections less admission's combined cap.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().Limit)
 	})
-	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued", "Work outside admission waiting now for a place of the request pool's share admission leaves, first in first out, at most twice the places.", func() int64 {
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued", "Work outside admission waiting now for a place of the request pool's share admission leaves, first in first out, at most 22 times the places, the cap that bounds the queue's memory.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().Queued)
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued_max", "The most work outside admission that has waited for a place at once since the process started.", func() int64 {

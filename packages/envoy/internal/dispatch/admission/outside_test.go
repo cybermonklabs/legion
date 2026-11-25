@@ -65,8 +65,8 @@ func TestTheWorkOutsideAdmissionHoldsTheShareAdmissionLeaves(t *testing.T) {
 	if OutsideLimit != store.SharedPoolSize-MaxAdmittedUnits {
 		t.Fatalf("OutsideLimit = %d, want the request pool's %d less admission's %d", OutsideLimit, store.SharedPoolSize, MaxAdmittedUnits)
 	}
-	if OutsideLimit != 8 || OutsideQueueLimit != 16 {
-		t.Fatalf("OutsideLimit = %d and OutsideQueueLimit = %d, want 8 and 16", OutsideLimit, OutsideQueueLimit)
+	if OutsideLimit != 8 || OutsideQueueLimit != 176 {
+		t.Fatalf("OutsideLimit = %d and OutsideQueueLimit = %d, want 8 and 176", OutsideLimit, OutsideQueueLimit)
 	}
 	outside := New(Limits{OutsideWait: time.Minute}).Outside()
 	takeEveryPlace(t, outside)
@@ -176,9 +176,10 @@ func TestWorkOutsideAdmissionIsGivenItsPlaceInTheOrderItAsked(t *testing.T) {
 	}
 }
 
-// The queue for a place holds OutsideQueueLimit, twice the places: with eight holding and sixteen
-// waiting, the next asks and is refused at once, counted as a full queue under its user, and work
-// whose context ends while it waits leaves the queue, making room for the next.
+// The queue for a place holds OutsideQueueLimit, ReadBurstFactor times the places, the cap that
+// bounds its memory: with eight holding and 176 waiting, the next asks and is refused at once,
+// counted as a full queue under its user, and work whose context ends while it waits leaves the
+// queue, making room for the next.
 func TestWorkOutsideAdmissionPastItsQueueIsRefusedAtOnce(t *testing.T) {
 	outside := New(Limits{OutsideWait: time.Minute}).Outside()
 	takeEveryPlace(t, outside)

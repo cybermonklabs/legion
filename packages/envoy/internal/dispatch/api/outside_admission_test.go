@@ -212,23 +212,26 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 
 // A burst of DPoP presentations, more at once than the request pool's share outside admission and
 // its queue hold, takes no more of the request pool before admission than that share, 8 of its 48:
-// each decision takes a place before it writes its proof's row (decideBrokerToken), the next
-// sixteen wait for one, and every presentation past those is answered at once with admission's own
-// refusal for a full queue - its status, every header and every byte of its body are those
-// admission answers a read it has no room for - and its proof is not spent, so the same request
-// sent again is served. Every connection of the request pool is held while the burst arrives, so a
-// decision that reaches the pool waits there holding its place, and the pool's own count of the
-// acquires waiting on it is the burst's hold on the pool before admission. Once the pool is free,
-// inside the second the waiting presentations wait, every presentation the queue held is served.
-// The share and its queue are read from the numbers they are made of rather than from the limit,
-// so a limit taken out is a burst this test still holds to them.
+// each decision takes a place before it writes its proof's row (decideBrokerToken), the next 176
+// wait for one - the queue at its cap, admission.ReadBurstFactor times the share, which bounds its
+// memory - and every presentation past those is answered at once with admission's own refusal for
+// a full queue - its status, every header and every byte of its body are those admission answers a
+// read it has no room for - and its proof is not spent, so the same request sent again is served.
+// Every connection of the request pool is held while the burst arrives, so a decision that reaches
+// the pool waits there holding its place, and the pool's own count of the acquires waiting on it
+// is the burst's hold on the pool before admission. Once the pool is free, inside the wait the
+// waiting presentations wait, every presentation the queue held is served. The share and its queue
+// are read from the numbers they are made of rather than from the limit, so a limit taken out is a
+// burst this test still holds to them.
 func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves(t *testing.T) {
 	share := store.SharedPoolSize - admission.MaxAdmittedUnits
-	queue := 2 * share
+	queue := admission.ReadBurstFactor * share
 	burst := share + queue + share
-	// Room for every decision the share lets through once the pool is free, and a read queue that
-	// waits long enough for the refusal it is compared with to be had.
-	limiter := admission.New(admission.Limits{Read: share, Write: share, ReadWait: time.Minute, WriteWait: time.Minute})
+	// Room for every decision the share lets through once the pool is free - the read class's
+	// share and its queue's cap of ReadBurstFactor times it hold all of them - a wait for a place
+	// long enough that the 176 the queue holds are each served through the pool's two connections,
+	// and a read queue that waits long enough for the refusal it is compared with to be had.
+	limiter := admission.New(admission.Limits{Read: share, Write: share, ReadWait: time.Minute, WriteWait: time.Minute, OutsideWait: time.Minute})
 	rig := newBrokerTokenRigOn(t, testServerOptions{requestPoolSize: 2, acquireBound: 30 * time.Second, admission: limiter})
 	caller := newBrokerCaller(t)
 	const token = "a-token-presented-in-a-burst"
@@ -462,11 +465,9 @@ func (h *heldIntrospections) RoundTrip(r *http.Request) (*http.Response, error) 
 
 // admissionsQueueFullRefusal is admission's own answer to a read on rig's server it has no room
 // for and no place in its queue for: every read unit of limiter, whose read limit is limit, held,
-// and as many reads queued as the queue holds. The reads join a queue that was empty a moment
-// before, which is a burst the queue absorbs, so it holds the read class's burst cap,
-// admission.ReadBurstFactor times the limit, rather than twice the limit, all a queue that has
-// stood for a whole wait holds: a request past twice the limit would queue for its minute here
-// and never be refused queue_full.
+// and as many reads queued as the queue holds, its burst cap, admission.ReadBurstFactor times the
+// limit, the queue's one bound: a request below it would queue for its minute here and never be
+// refused queue_full.
 func admissionsQueueFullRefusal(t *testing.T, rig *brokerTokenRig, limiter *admission.Limiter, limit int) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -542,10 +543,15 @@ type outsideWorkAnswer struct {
 	at  time.Time
 }
 
-// newOutsideWorkRig builds the rig on a server of its own, with gates for gated arrivals.
-func newOutsideWorkRig(t *testing.T, gated int) *outsideWorkRig {
+// newOutsideWorkRig builds the rig on a server of its own, with gates for gated arrivals and
+// outsideWait the work's wait for a place (zero is the second every server waits). Its took holds
+// a report from every work the places and their queue can hold at once, so work none of the test
+// reads reports to it without waiting.
+func newOutsideWorkRig(t *testing.T, gated int, outsideWait time.Duration) *outsideWorkRig {
 	t.Helper()
-	rig := &outsideWorkRig{limiter: admission.New(admission.DefaultLimits()), took: make(chan int, 64)}
+	limits := admission.DefaultLimits()
+	limits.OutsideWait = outsideWait
+	rig := &outsideWorkRig{limiter: admission.New(limits), took: make(chan int, admission.OutsideLimit+admission.OutsideQueueLimit)}
 	for range gated {
 		rig.gates = append(rig.gates, make(chan struct{}))
 	}
@@ -630,16 +636,18 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 }
 
 // Work outside admission that finds every place held waits for one, and is given it in the order
-// it asked, for at most a second, in a queue of sixteen: heartbeat checks and document sockets'
-// admission reads, alternately, arrive one after another while eight of them hold every place.
+// it asked, for at most its wait, in a queue of at most admission.OutsideQueueLimit, 176, the cap
+// that bounds its memory: heartbeat checks and document sockets' admission reads, alternately,
+// arrive one after another while eight of them hold every place.
 //
 //   - In the order it asked: the eight holding are held at gates of the test's, and twelve more
 //     wait; each place given back, one at a time, goes to the work that has waited longest.
 //   - On a held pool freed within the wait: every connection of the request pool is held, so the
-//     eight holding wait on it, and sixteen more wait for a place, the most the queue holds; four
-//     more are refused at once for the full queue, the checks skipped and the sockets refused. The
-//     pool's acquires waiting stay at the eight. Once the pool is freed, inside the second, all
-//     twenty-four are served.
+//     eight holding wait on it, and 176 more wait for a place, the most the queue holds; four more
+//     are refused at once for the full queue, the checks skipped and the sockets refused. The
+//     pool's acquires waiting stay at the eight. Once the pool is freed, inside the wait, all 184
+//     are served. Their wait is a minute here rather than a server's second, since 184 arrivals
+//     one after another take longer than a second to queue.
 //   - On a held pool past the wait: the eight holding wait on the pool and twelve more for a
 //     place, and the pool is held past the second: each of the twelve is refused once its own
 //     second has run out, the checks skipped and the sockets refused, and the eight are served once
@@ -647,7 +655,7 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T) {
 	const queued = 12
 	t.Run("in the order it asked", func(t *testing.T) {
-		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued)
+		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued, 0)
 		answers, _ := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for range admission.OutsideLimit {
 			select {
@@ -684,7 +692,7 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 	})
 
 	t.Run("on a held pool freed within the wait", func(t *testing.T) {
-		rig := newOutsideWorkRig(t, 0)
+		rig := newOutsideWorkRig(t, 0, time.Minute)
 		release := holdEveryConnection(t, rig.database.Pool)
 		served := admission.OutsideLimit + admission.OutsideQueueLimit
 		answers, _ := rig.arrive(t, 0, served)
@@ -726,7 +734,7 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 
 	t.Run("on a held pool past the wait", func(t *testing.T) {
 		const slack = 500 * time.Millisecond
-		rig := newOutsideWorkRig(t, 0)
+		rig := newOutsideWorkRig(t, 0, 0)
 		release := holdEveryConnection(t, rig.database.Pool)
 		answers, arrived := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for i := admission.OutsideLimit; i < len(answers); i++ {
