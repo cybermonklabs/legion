@@ -4,7 +4,7 @@ import "github.com/sjawhar/envoy/internal/dispatch/graphstore"
 
 // runProjections are the census's kinds of the runs of the command bar (projections). A run is an
 // interaction node, which going_requests projects, and each of its frames a frame value of that
-// node, which a going_events row projects (dispatch://INFRA-1950/spec#b-r-interaction): the
+// node, which a going_events row projects (the node-visibility spec's `r-interaction`): the
 // interaction kind holds a row to its node and its authored_by, and the frame kind every frame a
 // run's rows hold to every frame value its node holds. A run is readable for one hour; then the
 // sweep states its node gone and removes its rows (api's sweepGoingRequests), and a run whose rows

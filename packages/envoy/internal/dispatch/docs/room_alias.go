@@ -11,7 +11,7 @@ import (
 )
 
 // A document socket asks for a document by its id, and the server decides the room it edits in
-// (R5 of dispatch://INFRA-1253): a document converted into its issue's room is edited in that
+// (R5 of the issue-tree spec): a document converted into its issue's room is edited in that
 // room, whose name is the issue's tree artifact's id. The Hocuspocus framing names the document at
 // the head of every message, both ways (HocuspocusFraming, docs/service.go), and the browser's
 // provider routes every message it reads by that name, so a socket answered under the room's name

@@ -6,7 +6,7 @@ import (
 )
 
 // An item reference is the place a node's parent names when that parent is an ask, a comment or
-// a message, or a block of one (dispatch://INFRA-1253/spec R2): FormatItemBlockRef writes an ask,
+// a message, or a block of one (R2 of the issue-tree spec): FormatItemBlockRef writes an ask,
 // a comment and a message, and a part of an ask, a block of a comment and a block of a message,
 // and CanonicalItemBlockRef reads each back as the reference it was written from, so a parent
 // survives a round trip through markdown with no normalising. Each form the reader alone accepts

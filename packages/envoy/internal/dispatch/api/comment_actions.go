@@ -708,11 +708,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 // what orphaning an anchor means. The narrow write says what it changes, and the artifact the
 // comment's anchored_to tuple names stays among the rest, so this write restates nothing the
 // store holds. Where the anchor stood in a block until now, it queues after it the retraction of
-// the anchored_in to that block's node (graphstore.AnchoredIn): an orphaned anchor stands in no
-// block. The caller's transaction holds the comment's owner lock and the comment's own row
-// (lockedComment, lockedCommentForCorrection), so the block is read here, in its read phase, off
-// the row as it stands, and a comment the store holds no node of states nothing to retract. The
-// retraction is dated now by actor, at the sentinel, since the orphaning appends no event.
+// the anchored_in to that block's node and, for a comment that answers nothing, of its part_of to
+// the same node (graphstore.AnchorTuples, this issue's spec R31): an orphaned anchor stands in no
+// block, and its comment stands under its document. The caller's transaction holds the comment's
+// owner lock and the comment's own row (lockedComment, lockedCommentForCorrection), so the block
+// is read here, in its read phase, off the row as it stands, and a comment the store holds no
+// node of states nothing to retract. The retractions are dated now by actor, at the sentinel,
+// since the orphaning appends no event.
 func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, actor model.Actor) error {
 	stood := !comment.Anchor.Orphaned
 	comment.Anchor.Orphaned = true
@@ -734,10 +736,11 @@ func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, co
 	if block == nil || !graphstore.AddressFits(*block) {
 		return nil
 	}
-	retraction := graphstore.AnchoredIn(id, *block, false, actor, time.Now().UTC(), graphstore.NoEvent)
+	answersNothing := comment.Answers == nil && comment.ReplyTo == nil && comment.AskID == nil
+	retractions := graphstore.AnchorTuples(nil, id, refs.BlockNodeKind, *block, answersNothing, false, actor, time.Now().UTC(), graphstore.NoEvent)
 	return ledger.Queue(func(b *store.WriteBatch) error {
-		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
-		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
+		graphstore.QueueWrite(b, nil, retractions)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retractions))
 		return nil
 	})
 }

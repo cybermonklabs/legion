@@ -151,7 +151,17 @@
           "creatable_since": 5
         },
         "size": {
-          "kind": "days",
+          "kind": "minutes",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "skills": {
+          "kind": "string[]",
+          "since": 7,
+          "creatable_since": 7
+        },
+        "docs": {
+          "kind": "string[]",
           "since": 7,
           "creatable_since": 7
         },

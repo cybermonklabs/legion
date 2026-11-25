@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The queries a write left owed (R7 of dispatch://INFRA-1253). A write that moves the record of a
+// The queries a write left owed (R7 of the issue-tree spec). A write that moves the record of a
 // query of a converted issue writes no version of that query in its own transaction: in its batch
 // it marks the issue's queries owed (QueueQueryMark, migration 20261125090000_issue_tree_query_marks),
 // and the drain writes the versions once the write has committed (DrainOwedQueries), in a
@@ -115,38 +115,54 @@ type queryMark struct {
 
 // DrainOwedQueries is the drain a request runs once the write that marked the queries of the issue
 // issueKey owed has committed, and before the server publishes that write's events (api's publish):
-// it writes a version of each query whose record moved and clears the mark (drainQueryMark), named
-// after the writer of the newest tuple a marking write appended. It answers the events the drain
-// appended, for the caller to publish after its own, which they follow in the event log. A drain
-// that fails is logged and leaves the mark, which the block-index tick drains
-// (drainOwedQueryMarks); the write it follows stands committed either way.
+// it fills each record digest a version of the issue owes, then writes a version of each query
+// whose record moved and clears the mark (drainQueryMark), named after the writer of the newest
+// tuple a marking write appended. It answers the events the fill and the drain appended, for the
+// caller to publish after its own, which they follow in the event log. A drain that fails is
+// logged and leaves the mark, which the block-index tick drains (drainOwedQueryMarks); the write it
+// follows stands committed either way, and so does a fill that committed before the drain failed.
 func (s *Service) DrainOwedQueries(ctx context.Context, issueKey string) []model.Event {
 	appended, _, err := s.drainQueryMark(ctx, issueKey)
 	if err != nil {
 		slog.Error("dispatch: drain the queries an issue owes", "issue", issueKey, "error", err)
-		return nil
 	}
 	return appended
 }
 
-// drainQueryMark drains the mark of the issue issueKey, where one stands, in a transaction of its
-// own, and answers the events it appended and whether it found a mark to drain. It takes the
-// issue's owner lock (store.LockOwner), then the lock of the issue's query rooms (LockQueryRooms),
-// and reads the mark under them, with the writer of the tuple at its greatest_seq; none of the
-// three gives the transaction an id. That writer names the versions it writes, and their
-// artifact.version, and QueryDrainActor does where no tuple stands at that sequence. Under the
-// drain's own ledger (queueWrites) it reads what each version is decided on (planRevisions) and queues
-// each version (writeRevisions): its row, its node and its version_renders row holding its
-// record's digest, read before the batch, and the stand of its block index where its bytes are the
-// version before it's (queueRevisionStand). For each version it then queues what an edit route's
-// version writes beside it (finishRevision): the move of the document's open approval request, the
-// carry of an approval where the record moved by appended results alone, and the version's
-// artifact.version. Last it queues the clear of the mark, only where it still holds the causes
-// read, and then what the versions state, caused by the mark's greatest_event or at the sentinel
-// where it holds none, with their head rows, the last rows the write takes. The write phase is one
-// batch, and the COMMIT follows it: the transaction's window is that batch and its COMMIT. A
-// failure rolls back everything, the clear of the mark with it.
+// drainQueryMark runs, for the issue issueKey, two transactions in order and never one inside the
+// other (R7): the fill of each record digest a version of the issue's queries owes
+// (fillOwedDigests), which commits first, and then the drain of the issue's mark, where one stands
+// (drainMark). It answers the events both appended, the fill's first, and whether it found a mark
+// to drain. A fill that fails runs no drain, so no mark is cleared while a digest is owed; a fill
+// that committed is answered whatever the drain does.
 func (s *Service) drainQueryMark(ctx context.Context, issueKey string) ([]model.Event, bool, error) {
+	filled, err := s.fillOwedDigests(ctx, issueKey)
+	if err != nil {
+		return nil, false, err
+	}
+	drained, found, err := s.drainMark(ctx, issueKey)
+	return append(filled, drained...), found, err
+}
+
+// drainMark drains the mark of the issue issueKey, where one stands, in a transaction of its own,
+// and answers the events it appended and whether it found a mark to drain. It takes the issue's
+// owner lock (store.LockOwner), then the lock of the issue's query rooms (LockQueryRooms), and
+// reads the mark under them, with the writer of the tuple at its greatest_seq; none of the three
+// gives the transaction an id. That writer names the versions it writes, and their
+// artifact.version, and QueryDrainActor does where no tuple stands at that sequence. Under the
+// drain's own ledger (queueWrites) it reads what each version is decided on (planRevisions), which
+// refuses while a query version of the issue still owes its record digest, so the mark is never
+// cleared then, and queues each version (writeRevisions): its row, its node and its
+// version_renders row holding its record's digest, read before the batch, and the stand of its
+// block index where its bytes are the version before it's (queueRevisionStand). For each version
+// it then queues what an edit route's version writes beside it (finishRevision): the move of the
+// document's open approval request, the carry of an approval where the record moved by appended
+// results alone, and the version's artifact.version. Last it queues the clear of the mark, only
+// where it still holds the causes read, and then what the versions state, caused by the mark's
+// greatest_event or at the sentinel where it holds none, with their head rows, the last rows the
+// write takes. The write phase is one batch, and the COMMIT follows it: the transaction's window is
+// that batch and its COMMIT. A failure rolls back everything, the clear of the mark with it.
+func (s *Service) drainMark(ctx context.Context, issueKey string) ([]model.Event, bool, error) {
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin the drain of %s: %w", issueKey, err)
@@ -320,14 +336,19 @@ func appendsResultsAlone(approved, record QueryRecord) bool {
 	return appended && len(rest) == 0 && len(before) == 0
 }
 
-// drainOwedQueryMarks is the block-index tick's pass over the marks a request left
-// (issue_query_marks): it drains up to queryMarkBatch of them, oldest first by the tuple sequence
-// that marked each, each in a transaction of its own (drainQueryMark), which names the versions it
-// writes as a request's drain does, after the writer of the tuple at the mark's greatest_seq, or
+// drainOwedQueryMarks is the block-index tick's pass over what requests left owed: first the fills
+// a request lost (fillLostDigests), then the marks (issue_query_marks). It drains up to
+// queryMarkBatch marks, oldest first by the tuple sequence that marked each, each issue's fill and
+// drain in transactions of their own (drainQueryMark), which names the versions it writes as a
+// request's drain does, after the writer of the tuple at the mark's greatest_seq, or
 // QueryDrainActor where none stands there. It publishes what each appended once it has committed,
-// and counts the issues it drained in tick.Queries. A mark it cannot drain is logged and left for
-// the next tick. It reports whether the batch was full.
+// a fill that committed before its drain failed included, and counts the issues it drained in
+// tick.Queries. A mark it cannot drain is logged and left for the next tick. It reports whether
+// the batch was full.
 func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick) (bool, error) {
+	if err := s.fillLostDigests(ctx); err != nil {
+		return false, err
+	}
 	rows, err := s.store.Pool.Query(ctx, queryMarksStatement, queryMarkBatch)
 	if err != nil {
 		return false, fmt.Errorf("list the issues whose queries are owed: %w", err)
@@ -338,6 +359,9 @@ func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick)
 	}
 	for _, issue := range issues {
 		appended, drained, err := s.drainQueryMark(ctx, issue)
+		for _, event := range appended {
+			s.events.Publish(event)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
@@ -347,9 +371,6 @@ func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick)
 		}
 		if drained {
 			tick.Queries++
-		}
-		for _, event := range appended {
-			s.events.Publish(event)
 		}
 	}
 	return len(issues) == queryMarkBatch, nil

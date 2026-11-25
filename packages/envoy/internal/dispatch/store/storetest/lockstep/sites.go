@@ -98,6 +98,13 @@ var storeWriteCallSites = map[string]string{
 	// (QueueWrite, no node), the block's parent_block_id, the issue's query mark and the head rows.
 	// api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds a flat move to those steps.
 	"api/node_move.go#queueNodeMove": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The node DELETE route's one transaction (api/node_delete.go's queueNodeDelete): under the
+	// owner locks of the issue and of every issue a node of the subtree stands under, then each
+	// changed document's room lock in room-id order, the direct write of each document's tree and
+	// its version, the gone state of each lens, finding, risk and constraint it takes, the
+	// retraction of every tuple out of what it takes, the orphaned node anchors, the issue's query
+	// mark and the head rows. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to them.
+	"api/node_delete.go#queueNodeDelete": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core the
 	// PATCH and each step of a status change run), which names the issue changed: the issue's owner
 	// lock (lockPatchOwners), the issue's row, then, on a context that carries a run alone, the
@@ -143,6 +150,10 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_actions.go#orphanCommentAnchor":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "docs#TestTheAnchorBlockBackfillTakesTheRowThenTheTuple",
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "docs#TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple",
+	// R31's orphan of each comment whose node anchor names a node a delete takes
+	// (docs.NodeAnchorOrphans.Queue): the comments update and the retraction of each comment's
+	// anchored_in and part_of, in the batch of the node DELETE under the owner locks it holds.
+	"docs/anchor_refresh.go#Queue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An edit or a delete of an issue message and a delete of a comment made for a run
 	// (api/message_corrections.go, api/comment_delete.go), which names the message or the comment
 	// changed, in the same steps: the issue's owner lock, under which it reads the row, then, in

@@ -115,11 +115,15 @@ func distinctKeys(keys []NodeKey) []NodeKey {
 // a node that moved takes its subtree with it. A node no issue's tree holds is left with no row. A
 // writer queues it after the last of its own statements that writes the nodes, their tuples or the
 // rows they read (document_blocks, issue_room_blocks, document_block_texts, a conversation item's
-// row), in the same transaction. Nodes that name nothing queue nothing.
+// row), in the same transaction. Before the head rows it writes the node_search rows of the block
+// nodes among nodes, read again from the store as well (queueNodeSearch), so a node's text and
+// state reach search in the transaction that writes them and the head rows stay the last rows the
+// write takes. Nodes that name nothing queue nothing.
 func QueueHeads(b *store.WriteBatch, nodes []NodeKey) {
 	if len(nodes) == 0 {
 		return
 	}
+	queueNodeSearch(b, nodes)
 	kinds, ids := nodeKeyColumns(nodes)
 	b.Queue("write the head rows of the nodes written", headWriteStatement, kinds, ids)
 }

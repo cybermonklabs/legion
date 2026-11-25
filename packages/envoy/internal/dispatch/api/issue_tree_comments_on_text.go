@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -23,12 +25,13 @@ import (
 // carries count toward its one page of at most 200, newest first, by each comment's own time.
 //
 // A comment on text is the first comment of a thread, one that answers nothing, whose current
-// anchored_in at the read's cut names a node; its thread is it and every comment whose reply_to
-// chain climbs to it. The walk takes the comments R2's test passes (docs.WalkIssueTree); the read
-// adds the others (placeTextComments), each under what it answers, the first under the node its
-// anchored_in names, which keep lifts to that node's nearest ancestor the answer holds where no
-// read returns it, as a paragraph of a role document. A node anchor (R31's comments.node_anchor) is
-// the node-anchor work's to add to textCommentsStatement and to commentAnchorOf.
+// anchored_in at the read's cut names a node: a block, through a document anchor
+// (comments.anchor), or a lens, a finding, a risk, a constraint or a result, through a node anchor
+// (R31's comments.node_anchor); its thread is it and every comment whose reply_to chain climbs to
+// it. The walk takes the comments R2's test passes (docs.WalkIssueTree); the read adds the others
+// (placeTextComments), each under what it answers, the first under the node its anchored_in names,
+// which keep lifts to that node's nearest ancestor the answer holds where no read returns it, as a
+// paragraph of a role document.
 
 // treeTextComment is one comment of a thread on text as the read holds it: the id of its thread's
 // first comment, the one on text; the comment a reply answers, coalesce(answers, reply_to), zero on
@@ -51,30 +54,43 @@ type treeTextThread struct {
 	voiced   bool
 }
 
-// textCommentsStatement is every comment of the issue $1 of a thread on text at the cut: each
-// first comment written by $2, one that answers nothing, found through its anchor's document among
-// the issue's documents (comments_anchor_artifact), whose current anchored_in - the tuples at a seq
-// up to $3 and, where $4 is not null, at a time up to $4, the newest to each far end, kept while it
-// asserts - names a node; and each comment written by $2 whose reply_to chain climbs to one, its
-// climb bounded at $5 links, as R2's test climbs a thread. Each row is the thread's first comment,
-// the comment, when it was written, what it answers, whether a person wrote in its thread by $2
-// (R2's test: a comment of kind user), the node the first comment is on, and, of a thread no
-// person wrote in, the comment's current blocks in their position order.
-var textCommentsStatement = `
-	with recursive heads as (
-		select c.id, held.to_kind, held.to_id
-		from artifacts a
-		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
-		cross join lateral (
+// textCommentAnchoredIn is the far end of the current anchored_in of the comment c at the read's
+// cut - the tuples at a seq up to $3 and, where $4 is not null, at a time up to $4, the newest to
+// each far end, kept while it asserts - the newest of those, and no row where it holds none.
+var textCommentAnchoredIn = `
 			select anchoring.to_kind, anchoring.to_id from (
 				` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
 	`t.from_kind = '`+graphstore.KindComment+`' and t.from_id = c.id::text and t.kind = '`+graphstore.TupleAnchoredIn+`'
 				  and t.to_kind <> '`+graphstore.KindValue+`' and t.seq <= $3 and ($4::timestamptz is null or t.at <= $4)`) + `
 			) anchoring
 			where anchoring.asserted
-			order by anchoring.seq desc limit 1
+			order by anchoring.seq desc limit 1`
+
+// textCommentsStatement is every comment of the issue $1 of a thread on text at the cut: each
+// first comment written by $2, one that answers nothing, whose current anchored_in names a node
+// (textCommentAnchoredIn), found through its document anchor's document among the issue's
+// documents (comments_anchor_artifact) or through its node anchor among the issue's comments that
+// hold one (comments_issue_node_anchor), no comment holding both; and each comment written by $2
+// whose reply_to chain climbs to one, its climb bounded at $5 links, as R2's test climbs a thread.
+// Each row is the thread's first comment, the comment, when it was written, what it answers,
+// whether a person wrote in its thread by $2 (R2's test: a comment of kind user), the node the
+// first comment is on, and, of a thread no person wrote in, the comment's current blocks in their
+// position order.
+var textCommentsStatement = `
+	with recursive heads as (
+		select c.id, held.to_kind, held.to_id
+		from artifacts a
+		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
+		cross join lateral (` + textCommentAnchoredIn + `
 		) held
 		where a.issue_key = $1 and c.issue_key = $1 and c.created_at <= $2
+		  and c.reply_to is null and c.answers is null and c.ask_id is null
+		union all
+		select c.id, held.to_kind, held.to_id
+		from comments c
+		cross join lateral (` + textCommentAnchoredIn + `
+		) held
+		where c.issue_key = $1 and c.node_anchor is not null and c.created_at <= $2
 		  and c.reply_to is null and c.answers is null and c.ask_id is null
 	),
 	thread as (
@@ -164,11 +180,15 @@ func (b *issueTreeBuilder) readViewTextComments() error {
 }
 
 // textOnSkeleton reports whether the read with no view can answer the thread's first comment by
-// the node it is on: a block of a document whose blocks the skeleton holds, or a node of another
-// kind. A comment on a block of any other document comes with no answer of the skeleton, as that
-// block comes with none.
+// the node it is on: a block of a document whose blocks the skeleton holds, a finding of a lens,
+// which the store keys as a block under its lens's address (graphstore.ParseFindingID), or a node
+// of another kind. A comment on a block of any other document comes with no answer of the
+// skeleton, as that block comes with none.
 func textOnSkeleton(thread *treeTextThread, documents map[string]bool) bool {
 	if thread.on.Kind != refs.BlockNodeKind {
+		return true
+	}
+	if _, _, finding := graphstore.ParseFindingID(thread.on.ID); finding {
 		return true
 	}
 	document, _, _ := strings.Cut(thread.on.ID, "#")
@@ -435,24 +455,31 @@ func (b *issueTreeBuilder) underPage(order []refs.Target) map[refs.Target]bool {
 }
 
 // commentAnchorsStatement is the stored anchor of each comment $1 names that holds one: the
-// document anchor of comments.anchor, which the comments read answers as model.Anchor.
-const commentAnchorsStatement = `select c.id::text, c.anchor from comments c where c.id = any($1::uuid[]) and c.anchor is not null`
+// document anchor of comments.anchor, which the comments read answers as model.Anchor, or the node
+// anchor of comments.node_anchor (R31), beside the state of the node it names, read off that
+// node's graph_nodes row by the store kind and id the anchor holds. No comment holds both.
+const commentAnchorsStatement = `
+	select c.id::text, c.anchor, c.node_anchor, n.state
+	from comments c
+	left join graph_nodes n on c.node_anchor is not null and n.kind = c.node_anchor->>'node_kind' and n.id = c.node_anchor->>'node_id'
+	where c.id = any($1::uuid[]) and (c.anchor is not null or c.node_anchor is not null)`
 
 // queueCommentAnchors queues into batch the read of the anchor of each of comments that holds one
 // (commentAnchorsStatement), each as commentAnchorOf answers it, into anchors.
 func (b *issueTreeBuilder) queueCommentAnchors(batch *pgx.Batch, comments []string) {
-	b.anchors = map[string]*model.Anchor{}
+	b.anchors = map[string]*model.IssueTreeAnchor{}
 	if len(comments) == 0 {
 		return
 	}
 	batch.Queue(commentAnchorsStatement, comments).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var id string
-			var document []byte
-			if err := rows.Scan(&id, &document); err != nil {
+			var document, node []byte
+			var state *string
+			if err := rows.Scan(&id, &document, &node, &state); err != nil {
 				return err
 			}
-			anchor, err := commentAnchorOf(document)
+			anchor, err := commentAnchorOf(document, node, deref(state))
 			if err != nil {
 				return fmt.Errorf("decode the anchor of comment %s: %w", id, err)
 			}
@@ -462,13 +489,65 @@ func (b *issueTreeBuilder) queueCommentAnchors(batch *pgx.Batch, comments []stri
 	})
 }
 
-// commentAnchorOf is the anchor member of a comment the tree read answers (IssueTreeNode.Anchor)
-// from its stored document anchor: its artifact_id, block_id, mark_id, version, quote and
-// orphaned, as the comments read decodes them (model.DecodeAnchor), the orphaned mark as stored.
-func commentAnchorOf(document []byte) (*model.Anchor, error) {
-	var anchor model.Anchor
-	if err := model.DecodeAnchor(document, &anchor); err != nil {
+// storedNodeAnchor is a comment's node anchor as comments.node_anchor stores it (R31): the store
+// kind and id of the node it names, the quote, the occurrence of the quote in the node's text it
+// counts, and whether the quote has left that text.
+type storedNodeAnchor struct {
+	NodeKind   string `json:"node_kind"`
+	NodeID     string `json:"node_id"`
+	Quote      string `json:"quote"`
+	Occurrence int    `json:"occurrence"`
+	Orphaned   bool   `json:"orphaned"`
+}
+
+// commentAnchorOf is the anchor member of a comment the tree read answers (IssueTreeNode.Anchor),
+// its orphaned mark as stored: from its document anchor, where it holds one, its artifact_id,
+// block_id, mark_id, version, quote and orphaned, as the comments read decodes them
+// (model.DecodeAnchor); else from its node anchor, the node it names with that node's state, its
+// quote, its occurrence and orphaned.
+func commentAnchorOf(document, node []byte, state string) (*model.IssueTreeAnchor, error) {
+	if document != nil {
+		var anchor model.Anchor
+		if err := model.DecodeAnchor(document, &anchor); err != nil {
+			return nil, err
+		}
+		return &model.IssueTreeAnchor{ArtifactID: anchor.ArtifactID, BlockID: anchor.BlockID, MarkID: anchor.MarkID, Version: anchor.Version,
+			Quote: anchor.Quote, Orphaned: anchor.Orphaned}, nil
+	}
+	var stored storedNodeAnchor
+	if err := json.Unmarshal(node, &stored); err != nil {
 		return nil, err
 	}
-	return &anchor, nil
+	return &model.IssueTreeAnchor{Node: &model.IssueTreeAnchorNode{Kind: stored.NodeKind, ID: stored.NodeID, State: state},
+		Quote: stored.Quote, Occurrence: &stored.Occurrence, Orphaned: stored.Orphaned}, nil
+}
+
+// anchorOccurrences gives each document anchor the read holds (anchors) that is not orphaned and
+// names a block its zero-based occurrence within that block (R31): the number of the block's
+// matches of its quote that start before its mark, the count pmdoc.QuoteFinder.FindInBlock takes,
+// read off each document once (docs.Service.AnchorOccurrences). It runs after the read's
+// transaction has closed, as documentPositions does, since a document's marks are its room's. An
+// anchor whose document no longer holds its mark inside its block answers none, as an orphaned one
+// does: a read-only page, which renders the document's Markdown without its marks, places a thread
+// on the second of two identical quotes in one block only by this occurrence.
+func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
+	asked := map[string][]docs.CommentAnchorInBlock{}
+	held := map[string][]*model.IssueTreeAnchor{}
+	for _, anchor := range b.anchors {
+		if anchor.Node != nil || anchor.Orphaned || anchor.ArtifactID == "" || anchor.BlockID == nil || *anchor.BlockID == "" {
+			continue
+		}
+		asked[anchor.ArtifactID] = append(asked[anchor.ArtifactID], docs.CommentAnchorInBlock{MarkID: anchor.MarkID, BlockID: *anchor.BlockID, Quote: anchor.Quote})
+		held[anchor.ArtifactID] = append(held[anchor.ArtifactID], anchor)
+	}
+	for document, anchors := range asked {
+		occurrences, err := s.deps.Docs.AnchorOccurrences(b.ctx, document, anchors)
+		if err != nil {
+			return fmt.Errorf("read the occurrences of the comments' anchors in document %s of %s: %w", document, b.key, err)
+		}
+		for index, occurrence := range occurrences {
+			held[document][index].Occurrence = &occurrence
+		}
+	}
+	return nil
 }

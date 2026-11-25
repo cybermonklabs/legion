@@ -504,7 +504,7 @@ type backlinkArm struct {
 	projectedIn string
 	// moved is, for an arm over a column that may be updated in place while the row's node columns
 	// are left as they were, the test that a row naming its node names a far end its node's tuple
-	// does not: the arm counts such a row as naming no node (R9 of dispatch://INFRA-1253), as
+	// does not: the arm counts such a row as naming no node (R9 of the issue-tree spec), as
 	// graph_edges' old arm answers it. An issue's parent has one (store.IssueParentMoved), since
 	// the release before's issue PATCH sets parent_key in place, and a component's parent the same
 	// (store.ComponentParentMoved).
@@ -632,7 +632,7 @@ var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: [
 }}
 
 // filedFrom is the arm that counts, on an ask, a comment or a message, the filed_from tuple of each
-// issue filed out of it, which the view answers from the store alone (dispatch://INFRA-1253 R9).
+// issue filed out of it, which the view answers from the store alone (R9 of the issue-tree spec).
 var filedFrom = backlinkArm{kind: graphstore.TupleFiledFrom, storedFrom: []string{graphstore.KindIssue}}
 
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
@@ -912,15 +912,16 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// relation a block states but its membership of its document, which is the artifact's
 		// own part_of arm, and its placement under the block holding it, which is no edge of
 		// the view, each counted only while the block_refs row of its pair carries the block's
-		// node (blockRefCarries), as the view's tuple arm joins it. The types test is the same one
-		// with the attribute node's targets as its input, as the view's tuple arm makes it
-		// (migration 20261109215947), and a mention is no attribute of any block type, so it is
-		// listed without the lookup. Its own test of the citing block is the view's state rule and
-		// this registry's predicate made out of one read of that block's node row
-		// (liveVisibleNode).
+		// node (blockRefCarries), as the view's tuple arm joins it. The types test is the view's
+		// tuple arm's: block_node_listed with the attribute node's targets as its input
+		// (migration 20261125150001), which a boot step restates to read the target's type from
+		// its node (graphcensus.RunTypedBlockSupertagsStep), and a mention is no attribute of any
+		// block type, so it is listed without the lookup. Its own test of the citing block is the
+		// view's state rule and this registry's predicate made out of one read of that block's
+		// node row (liveVisibleNode).
 		arm(`graph_tuples r`, `r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
-			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
+			and (r.kind = 'mentions' or block_node_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
 			and `+blockRefCarries(BlockNodeKind, "r"),
 			liveVisibleNode("block", `r.from_id`)),
 	}

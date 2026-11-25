@@ -44,7 +44,7 @@ import (
 //     (UseDocuments), which writes the documents.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
-// (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
+// (Boot): the readers of this release that take an ask's answer from
 // its node - a reading's check of its ask (askAnswers) and this step's own count - read an ask
 // phase 1 has not stated yet as open, and the release before keeps serving through a roll until
 // this process serves. The boot reads only what phase 1 needs - whether a row stands unmarked

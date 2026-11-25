@@ -737,6 +737,34 @@ test("a filter draws the outline's node where the outline's tree and its view's 
   ]);
 });
 
+// R4 and R9: Conversation's read holds no plan task, so the Plan filter draws each task from the
+// tree its own view answer builds, where the names read gave no words to the chip of a statement
+// the task also serves: the row names that statement by its line, from the tree that holds it.
+test("a view's row drawn from its own tree names each other parent it serves by that parent's line", () => {
+  const second = "dispatch://CORE-1/spec#b-r2";
+  const task = node("plan#b-t1", "plan_task", [], {
+    alsoUnder: [{ answered: false, gone: false, name: "", ref: second }],
+    readId: "CORE-1/plan#t1",
+  });
+  const tree = node("CORE-1", "issue", [
+    statement("spec#b-r1", [task], { readId: "CORE-1/spec#r1", text: "The first statement." }),
+    statement("spec#b-r2", [], {
+      readId: "CORE-1/spec#r2",
+      reference: second,
+      text: "The second statement.",
+    }),
+  ]);
+  const answer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
+    view: "plan",
+  });
+  const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
+  const drawn = presetView(root, "plan", "").root.children.find((row) => row.id === "plan#b-t1");
+  expect(
+    drawn?.alsoUnder.map((chip) => chip.name),
+    "the task does not name the second statement it serves"
+  ).toEqual(["The second statement."]);
+});
+
 // Two documents of an issue that has not converted can hold one block id, and each block is a row
 // of its own document's id: a filter draws the view's node as the tree's node of that same
 // document, never as the other document's block that shares its read id, though the tree holds

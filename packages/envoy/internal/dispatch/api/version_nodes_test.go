@@ -21,7 +21,7 @@ import (
 )
 
 // TestEveryVersionRowIsTheProjectionOfAVersionNode holds every insert of an artifact_versions row to
-// R16 of dispatch://INFRA-1253 (T2b of its plan): the row is the projection of a version node,
+// R16 of the issue-tree spec (T2b of its plan): the row is the projection of a version node,
 // `<ref_key>@v<number>`, supertag `document version`, part_of its document's node, with its number
 // and its time as values, written in the row's own transaction and caused by the event of the
 // write. Each site is driven through its route: an issue's spec at the create (api's createIssue),
@@ -214,7 +214,7 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	}
 	for attribute, want := range map[string]string{
 		graphstore.AttributeQuery:             graphstore.QueryPlan,
-		graphstore.AttributeTakes:             `["plan_task"]`,
+		graphstore.AttributeTakes:             `["plan_task","plan_role"]`,
 		graphstore.AttributeSubtree:           "issue:" + key,
 		graphstore.AttributeDefinitionVersion: strconv.Itoa(graphstore.QueryDefinitionVersion),
 	} {

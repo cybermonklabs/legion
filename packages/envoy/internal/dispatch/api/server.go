@@ -469,6 +469,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// betweenNodeRouteReads runs on a write of a node route (PATCH and DELETE of
+	// /api/v1/issues/{key}/nodes/{id}) after each read it makes with no lock held and before that
+	// attempt takes its owner locks (lockNodeRouteOwners), with the attempt's number from 1; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it: it is
+	// how a case commits a move between the read that names the locks and the read under them, to
+	// read that the route starts over and, at each attempt, answers 409 PARENT_CONTENDED.
+	betweenNodeRouteReads func(ctx context.Context, attempt int)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that

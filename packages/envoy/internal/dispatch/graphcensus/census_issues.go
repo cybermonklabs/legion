@@ -14,7 +14,7 @@ import (
 
 // issueProjections are the census's kinds of the relations between issues (projections), each
 // held triple by triple (projection.tuples) against the tuples the issue's node states now
-// (dispatch://INFRA-1253 R9, R10): issues.parent_key against the issue's child_of, and each
+// (R9, R10 of the issue-tree spec): issues.parent_key against the issue's child_of, and each
 // issue_links row against the needs of its pair. A row that names no node is a row a process of
 // the release before wrote, which graph_edges' old arm answers until the backfill names its node
 // (the object pass for an issue's own row, backfillIssueLinks for a link), and which the census
@@ -66,7 +66,7 @@ type issueLinkRow struct {
 // backfillIssueLinks states, for every issue_links row naming no node, the needs tuple it is the
 // projection of, dated at the row's own created_at and at the sentinel, as graph_edges' old arm
 // dates the edge, and names the issue's node on the row in the transaction that states the tuple,
-// so a second run reads no row the first one wrote (dispatch://INFRA-1149's r-view-end contract).
+// so a second run reads no row the first one wrote (the graph-store spec's r-view-end contract).
 // It walks the rows in their primary key's order, one batch a transaction (writeIssueLinkBatch).
 func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "issue_link"}

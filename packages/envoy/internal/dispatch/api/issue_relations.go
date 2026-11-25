@@ -1,5 +1,5 @@
 // issue_relations.go is an issue's relations to other nodes as POST /api/v1/issues and PATCH
-// /api/v1/issues/{key} write them (dispatch://INFRA-1253 R9, R10): its parent (child_of), the
+// /api/v1/issues/{key} write them (R9, R10 of the issue-tree spec): its parent (child_of), the
 // issues it waits on (needs, which the request may also name blocked_by), the issue of its project
 // it repeats (duplicate_of) and the ask, comment or message it was filed out of (filed_from). Each
 // is a tuple out of the issue's node, which the write appends in its own transaction, caused by

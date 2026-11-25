@@ -116,6 +116,8 @@ POST /api/v1/issues/{key}/lenses any
 GET /api/v1/issues/{key}/messages any
 POST /api/v1/issues/{key}/messages any
 GET /api/v1/issues/{key}/messages/{id} any
+DELETE /api/v1/issues/{key}/nodes/{id} any
+PATCH /api/v1/issues/{key}/nodes/{id} any
 POST /api/v1/issues/{key}/nodes/{id}/findings any
 POST /api/v1/issues/{key}/nodes/{id}/pointers any
 POST /api/v1/issues/{key}/nodes/{id}/settle any

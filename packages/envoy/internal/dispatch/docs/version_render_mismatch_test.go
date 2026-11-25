@@ -1,0 +1,367 @@
+package docs
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+// The steps of TestTheTreeRendersAPostCutoverVersionFromItsTuples that hold R15's version whose
+// tree does not render as its stored markdown (tree_mismatch) and R14's carry of the pass that
+// states a version first. Their issues are of a project of their own, MISS, so no other step's
+// issue shares their documents.
+
+// mismatchSeed is the text the mismatched version's write seeds its document with: what the
+// document's tree renders as, and what its version does not store.
+const mismatchSeed = "Seeded words.\n"
+
+// renderRow is a version's version_renders row as the steps read it.
+type renderRow struct {
+	at         *time.Time
+	digest     *string
+	readSeq    *int64
+	mismatch   bool
+	repairedAt *time.Time
+}
+
+// readRenderRow reads the version_renders row of version number of artifactID.
+func readRenderRow(t *testing.T, database *store.Store, artifactID string, number int) renderRow {
+	t.Helper()
+	var row renderRow
+	if err := database.Pool.QueryRow(context.Background(), `
+		select at, record_sha256, read_seq, tree_mismatch, tree_mismatch_repaired_at
+		from version_renders where artifact_id = $1 and number = $2`, artifactID, number).Scan(
+		&row.at, &row.digest, &row.readSeq, &row.mismatch, &row.repairedAt); err != nil {
+		t.Fatalf("read the version_renders row of version %d of %s: %v", number, artifactID, err)
+	}
+	return row
+}
+
+// seedMismatchIssues writes the project MISS and its issues MISS-1 to MISS-3, none of which has
+// converted: no issue_trees row and no document_rooms row.
+func seedMismatchIssues(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into projects (key, name, default_assignee) values ('MISS', 'Mismatches', 'alice') on conflict (key) do nothing;
+		insert into issues (key, project_key, number, title, created_by, rank)
+		select 'MISS-' || n, 'MISS', n, 'Mismatch ' || n, '{"kind":"user","id":"alice"}', 'U' || n
+		from generate_series(1, 3) n
+		on conflict (key) do nothing`); err != nil {
+		t.Fatalf("seed project MISS: %v", err)
+	}
+}
+
+// mismatchedMarkdown is the renderer's own rendering of a document that holds one paragraph,
+// "Other words." (documentMarkdownWithOffsets): the markdown the mismatched version stores, which
+// the repair restates only because it reads back and renders as its own bytes.
+func mismatchedMarkdown(t *testing.T) string {
+	t.Helper()
+	tree, err := pmdoc.Parse("Other words.\n")
+	if err != nil {
+		t.Fatalf("parse the mismatched paragraph: %v", err)
+	}
+	markdown, _, err := documentMarkdownWithOffsets(tree)
+	if err != nil {
+		t.Fatalf("render the mismatched paragraph: %v", err)
+	}
+	read, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		t.Fatalf("the mismatched markdown does not render back as itself: %v", err)
+	}
+	if again, _, err := documentMarkdownWithOffsets(read); err != nil || again != markdown || markdown == mismatchSeed {
+		t.Fatalf("the mismatched markdown does not render back as itself: %q renders as %q (%v)", markdown, again, err)
+	}
+	return markdown
+}
+
+// writeMismatchedSpec creates the spec of issue, with primary set as treeDocument creates one,
+// whose node is its query's (writeQueryNode), so its version has a record of R14, and writes its
+// version 1 as the upload route writes a version (api's storeArtifact), with the one input the
+// product never gives: in one transaction joined to the service it seeds the document's text
+// with mismatchSeed (SeedText) and queues version 1 with other (Ledger.QueueVersion), which
+// records the version's doc_update_version at the head the seed left and inserts the version's
+// version_renders row; it indexes the version (IndexDocumentReferences), which leaves the blocks
+// of a tree that does not render as the version's markdown to the reconciliation, writes the
+// version's node (WriteVersionNode) and commits. It answers the spec and its ref_key.
+func writeMismatchedSpec(t *testing.T, database *store.Store, service *Service, issue, other string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	writeQueryNode(t, database, "MISS", issue, "spec", graphstore.QuerySpec)
+	var id, refKey string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ($1, 'MISS', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`, issue).Scan(&id, &refKey); err != nil {
+		t.Fatalf("create the spec of %s: %v", issue, err)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of %s: %v", refKey, err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	if _, err := service.SeedText(joined, id, mismatchSeed, alice); err != nil {
+		t.Fatalf("seed %s: %v", refKey, err)
+	}
+	version, err := ledger.QueueVersion(ctx, id, other, []model.Actor{alice}, nil)
+	if err != nil {
+		t.Fatalf("queue version 1 of %s: %v", refKey, err)
+	}
+	ledger.WroteVersion(id, version, other)
+	_, stated, err := service.IndexDocumentReferences(joined, id, version.Number, other)
+	if err != nil {
+		t.Fatalf("index version 1 of %s: %v", refKey, err)
+	}
+	owner, err := ReadVersionOwner(joined, tx, id)
+	if err != nil {
+		t.Fatalf("read the owner of version 1 of %s: %v", refKey, err)
+	}
+	node, err := WriteVersionNode(joined, tx, owner, version.Number, alice, version.CreatedAt)
+	if err != nil {
+		t.Fatalf("write the node of version 1 of %s: %v", refKey, err)
+	}
+	if err := causeInWritePhase(joined, tx, graphstore.Joined(stated, node), graphstore.NoEvent); err != nil {
+		t.Fatalf("append what the write of %s stated: %v", refKey, err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the write of %s: %v", refKey, err)
+	}
+	return id, refKey
+}
+
+// renderStepTreeMismatch: a version whose tree does not render as its stored markdown keeps its
+// stored bytes, and the census refuses on it, until a later quiet tick repairs it; and a mark a
+// later version's pass has moved past is closed (R14, R15, R16).
+//
+// MISS-1's spec stores version 1 as mismatchedMarkdown over a tree seeded with mismatchSeed
+// (writeMismatchedSpec). alice approves version 1, pinning its stored markdown's digest. The seed's
+// pending row is settled as the product settles it (settleOwedNow): no content changed since
+// version 1, so no version is written and the row goes. One tick then states the document's tree
+// at version 1 and marks the row tree_mismatch: no time, no digest, no seq. The version answers
+// its stored bytes, the census counts the row tree_mismatch and never deferred, the census alone
+// refuses, and alice's approval stands with nothing carried. The next tick, with no update in
+// flight, no pending row, no pass owed and the blocks still at version 1, restates version 1 from
+// its stored bytes: its row holds its time, seq and record digest, its mark is cleared and
+// tree_mismatch_repaired_at set, the version renders from the tree as its stored bytes, the census
+// moves the row from tree_mismatch to tree_mismatch_repaired, and the pass carries alice's
+// approval to version 1 with the restore's reason, pinning the record's digest.
+//
+// MISS-2's spec is marked the same way, then version 2 is written through the real version write,
+// which stands the blocks at version 2; the next tick closes version 1's mark: no time, no digest
+// and no seq, the mark cleared and repaired_at set, version 1 answering its stored bytes, and the
+// census reading tree_mismatch down by 1, tree_mismatch_repaired and deferred each up by 1.
+func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
+	ctx := context.Background()
+	database := rig.database
+	seedMismatchIssues(t, database)
+	other := mismatchedMarkdown(t)
+
+	spec, refKey := writeMismatchedSpec(t, database, service, "MISS-1", other)
+	address := "version " + refKey + "@v1"
+	approveStoredVersion(t, database, spec, 1, "alice")
+	approval, err := NewestReview(ctx, database.Pool, spec)
+	if err != nil || approval == nil || approval.ContentSHA256 == nil || *approval.ContentSHA256 != renderSum(other) {
+		t.Fatalf("alice's approval of %s@v1 = %+v, %v; want it pinning the stored markdown's %s", refKey, approval, err, renderSum(other))
+	}
+	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle %s: %v", refKey, err)
+	}
+	reconcileBlockIndex(t, service, "")
+	if row := readRenderRow(t, database, spec, 1); row.at != nil || row.digest != nil || row.readSeq != nil || !row.mismatch {
+		t.Errorf("after the tick the row of %s@v1 holds %v, %v and %v, tree_mismatch %t; want no time, no digest, no seq and tree_mismatch",
+			refKey, row.at, row.digest, row.readSeq, row.mismatch)
+	}
+	if got := rig.renderVersion(t, spec, 1); got.Source != StoredBytes || got.Markdown != other {
+		t.Errorf("version 1 of %s renders %d bytes from %s, want its %d stored bytes from %s", refKey, len(got.Markdown), got.Source, len(other), StoredBytes)
+	}
+	marked := rig.readRenderCensus(t)
+	if slices.Contains(marked.DeferredAt, address) {
+		t.Errorf("the census counts version 1 of %s as deferred, want tree_mismatch", refKey)
+	}
+	if marked.TreeMismatch < 1 || !slices.ContainsFunc(marked.Reported, func(difference graphcensus.Difference) bool {
+		return difference.At == address && strings.Contains(difference.Cause, "tree_mismatch")
+	}) {
+		t.Errorf("the census reads tree_mismatch=%d at %v, want 1 at version 1 of %s", marked.TreeMismatch, marked.Reported, refKey)
+	}
+	if !(&graphcensus.StoreReport{VersionRenders: &marked}).Refused() {
+		t.Errorf("the census holds tree_mismatch=%d and is not refused", marked.TreeMismatch)
+	}
+	if newest, err := NewestReview(ctx, database.Pool, spec); err != nil || newest == nil || newest.ID != approval.ID {
+		t.Errorf("the approval of %s at version 1 reads stale after a pass whose tree does not render as its stored bytes: the newest review is %+v (%v), want alice's own %s",
+			refKey, newest, err, approval.ID)
+	}
+
+	reconcileBlockIndex(t, service, "")
+	row := readRenderRow(t, database, spec, 1)
+	if row.mismatch || row.repairedAt == nil || row.at == nil || row.digest == nil || row.readSeq == nil {
+		t.Fatalf("version 1 of %s still holds tree_mismatch after a quiet tick: its row holds %v, %v and %v, tree_mismatch %t, repaired at %v",
+			refKey, row.at, row.digest, row.readSeq, row.mismatch, row.repairedAt)
+	}
+	requireStatedRow(t, database, "MISS-1", graphstore.QuerySpec, spec, 1)
+	if got := rig.renderVersion(t, spec, 1); got.Source != RenderedFromTree || got.Markdown != other {
+		t.Errorf("version 1 of %s renders %d bytes from %s, want its %d stored bytes from %s", refKey, len(got.Markdown), got.Source, len(other), RenderedFromTree)
+	}
+	repaired := rig.readRenderCensus(t)
+	if repaired.TreeMismatch != marked.TreeMismatch-1 || repaired.TreeMismatchRepaired != marked.TreeMismatchRepaired+1 {
+		t.Errorf("the census reads tree_mismatch=%d tree_mismatch_repaired=%d after the repair, want %d and %d",
+			repaired.TreeMismatch, repaired.TreeMismatchRepaired, marked.TreeMismatch-1, marked.TreeMismatchRepaired+1)
+	}
+	if slices.ContainsFunc(repaired.Reported, func(difference graphcensus.Difference) bool { return difference.At == address }) {
+		t.Errorf("the census reads a difference at version %s@v1 after the repair: %v", refKey, repaired.Reported)
+	}
+	carried, err := NewestReview(ctx, database.Pool, spec)
+	switch {
+	case err != nil || carried == nil:
+		t.Errorf("the newest review of %s = %+v, %v; want a review carried to version 1", refKey, carried, err)
+	case carried.ID == approval.ID || carried.State != "approved" || carried.Version != 1 || carried.Reason == nil ||
+		*carried.Reason != restoredReason(1, 1) || carried.ContentSHA256 == nil || *carried.ContentSHA256 != *row.digest:
+		t.Errorf("the approval of %s at version 1 reads stale after the repair restated it: the newest review is %+v, want a carry to version 1 reading %q and pinning the record's %s",
+			refKey, carried, restoredReason(1, 1), *row.digest)
+	}
+
+	closed, closedRef := writeMismatchedSpec(t, database, service, "MISS-2", other)
+	if err := service.settleOwedNow(ctx, closed, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle %s: %v", closedRef, err)
+	}
+	reconcileBlockIndex(t, service, "")
+	if row := readRenderRow(t, database, closed, 1); !row.mismatch {
+		t.Fatalf("after the tick the row of %s@v1 holds tree_mismatch %t, want it marked", closedRef, row.mismatch)
+	}
+	if _, err := joinedReplaceText(service, closed, "Later words.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("write the next text of %s: %v", closedRef, err)
+	}
+	if result, _ := writeVersionThroughTheRealPath(t, service, closed, "The next version"); result.Version.Number != 2 {
+		t.Fatalf("the real version write wrote version %d of %s, want 2", result.Version.Number, closedRef)
+	}
+	settle(t, database, closed)
+	before := rig.readRenderCensus(t)
+	reconcileBlockIndex(t, service, "")
+	row = readRenderRow(t, database, closed, 1)
+	if row.mismatch || row.repairedAt == nil || row.at != nil || row.digest != nil || row.readSeq != nil {
+		t.Errorf("version 1 of %s still holds tree_mismatch after a quiet tick: its row holds %v, %v and %v, tree_mismatch %t, repaired at %v; want the mark closed with no time, digest or seq",
+			closedRef, row.at, row.digest, row.readSeq, row.mismatch, row.repairedAt)
+	}
+	if got := rig.renderVersion(t, closed, 1); got.Source != StoredBytes || got.Markdown != other {
+		t.Errorf("version 1 of %s renders %d bytes from %s, want its %d stored bytes from %s", closedRef, len(got.Markdown), got.Source, len(other), StoredBytes)
+	}
+	after := rig.readRenderCensus(t)
+	if after.TreeMismatch != before.TreeMismatch-1 || after.TreeMismatchRepaired != before.TreeMismatchRepaired+1 || after.Deferred != before.Deferred+1 {
+		t.Errorf("the census reads tree_mismatch=%d tree_mismatch_repaired=%d deferred=%d after the repair, want %d %d %d",
+			after.TreeMismatch, after.TreeMismatchRepaired, after.Deferred, before.TreeMismatch-1, before.TreeMismatchRepaired+1, before.Deferred+1)
+	}
+	if slices.ContainsFunc(after.Reported, func(difference graphcensus.Difference) bool { return difference.At == "version "+closedRef+"@v1" }) {
+		t.Errorf("the census reads a tree_mismatch line at version 1 of %s after the repair closed it: %v", closedRef, after.Reported)
+	}
+}
+
+// renderStepCarryOfACarry: the reason a carry of a carry writes (R14). MISS-3's spec, a query
+// version's document, writes version 1 through the real version write, which indexes it in its own
+// transaction, and alice approves it. Version 2 is an upload of version 1's text, written as
+// storeArtifact writes one (ReplaceText with the token of the version it replaces, QueueVersion,
+// IndexDocumentReferences, CarryUploadedApproval): the replacement changes nothing, so the upload
+// writes no tree and leaves version 2's blocks to the reconciliation, its row with no time, and
+// CarryUploadedApproval carries alice's approval to version 2 by the restore, pinning the stored
+// markdown's digest. The reconciliation's pass then states version 2, whose render is its stored
+// bytes, records its time and its record's digest, and carries again, to version 2, since the
+// newest review approves version 2: its reason names the version alice approved and the version
+// whose text it holds (restoreCarriedReason), and it pins the record's digest.
+func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
+	ctx := context.Background()
+	database := rig.database
+	seedMismatchIssues(t, database)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	writeQueryNode(t, database, "MISS", "MISS-3", "spec", graphstore.QuerySpec)
+	var spec, refKey string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('MISS-3', 'MISS', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key`).Scan(&spec, &refKey); err != nil {
+		t.Fatalf("create the spec of MISS-3: %v", err)
+	}
+	seedServiceText(t, service, spec, "The words the person approved.\n")
+	writeVersionThroughTheRealPath(t, service, spec, "The first version")
+	settle(t, database, spec)
+	first := storedVersionMarkdown(t, database, spec, 1)
+	approveStoredVersion(t, database, spec, 1, "alice")
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the upload of %s: %v", refKey, err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	precondition, err := replacementPrecondition(joined, service, spec)
+	if err != nil {
+		t.Fatalf("read the token of %s: %v", refKey, err)
+	}
+	stored, err := service.ReplaceText(joined, spec, first, alice, precondition)
+	if err != nil {
+		t.Fatalf("replace the text of %s: %v", refKey, err)
+	}
+	version, err := ledger.QueueVersion(ctx, spec, stored, []model.Actor{alice}, nil)
+	if err != nil {
+		t.Fatalf("queue the upload's version of %s: %v", refKey, err)
+	}
+	ledger.WroteVersion(spec, version, stored)
+	_, stated, err := service.IndexDocumentReferences(joined, spec, version.Number, stored)
+	if err != nil {
+		t.Fatalf("index the upload's version of %s: %v", refKey, err)
+	}
+	owner, err := ReadVersionOwner(joined, tx, spec)
+	if err != nil {
+		t.Fatalf("read the owner of the upload's version of %s: %v", refKey, err)
+	}
+	node, err := WriteVersionNode(joined, tx, owner, version.Number, alice, version.CreatedAt)
+	if err != nil {
+		t.Fatalf("write the node of the upload's version of %s: %v", refKey, err)
+	}
+	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, service.serverURL); err != nil {
+		t.Fatalf("carry the approval of %s to the upload's version: %v", refKey, err)
+	}
+	if err := causeInWritePhase(joined, tx, graphstore.Joined(stated, node), graphstore.NoEvent); err != nil {
+		t.Fatalf("append what the upload of %s stated: %v", refKey, err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the upload of %s: %v", refKey, err)
+	}
+	if version.Number != 2 || stored != first {
+		t.Fatalf("the upload wrote version %d of %s storing %q, want version 2 storing version 1's %q", version.Number, refKey, stored, first)
+	}
+	if row := readRenderRow(t, database, spec, 2); row.at != nil {
+		t.Fatalf("version 2 of %s holds a time before its pass", refKey)
+	}
+	uploaded, err := NewestReview(ctx, database.Pool, spec)
+	if err != nil || uploaded == nil || uploaded.Version != 2 || uploaded.Reason == nil || *uploaded.Reason != restoredReason(1, 1) ||
+		uploaded.ContentSHA256 == nil || *uploaded.ContentSHA256 != renderSum(first) {
+		t.Fatalf("the upload of version 2 of %s carried %+v (%v), want %q pinning the stored markdown's %s", refKey, uploaded, err, restoredReason(1, 1), renderSum(first))
+	}
+
+	drainOwed(t, database, service)
+	row := readRenderRow(t, database, spec, 2)
+	if row.at == nil || row.digest == nil {
+		t.Fatalf("the pass left version 2 of %s with its row holding %v and %v, want its time and its record's digest", refKey, row.at, row.digest)
+	}
+	carried, err := NewestReview(ctx, database.Pool, spec)
+	want := fmt.Sprintf(restoreCarriedReason, 1, 2)
+	switch {
+	case err != nil || carried == nil || carried.ID == uploaded.ID || carried.Version != 2 || carried.Reason == nil:
+		t.Errorf("the carry to version 2 of %s gives the reason %+v (%v), want %q", refKey, carried, err, want)
+	case *carried.Reason != want:
+		t.Errorf("the carry to version 2 of %s gives the reason %q, want %q", refKey, *carried.Reason, want)
+	case carried.ContentSHA256 == nil || *carried.ContentSHA256 != *row.digest:
+		t.Errorf("the carry to version 2 of %s pins %v, want the record's %s", refKey, carried.ContentSHA256, *row.digest)
+	}
+}

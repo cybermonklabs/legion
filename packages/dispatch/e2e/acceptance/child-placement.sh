@@ -6,10 +6,13 @@
 #   P1 As the person DEV_SIGNIN_LOGIN signs in, it creates the issue A and writes a comment on it,
 #      creates under A the child C1 filed from that comment and the child C2 with no placement, and
 #      creates the issue B outside A's tree.
-#   P2 It reads C1's placement_seq off A's tree read and places C1 under the comment through
-#      PATCH /api/v1/issues/{A}/nodes/{C1's store address} with the body {parent} and an If-Match
-#      naming that placement_seq, sent with the person's cookie. A's tree read answers C1 under
-#      the comment, and C2 under A.
+#   P2 The child C1 holds child_of and no part_of, so A's tree read answers its placement_seq as the
+#      seq of its current child_of tuple, which the driver reads from graph_tuples beside it. It
+#      places C1 under the comment through PATCH /api/v1/issues/{A}/nodes/{C1's store address} with
+#      the body {parent} and an If-Match naming that placement_seq, sent with the person's cookie,
+#      and the same PATCH with the same tag again answers 412 PRECONDITION_FAILED and moves nothing,
+#      since the move wrote C1's first part_of. A's tree read answers C1 under the comment, and C2
+#      under A at the seq of C2's current child_of.
 #   P3 It moves C1 under B by writing its child_of (PATCH /api/v1/issues/{C1} {parent: B}). B's tree
 #      read answers C1 under B, the store holds no current part_of tuple from C1 to the comment,
 #      and A's tree read answers C2 under A and C1 nowhere. Where C1 still stands under the
@@ -137,6 +140,19 @@ child_placement_under() {
   pass "$1" "the tree read of $2 answers $3 under $4 $5"
 }
 
+# child_placement_seqs SECTION KIND ISSUE: the seqs of the current KIND tuples out of the issue node
+# ISSUE - for each far end, the newest tuple naming it, kept while it asserts - sorted and joined by
+# commas, in $answer.
+child_placement_seqs() {
+  with_vars "$1" "read the seqs of the current $2 tuples out of $3" \
+    "select coalesce(string_agg(t.seq::text, ',' order by t.seq), '')
+     from (select distinct on (to_kind, to_id) seq, asserted from graph_tuples
+           where from_kind = 'issue' and from_id = :'issue' and kind = :'kind' and to_kind <> 'value'
+           order by to_kind, to_id, seq desc) t
+     where t.asserted" \
+    issue="$3" kind="$2"
+}
+
 # child_placement_far_ends SECTION KIND ISSUE: the far ends of the current KIND tuples out of the
 # issue node ISSUE - for each far end, the newest tuple naming it is asserted - each written
 # <to_kind>:<to_id>, sorted and joined by commas, in $answer.
@@ -148,6 +164,27 @@ child_placement_far_ends() {
            order by to_kind, to_id, seq desc) t
      where t.asserted" \
     issue="$3" kind="$2"
+}
+
+# child_placement_child_of_tag SECTION ISSUE CHILD: the child issue CHILD holds no current part_of
+# and one current child_of, and the tree read of ISSUE last kept answers CHILD's placement_seq as
+# that child_of's seq (R8), which it sets in child_placement_tag. Where the read answers null or
+# another number, the failure names the child, the answer and the seq it wants.
+child_placement_child_of_tag() {
+  local child_of seq
+  child_placement_far_ends "$1" part_of "$3"
+  [[ -z "$answer" ]] || fail "$1" "$3 holds no part_of before a move places it" "its current part_of tuples name '$answer'"
+  child_placement_seqs "$1" child_of "$3"
+  [[ "$answer" =~ ^[0-9]+$ ]] || fail "$1" "$3 holds one current child_of" "its current child_of tuples have the seqs '$answer'"
+  child_of="$answer"
+  child_placement_node "$1" "$2" issue "$3"
+  [[ -n "$child_placement_found" ]] || fail "$1" "the tree read of $2 answers $3" "it answers no node of $3"
+  seq="$(jq -r '.placement_seq | if . == null then "null" else tostring end' <<<"$child_placement_found")"
+  [[ "$seq" == "$child_of" ]] ||
+    fail "$1" "the tree read of $2 answers the placement_seq of $3, which holds no part_of, as the seq of its current child_of, $child_of" \
+      "it answers the child $3 at placement_seq $seq: $child_placement_found"
+  child_placement_tag="$child_of"
+  pass "$1" "the tree read of $2 answers $3, which holds no part_of, at placement_seq $child_of, the seq of its current child_of"
 }
 
 # --- P1: the issue, the comment that files its child, the two children and the other parent ---------
@@ -179,25 +216,32 @@ pass P1 "created $placed and $unplaced under $first, and $second outside its tre
 child_placement_tree P2 "$first"
 child_placement_node P2 "$first" comment "$comment_id"
 [[ -n "$child_placement_found" ]] || fail P2 "the tree read of $first answers the comment $comment_id" "it answers no node of it"
-child_placement_node P2 "$first" issue "$placed"
-[[ -n "$child_placement_found" ]] || fail P2 "the tree read of $first answers $placed" "it answers no node of $placed"
-placement_seq="$(jq -r '.placement_seq // empty' <<<"$child_placement_found")"
-[[ "$placement_seq" =~ ^[0-9]+$ ]] ||
-  fail P2 "the tree read of $first answers the placement_seq of $placed" "it answers $child_placement_found"
-readonly placement_seq
-pass P2 "the tree read of $first answers $placed at placement_seq $placement_seq"
-child_placement_move P2 "$first" "issue/$placed" "$placement_seq" \
-  "$(jq -cn --arg c "comment/$comment_id" '{parent: $c}')"
-tree_want 200 P2 "$tree_person places $placed under the comment $comment_id"
+child_placement_child_of_tag P2 "$first" "$placed"
+readonly placement_seq="$child_placement_tag"
+place_body="$(jq -cn --arg c "comment/$comment_id" '{parent: $c}')"
+readonly place_body
+child_placement_move P2 "$first" "issue/$placed" "$placement_seq" "$place_body"
+tree_want 200 P2 "$tree_person places $placed under the comment $comment_id with the tag of its child_of"
 expect P2 "the move of $placed answers the comment as its parent" true \
   --arg c "$comment_id" '.parent | type == "string" and endswith($c)'
+tree_field P2 "the move of $placed answers its new placement_seq" .placement_seq
+[[ "$tree_value" =~ ^[0-9]+$ && "$tree_value" != "$placement_seq" ]] ||
+  fail P2 "the move of $placed answers a new placement_seq" "it answers $tree_value, and the tag it took was $placement_seq"
+readonly moved_seq="$tree_value"
+child_placement_move P2 "$first" "issue/$placed" "$placement_seq" "$place_body"
+tree_want 412 P2 "the same move of $placed again, with the tag of its child_of the move made stale"
+expect P2 "the repeat of the move of $placed answers PRECONDITION_FAILED" '"PRECONDITION_FAILED"' .code
+child_placement_far_ends P2 part_of "$placed"
+[[ "$answer" == "comment:$comment_id" ]] ||
+  fail P2 "the store holds the one part_of tuple from $placed to the comment $comment_id" "its current part_of tuples name '$answer'"
+child_placement_seqs P2 part_of "$placed"
+[[ "$answer" == "$moved_seq" ]] ||
+  fail P2 "the refused repeat moves nothing: $placed stands at placement_seq $moved_seq" "its current part_of tuples have the seqs '$answer'"
+pass P2 "the store holds the one part_of tuple from $placed to the comment $comment_id, at the seq $moved_seq the move answered"
 child_placement_tree P2 "$first"
 child_placement_under P2 "$first" "$placed" comment "$comment_id"
 child_placement_under P2 "$first" "$unplaced" issue "$first"
-child_placement_far_ends P2 part_of "$placed"
-[[ ",$answer," == *",comment:$comment_id,"* ]] ||
-  fail P2 "the store holds the part_of tuple from $placed to the comment $comment_id" "its current part_of tuples name '$answer'"
-pass P2 "the store holds the part_of tuple from $placed to the comment $comment_id"
+child_placement_child_of_tag P2 "$first" "$unplaced"
 
 # --- P3: child_of moves the child, and the placement under the old words goes ----------------------
 

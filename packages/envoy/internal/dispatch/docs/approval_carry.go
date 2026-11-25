@@ -426,10 +426,12 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // carries nothing by their cases (restoreCase, conversionCase), which no route can reach. Its
 // reads run where it is called, the route's read phase, and its writes are queued there, as
 // carryApproval's are; the events it appends reach the ledger of the transaction it runs in
-// (eventSink), which publishes them after its Commit, beside the version move's own. Where the
-// upload's own pass gave the version its version_renders row (IndexDocumentReferences), its writes
-// run after that row (carryAfterRender), so the review it inserts pins the row's digest; an upload
-// of the approved text writes that row itself first, with the approval's digest (carryRestored).
+// (eventSink), which publishes them after its Commit, beside the version move's own. Its writes
+// keep their place, before the version's artifact.version, which the upload appends after it
+// (R14): the review it inserts pins the digest of the version's stored markdown while the
+// version's record digest is owed, and the fill after the commit repins it to the record
+// (fillOwedDigests); an upload of the approved text writes the version's row itself first, with
+// the approval's digest (carryRestored).
 func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
@@ -443,9 +445,7 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 			return skipUnreadableVersion(artifactID, number, err)
 		}
 	}
-	return carryAfterRender(ctx, tx, artifactID, number, func() error {
-		return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
-	})
+	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,

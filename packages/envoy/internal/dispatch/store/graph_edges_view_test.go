@@ -20,6 +20,7 @@ var graphEdgesViewMigrations = map[string]GraphEdgesArms{
 	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
 	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
 	"20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
+	"20261125150001_issue_tree_graph_edges_block_node_listed.up.sql":      GraphEdgesBlockNodeListed,
 }
 
 // graphEdgesSiblingRestatements are the migrations of the sibling branch this branch merges that
@@ -42,7 +43,7 @@ const graphEdgesStatement = "create or replace view graph_edges "
 
 // TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives holds graph_edges to one source. A
 // migration is an embedded file that calls no Go, so each migration that states the view from
-// dispatch://INFRA-1253's split of the issue relations on holds the text GraphEdgesView gives for
+// the issue-tree spec's split of the issue relations on holds the text GraphEdgesView gives for
 // its arm set, byte for byte after its header of comments, and nothing else. Every migration
 // that states the view and sorts after the first of them must be one of them, so a migration that
 // states the view by hand fails here by its name. Last, a database migrated to this head holds the

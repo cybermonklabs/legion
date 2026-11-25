@@ -1722,7 +1722,7 @@
     },
     "/api/v1/artifacts/{id}/edits": {
       "post": {
-        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (\u003cref_key\u003e#\u003cblock id\u003e), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. A batch whose result adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken whose result holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block; an edit of the tree artifact that touches none of those blocks is taken, and each refused edit writes nothing.",
+        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (\u003cref_key\u003e#\u003cblock id\u003e), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, quoting each such ask's question or decision's words and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. A batch whose result adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken whose result holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An edit of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; one of an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. An edit of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block; an edit of the tree artifact that touches none of those blocks is taken, and each refused edit writes nothing.",
         "operationId": "postApiV1ArtifactsByIdEdits",
         "parameters": [
           {
@@ -3340,7 +3340,7 @@
     },
     "/api/v1/comments/{id}": {
       "get": {
-        "description": "Read one comment with its thread.",
+        "description": "Read one comment with its thread. With ?node_anchor=true the comment carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned} where its anchor names a node or a block, and the answer is not cached.",
         "operationId": "getApiV1CommentsById",
         "parameters": [
           {
@@ -3349,6 +3349,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "node_anchor",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5827,7 +5834,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new version or a new document that adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken that holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an upload of its spec or Verification document, a file under the name verification.md among them, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT.",
+        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new version or a new document that adds a requirement block to an issue that is a view on its ancestor's spec - an issue born converted whose spec is not its own and whose nearest ancestor holding requirements and no view itself is not done, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, and writes nothing; one taken that holds a requirement block on an issue that is no view makes the issue's spec its own, so it is never a view. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired, rather than DOCUMENT_RETIRED: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. An upload under the name or slug of the issue's decisions query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes nothing. On an issue Legion runs, an upload of its spec or Verification document, a file under the name verification.md among them, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT.",
         "operationId": "postApiV1IssuesByKeyArtifacts",
         "parameters": [
           {
@@ -6041,7 +6048,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, one that adds a requirement block to an issue that is a view on its ancestor's spec is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, an edit of a retired document 409 DOCUMENT_RETIRED, one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as POST /api/v1/artifacts/{id}/edits answers it.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, one that adds a requirement block to an issue that is a view on its ancestor's spec is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that ancestor, an edit of a retired document 409 DOCUMENT_RETIRED, one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, and an edit of the issue's decisions query is 409 DECISIONS_QUERY, as POST /api/v1/artifacts/{id}/edits answers them. On an issue Legion runs, an edit of its spec or Verification document by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so is such a session's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as POST /api/v1/artifacts/{id}/edits answers it.",
         "operationId": "postApiV1IssuesByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -6745,7 +6752,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. With ?node_anchor=true each comment whose anchor names a node or a block carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned}, and the answer is not cached.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6761,6 +6768,13 @@
             "in": "query",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "node_anchor",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -6789,7 +6803,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/CommentWithTrees"
+                    "$ref": "#/components/schemas/CommentWithNodeAnchor"
                   },
                   "type": "array"
                 }
@@ -7658,8 +7672,111 @@
       }
     },
     "/api/v1/issues/{key}/nodes/{id}": {
+      "delete": {
+        "description": "Delete the node {id} names and its part_of subtree {actor?}, in one transaction, or with ?dry_run=true answer how many nodes the delete would take that a read of the issue's tree returns to the caller, writing nothing and taking no write lock. {id} is read as the move reads it; a node the caller may not see under the issue is 404 NOT_FOUND. The delete takes no comment, message, issue node, ask, :::ask block or document of the subtree, nor what stands under one; each block it takes leaves the text of its document in one direct write of the document's tree under the room locks, a block it does not take being lifted to where the taken block's text stood, and each document so changed writes one version with its artifact.version, which moves its open approval request; each lens, finding, risk and constraint it takes goes gone, each comment whose node anchor names one is orphaned, every tuple out of what it takes is retracted, and a converted issue's queries are marked owed and drained once it has committed. Refusals, in order: an ask, an :::ask block, a comment, a message, a result, an issue node or a document as {id} is 400 NODE_NOT_DELETABLE, after a caller who holds no person scope naming the :::ask block of an answered ask, 409 ANSWERED_ASK_KEPT; on the delete, no If-Match is 428 PRECONDITION_REQUIRED and no expected_count 400 DELETE_INPUT; under the owner locks of the issue and of every issue a node of the subtree stands under, a node under an issue it did not lock at each of two attempts is 409 PARENT_CONTENDED, and a tag that is no longer the node's placement_seq 412 PRECONDITION_FAILED; on the dry run as on the delete, a subtree that holds a result is 409 NODE_HOLDS_RESULT, a requirement, criterion or check on an issue Legion runs from a writer who is no person and no architect 403 DOCUMENT_WRITER_NOT_ARCHITECT, from a caller who holds no person scope a person's decision 409 ANSWERED_ASK_KEPT and a lens, finding, risk or constraint 403 STATE_NOT_PERMITTED, each naming a node only where the caller may see it, and a delete that would leave a callout or a list item it keeps with no block of its own 409 CONTAINER_WOULD_EMPTY, naming the container and its kind, which the dry run reads off the live document with no write lock; last, an expected_count that is not the count the delete takes is 409 DELETE_COUNT_MOVED, carrying the count now in count. A refused delete stores nothing. Answers 200 {count}.",
+        "operationId": "deleteApiV1IssuesByKeyNodesById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "expected_count",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a quoted entity tag (\"123\"), which the delete itself must send: none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; the dry run (dry_run=true) reads none",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeDeleted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DeleteCountMoved"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
       "patch": {
-        "description": "Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes.",
+        "description": "Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; a body with neither parent nor after is 400 MOVE_INPUT, and a move with no If-Match 428 PRECONDITION_REQUIRED; on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; then, under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED; a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why; an after that is no ranked sibling of the node's band is 400 INVALID_POINTER, naming after; and last, under the room locks, a text move that would leave a callout or a list item with no block of its own is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes.",
         "operationId": "patchApiV1IssuesByKeyNodesById",
         "parameters": [
           {
@@ -7931,7 +8048,7 @@
     },
     "/api/v1/issues/{key}/nodes/{id}/state": {
       "post": {
-        "description": "Write the node state of the node {id} names {state}: proposed, overtaken or live on any node the store holds that is not gone but the block of an :::ask block of a document, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. gone is final: any write on a gone node is 409 NODE_GONE, naming the node. The write that takes a lens, a finding, a risk or a constraint to gone takes its whole part_of subtree to gone in the same write, at every depth and whatever each node's kind - a finding or a risk under a lens, a lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each - those the caller may not see included, so no read by its own address answers one of them once the node above it is gone. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. A write on the block of an :::ask block of a document is 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) by its dispatch://\u003cKEY\u003e/ask/\u003cuuid\u003e address, or saying no ask holds the question yet. {id} is the node's store address under the issue (`\u003cref_key\u003e#\u003cblock id\u003e` for a block of a document, `lens/\u003cuuid\u003e`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, gone or not. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so is gone on a block of a document or an issue, a document, an ask, a comment or a message, each naming the node's kind, its state and the value asked for. A move of a lens, a finding, a risk or a constraint into gone is a person's alone - a browser's cookie, or a token holding the person scope - since it takes what the caller may not see: any other caller, the node's own author included, is 403 STATE_NOT_PERMITTED naming the node, in the same words whatever stands under it, and an agent marks a node it wrote overtaken instead. Any other move of a node into or out of proposed or settled, other than the settle itself, takes the settle's caller rule: a person makes it on any node, and any other caller only on a node whose recorded author is the author its credential proves, by the one author rule the settle reads; any other is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the deployment's shared agent token makes no such move. A move out of settled undoes a decision, a move out of proposed ends a proposal and counts a proposed check or plan task as serving its requirement, and a move into proposed takes a requirement's gaps out of the coverage read and the approval request. On an issue Legion runs, a write of the state of a requirement, criterion or check block by a session that is no person and no architect of the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT, and nothing is stored. The write appends one state tuple on each node it moves, written by the caller - a person's as the person it acts for, as the settle's is - and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing and takes no caller rule, since it moves nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before.",
+        "description": "Write the node state of the node {id} names {state}: proposed, overtaken or live on any node the store holds that is not gone but the block of an :::ask block of a document, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. gone is final: any write on a gone node is 409 NODE_GONE, naming the node. The write that takes a lens, a finding, a risk or a constraint to gone takes its whole part_of subtree to gone in the same write, at every depth and whatever each node's kind - a finding or a risk under a lens, a lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each - those the caller may not see included, so no read by its own address answers one of them once the node above it is gone. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. A write on the block of an :::ask block of a document is 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) by its dispatch://\u003cKEY\u003e/ask/\u003cuuid\u003e address, or saying no ask holds the question yet. A caller who holds no person scope that sets a person's decision - an answered ask's own node, or a decision a person decided - overtaken or live is 409 ANSWERED_ASK_KEPT, quoting the ask's question or the decision's words and naming the node; on an answered ask's own node proposed is refused too, before the settle's caller rule; nothing is stored. {id} is the node's store address under the issue (`\u003cref_key\u003e#\u003cblock id\u003e` for a block of a document, `lens/\u003cuuid\u003e`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, gone or not. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so is gone on a block of a document or an issue, a document, an ask, a comment or a message, each naming the node's kind, its state and the value asked for. A move of a lens, a finding, a risk or a constraint into gone is a person's alone - a browser's cookie, or a token holding the person scope - since it takes what the caller may not see: any other caller, the node's own author included, is 403 STATE_NOT_PERMITTED naming the node, in the same words whatever stands under it, and an agent marks a node it wrote overtaken instead. Any other move of a node into or out of proposed or settled, other than the settle itself, takes the settle's caller rule: a person makes it on any node, and any other caller only on a node whose recorded author is the author its credential proves, by the one author rule the settle reads; any other is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the deployment's shared agent token makes no such move. A move out of settled undoes a decision, a move out of proposed ends a proposal and counts a proposed check or plan task as serving its requirement, and a move into proposed takes a requirement's gaps out of the coverage read and the approval request. On an issue Legion runs, a write of the state of a requirement, criterion or check block by a session that is no person and no architect of the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT, and nothing is stored. The write appends one state tuple on each node it moves, written by the caller - a person's as the person it acts for, as the settle's is - and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing and takes no caller rule, since it moves nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before.",
         "operationId": "postApiV1IssuesByKeyNodesByIdState",
         "parameters": [
           {
@@ -11820,7 +11937,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing.",
+        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing.",
         "operationId": "postApiV1ProjectsByKeyArtifacts",
         "parameters": [
           {
@@ -12034,7 +12151,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, and an edit of a retired document 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them.",
         "operationId": "postApiV1ProjectsByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -14773,6 +14890,9 @@
           "mark_id": {
             "type": "string"
           },
+          "node": {
+            "type": "string"
+          },
           "occurrence": {
             "type": "integer"
           },
@@ -14780,9 +14900,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "artifact"
-        ],
         "type": "object"
       },
       "AnswerAskInput": {
@@ -18632,10 +18749,36 @@
         ],
         "type": "object"
       },
+      "CommentNodeAnchor": {
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/IssueTreeAnchorNode"
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "orphaned": {
+            "type": "boolean"
+          },
+          "quote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "quote",
+          "occurrence",
+          "orphaned"
+        ],
+        "type": "object"
+      },
       "CommentRead": {
         "properties": {
           "comment": {
-            "$ref": "#/components/schemas/CommentWithTrees"
+            "$ref": "#/components/schemas/CommentWithNodeAnchor"
           },
           "replies": {
             "items": {
@@ -18695,6 +18838,195 @@
         },
         "required": [
           "attempt"
+        ],
+        "type": "object"
+      },
+      "CommentWithNodeAnchor": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answers": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CommentDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/CommentMention"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "node_anchor": {
+            "$ref": "#/components/schemas/CommentNodeAnchor"
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turn": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "author",
+          "body",
+          "anchor",
+          "reply_to",
+          "answers",
+          "ask_id",
+          "turn",
+          "resolved",
+          "resolved_by",
+          "resolved_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
+          "suggestion",
+          "created_at",
+          "mentions",
+          "deliveries",
+          "reply_block"
         ],
         "type": "object"
       },
@@ -20690,6 +21022,25 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "DeleteCountMoved": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "count"
+        ],
         "type": "object"
       },
       "DeliveryComponent": {
@@ -26092,6 +26443,65 @@
         ],
         "type": "object"
       },
+      "IssueTreeAnchor": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "mark_id": {
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/IssueTreeAnchorNode"
+          },
+          "occurrence": {
+            "type": "integer"
+          },
+          "orphaned": {
+            "type": "boolean"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quote",
+          "orphaned"
+        ],
+        "type": "object"
+      },
+      "IssueTreeAnchorNode": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
       "IssueTreeAsk": {
         "properties": {
           "answer": {
@@ -26377,7 +26787,7 @@
       "IssueTreeNode": {
         "properties": {
           "anchor": {
-            "$ref": "#/components/schemas/Anchor"
+            "$ref": "#/components/schemas/IssueTreeAnchor"
           },
           "ask": {
             "$ref": "#/components/schemas/IssueTreeAsk"
@@ -26585,6 +26995,12 @@
           "cycle": {
             "type": "boolean"
           },
+          "docs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "done": {
             "$ref": "#/components/schemas/IssueTreePlan"
           },
@@ -26608,6 +27024,12 @@
               "null",
               "string"
             ]
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "start": {
             "$ref": "#/components/schemas/IssueTreePlan"
@@ -29035,6 +29457,17 @@
         "required": [
           "label",
           "session"
+        ],
+        "type": "object"
+      },
+      "NodeDeleted": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
         ],
         "type": "object"
       },

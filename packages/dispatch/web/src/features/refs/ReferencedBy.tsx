@@ -69,7 +69,7 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   duplicate_of: "Duplicate issue",
   filed_from: "Issue filed from it",
   followed_by: "Follower",
-  // A wait, one relation however its ends are (dispatch://INFRA-1253 R10): an issue's on an issue,
+  // A wait, one relation however its ends are (R10 of the issue-tree spec): an issue's on an issue,
   // and the `needs` a plan task's `block[]` attribute makes on another (`blocks.json`), as a
   // check's or a plan task's `serves` names a requirement. Read from the node waited on, the edge
   // says what the citing node does for it.

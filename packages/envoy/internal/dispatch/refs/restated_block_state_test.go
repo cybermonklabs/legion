@@ -53,7 +53,7 @@ func TestAReindexLeavesAProposedRequirementProposed(t *testing.T) {
 	// A write that owns the state - a plain write, as the state route's is - marks it proposed.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, []graphstore.Node{{
-			Kind: BlockNodeKind, ID: document.address(requirement), Supertag: BlockSupertag,
+			Kind: BlockNodeKind, ID: document.address(requirement), Supertag: requirementType,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateProposed,
 			MadeAt: first.at.Add(time.Second), MadeBy: writer, SourceEvent: graphstore.NoEvent,
 		}}, nil)

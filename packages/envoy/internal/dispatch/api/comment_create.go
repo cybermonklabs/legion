@@ -772,6 +772,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
+	// A node anchor names a node of the issue the caller may see, read through the credential that
+	// proved the caller (resolveNodeAnchor), as the node routes read it.
+	var reader model.Actor
+	if onNode(input.Anchor) {
+		if reader, ok = s.actingReader(w, r); !ok {
+			return
+		}
+	}
 	if input.Suggestion == nil && strings.TrimSpace(input.Body) == "" {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
@@ -874,7 +882,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created", false,
 		)
 	}
-	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, markKind, rowID, actor)
+	// An anchor on a node's text is no mark of a document: it is resolved off the store, and the
+	// document anchor's write below is given none (R31).
+	documentAnchor := input.Anchor
+	var nodeAnchor *model.NodeAnchor
+	if onNode(input.Anchor) {
+		documentAnchor = nil
+		if nodeAnchor, err = resolveNodeAnchor(r.Context(), tx, reader, owner, *input.Anchor, isSuggestion); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, documentAnchor, markKind, rowID, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -897,6 +916,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		ID: rowID, IssueKey: owner.IssueKey, ArtifactID: owner.ArtifactID, Author: actor, Body: input.Body, Anchor: anchor,
 		ReplyTo: input.ReplyTo, Answers: threadTarget.Answers, AskID: input.AskID, Turn: turn, Suggestion: suggestion,
 		Mentions: mentions, Deliveries: []model.CommentDelivery{}, RepliesToBlock: threadTarget.ReplyBlock.nodeID(),
+		NodeAnchor: nodeAnchor,
 	}
 	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, visibility, projectionKind)
 	if err != nil {
@@ -1109,6 +1129,155 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
 }
 
+// onNode reports whether input is an anchor on a node's text (this issue's spec R31): it names a
+// node and no document. An anchor naming both, or neither, is the document anchor's to refuse
+// (resolveAnchor).
+func onNode(input *model.AnchorInput) bool {
+	return input != nil && strings.TrimSpace(input.Node) != "" && strings.TrimSpace(input.Artifact) == ""
+}
+
+// nodeAnchorKinds are the kinds of node a comment's anchor may be on by node (R31), as the graph
+// addresses each (decodeNodeAddress): a lens, a finding of one, a risk and a constraint, which the
+// read registry resolves, and a result, which it does not (anchoredNodeText).
+var nodeAnchorKinds = []string{graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint}
+
+// nodeTextStatement is the text of the node the store keys by the kind $1 and the id $2, for the
+// reader bound at $3, as the tree read answers a node's text (this issue's spec R31): a lens's
+// verdict, or its kind's words where it holds none, a finding's text value, a risk's heading and a
+// constraint's standard, or its measurement where it holds no standard (refs.StandingTextSQL), and
+// a result's observed words. No other attribute is quotable: a risk's early warning or
+// prevention, and a constraint's measurement beside a standard, are not its text.
+var nodeTextStatement = `
+	select coalesce(` + refs.StandingTextSQL("n", "$3") + `,
+	                case when n.kind = '` + graphstore.KindResult + `' then n.attributes->>'` + graphstore.AttributeObserved + `' end, '')
+	from graph_nodes n
+	where n.kind = $1 and n.id = $2`
+
+// resultNodeStatement is the state and the visibility of the result node $1 recorded on the issue
+// $2 (check_results.issue_key); no row where the store holds no such result of that issue. Its
+// text is its own text tuple, read as every node's is (nodeTextStatement).
+var resultNodeStatement = `
+	select n.state, n.visibility
+	from graph_nodes n
+	where n.kind = '` + graphstore.KindResult + `' and n.id = $1
+	  and exists (select 1 from check_results r where r.id::text = n.id and r.issue_key = $2)`
+
+// resultAddress is the id of the result address names, by its store address (`result/<id>`) or
+// its dispatch:// address, and false for an address of any other kind.
+func resultAddress(address string) (string, bool) {
+	id, named := strings.CutPrefix(strings.TrimPrefix(address, "dispatch://"), graphstore.KindResult+"/")
+	return id, named && id != ""
+}
+
+// invalidNodeAnchor is the 400 INVALID_ANCHOR of a node anchor, whose words name the field.
+func invalidNodeAnchor(format string, args ...any) error {
+	return errorf(http.StatusBadRequest, "INVALID_ANCHOR", format, args...)
+}
+
+// resolveNodeAnchor is the node anchor a comment's write names (R31), read in tx for reader, the
+// credential that proved the caller, under the owner lock the write holds: the lens, finding,
+// risk, constraint or result input's node names under owner's issue, by its store address as
+// /nodes/{id} takes it or its dispatch:// address, with the quote and the zero-based occurrence
+// of it in the node's text (docs.FindNodeQuote). Each of these is 400 INVALID_ANCHOR naming the
+// field, and the caller writes no comment: a mark_id or a block_id beside node, no quote, a
+// suggestion, a comment that belongs to a document rather than an issue, a node of another kind,
+// one reader may not see under the issue, one reserved for its author, a gone one, and a quote
+// the node's text does not hold at that occurrence, or holds in several places where none is
+// named. A comment is read by the whole project and a node's visibility never moves after its
+// write, so refusing an author-only node keeps every comment on a node visible only to those who
+// see that node.
+func resolveNodeAnchor(ctx context.Context, tx pgx.Tx, reader model.Actor, owner owner, input model.AnchorInput, suggestion bool) (*model.NodeAnchor, error) {
+	address := strings.TrimSpace(input.Node)
+	switch {
+	case input.MarkID != nil:
+		return nil, invalidNodeAnchor("anchor mark_id names a mark of a document and is refused beside node")
+	case input.BlockID != nil:
+		return nil, invalidNodeAnchor("anchor block_id names a block of a document and is refused beside node")
+	case input.Quote == nil || *input.Quote == "":
+		return nil, invalidNodeAnchor("anchor quote is required beside node: it names the words of the node's text the comment is on")
+	case input.Occurrence != nil && *input.Occurrence < 0:
+		return nil, invalidNodeAnchor("anchor occurrence %d counts no match: it is the zero-based match of the quote in the node's text", *input.Occurrence)
+	case suggestion:
+		return nil, invalidNodeAnchor("anchor node is refused on a suggestion, which replaces words of a document: anchor it by artifact")
+	case owner.IssueKey == nil:
+		return nil, invalidNodeAnchor("anchor node names a node of the comment's issue, and this comment belongs to a document: anchor it by artifact")
+	}
+	key := *owner.IssueKey
+	stored, text, err := anchoredNodeText(ctx, tx, reader, key, address)
+	if err != nil {
+		return nil, err
+	}
+	quote := *input.Quote
+	occurrence, err := docs.FindNodeQuote(text, quote, input.Occurrence)
+	var ambiguous *pmdoc.ErrTargetAmbiguous
+	switch {
+	case errors.As(err, &ambiguous):
+		return nil, invalidNodeAnchor("anchor quote %q matches %d places in the text of node %q: name the one by occurrence", quote, len(ambiguous.Candidates), address)
+	case errors.Is(err, pmdoc.ErrTargetNotFound) && input.Occurrence != nil:
+		return nil, invalidNodeAnchor("anchor quote %q is not in the text of node %q at occurrence %d", quote, address, *input.Occurrence)
+	case errors.Is(err, pmdoc.ErrTargetNotFound):
+		return nil, invalidNodeAnchor("anchor quote %q is not in the text of node %q", quote, address)
+	case err != nil:
+		return nil, fmt.Errorf("find the quote in the text of %s %s: %w", stored.kind, stored.id, err)
+	}
+	return &model.NodeAnchor{NodeKind: stored.kind, NodeID: stored.id, Quote: quote, Occurrence: occurrence}, nil
+}
+
+// anchoredNodeText is the node address names under the issue key, read in tx for reader, as the
+// store keys it, with its text (resolveNodeAnchor): a result through its own row
+// (resultNodeStatement), since the read registry resolves none, and any other kind through
+// findWrittenNode. Each refusal is 400 INVALID_ANCHOR naming node: a kind no node anchor takes, a
+// node reader may not see under key, a gone one and one reserved for its author.
+func anchoredNodeText(ctx context.Context, tx pgx.Tx, reader model.Actor, key, address string) (storedEnd, string, error) {
+	stored, err := anchoredNode(ctx, tx, reader, key, address)
+	if err != nil {
+		return storedEnd{}, "", err
+	}
+	var text string
+	if err := tx.QueryRow(ctx, nodeTextStatement, stored.kind, stored.id, refs.VisibilityArg(reader)).Scan(&text); err != nil {
+		return storedEnd{}, "", fmt.Errorf("read the text of %s %s: %w", stored.kind, stored.id, err)
+	}
+	return stored, text, nil
+}
+
+// anchoredNode is the node address names under the issue key, read in tx for reader, as the store
+// keys it (anchoredNodeText).
+func anchoredNode(ctx context.Context, tx pgx.Tx, reader model.Actor, key, address string) (storedEnd, error) {
+	if id, named := resultAddress(address); named {
+		var state, visibility string
+		err := tx.QueryRow(ctx, resultNodeStatement, id, key).Scan(&state, &visibility)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return storedEnd{}, invalidNodeAnchor("anchor node %q names no node of %s you may see", address, key)
+		case err != nil:
+			return storedEnd{}, fmt.Errorf("read the result %s: %w", id, err)
+		case state == graphstore.StateGone:
+			return storedEnd{}, invalidNodeAnchor("anchor node %q is gone, and gone is final: no comment is written on it", address)
+		case visibility == graphstore.VisibilityAuthor:
+			return storedEnd{}, invalidNodeAnchor("anchor node %q is reserved for its author, and a comment is read by the whole project", address)
+		}
+		return storedEnd{kind: graphstore.KindResult, id: id}, nil
+	}
+	if kind, _, ok := decodeNodeAddress(address); !ok || !slices.Contains(nodeAnchorKinds, kind) {
+		return storedEnd{}, invalidNodeAnchor("anchor node %q names no lens, finding, risk, constraint or result", address)
+	}
+	found, end, err := findWrittenNode(ctx, tx, reader, key, address)
+	var refusal *apiError
+	switch {
+	case errors.As(err, &refusal) && refusal.code == codeNodeGone:
+		return storedEnd{}, invalidNodeAnchor("anchor node %q is gone, and gone is final: no comment is written on it", address)
+	case errors.As(err, &refusal) && refusal.status == http.StatusNotFound:
+		return storedEnd{}, invalidNodeAnchor("anchor node %q names no node of %s you may see", address, key)
+	case err != nil:
+		return storedEnd{}, err
+	case !slices.Contains(nodeAnchorKinds, end.kind):
+		return storedEnd{}, invalidNodeAnchor("anchor node %q names a %s, which is no lens, finding, risk, constraint or result", address, end.kind)
+	case found.Visibility == graphstore.VisibilityAuthor:
+		return storedEnd{}, invalidNodeAnchor("anchor node %q is reserved for its author, and a comment is read by the whole project: anchor it on a node every reader of the project sees", address)
+	}
+	return end.stored(), nil
+}
+
 // commentStoreWrite is what a comment is in the node and tuple store: its node, and the facts
 // its row is the projection of (graphstore.CommentFacts).
 //
@@ -1133,16 +1302,34 @@ type commentStoreWrite struct {
 	unprojected bool
 }
 
+// commentAnchor is a comment's anchor as its store write reads it (commentStored): the document
+// anchor comments.anchor holds, or the node anchor comments.node_anchor holds (this issue's spec
+// R31), at most one of the two; a comment with neither has no commentAnchor.
+type commentAnchor struct {
+	document *model.Anchor
+	node     *model.NodeAnchor
+}
+
+// anchorOfComment is comment's anchor as its store write reads it, nil where it holds none.
+func anchorOfComment(comment *model.Comment) *commentAnchor {
+	if comment.Anchor == nil && comment.NodeAnchor == nil {
+		return nil
+	}
+	return &commentAnchor{document: comment.Anchor, node: comment.NodeAnchor}
+}
+
 // commentStored is what the comment rowID states (graphstore.CommentFacts): its node, at
 // visibility and live, in project or between parties (graphstore.ScopeOf of what it belongs to),
-// made by its author at the row's own created_at, and the artifact it is anchored to and the
-// artifact that owns it, each stated only where the comment has one. Both relations name the
-// artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
-// the caller's read phase, in one statement. An anchor that names a block states beside them its
-// anchored_in to that block's node (graphstore.AnchoredIn), addressed as the block index
-// addresses it: the ref_key of the room the anchor's document is edited in, which the same
-// statement reads, '#' and the block id. A block whose address is past the store's bound is no
-// node, and the comment states no anchored_in to it.
+// made by its author at the row's own created_at, and the artifact its document anchor is anchored
+// to and the artifact that owns it, each stated only where the comment has one. Both relations
+// name the artifact by its address, which is its ref_key, so the two artifacts' addresses are read
+// here, in the caller's read phase, in one statement. A document anchor that names a block states
+// beside them its anchored_in to that block's node, addressed as the block index addresses it: the
+// ref_key of the room the anchor's document is edited in, which the same statement reads, '#' and
+// the block id; a node anchor states its anchored_in to the node it names. Each states its part_of
+// to that same node too (graphstore.AnchorTuples, R31), since no reply carries an anchor
+// (normalizeCommentThreadTarget), so a comment with one answers nothing. A block whose address is
+// past the store's bound is no node, and the comment states neither to it.
 //
 // visibility is what graphstore.VisibilityFor answered the request, and the store refuses a
 // comment reserved for its author (graphstore.ErrVisibilityNotAdmitted) when writeNode writes it.
@@ -1155,14 +1342,18 @@ func commentStored(
 	author model.Actor,
 	at time.Time,
 	visibility string,
-	anchor *model.Anchor,
+	anchor *commentAnchor,
 	ownerArtifactID *string,
 	project string,
 	parties []string,
 ) (commentStoreWrite, error) {
-	var artifacts []string
+	var document *model.Anchor
 	if anchor != nil {
-		artifacts = append(artifacts, anchor.ArtifactID)
+		document = anchor.document
+	}
+	var artifacts []string
+	if document != nil {
+		artifacts = append(artifacts, document.ArtifactID)
 	}
 	if ownerArtifactID != nil {
 		artifacts = append(artifacts, *ownerArtifactID)
@@ -1172,8 +1363,8 @@ func commentStored(
 		return commentStoreWrite{}, err
 	}
 	anchorAddress, ownerAddress := "", ""
-	if anchor != nil {
-		anchorAddress = addresses[anchor.ArtifactID].refKey
+	if document != nil {
+		anchorAddress = addresses[document.ArtifactID].refKey
 	}
 	if ownerArtifactID != nil {
 		ownerAddress = addresses[*ownerArtifactID].refKey
@@ -1192,10 +1383,13 @@ func commentStored(
 		return commentStoreWrite{unprojected: true}, nil
 	}
 	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
-	if anchor != nil && anchor.BlockID != nil && *anchor.BlockID != "" && !anchor.Orphaned {
-		if block := addresses[anchor.ArtifactID].room + "#" + *anchor.BlockID; graphstore.AddressFits(block) {
-			tuples = append(tuples, graphstore.AnchoredIn(rowID, block, true, author, at, graphstore.NoEvent))
+	switch {
+	case document != nil && document.BlockID != nil && *document.BlockID != "" && !document.Orphaned:
+		if block := addresses[document.ArtifactID].room + "#" + *document.BlockID; graphstore.AddressFits(block) {
+			tuples = graphstore.AnchorTuples(tuples, rowID, refs.BlockNodeKind, block, true, true, author, at, graphstore.NoEvent)
 		}
+	case anchor != nil && anchor.node != nil && !anchor.node.Orphaned && graphstore.AddressFits(anchor.node.NodeID):
+		tuples = graphstore.AnchorTuples(tuples, rowID, anchor.node.NodeKind, anchor.node.NodeID, true, true, author, at, graphstore.NoEvent)
 	}
 	node.Visibility = visibility
 	// The comment is the node this write creates (graphstore.Created), named changed by a run
@@ -1357,6 +1551,12 @@ func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, commen
 			return commentStoreWrite{}, err
 		}
 	}
+	var nodeAnchor any
+	if comment.NodeAnchor != nil {
+		if nodeAnchor, err = encodeJSON(comment.NodeAnchor); err != nil {
+			return commentStoreWrite{}, err
+		}
+	}
 	var suggestion any
 	if comment.Suggestion != nil {
 		if suggestion, err = encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Kind: suggestionKind}); err != nil {
@@ -1370,7 +1570,7 @@ func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, commen
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
-	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, visibility, comment.Anchor, comment.ArtifactID, project, parties)
+	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, visibility, anchorOfComment(comment), comment.ArtifactID, project, parties)
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
@@ -1384,11 +1584,11 @@ func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, commen
 	}
 	nodeKind, nodeAddress := stored.rowNode()
 	if err := queueExec(ledger, `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
-		select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at, node_anchor)
+		select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		where `+graphstore.KeptHeadRows+`
 	`, comment.ID, comment.IssueKey, comment.ArtifactID, author, comment.Body, anchor, comment.ReplyTo, comment.AskID, comment.Turn,
-		suggestion, comment.RepliesToBlock, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
+		suggestion, comment.RepliesToBlock, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt, nodeAnchor); err != nil {
 		return commentStoreWrite{}, err
 	}
 	return stored, nil

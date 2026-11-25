@@ -48,7 +48,7 @@ var blockSchemaJSON []byte
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
 // (model.GraphEdgeKinds) but needs (model.EdgeKindNeeds), the one relation an issue and a plan
-// node both wait by (dispatch://INFRA-1253 R10).
+// node both wait by (R10 of the issue-tree spec).
 func LinkKinds() []string {
 	return slices.Clone(active.Load().linkKinds)
 }
@@ -238,7 +238,7 @@ func normalizeSchemaDefaults(value *BlockSchema) error {
 var linkKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // ParentAttribute is the name of the attribute that places a typed block in its issue's tree
-// where its rendering cannot (dispatch://INFRA-1253/spec R2 and R3): a `block[]` attribute
+// where its rendering cannot (R2 and R3 of the issue-tree spec): a `block[]` attribute
 // holding at most one reference, because a node has one parent, which the block index turns into
 // the block's `part_of` tuple. It is the one attribute whose `items` name the conversation's kinds
 // (ask, comment, message).
@@ -247,7 +247,7 @@ const ParentAttribute = "parent"
 func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeBool, BlockAttributeEnum, BlockAttributeStringList,
-		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeDays:
+		BlockAttributeBlockList, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
 	default:
 		return fmt.Errorf("type %q attribute %q has unknown kind %q", typeName, name, attr.Kind)
 	}
@@ -312,12 +312,13 @@ func validateAttributeValue(name string, attr BlockAttributeSchema, value any) e
 		if _, ok := value.(string); !ok {
 			return fmt.Errorf("must be a string, got %T", value)
 		}
-	case BlockAttributeDays:
+	case BlockAttributeMinutes:
 		text, ok := value.(string)
 		if !ok {
-			return fmt.Errorf("must be a duration in days, got %T", value)
+			return fmt.Errorf("must be a duration in minutes, got %T", value)
 		}
-		return validateDays(text)
+		_, err := Minutes(text)
+		return err
 	case BlockAttributeTimestamp:
 		text, ok := value.(string)
 		if !ok {
@@ -395,22 +396,55 @@ func validateAskReference(value string) error {
 	return nil
 }
 
-// daysPattern is a duration in days as markdown writes one: a decimal with no sign and no
-// exponent, no leading zero but the one before a point, and at most two digits after its point.
-var daysPattern = regexp.MustCompile(`^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$`)
+// MaxMinutes is the longest duration a `minutes` attribute holds: 10,000 minutes, about 21
+// working days of eight hours, past which a plan task is not one task (R18 of the issue tree's
+// spec).
+const MaxMinutes = 10000
 
-// zeroDays is every spelling daysPattern admits whose value is zero, which no duration is.
-var zeroDays = regexp.MustCompile(`^0(?:\.0{1,2})?$`)
+// minutesPattern is a duration as markdown writes one: a whole number of hours, a whole number of
+// minutes, or both with the hours first, each number positive, with no sign and no leading zero.
+// It also matches the empty string, which Minutes refuses.
+var minutesPattern = regexp.MustCompile(`^(?:([1-9][0-9]*)h)?(?:([1-9][0-9]*)m)?$`)
 
-// validateDays refuses the value of a `days` attribute unless it is a positive number of days
-// written as daysPattern reads one: `0.25`, `1` and `2.5` are durations; `0`, `-1`, `1.234`,
-// `01`, `.5`, `1.` and `1e2` are not. The value is kept as its author wrote it, so it reads back
-// character for character. Its twin is daysValueProblem in @legion/proof-editor.
-func validateDays(value string) error {
-	if !daysPattern.MatchString(value) || zeroDays.MatchString(value) {
-		return fmt.Errorf("%q is not a duration in days: a positive number with at most two digits after its point, such as 0.25, 1 or 2.5", value)
+// minutesDigits is the most digits a number of a duration may have: a number of six is past
+// MaxMinutes whatever its unit, so a longer one is refused before it is read as a number, which
+// therefore never overflows.
+const minutesDigits = 5
+
+// Minutes is the whole number of minutes value, a `minutes` attribute as its author wrote it,
+// stands for, and refuses a value of another shape: `45m` is 45, `2h` is 120, `1h30m` is 90 and
+// `1h90m` is 150, the hours and the minutes each a whole number; `0m`, `1h0m`, `-5m`, `2d`,
+// `1.5h`, `90`, `30m1h` and `045m` are refused, and so is a duration past MaxMinutes, `10001m` or
+// `166h41m`, while `10000m` and `166h40m` are taken. The block's text keeps the value as its
+// author wrote it, so it reads back character for character; the block's node holds this number
+// (refs' planBlockValues). Its twin is minutesValueProblem in @legion/proof-editor, which gives a
+// refusal in this function's wording, quoting a value as JSON.stringify does where this uses %q.
+func Minutes(value string) (int, error) {
+	match := minutesPattern.FindStringSubmatch(value)
+	if value == "" || match == nil {
+		return 0, fmt.Errorf("%q is not a duration: a whole number of hours, a whole number of minutes, or both with the hours first, such as 45m, 2h or 1h30m", value)
 	}
-	return nil
+	total := 0
+	for index, unit := range [...]int{60, 1} {
+		digits := match[index+1]
+		if len(digits) > minutesDigits {
+			return 0, minutesPast(value)
+		}
+		count := 0
+		for _, digit := range digits {
+			count = count*10 + int(digit-'0')
+		}
+		total += count * unit
+	}
+	if total > MaxMinutes {
+		return 0, minutesPast(value)
+	}
+	return total, nil
+}
+
+// minutesPast is Minutes' refusal of value, a duration of its shape longer than MaxMinutes.
+func minutesPast(value string) error {
+	return fmt.Errorf("%q is more than %d minutes, the longest a duration may be", value, MaxMinutes)
 }
 
 // ParseBlockPointerValue reads a `block[]` attribute as markdown writes it: the empty string for
@@ -575,7 +609,7 @@ func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (
 		return nil, fmt.Errorf("must be encoded as a string, got %T", raw)
 	}
 	switch attr.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeDays:
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
 		if err := validateAttributeValue(name, attr, text); err != nil {
 			return nil, err
 		}
@@ -791,7 +825,7 @@ func renderTypedAttributes(n *Node, typ BlockTypeSchema) (string, []model.BlockA
 // quoting; it refuses a value whose kind is not the one the type declares.
 func encodeTypedAttribute(blockType, name string, definition BlockAttributeSchema, value any) (string, error) {
 	switch definition.Kind {
-	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeDays:
+	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp, BlockAttributeAsk, BlockAttributeMinutes:
 		text, ok := value.(string)
 		if !ok {
 			return "", fmt.Errorf("%w: typed block %q attribute %q must be a string", ErrSchema, blockType, name)

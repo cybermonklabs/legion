@@ -758,7 +758,7 @@ type issueSummaryResponse struct {
 }
 
 // WaitsOf is the issues an issue answer says the issue waits on: its needs, which a Dispatch of
-// dispatch://INFRA-1253's release on answers, and else its blocked_by, which the Dispatch of the
+// the issue-tree spec's release on answers, and else its blocked_by, which the Dispatch of the
 // release before answers alone, since a new daemon can meet an old Dispatch. An answer holding
 // needs is read by it, whatever blocked_by holds beside it.
 func WaitsOf(needs *[]string, blockedBy []string) []string {

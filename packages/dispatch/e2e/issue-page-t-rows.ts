@@ -186,20 +186,41 @@ interface OutlineRead {
   readonly slugs: readonly string[];
 }
 
+/** How many presses `drawEveryPage` makes at most: far more pages of children than any seed
+ *  holds, so a control that a press never takes away fails the row here. */
+const PAGES_DRAWN_AT_MOST = 40;
+
+/**
+ * Presses each control that draws the next page of a node's children (`data-tree-page`), until
+ * none is left. An outline draws a node's first 50 children and, after them, a control that says
+ * how many are left and draws the next 50 on the reader's press (R15); a page is no fold, so the
+ * rows it holds back are rows Graph holds, and row 1 reads them with every page drawn.
+ */
+async function drawEveryPage(page: Page): Promise<void> {
+  const control = page.locator("[data-issue-page] [data-tree-page] button").first();
+  for (let pressed = 0; pressed < PAGES_DRAWN_AT_MOST; pressed += 1) {
+    if ((await control.count()) === 0) return;
+    await control.click();
+  }
+  await expect(control, "a page of children is still held back after every press").toHaveCount(0);
+}
+
 /** Opens the seeded issue on Graph (`/graph`, R10) and reads every row as Graph opens, with no
- *  key pressed, once two readings agree, each with the body its face draws (`drawnRowFaces`):
- *  Graph opens with every node unfolded and each row's face drawn whatever the focus (R11). And
- *  what the page received of the tree read, Graph's read, and of the decisions read, and which
- *  comments the comments read anchors to text. */
+ *  key pressed and every page of children drawn (`drawEveryPage`), once two readings agree, each
+ *  with the body its face draws (`drawnRowFaces`): Graph opens with every node unfolded and each
+ *  row's face drawn whatever the focus (R11). And what the page received of the tree read,
+ *  Graph's read, and of the decisions read, and which comments the comments read anchors to
+ *  text. */
 async function readOutline(page: Page, seeded: SeededIssue): Promise<OutlineRead> {
   const tree = treeAnswerOf(page);
   const decisions = decisionsReadOf(page, seeded.key);
   const traffic = watchApiRequests(page);
   await gotoIssue(page, presetPath(seeded.key, "graph"));
   await expectIssuePageDrawn(page);
-  const rows = await steadily(page, traffic, `${seeded.key} as Graph opens`, () =>
-    drawnRowFaces(page)
-  );
+  const rows = await steadily(page, traffic, `${seeded.key} as Graph opens`, async () => {
+    await drawEveryPage(page);
+    return drawnRowFaces(page);
+  });
   const answer = await heldAnswer(tree, `${seeded.key}'s tree read`);
   const [reads, comments] = await Promise.all([idReadsOf(seeded.key), listComments(seeded.key)]);
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
@@ -374,14 +395,15 @@ const PLACE = ["parentKey", "level"] as const satisfies readonly (keyof KeyedRow
 
 /**
  * What row 1 compares of `row`'s `field`, for a row of the page and of the fixture alike. The
- * fixture holds F's page, which drew a node's text whole, with its author line, its facts, its
- * gap sentences and its counts, in the focused row's body alone, its line's words cut; the page
- * draws every node's text whole on its row and the rest on its face, whatever the focus (R11),
- * and its reading takes each row's body from that face (`drawnRowFaces`). So a row's words are
- * the words its body drew wherever the reading holds a body, and its body is what that body drew
- * beside them: its author line, its other lines, and an ask's options and answer. A child issue's
- * row is its key, its title and its status (R14), so its face draws no author line where F's body
- * drew "Author unknown": a child's body is compared without it.
+ * fixture holds the page that built its tree from the old reads, which drew a node's text whole,
+ * with its author line, its facts, its gap sentences and its counts, in the focused row's body
+ * alone, its line's words cut; the page draws every node's text whole on its row and the rest on
+ * its face, whatever the focus (R11), and its reading takes each row's body from that face
+ * (`drawnRowFaces`). So a row's words are the words its body drew wherever the reading holds a
+ * body, and its body is what that body drew beside them: its author line, its other lines, and an
+ * ask's options and answer. A child issue's row is its key, its title and its status (R14), so
+ * its face draws no author line where the old page's body drew "Author unknown": a child's body
+ * is compared without it.
  */
 function compared(row: KeyedRow, field: keyof KeyedRow): unknown {
   if (field === "words") return row.body?.words ?? row.words;
@@ -579,9 +601,10 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
 }
 
 /** Row 1 on the seed `name`, which `seed` seeds: as Graph opens, each row stands under the parent
- *  the tree read answers, and reads as the reads drew it. The fixture's `opened` rows are F's page
- *  as it opened, folded to the frontier, and Graph opens with every node unfolded (R11), so the
- *  rows as Graph opens are read against the fixture's `rows`, F's page with every branch open. */
+ *  the tree read answers, and reads as the reads drew it. The fixture's `opened` rows are the old
+ *  page as it opened, folded to the frontier, and Graph opens with every node unfolded (R11), so
+ *  the rows as Graph opens are read against the fixture's `rows`, the old page with every branch
+ *  open. */
 export async function expectSameRows(
   browser: Browser,
   name: string,
@@ -645,7 +668,7 @@ export const LOAD_BOUND = 40;
  * answered `answer`: a filter's view read goes with the load only where Conversation's read does
  * not hold that filter's nodes - Plan's always, Spec's where the issue is a child, and
  * Verification's where the issue is a parent and `answer` holds no check of an issue under it
- * (spec R4 and R5, decision 441).
+ * (spec R4 and R5).
  */
 export function loadViews(issue: IssueDetails, answer: IssueTreeRead): TreeView[] {
   const lacksChildChecks = !(answer.nodes ?? []).some(

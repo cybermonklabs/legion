@@ -194,6 +194,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/broadcasts/{id}":        {target: "/api/v1/broadcasts/$broadcast", statement: statementOf(`\bfrom\s+broadcasts\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/decisions": {target: "/api/v1/issues/$issue/decisions", statement: statementOf(`\bfrom\s+decision_keeps\b`)},
+	// The tree read's one read of the issue's tree artifact and role documents
+	// (issueTreeIssueStatement), which every page of every read sends for the issue read.
+	"GET /api/v1/issues/{key}/tree": {target: "/api/v1/issues/$issue/tree",
+		statement: statementOf(`\bwith\s+tree\s+as\s*\(\s*select\s+t\.artifact_id::text\s+as\s+id\s+from\s+issue_trees\s+t\s+where\s+t\.issue_key\s*=\s*\$1\s*\)`)},
 	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+mine\s+as\b`),
 		volatile: []volatileMember{{"as_of", readTime}, {"asks.*.age_seconds", "each ask's age, counted to the moment of the read"}}},
 	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*\$1\b`)},

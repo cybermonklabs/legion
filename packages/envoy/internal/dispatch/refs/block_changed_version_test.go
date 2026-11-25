@@ -142,7 +142,7 @@ func roomFixture(t *testing.T, tx pgx.Tx) (spec, specRef, verification, tree, tr
 }
 
 // A block of an issue room cut from one fragment and pasted with the same text into another moves
-// into the other fragment's document (T12a of dispatch://INFRA-1253's plan): its issue_room_blocks
+// into the other fragment's document (T12a of the issue-tree plan): its issue_room_blocks
 // row names that document, and it records that document's version as its changed_version and as
 // its newest text row, so the text a reader asks of the block at that document's version is
 // there. Block x stands in the spec's fragment at the spec's version 4, then in the Verification
@@ -202,7 +202,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 }
 
 // A block of an issue room reads, as a node, as a block of its own document (T12a of
-// dispatch://INFRA-1253's plan, refs.BlockDocumentSQL): its document, its parent and the reference
+// the issue-tree plan, refs.BlockDocumentSQL): its document, its parent and the reference
 // it is cited by are the spec's, whose fragment holds it, its last change is the spec's version 4
 // at that version's time and by that version's authors, and its node's own address stays the
 // tree's, which keys its row. A read that took the row's artifact as the block's document names

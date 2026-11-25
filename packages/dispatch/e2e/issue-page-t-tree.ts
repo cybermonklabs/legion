@@ -18,10 +18,10 @@ import type { ApiRequest } from "./traffic";
  * What the rows of the `e2e/issue-page-t-*.e2e.ts` files read of what the page received
  * besides what it drew, the gates they check first, and what the page draws beside the rows.
  * These helpers are kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
- * (`e2e/tools/issue-page-t-record.ts`) loads on a base that holds F's page and not the tree read:
- * what reads the tree read names its modules and its answer's types, which that base does not
- * hold, so it is here, so that file loads no more than the recorder needs; the steps and
- * comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
+ * (`e2e/tools/issue-page-t-record.ts`) loads on a base whose page builds its tree from the old
+ * reads and holds no tree read: what reads the tree read names its modules and its answer's
+ * types, which that base does not hold, so it is here, so that file loads no more than the
+ * recorder needs; the steps and comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
  *
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
  * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read
@@ -41,7 +41,7 @@ import type { ApiRequest } from "./traffic";
 export type TreeView = Filter;
 
 /** The tree read's path, whatever issue it reads. */
-const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
+export const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
 
 /** The path of issue `key`'s tree read. */
 function treePath(key: string): string {
@@ -505,6 +505,21 @@ export function partUGate(answer: IssueTreeRead, read: DecisionsRead | undefined
     owed:
       "owed until the page draws the decisions from the tree read's nodes, once decisions are " +
       `nodes of the tree read on this branch's base: ${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
+  };
+}
+
+/** The model storing a decision that settles a question under that question, which waits on
+ *  the model: the tree read answers the decision block `decision` with the ask `ask` as its
+ *  parent. The page places no node itself, so until then the decision stands where the read's
+ *  parent puts it. */
+export function decisionUnderAskGate(answer: IssueTreeRead, decision: string, ask: string): Gate {
+  return {
+    met: (answer.nodes ?? []).some(
+      (node) => node.block_id === decision && node.parent?.id.endsWith(ask) === true
+    ),
+    owed:
+      "owed until the tree read answers a decision that settles a question with that question " +
+      `as its parent: this base answers it under the issue; ${OWED_BY}`,
   };
 }
 

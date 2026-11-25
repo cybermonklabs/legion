@@ -45,7 +45,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
-import { refuseTreeRead } from "./issue-page-t-tree";
+import { refuseTreeRead, TREE_PATH } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -160,13 +160,13 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
  *  are built from (`tree-read/tree-read.ts`' `blocksOf`), of whatever issue it reads: each of its
  *  pages. */
 const BLOCKS_READ = (url: URL): boolean =>
-  /^\/api\/v1\/issues\/[^/]+\/tree$/.test(url.pathname) && url.searchParams.get("view") === "plan";
+  TREE_PATH.test(url.pathname) && url.searchParams.get("view") === "plan";
 
-/** Before the reads it needs answer: opened with every document's blocks read held, `path`
+/** Before the reads it needs answer: opened with the Plan view's read of the tree held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
  *  draws the view's tasks, its switch and its empty line once the plan's and the spec's blocks
- *  reads have answered); let go, it draws the chart. */
+ *  have answered); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -813,11 +813,12 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       })
       .toBe(false);
 
-    // Enter on a step goes to its task in the conversation.
+    // Enter on a step goes to its task's address in the conversation, which Conversation draws
+    // no row of, so the address opens the filter of its kind, Plan, at that task.
     await nodeRow(page, step(T.loose)).first().focus();
     await page.keyboard.press("Enter");
-    await expect(page, `Enter on ${T.loose} does not go to it in the conversation`).toHaveURL(
-      new RegExp(`/issues/${seeded.key}#b-${T.loose}$`)
+    await expect(page, `Enter on ${T.loose} does not go to its address in Plan`).toHaveURL(
+      new RegExp(`${planPath(seeded.key)}#b-${T.loose}$`)
     );
 
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;

@@ -194,16 +194,21 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     );
     // The same undecidable `not found` the corrections met: a reader of this read must be able
     // to tell a post that is gone from an issue that was never there (dispatch://INFRA-1523).
-    const comment = await client.getComment(id).catch(async (error: unknown) => {
-      throw await refuseMissingOfRef(
-        error,
-        "comment",
-        id,
-        ref.owner,
-        refOwnerName(ref),
-        readRefOwner(client, ref.owner, () => documentIdOf(ref))
-      );
-    });
+    // The read asks for the node the comment's anchor names (`node_anchor=true`), which its
+    // anchor line prints: a comment on a lens, a finding, a risk, a constraint or a result
+    // answers `anchor: null` to a read that does not ask.
+    const comment = await client
+      .getComment(id, { nodeAnchors: true })
+      .catch(async (error: unknown) => {
+        throw await refuseMissingOfRef(
+          error,
+          "comment",
+          id,
+          ref.owner,
+          refOwnerName(ref),
+          readRefOwner(client, ref.owner, () => documentIdOf(ref))
+        );
+      });
     await refuseItemOffRef(
       input.tool,
       "comment",
@@ -420,10 +425,11 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
   if (ownerArguments.ref?.kind === "comments") {
     // The comment list of a key no issue carries is empty, not 404, so the issue is read beside
     // it: a missing key is refused as the log and the children refuse it, never listed as an
-    // issue with no comments.
+    // issue with no comments. The list asks for the node each comment's anchor names, as the
+    // read of one comment does.
     const [owner, comments] = await Promise.all([
       client.getIssue(issueKey),
-      client.getComments(issueKey),
+      client.getComments(issueKey, { nodeAnchors: true }),
     ]);
     const pictures = await picturesOf(datedBodies(comments));
     return {

@@ -89,6 +89,18 @@ type issueTreeQuery struct {
 
 // getIssueTree is GET /api/v1/issues/{key}/tree.
 func (s *server) getIssueTree(w http.ResponseWriter, r *http.Request) {
+	s.serveIssueTree(w, r, s.readIssueTree)
+}
+
+// issueTreeReader is what answers the tree read once its query is read (readIssueTree): the
+// route's own reader, and in a test the read with R8's two cuts undone that a test holds the
+// route's answers to.
+type issueTreeReader func(ctx context.Context, who model.Actor, key, view string, kinds []string, version int, cursor string,
+	before *refs.CommentPosition, trees *displayTreeReader) (model.IssueTreeRead, treePagePlan, error)
+
+// serveIssueTree reads GET /api/v1/issues/{key}/tree's query, refusing one it does not take, and
+// answers the tree read through read.
+func (s *server) serveIssueTree(w http.ResponseWriter, r *http.Request, read issueTreeReader) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return
@@ -137,7 +149,7 @@ func (s *server) getIssueTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer, plan, err := s.readIssueTree(r.Context(), who, key, view, kinds, version, query.Get("cursor"), before, trees)
+	answer, plan, err := read(r.Context(), who, key, view, kinds, version, query.Get("cursor"), before, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -159,10 +171,12 @@ func commentsBeforeRefusal(key string) string {
 // its comments the page before names where it is set, with the plan its page is cut by where its
 // JSON holds more than issueTreePageBytes (treePagePlan). Every read of the store is made in one
 // read-only transaction at repeatable read, with JIT off (refs.TurnJITOff), so the answer is one
-// state of the store; the documents' block lists, which the live rooms answer, are read after it
-// (issueTreeBuilder.documentPositions, issueTreeBuilder.countDocuments). trees is the request's
-// reader of the display trees, nil for a caller that asked for none. A page holds at most
-// Deps.IssueTreePageSize nodes, issueTreePageSize where it is zero.
+// state of the store; the documents' block lists and the occurrences of the comments' document
+// anchors in their blocks, which the live rooms answer, are read after it
+// (issueTreeBuilder.documentPositions, issueTreeBuilder.countDocuments,
+// issueTreeBuilder.anchorOccurrences). trees is the request's reader of the display trees, nil for
+// a caller that asked for none. A page holds at most Deps.IssueTreePageSize nodes,
+// issueTreePageSize where it is zero.
 func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view string, kinds []string, version int, cursor string, before *refs.CommentPosition,
 	trees *displayTreeReader) (model.IssueTreeRead, treePagePlan, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -185,6 +199,9 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
 	if err := builder.countDocuments(s); err != nil {
+		return model.IssueTreeRead{}, treePagePlan{}, err
+	}
+	if err := builder.anchorOccurrences(s); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
 	answer, plan := builder.answer(version, trees)
@@ -291,7 +308,7 @@ type issueTreeBuilder struct {
 	decisions map[refs.Target]model.Decision
 	plans     map[refs.Target]*model.IssueTreePlan
 	positions map[refs.Target]int
-	// placements is the placement_seq of each node of the page that holds a part_of at the cut
+	// placements is the placement_seq of each node of the page that holds one at the cut
 	// (readPlacementSeqs).
 	placements map[refs.Target]int64
 	// owed is each document of the issue that owes its block index (queueOwedDocuments).
@@ -301,7 +318,7 @@ type issueTreeBuilder struct {
 	// anchors the anchor of each comment of the page that holds one (queueCommentAnchors), by id.
 	checks  map[string]int
 	titles  map[string]string
-	anchors map[string]*model.Anchor
+	anchors map[string]*model.IssueTreeAnchor
 
 	// page is the nodes of the answer from the read's cursor on: a slice of its walk's order, its
 	// first sliced nodes, with the context nodes that slice places, at most pageSize nodes in all
@@ -392,18 +409,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	if err != nil {
 		return err
 	}
-	b.entries = map[refs.Target]*treeEntry{}
-	for index, node := range b.tree.Nodes {
-		target := refs.Target{Kind: node.Kind, ID: node.ID}
-		b.entries[target] = &treeEntry{
-			target: target, walk: index, parent: node.Parent, typ: node.Type,
-			rank: node.Rank, ranked: node.Ranked, madeAt: node.MadeAt, above: node.Above,
-		}
-		b.walked = append(b.walked, target)
-	}
-	b.named = make(map[refs.Target]refs.Target, len(b.tree.Named))
-	maps.Copy(b.named, b.tree.Named)
-	b.ancestors = b.tree.Ancestors
+	b.enterWalk()
 	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
 		return err
 	}
@@ -429,28 +435,55 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	return b.readMembers()
 }
 
-// placementSeqsStatement reads, for each node the arrays $1 and $2 name by its kind and its id, the
-// seq of its current part_of at the cut - the tuples at a seq up to $3 and, where $4 is not null, at
-// a time up to $4 (refs.TreeCut's bounds) - read as a current relation is read
-// (graphstore.CurrentTupleRead: the newest tuple to each far end, kept while it asserts), the
-// newest of those; a node that holds none answers no row. A node's kind is read as the store keys
-// it (refs.StoredKindSQL), a finding of a lens as the store's block.
-var placementSeqsStatement = `
-	select p.kind, p.id, placed.seq
-	from unnest($1::text[], $2::text[]) as p (kind, id)
-	cross join lateral (
-		select held.seq from (
-			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
-	`t.from_kind = `+refs.StoredKindSQL("p.kind")+` and t.from_id = p.id and t.kind = '`+graphstore.TuplePartOf+`'
-			  and t.to_kind <> '`+graphstore.KindValue+`' and t.seq <= $3 and ($4::timestamptz is null or t.at <= $4)`) + `
-		) held
-		where held.asserted
-		order by held.seq desc limit 1
-	) placed`
+// enterWalk enters each node the walk took (b.tree) as a candidate of the answer, in the walk's
+// order, with its place, its type, its rank and when it was made, and keeps what the walk named
+// of the comments it hung under the issue and the issues above.
+func (b *issueTreeBuilder) enterWalk() {
+	b.entries = map[refs.Target]*treeEntry{}
+	for index, node := range b.tree.Nodes {
+		target := refs.Target{Kind: node.Kind, ID: node.ID}
+		b.entries[target] = &treeEntry{
+			target: target, walk: index, parent: node.Parent, typ: node.Type,
+			rank: node.Rank, ranked: node.Ranked, madeAt: node.MadeAt, above: node.Above,
+		}
+		b.walked = append(b.walked, target)
+	}
+	b.named = make(map[refs.Target]refs.Target, len(b.tree.Named))
+	maps.Copy(b.named, b.tree.Named)
+	b.ancestors = b.tree.Ancestors
+}
 
-// readPlacementSeqs reads each of targets' placement_seq at cut (placementSeqsStatement), in one
-// statement: the If-Match a move of the node names.
-func readPlacementSeqs(ctx context.Context, q pgx.Tx, targets []refs.Target, cut refs.TreeCut) (map[refs.Target]int64, error) {
+// placementCutSQL bounds the tuples placementSeqsStatement reads to the cut: at a seq up to $3 and,
+// where $4 is not null, at a time up to $4 (refs.TreeCut's bounds).
+const placementCutSQL = `t.seq <= $3 and ($4::timestamptz is null or t.at <= $4)`
+
+// placementSeqsStatement reads, for each node the arrays $1 and $2 name by its kind and its id, its
+// placement_seq at the cut (placementCutSQL, R8): the seq of its current part_of, read as a current
+// relation is read (graphstore.CurrentTupleRead: the newest tuple to each far end, kept while it
+// asserts), the newest of those, else, for a child issue that holds none, the seq of its current
+// child_of (childOfPlacementSQL). A node that holds neither answers no row, and neither does the
+// read's own issue node, the node of the issue $5. A node's kind is read as the store keys it
+// (refs.StoredKindSQL), a finding of a lens as the store's block.
+var placementSeqsStatement = `
+	select placed.kind, placed.id, placed.seq from (
+		select p.kind, p.id, coalesce((
+			select held.seq from (
+				` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
+	`t.from_kind = `+refs.StoredKindSQL("p.kind")+` and t.from_id = p.id and t.kind = '`+graphstore.TuplePartOf+`'
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+placementCutSQL) + `
+			) held
+			where held.asserted
+			order by held.seq desc limit 1
+		), ` + childOfPlacementSQL("p.kind", "p.id", placementCutSQL) + `) as seq
+		from unnest($1::text[], $2::text[]) as p (kind, id)
+		where not (p.kind = '` + graphstore.KindIssue + `' and p.id = $5::text)
+	) placed
+	where placed.seq is not null`
+
+// readPlacementSeqs reads the placement_seq at cut of each of targets but the node of the issue
+// key, the read's own (placementSeqsStatement), in one statement: the If-Match a move of the node
+// names.
+func readPlacementSeqs(ctx context.Context, q pgx.Tx, targets []refs.Target, cut refs.TreeCut, key string) (map[refs.Target]int64, error) {
 	placements := make(map[refs.Target]int64, len(targets))
 	if len(targets) == 0 {
 		return placements, nil
@@ -460,7 +493,7 @@ func readPlacementSeqs(ctx context.Context, q pgx.Tx, targets []refs.Target, cut
 		kinds[index], ids[index] = target.Kind, target.ID
 	}
 	seq, at := treeCutBounds(cut)
-	rows, err := q.Query(ctx, placementSeqsStatement, kinds, ids, seq, at)
+	rows, err := q.Query(ctx, placementSeqsStatement, kinds, ids, seq, at, key)
 	if err != nil {
 		return nil, fmt.Errorf("read the placement of %d nodes: %w", len(targets), err)
 	}
@@ -760,8 +793,9 @@ func tuplesInto(ctx context.Context, q queryer, kind string, blocks []string, cu
 }
 
 // readPlanOrder reads the ordered read of the issue's whole tree (refs.PlanOrder) for the plan
-// view: each node's position, needs and size, every plan node of an issue under the issue added
-// beside the issue's own, and each issue of the tree answered as its two halves.
+// view: each node's position, needs and size, a plan node's skills and docs, every plan node of an
+// issue under the issue added beside the issue's own, and each issue of the tree answered as its
+// two halves.
 func (b *issueTreeBuilder) readPlanOrder() error {
 	order, err := refs.PlanOrder(b.ctx, b.q, b.who, b.key)
 	if err != nil {
@@ -801,6 +835,7 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			return
 		}
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
+		plan.Skills, plan.Docs = node.Skills, node.Docs
 		b.plans[target] = plan
 		if node.Issue != b.key {
 			b.add(target, refs.Target{}, node.Issue, treeRoleTree)
@@ -1399,7 +1434,7 @@ func (b *issueTreeBuilder) readMembers() error {
 		return err
 	}
 	b.issues[b.key] = root
-	if b.placements, err = readPlacementSeqs(b.ctx, b.q, b.page, b.cut); err != nil {
+	if b.placements, err = readPlacementSeqs(b.ctx, b.q, b.page, b.cut, b.key); err != nil {
 		return err
 	}
 	for _, target := range b.page {
@@ -1974,11 +2009,27 @@ func (b *issueTreeBuilder) planPosition(target refs.Target) int {
 }
 
 // contextOrder is the context nodes in kind order and then id order, each once, byte for byte: of
-// the read with kind, those a tuple of a node of its answer names (kindContext) alone.
+// the read with kind, those a tuple of a node of its answer names (kindContext) alone; of a view,
+// its fixed context and the person or session a decided_by of a node it answers names, and no
+// decider of a decision the view does not answer (R8: a view's context is a fixed set).
 func (b *issueTreeBuilder) contextOrder() []refs.Target {
+	var deciders map[refs.Target]bool
+	if b.view != "" {
+		deciders = map[refs.Target]bool{}
+		for _, target := range b.order {
+			for _, relation := range b.facts[target].Relations {
+				if relation.Kind == graphstore.TupleDecidedBy {
+					deciders[relation.To] = true
+				}
+			}
+		}
+	}
 	var context []refs.Target
 	for _, target := range b.context {
 		if len(b.kinds) > 0 && !b.kindContext[target] {
+			continue
+		}
+		if deciders != nil && (target.Kind == graphstore.KindPerson || target.Kind == graphstore.KindSession) && !deciders[target] {
 			continue
 		}
 		if b.kept[target] && b.entries[target].role == treeRoleContext && !slices.Contains(b.order, target) {

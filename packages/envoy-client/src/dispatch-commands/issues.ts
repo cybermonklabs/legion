@@ -147,7 +147,7 @@ function advancesRevisionToSend(issue: IssueDetails, named: number | undefined):
 
 /** The two members a create or an update names the issue's waits by: needs, which a Dispatch of
  *  the issue tree reads, and blocked_by with the same targets, which a Dispatch of the release
- *  before reads alone, so a CLI of this release is served by either (dispatch://INFRA-1253 R10).
+ *  before reads alone, so a CLI of this release is served by either (R10 of the issue-tree spec).
  *  A call naming no waits sends neither. */
 function waitsBody(blockedBy: readonly string[] | undefined): {
   readonly needs?: string[];

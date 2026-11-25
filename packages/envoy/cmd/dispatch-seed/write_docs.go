@@ -46,7 +46,7 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // marked is whether artifacts carries the node columns (carriesNodeMarker), which is whether the
 // database is this release's or the one before it. On this release's, the document's row names its
 // node, its node hangs under its issue, and each version is the projection of a version node, as
-// this release's server writes them (dispatch://INFRA-1253). On the one before, each is written as
+// this release's server writes them (the issue-tree spec). On the one before, each is written as
 // that release's server writes it, a document's node and nothing of the tree, so the backfill this
 // release runs over the data set writes the rest, and the sizing reads what it will write.
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {

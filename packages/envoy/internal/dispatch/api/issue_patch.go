@@ -644,7 +644,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// row the release before wrote names none, so such a write stamps the marker on it in this
 	// update and claims below the child_of the row names, whether or not the parent moves: the
 	// row's marker and its node's child_of stand together, as the create and the backfill write
-	// them (R9 of dispatch://INFRA-1253). The row is this write's, locked above, so the marker it
+	// them (R9 of the issue-tree spec). The row is this write's, locked above, so the marker it
 	// reads is the one it updates.
 	stampsMarker := false
 	if waitsProvided || duplicateProvided || filedProvided || parentChanged {
@@ -820,7 +820,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	// A reparent moves the issue's child_of, which the update above set issues.parent_key for,
 	// and retracts its part_of to the words of a conversation no longer on its parent or above it
-	// (R2 of dispatch://INFRA-1253): the child hangs from its new parent until someone places it
+	// (R2 of the issue-tree spec): the child hangs from its new parent until someone places it
 	// again. A write that stamped the marker on the row claims the parent it names too, which is
 	// the one it already had where it did not move: that edge keeps the time the old arm dated it
 	// by, the row's created_at, as the backfill dates it.

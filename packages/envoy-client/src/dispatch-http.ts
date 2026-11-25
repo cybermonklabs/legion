@@ -22,6 +22,7 @@ import type {
   CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
+  CommentNodeAnchorSchema,
   CommentRead,
   CommentWriteResponse,
   ConstraintInput,
@@ -121,6 +122,7 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import type { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
@@ -510,6 +512,35 @@ export type GraphReferencesQuery = ({ readonly to: string } | { readonly from: s
 export interface IssueReadOptions {
   /** `DEFAULT_ISSUE_READ_EVENTS` when absent or undefined. */
   readonly events?: number | "all" | undefined;
+}
+
+/** What a comment read asks of Dispatch beside the comment. */
+export interface CommentReadOptions {
+  /** Sends `?node_anchor=true`, so each comment whose anchor names a node or a block carries
+   *  `node_anchor` (`CommentNodeAnchor`). A Dispatch older than the member ignores the parameter
+   *  and answers none. */
+  readonly nodeAnchors?: boolean;
+}
+
+/** The member `node_anchor` of a comment a read asked with `?node_anchor=true` answers
+ *  (`CommentNodeAnchorSchema` in `@legion/contracts`): the node the comment's anchor names, by
+ *  its store kind and id, with its state; the words the anchor quotes; their zero-based match in
+ *  the node's text, null for a document anchor; and whether those words left the text. */
+export type CommentNodeAnchor = z.output<typeof CommentNodeAnchorSchema>;
+
+/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it. */
+export type WithNodeAnchor<Read> = Read & { readonly node_anchor?: CommentNodeAnchor };
+
+/** `GET /api/v1/comments/{id}`'s answer, its comment read with `CommentReadOptions`. Its replies
+ *  carry no `node_anchor`, since a reply quotes no text. */
+export type CommentReadWithNodeAnchor = CommentRead & {
+  readonly comment: WithNodeAnchor<CommentRead["comment"]>;
+};
+
+/** The query of a comment read asked with `options`: `node_anchor=true` for node anchors, and
+ *  none otherwise. */
+function nodeAnchorQuery(options: CommentReadOptions): { readonly node_anchor: true } | undefined {
+  return options.nodeAnchors === true ? { node_anchor: true } : undefined;
 }
 
 /** The most events one `GET /api/v1/issues/{key}/events` page holds: Dispatch refuses a larger
@@ -2069,8 +2100,11 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
-  async getComment(id: string): Promise<CommentRead> {
-    return this.#json("GET", ["api", "v1", "comments", id]);
+  async getComment(
+    id: string,
+    options: CommentReadOptions = {}
+  ): Promise<CommentReadWithNodeAnchor> {
+    return this.#json("GET", ["api", "v1", "comments", id], undefined, nodeAnchorQuery(options));
   }
 
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
@@ -2103,8 +2137,16 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "comments", id, "history"]);
   }
 
-  async getComments(issue: string): Promise<Comment[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
+  async getComments(
+    issue: string,
+    options: CommentReadOptions = {}
+  ): Promise<WithNodeAnchor<Comment>[]> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
+      undefined,
+      nodeAnchorQuery(options)
+    );
   }
 
   /** `POST /api/v1/issues/{key}/handoffs/{phase}`: records `body`, the handoff's exact text, as

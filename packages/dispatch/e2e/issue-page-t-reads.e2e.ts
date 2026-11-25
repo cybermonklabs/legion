@@ -87,9 +87,10 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load sends one tree read with no view"
     ).toBe(1);
     expect(blocksReads(load), "the first load sends no blocks read").toEqual([]);
-    expect(load.length, "the first load sends at most 40 requests under /api/").toBeLessThanOrEqual(
-      LOAD_BOUND
-    );
+    expect(
+      load.length,
+      `the first load sends at most ${LOAD_BOUND} requests under /api/`
+    ).toBeLessThanOrEqual(LOAD_BOUND);
     // The view reads R4 sends with a load of Conversation for this seed's issue, which is a child
     // (the seed files it under a parent) and a parent whose Conversation's answer holds no check
     // of a child: Plan's always, Spec's for a child, Verification's for such a parent.

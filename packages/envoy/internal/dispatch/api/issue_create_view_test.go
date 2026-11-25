@@ -48,7 +48,7 @@ func TestAnIssueCreateRefusesARequirementOnAView(t *testing.T) {
 		what := "a child of " + under.Key + " whose spec holds a requirement"
 		refusal := requireRefused(t, what, createIssueRequest(t, handler, map[string]any{
 			"project": "BORN", "title": "A child of " + under.Key, "spec": requirement, "parent": under.Key, "force": true,
-		}), http.StatusConflict, codeRequirementBelongsToAncestor, "a view on the spec of "+parent.Key+" ")
+		}), http.StatusConflict, codeRequirementBelongsToAncestor, parent.Key)
 		if !strings.Contains(refusal.Error, "cr9") {
 			t.Errorf("%s is refused %q, want the requirement it adds named", what, refusal.Error)
 		}

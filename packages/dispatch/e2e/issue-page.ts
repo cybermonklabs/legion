@@ -25,12 +25,13 @@ import { asUser } from "./users";
  *
  * - **The page's root** `[data-issue-page]`, which everything the new page draws is inside, a
  *   refused address included (`IssueOutlinePage.tsx`). `gotoIssue` waits for it.
- * - **The view row** `[data-filter-row]`, one line at every width, and in it the five controls
- *   `[data-testid="issue-presets"]`. From 1280 px they are a `toolbar` named
- *   `CONTROL_LABELS.presets` of five toggle `button`s carrying `aria-pressed`, each named by its
- *   view's word and described by its signal, whose count is `[data-preset-count="<view>"]`.
- *   Below 1280 px they are one `button` with `aria-haspopup="menu"`, opening a `menu` of five
- *   `menuitemradio`s (`IssuePresets.tsx`).
+ * - **The view row** `[data-filter-row]`, one line at every width, and in it the controls of the
+ *   view row's one list (`PRESET_ORDER`), `[data-testid="issue-presets"]`. From 1280 px they are
+ *   a `toolbar` named `CONTROL_LABELS.presets` of toggle `button`s carrying `aria-pressed`, each
+ *   named by its view's word and described by its signal, whose count is
+ *   `[data-preset-count="<view>"]`; Graph, the last, draws no count. Below 1280 px they are one
+ *   `button` with `aria-haspopup="menu"`, opening a `menu` of one `menuitemradio` for each
+ *   (`IssuePresets.tsx`).
  * - **The icon rail** `nav[data-testid="icon-rail"]`, the shell's navigation on the new page
  *   from 768 px up (`IconRail.tsx`).
  * - **Details**, the shell's margin as a drawer over the right of the page,
@@ -111,22 +112,22 @@ export function issuePage(page: Page): Locator {
   return page.locator("[data-issue-page]");
 }
 
-/** The whole view row: the five controls or the one control, Outline, and Keys. */
+/** The whole view row: its controls or the one control, Outline, and Keys. */
 export function filterRow(page: Page): Locator {
   return page.locator("[data-filter-row]");
 }
 
-/** The five controls, in either of their two shapes. */
+/** The view row's controls, in either of their two shapes. */
 export function presetRow(page: Page): Locator {
   return page.getByTestId("issue-presets");
 }
 
-/** The row of five, from 1280 px up. */
+/** The row of controls, from 1280 px up. */
 export function presetToolbar(page: Page): Locator {
   return page.getByRole("toolbar", { exact: true, name: CONTROL_LABELS.presets });
 }
 
-/** The five toggles of the row, from 1280 px up. */
+/** The toggles of the row, from 1280 px up. */
 export function presetToggles(page: Page): Locator {
   return presetRow(page).locator("button[aria-pressed]");
 }

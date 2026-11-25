@@ -25,8 +25,8 @@ const (
 )
 
 // DecisionSupertag and ReadingSupertag are the supertags of a decision's and a reading's block
-// node, their types' own, where every other block's node carries BlockSupertag
-// (TypedFacts.supertag).
+// node, their types' own, as every typed block's node carries its type's (TypeSupertag), but for
+// a reading in an ask nobody has answered, whose node carries BlockSupertag (TypedFacts.supertag).
 const (
 	DecisionSupertag = decisionType
 	ReadingSupertag  = readingType
@@ -357,7 +357,7 @@ func HoldsTypedBlocks(blocks []model.ArtifactBlock) bool {
 // `server`. A reading never changes the decision it reads, so the decision's words, and the sum a
 // Keep records over them, are the same whether readings hang under it or not. `shaped` is a
 // relation out of the decision to the spec nodes it shaped, and no word of it (R32 of
-// dispatch://INFRA-1253's spec), so a write of it alone stales no Keep. A server attribute -
+// the issue-tree spec), so a write of it alone stales no Keep. A server attribute -
 // decided_by, kept_by, kept_text_sum - is the server's record of the decision and no word of it
 // either; markdown carries none of them today, and this leaves them out whatever the schema says.
 // It is the one function every sum of a decision's words goes through: the reads of a decision
@@ -376,6 +376,17 @@ func DecisionWords(decision *pmdoc.Node) (string, error) {
 		own.Attrs[name] = value
 	}
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
+}
+
+// AskWords is an ask's own words, the text its sum covers and a person's answer decides: the
+// blocks of its content, its question and its options, rendered alone, with no attribute of its
+// block - neither the server's state and answer nor its `shaped` pointers nor its urgency - and none
+// of the readings it closes with (pmdoc.TypedContent). It is the one rendering of an ask's words:
+// the reads of a decision (decisionread) and R32's refusal of an agent's write that changes an
+// answered ask's words (docs' refuseDroppedAnsweredAsks) both read it.
+func AskWords(ask *pmdoc.Node) (string, error) {
+	content, _ := pmdoc.TypedContent(ask)
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: content})
 }
 
 // shapedAttribute is the name of a decision's `shaped` attribute, whose store name is
@@ -598,21 +609,31 @@ func (f *TypedFacts) setDecidedBy(id string, author Target) {
 	f.decidedBy[id] = author
 }
 
-// supertag is the supertag of the node of block id, of type typ: its own type's for a decision
-// and for a reading the facts hold to be one, and BlockSupertag for every other block. Facts that
-// read nothing tag every decision and reading by its type.
+// supertag is the supertag of the node of block id, of type typ (R26 of the issue-tree
+// spec): a decision's and a reading's are the facts' to decide - each decision, and each reading but
+// one in an ask a person has not answered or in no decision or ask, takes its type's, and every
+// other one BlockSupertag - and every other block's is its type's (TypeSupertag): its type for a
+// typed block of the block schema, BlockSupertag for a paragraph, a heading, a list or any other
+// kind. Facts that read nothing tag every decision and reading by its type. So every writer of a
+// block node - the block index, the typed-node pass, the requirements, checks and plan tasks a
+// deferred version's write writes (PlanAuthored) - gives one block one supertag.
 func (f TypedFacts) supertag(id, typ string) string {
-	if f.read {
+	if f.read && (typ == decisionType || typ == readingType) {
 		if supertag, typed := f.supertags[id]; typed {
 			return supertag
 		}
 		return BlockSupertag
 	}
-	switch typ {
-	case decisionType, readingType:
-		return typ
-	}
-	return BlockSupertag
+	return TypeSupertag(typ)
+}
+
+// decides says the facts decide the supertag of a block of type typ: a decision's and a reading's
+// where they read the version's tree, and every other type's always (supertag). Facts that read
+// nothing - a version whose tree did not read back - tag a decision and a reading by its type,
+// which a reading in an ask nobody answered is not, so the block index leaves the node of an
+// unchanged decision or reading as it stands under such facts.
+func (f TypedFacts) decides(typ string) bool {
+	return f.read || f.bare || (typ != decisionType && typ != readingType)
 }
 
 // withTies is pointers with each decision's written ties beside them (a from_ask), which the
@@ -1146,17 +1167,18 @@ func (d DecisionIndexing) heldRooms(index BlockIndex) map[string]string {
 // artifactID, at any state but gone (the spec's R12: a proposed, settled or overtaken
 // node is as present as a live one), that the version's blocks no longer hold as one, written at
 // versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
-// and, for a decision or a reading, restated with the supertag block where the version holds the
-// block under another type, as PlanBlocks writes the node of a retyped block, which keeps the
+// and restated with the supertag of the type the version holds the block under where that is
+// another than the one it carries (TypeSupertag; BlockSupertag for a decision or a reading the
+// facts do not decide), as PlanBlocks writes the node of a retyped block, which keeps the
 // state it holds (blockNode). supertags is each block the version holds as a decision or a reading
 // (TypedFacts.supertags), whose node the typed-node pass writes itself. It answers beside the
 // nodes the id of each block it states gone, in the nodes' order, whose rows the pass deletes
 // (DecisionIndexing.planGone). A node it states gone is one the version changed (blockNode's
 // changed), as a block a version's index drops is.
 //
-// A typed block is each type of the block schema (pmdoc.TypedBlockNames): a decision and a reading,
-// whose node carries its type's supertag, and a callout, an ask block, a requirement, a check, a
-// criterion and a plan task, whose node carries the supertag block and whose document_blocks row
+// A typed block is each type of the block schema (pmdoc.TypedBlockNames): a decision, a reading,
+// a callout, an ask block, a requirement, a check, a criterion and a plan task, whose node carries
+// its type's supertag (R26 of the issue-tree spec) and whose document_blocks row
 // carries the type. It reads only what the store places in the
 // document, each by its own key: the typed blocks its document_blocks rows hold, the block nodes
 // whose current part_of is the document's own node (graph_tuples_as_of_in) and those its block_refs
@@ -1239,26 +1261,38 @@ func unheldTypedNodes(ctx context.Context, q Queryer, artifactID string, documen
 	if len(held) == 0 {
 		return nil, nil, nil
 	}
-	present := make(map[string]string, len(blocks))
+	present := make(map[string]model.ArtifactBlock, len(blocks))
 	for _, block := range blocks {
 		if blockIDFits(refKey, block.ID) {
-			present[blockNodeAddress(refKey, block.ID)] = block.ID
+			present[blockNodeAddress(refKey, block.ID)] = block
 		}
 	}
 	// The block index marks the blocks a version dropped or whose words it moved changed
 	// (blockNode's changed). This pass deletes the row of each typed block the version dropped,
-	// so no later index drops it again, and marks it changed here; a decision or a reading it
-	// restates as a block keeps its words, and is not marked.
+	// so no later index drops it again, and marks it changed here; a node it restates under the
+	// supertag of the block's type now keeps its words, and is not marked.
 	var nodes []graphstore.Node
 	var gone []string
 	for _, address := range slices.Sorted(maps.Keys(held)) {
-		id, holds := present[address]
-		switch {
-		case !holds:
+		block, holds := present[address]
+		if !holds {
 			nodes = append(nodes, blockNode(address, document, document.Writer, versionAt, graphstore.StateGone, held[address], true))
 			gone = append(gone, strings.TrimPrefix(address, refKey+"#"))
-		case supertags[id] == "" && held[address] != BlockSupertag:
-			nodes = append(nodes, blockNode(address, document, document.Writer, versionAt, graphstore.StateLive, BlockSupertag, false))
+			continue
+		}
+		if supertags[block.ID] != "" {
+			continue
+		}
+		// A block the version holds as no decision or reading the facts decide carries the
+		// supertag of its type now (TypeSupertag): a decision or a reading retyped into a check
+		// takes check, and a reading that is no reading yet - in an ask nobody answered - and a
+		// paragraph take block.
+		want := BlockSupertag
+		if block.Type != decisionType && block.Type != readingType {
+			want = TypeSupertag(block.Type)
+		}
+		if held[address] != want {
+			nodes = append(nodes, blockNode(address, document, document.Writer, versionAt, graphstore.StateLive, want, false))
 		}
 	}
 	return nodes, gone, nil

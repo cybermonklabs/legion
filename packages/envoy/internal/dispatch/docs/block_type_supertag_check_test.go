@@ -34,9 +34,10 @@ const blockTypeSupertagUnanswered = "g2"
 // The three documents of issue CORE-1. Together they hold one block of each type of
 // pmdoc/schema/blocks.json - a callout, an ask, a requirement, a plan task, a check, a decision, a
 // reading and a criterion - and a paragraph, a heading, a list and a code block, a reading in an
-// ask that nobody has answered among them. d2 is a decision with no reading and vp1 a paragraph of
-// the Verification document, which the retypes below turn into a check; c2 is a check they turn
-// into a requirement.
+// ask that nobody has answered among them (blockTypeSupertagUnansweredReading, which a browser's
+// write puts in the spec's ask a1). d2 is a decision with no reading and vp1 a paragraph of the
+// Verification document, which the retypes below turn into a check; c2 is a check they turn into a
+// requirement.
 const (
 	blockTypeSupertagSpec = "## The spec heading\n\n" +
 		"A plain paragraph of the spec.\n\n" +
@@ -47,14 +48,27 @@ const (
 		":::callout{#co1 kind=\"note\" title=\"\"}\nA callout.\n:::\n\n" +
 		"::::decision{#d1}\nThe decision with its reading.\n\n:::reading{#g1}\nThe agent reads the decision.\n:::\n::::\n\n" +
 		":::decision{#d2}\nA decision with no reading.\n:::\n\n" +
-		"::::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich way?\n\n- Left: Go left\n- Right: Go right\n\n" +
-		":::reading{#" + blockTypeSupertagUnanswered + "}\nThe agent reads the question.\n:::\n::::\n"
+		":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich way?\n\n- Left: Go left\n- Right: Go right\n:::\n"
 	blockTypeSupertagVerification = "A paragraph of the Verification document.\n\n" +
 		":::check{#c1 serves=\"dispatch://CORE-1/spec#b-r1\" surface=\"api\" run=\"go test ./x\"}\nThe first check.\n:::\n\n" +
 		":::check{#c2 serves=\"dispatch://CORE-1/spec#b-r1\" surface=\"api\" run=\"go test ./x\"}\nThe second check.\n:::\n\n" +
 		":::check{#c3 serves=\"dispatch://CORE-1/spec#b-r1\" surface=\"api\" run=\"go test ./x\"}\nThe third check.\n:::\n"
 	blockTypeSupertagPlan = ":::plan_task{#t1 serves=\"dispatch://CORE-1/spec#b-r1\"}\nThe task.\n:::\n"
 )
+
+// blockTypeSupertagUnansweredReading appends the reading blockTypeSupertagUnanswered to the end of
+// the document's first ask, the spec's a1, which nobody has answered. A write that takes markdown
+// refuses a reading it introduces into an ask that holds no answer, the seed of a document's first
+// text among them (refuseReadingsWithoutAnswers, TestAReadingInAnAskWithNoAnswerIsRefused); a
+// browser's write is never refused, so this is how such a reading comes to stand in a document,
+// and the edit is a browser's (editLiveTree, appendToAsk).
+func blockTypeSupertagUnansweredReading(tree *pmdoc.Node) *pmdoc.Node {
+	return appendToAsk(&pmdoc.Node{
+		Type:     "reading",
+		Attrs:    pmdoc.Attrs{pmdoc.BlockIDAttr: blockTypeSupertagUnanswered},
+		Children: []*pmdoc.Node{{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: "The agent reads the question."}}}},
+	})(tree)
+}
 
 // blockTypeSupertagNode is one document_blocks row beside the supertag its node carries, and
 // whether the node stands.
@@ -125,10 +139,11 @@ func blockTypeSupertagRefKey(t *testing.T, database *store.Store, id string) str
 }
 
 // blockTypeSupertagDocument creates document slug of issue, of project, its role role where it
-// names one, its live text seeded with markdown, and writes its first version through the real
-// version write, as a route marks its context where deferred is set (WithDeferredBlockIndex), so
-// a document of more blocks than deferBlockIndexBlocks leaves its blocks to the reconciliation.
-func blockTypeSupertagDocument(t *testing.T, database *store.Store, service *Service, issue, project, slug string, primary bool, role, markdown string, deferred bool) (string, VersionResult) {
+// names one, its live text seeded with markdown and then edited by browser where it is not nil, a
+// browser's write (editLiveTree), and writes its first version through the real version write, as
+// a route marks its context where deferred is set (WithDeferredBlockIndex), so a document of more
+// blocks than deferBlockIndexBlocks leaves its blocks to the reconciliation.
+func blockTypeSupertagDocument(t *testing.T, database *store.Store, service *Service, issue, project, slug string, primary bool, role, markdown string, browser func(*pmdoc.Node) *pmdoc.Node, deferred bool) (string, VersionResult) {
 	t.Helper()
 	var stored *string
 	if role != "" {
@@ -143,6 +158,9 @@ func blockTypeSupertagDocument(t *testing.T, database *store.Store, service *Ser
 		t.Fatalf("create document %s: %v", slug, err)
 	}
 	seedServiceText(t, service, id, markdown)
+	if browser != nil {
+		editLiveTree(t, service, id, browser)
+	}
 	ctx := context.Background()
 	if deferred {
 		ctx = WithDeferredBlockIndex(ctx)
@@ -254,10 +272,11 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 		t.Fatalf("seed project BIG: %v", err)
 	}
 
-	// The writers: a spec, a Verification document and a plan through the real version write.
-	spec, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "spec", true, "", blockTypeSupertagSpec, false)
-	verification, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "verification-md", false, model.ArtifactRoleVerification, blockTypeSupertagVerification, false)
-	plan, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "plan-md", false, model.ArtifactRolePlan, blockTypeSupertagPlan, false)
+	// The writers: a spec, a Verification document and a plan through the real version write, the
+	// spec's reading in the ask nobody answered put there by a browser's write.
+	spec, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "spec", true, "", blockTypeSupertagSpec, blockTypeSupertagUnansweredReading, false)
+	verification, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "verification-md", false, model.ArtifactRoleVerification, blockTypeSupertagVerification, nil, false)
+	plan, _ := blockTypeSupertagDocument(t, database, service, "CORE-1", "CORE", "plan-md", false, model.ArtifactRolePlan, blockTypeSupertagPlan, nil, false)
 	documents := map[string]string{"spec": spec, "verification-md": verification, "plan-md": plan}
 	refKeys := map[string]string{}
 	var written []blockTypeSupertagNode
@@ -293,7 +312,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	}
 	big.WriteString("\n:::check{#bc1 surface=\"api\" run=\"go test ./x\"}\nA check of the big document.\n:::\n\n")
 	big.WriteString(":::check{#bc2 surface=\"api\" run=\"go test ./x\"}\nAnother check of the big document.\n:::\n")
-	bigID, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "verification-md", false, model.ArtifactRoleVerification, big.String(), true)
+	bigID, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "verification-md", false, model.ArtifactRoleVerification, big.String(), nil, true)
 	bigKey := blockTypeSupertagRefKey(t, database, bigID)
 	if blockIndexAt(t, database, bigID) != nil {
 		t.Fatalf("the Verification document of more than %d blocks is indexed by its own write, want its blocks left to the reconciliation", deferBlockIndexBlocks)
@@ -321,7 +340,7 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	// A write that states a check's block apart from its node fails whole. The probe trigger
 	// raises on a write of a graph_nodes row whose supertag is check, so a version that adds a
 	// check and states its node fails, and neither the node nor the row of the check stands.
-	probe, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "probe-md", false, "", "A paragraph of the probe document.\n", false)
+	probe, _ := blockTypeSupertagDocument(t, database, service, "BIG-1", "BIG", "probe-md", false, "", "A paragraph of the probe document.\n", nil, false)
 	probeKey := blockTypeSupertagRefKey(t, database, probe)
 	if _, err := database.Pool.Exec(ctx, `
 		create function blocktype_supertag_probe() returns trigger language plpgsql as $$

@@ -1264,6 +1264,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   copied_from_document: "copied from document",
   /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
+  /** The repository paths a plan task's implementer should read. */
+  docs: "docs to read",
   /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
@@ -1288,9 +1290,11 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   serves: "serves",
   /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
-  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+  /** How long a plan task takes, in minutes, which the plan's chart draws as its bar's length;
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
+  /** The skills a plan task's implementer should read. */
+  skills: "skills to read",
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",

@@ -549,7 +549,7 @@ var indexPasses = map[string]string{
 	// the ask's. Neither reads a row of either side to decide what the other says.
 	"api/comment_actions.go#editComment": "the edit request's own body, the comment's row it locked and the comment's own event",
 	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
-	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan): the anchored_in its
+	// A comment's anchor block (T17b of the issue-tree plan): the anchored_in its
 	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
 	// orphan flag. An accept, a reject or a delete that finds a suggestion's mark gone writes the
 	// anchor orphaned from the request and the comment's row it locked, and retracts the block that
@@ -562,6 +562,13 @@ var indexPasses = map[string]string{
 	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "the anchors the refresh orphaned or found again off the document's marks, the rows it updated and the events it appended",
 	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "the live document's block that holds the legacy anchor's quote, and the row it pins it on",
 	"api/comment_delivery.go#replyComment":            "the reply a delivery recorded",
+	// The orphaning of a comment's node anchor (this issue's spec R31): a write that takes a node
+	// gone, or appends its text, marks each comment anchored on that node orphaned and retracts the
+	// anchored_in and, for a comment that answers nothing, the part_of that comment's anchor states,
+	// in its own batch (docs.NodeAnchorOrphans). The comments are read in that write's read phase off
+	// the rows whose node anchor names one of its nodes, and what it orphans follows from the write's
+	// own nodes and text: it mends neither side of a projection from the other.
+	"docs/anchor_refresh.go#Queue": "the comments whose node anchor names a node the write takes gone or whose text it moves, read in that write's read phase, and the write's own time and writer",
 	// An edit of an issue message's words and a delete of a message or a comment, each made for a
 	// run, restate the post's node from the row they locked, caused by their own event, so the
 	// run's change of the post is named (changed_by_run). None reads a row of either side to
@@ -650,12 +657,28 @@ var indexPasses = map[string]string{
 	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
 	// row, which the write reads through the current part_of tuples (graphstore.WriteState).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
+	// A node's move (PATCH /api/v1/issues/{key}/nodes/{id}) states, at the sentinel, the
+	// retraction of the part_of the node held and a part_of to the parent the request names, its
+	// rank among that parent's children and a block's stored placement, as its route planned them
+	// under the owner locks of the issues the node and its parent stand under; it writes a moved
+	// block's parent_block_id from that same parent, the projection of the part_of it states, and
+	// marks those issues' queries owed. It reads graph_tuples only for the seq its own new part_of
+	// took, the placement_seq the route answers: it reads no side of a projection to mend the other.
+	"api/node_move.go#queueNodeMove": "the move its route planned under the issues' owner locks - the node, the part_of it held, the parent and the rank the request places it at, and whether it stores a block's placement - and the seq of the part_of its own write appended",
+	// A node's delete (DELETE /api/v1/issues/{key}/nodes/{id}, this issue's spec R7) states, at the
+	// sentinel, each node it takes gone that no version states gone and the retraction of every
+	// tuple out of what it takes, as its route planned them under the owner locks of the issues
+	// they stand under, with the orphaning of each comment anchored on a node it takes and the head
+	// rows of what it states. The plan reads the nodes and tuples the store holds under the node
+	// the request deletes in order to take them gone: the store read to write the store, no
+	// projection to mend it, nor the store to mend a projection.
+	"api/node_delete.go#queueNodeDelete": "the delete its route planned under the issues' owner locks - each node it takes gone and every tuple out of what it takes, as the store holds them - and the comments anchored on those nodes",
 	// An issue's own field write made for a run: the issue's node, restated from the write's own
 	// fields and the issue's row it locked, and caused by the issue's own event, so the run's change
 	// of the issue is named (changed_by_run). It reads no row of either side to decide what the
 	// other says.
 	"api/issue_patch.go#writeIssue": "the write's own fields (the PATCH's body, or a status change step's), the issue's row it locked and the issue's own event",
-	// An issue's relations its create and its PATCH state (dispatch://INFRA-1253 R9, R10): the
+	// An issue's relations its create and its PATCH state (R9, R10 of the issue-tree spec): the
 	// claims and tuples the request names, read against the issue's own row, the issue_links rows
 	// it holds and the tuples its node states only to state what moved, and the node of the item
 	// its filed_from names where the store held none, from that item's own row, as the backfill
@@ -675,10 +698,11 @@ var indexPasses = map[string]string{
 	// an event. It decides the version from the record of each query of the issue and the render of
 	// its document, both read at one cut of the writer's own transaction, against the document's
 	// newest version, and writes a new version from that read: it reads no projection row to mend
-	// the store, nor the store to mend a projection. The drain writes it for the issue a mark
-	// names - a result's, a retraction's or an issue room's settlement's - once that write has
-	// committed, under the mark's event.
-	"docs/query_marks.go#drainQueryMark": "the issue's query mark, and each query's record and its document's render at a cut of the drain's transaction, its newest version and the mark's event",
+	// the store, nor the store to mend a projection. The drain (drainMark) writes it for the issue a
+	// mark names - a result's, a retraction's or an issue room's settlement's - once that write has
+	// committed and the fill of the record digests the issue's versions owe has committed after it,
+	// under the mark's event.
+	"docs/query_marks.go#drainMark": "the issue's query mark, and each query's record and its document's render at a cut of the drain's transaction, its newest version and the mark's event",
 	// R2's daemon-thread step re-places a block that stands under a message of a thread the Legion
 	// daemon's session began under its issue's node, from the part_of and its seq it reads again
 	// under the issue's owner lock: it mends no projection.
@@ -692,7 +716,7 @@ var indexPasses = map[string]string{
 	"docs/issue_conversion.go#moveAsks":            "the asks rows whose block the converted documents hold, and the block ids the conversion re-minted",
 	"docs/issue_conversion.go#movePointers":        "the tuples, refs rows and block_refs rows at the moved blocks' old addresses, and the check_results rows of the converted documents' checks",
 	"docs/issue_conversion.go#finish":              "the facts the conversion's retirement and room passes stated, and the artifact.version it appended",
-	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
+	// A component's node and its relations (R9 of the issue-tree spec): an import states them from
 	// the model it fetched, read against the part_of and depends_on each node states now only to
 	// state what moved, and the components it drops from the source's rows as they stood; a
 	// source's removal states its components gone from the rows its delete is about to take.
@@ -934,6 +958,12 @@ var indexPasses = map[string]string{
 	// each node the write changed owes the run, reading only whether the node already holds an
 	// asserted one to that run's interaction, which the store's own tuples say: no projection.
 	"graphstore/append.go#queueChangedByRun": "the changed_by_run tuples the write owes its run, and the newest changed_by_run each node holds to that run",
+	// armlessAppend, the armless half of an append's statement (graphstore.ArmlessFresh), appends
+	// with no conflict arm each tuple its caller states whose node is one of the kind it names that
+	// the write's own node insert made, which it reads off the mark that insert left on the node's
+	// row (markInserted), and leaves every other tuple to the statement's own insert, which keeps
+	// the arm. It reads the store's own rows its write just wrote, no projection, and mends nothing.
+	"graphstore/append.go#armlessAppend": "the tuples its caller states and the marks its own node write left on the node rows it made",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a
 	// project already and its own made_at, made_by and cause, which the fact it states takes. The

@@ -15919,7 +15919,7 @@ describe("executeDispatchTool", () => {
     });
     expect(followedAsk(result.details)).toBeNull();
     expect(requests).toEqual([
-      "/api/v1/comments/cccccccc-0000-4000-8000-000000000042",
+      "/api/v1/comments/cccccccc-0000-4000-8000-000000000042?node_anchor=true",
       "/api/v1/references?to=dispatch%3A%2F%2FDSP-42%2Fcomment%2Fcccccccc-0000-4000-8000-000000000042",
       "/api/v1/references?from=dispatch%3A%2F%2FDSP-42%2Fcomment%2Fcccccccc-0000-4000-8000-000000000042",
     ]);
