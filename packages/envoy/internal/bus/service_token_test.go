@@ -82,8 +82,8 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
-	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
+	// No span of its own: the service can report ready late on a loaded machine with nothing wrong.
+	ready := testwait.Context(t)
 	require.NoError(t, service.Ready(ready))
 	count := func(token string) int {
 		mu.Lock()

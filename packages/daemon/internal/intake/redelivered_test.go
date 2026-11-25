@@ -1,6 +1,6 @@
 package intake_test
 
-//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:123)
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
 
 import (
 	"bytes"

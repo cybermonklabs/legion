@@ -1972,9 +1972,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # (ci_filter_coverage.gate_read_sets), so a change to a harness or its subject selects the job
 # and exactly that step's filter is in the list it reads.
 #
-# Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
-# so each of those gates reads it and a change to it runs them all;
-# scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
+# Every harness sources test-lib.sh for its `check`, `is` and `summary`, so each of those gates
+# reads it and a change to it runs them all.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
@@ -2110,6 +2109,8 @@ def browser_gate(filter, job):
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
         # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
+        (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
+                                     "id rule's cases by path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "`packages/dispatch/e2e/engine-reading.ts#blockSchema`"),
         (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json",
          "read at module load by packages/dispatch/e2e/visual-guard.ts (SHOT_READS_FILE), which "

@@ -1,6 +1,6 @@
 package daemon
 
-//ci:builds packages/envoy ./cmd/dispatch startScratchDispatchOn starts the dispatch command testbuild.EnvoyBinary builds, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:123)
+//ci:builds packages/envoy ./cmd/dispatch startScratchDispatchOn starts the dispatch command testbuild.EnvoyBinary builds, which runs go build ./cmd/dispatch in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
 
 import (
 	"bytes"
