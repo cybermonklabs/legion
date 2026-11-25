@@ -1,3 +1,6 @@
+/** Every row reads what the server's agent process made of the fake writing model's turns: the
+ *  answer the server keeps when a run ends, the model calls the fake counted, and the result of a
+ *  list of issues that the server gave the model. */
 import { createIssue, createProject, listIssues } from "./api";
 import {
   callTool,
