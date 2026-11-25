@@ -1913,8 +1913,8 @@ BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that di
 BROWSER_RECORD_STEP = "What the run left behind"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host and
 # then runs Playwright in the pinned container. Neither it nor e2e/run-server.sh builds a
-# Dispatch server any more - that job names the binaries job's own on DISPATCH_E2E_SERVER_BIN -
-# so this job starts no go command and adds no Run of its own.
+# Dispatch server - that job names the binaries job's own on DISPATCH_E2E_SERVER_BIN - so this
+# job starts no go command and adds no Run of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The six steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared

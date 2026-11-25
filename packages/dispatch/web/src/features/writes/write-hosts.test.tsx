@@ -11,7 +11,7 @@ import { ApiError, api } from "../../api/client";
 import { chunkLoadsOut } from "../shell/chunk-loads";
 import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
 import type { KeptWrite } from "./write-storage";
-import { kindsRegistered, plainWrite, writesOf } from "./write-store";
+import { kindsRegistered, plainWrite, type Writes, writesOf } from "./write-store";
 
 // The store's take-up of what a reload kept waits for every kind of write, a chunk of its own
 // (`kinds.ts`), and its own ask for that chunk can fail with no reload to follow: the page being
@@ -179,19 +179,10 @@ const lists = [
   ["sign-in page's kept list", KeptWritesHost, "Kept changes", "the changes this page kept"],
 ] as const;
 
-/** Draws `Host` over a store of alice's, and presses one write that the indicator shows and
- *  Dispatch refuses, whose label is `label`: each list draws the label of a refused write, the
- *  kept list as a write of alice's that the page keeps. Answers the view. */
-function drawARefusedWrite(Host: () => ReactNode, label: ReactNode): RenderResult {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const view = render(
-    <QueryClientProvider client={client}>
-      <Host />
-    </QueryClientProvider>
-  );
+/** Presses one write that the indicator shows and Dispatch refuses, whose label is `label`. */
+function pressARefusedWrite(writes: Writes, label: ReactNode): void {
   act(() => {
-    void writesOf(client)
+    void writes
       .run({
         detail: null,
         kind: plainWrite,
@@ -204,6 +195,20 @@ function drawARefusedWrite(Host: () => ReactNode, label: ReactNode): RenderResul
       })
       .catch(() => undefined);
   });
+}
+
+/** Draws `Host` over a store of alice's, and presses one write that the indicator shows and
+ *  Dispatch refuses, whose label is `label` (`pressARefusedWrite`): each list draws the label of
+ *  a refused write, the kept list as a write of alice's that the page keeps. Answers the view. */
+function drawARefusedWrite(Host: () => ReactNode, label: ReactNode): RenderResult {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Host />
+    </QueryClientProvider>
+  );
+  pressARefusedWrite(writesOf(client), label);
   return view;
 }
 
@@ -252,20 +257,7 @@ test("a pending-writes indicator whose chunk fails to download online draws a li
     </QueryClientProvider>
   );
   try {
-    act(() => {
-      void writes
-        .run({
-          detail: null,
-          kind: plainWrite,
-          // A label is text, which a row draws as it is; a part in its place draws in the
-          // indicator's own render.
-          label: (<NotLoaded />) as unknown as string,
-          method: "PATCH",
-          presentation: "indicator",
-          write: () => Promise.reject(new ApiError(422, { code: "KEY_REUSED", error: "refused" })),
-        })
-        .catch(() => undefined);
-    });
+    pressARefusedWrite(writes, <NotLoaded />);
     const line = await screen.findByRole("status");
     expect(line).toHaveTextContent(/^1 change not sent$/u);
     expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();

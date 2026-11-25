@@ -173,17 +173,17 @@ export function askedSurface<P extends AskedSurfaceProps>(
         }}
       />
     );
+    let part: ReactNode = null;
+    if (Component !== undefined) {
+      part = <Component {...props} typed={held.text} />;
+    } else if (open && downloadFailed) {
+      part = alert;
+    } else if (open) {
+      part = <Placeholder held={held} name={name} onCancel={onClose} />;
+    }
     return (
       <ChunkBoundary fallback={alert} reset={closes}>
-        {Component !== undefined ? (
-          <Component {...props} typed={held.text} />
-        ) : open ? (
-          downloadFailed ? (
-            alert
-          ) : (
-            <Placeholder held={held} name={name} onCancel={onClose} />
-          )
-        ) : null}
+        {part}
       </ChunkBoundary>
     );
   }

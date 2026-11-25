@@ -56,3 +56,9 @@ export function uploadedPercent(row: Write): number | undefined {
     ? row.uploaded
     : undefined;
 }
+
+/** How the indicator's status line and the line that stands in the indicator's place
+ *  (`ChangesNotSent` in `write-hosts.tsx`) count `n` writes: "1 change", "2 changes". */
+export function changesCount(n: number): string {
+  return n === 1 ? "1 change" : `${n} changes`;
+}

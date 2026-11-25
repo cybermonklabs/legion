@@ -53,11 +53,10 @@ export function refPreviewTriggerOf(node: EventTarget | null | undefined): HTMLE
  *  card on hover. A touch asks for no card: a tap follows the link. A held button asks for no
  *  card: a drag-selection that passes over a link is not a hover. */
 export function pointerAsksForCard(event: PointerEvent): HTMLElement | null {
+  if (event.pointerType === "touch" || event.buttons !== 0) return null;
   const reference = refPreviewTriggerOf(event.target);
   return reference !== null &&
     reference !== refPreviewTriggerOf(event.relatedTarget) &&
-    event.pointerType !== "touch" &&
-    event.buttons === 0 &&
     !hoverPreviewsOff(reference)
     ? reference
     : null;

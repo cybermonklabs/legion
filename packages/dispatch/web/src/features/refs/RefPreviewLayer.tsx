@@ -56,12 +56,11 @@ const RefPreviewHost = chunkComponent(
  *  `ask` when the reader asks for a card. Each listener reads its gesture by the rule that the
  *  card's own listener (`attachTriggers` in `RefPreview.tsx`) reads it by, from
  *  `ref-preview-card.ts`:
- *  - a pointer that comes over a reference, but not a touch, not with a button down, and not on
- *    a surface that opens no card on hover (`pointerAsksForCard`);
- *  - a focus on a reference that `:focus-visible` says the keyboard made (`focusAsksForCard`);
- *  - the caret entering a link of an editable document on a surface that opens no card on hover
- *    (`caretRefPreviewTrigger`). A caret that moves inside the link asks for nothing, so the link
- *    the caret is in when this mounts asks only once the caret leaves it and comes back.
+ *  - a pointer over a reference (`pointerAsksForCard`);
+ *  - a keyboard focus on a reference (`focusAsksForCard`);
+ *  - the caret entering a link of an editable document (`caretRefPreviewTrigger`). A caret that
+ *    moves inside the link asks for nothing, so the link the caret is in when this mounts asks
+ *    only once the caret leaves it and comes back.
  *  A marked reference whose address the card cannot parse (`routeOf` in `RefPreview.tsx`) still
  *  asks and can spend a recovery reload without opening a card: telling those apart needs the
  *  reference parser in `features/refs/routes.ts`, which stays out of the entry, so only the
@@ -117,9 +116,8 @@ export function RefPreviewLayer(): ReactNode {
     return null;
   }
   // A render that threw is drawn again for the next card too, as a chunk that did not load is.
-  const listener = <CardAsked ask={ask} />;
   return (
-    <ChunkBoundary fallback={listener} reset={asks}>
+    <ChunkBoundary fallback={<CardAsked ask={ask} />} reset={asks}>
       <RefPreviewHost />
     </ChunkBoundary>
   );

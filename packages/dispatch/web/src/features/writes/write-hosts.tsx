@@ -12,7 +12,7 @@ import {
 import { useContentDrawn } from "../shell/content-drawn";
 import { ERROR_ACTION_CLASS, ErrorView } from "../shell/ErrorBoundary";
 import { KeptWrites } from "./KeptWrites";
-import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
+import { changesCount, indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
 
@@ -98,7 +98,7 @@ function CouldNotShow({ className, list }: { className: string; list: string }):
  */
 function ChangesNotSent({ rows }: { rows: readonly Write[] }): ReactNode {
   if (rows.length === 0) return null;
-  const count = rows.length === 1 ? "1 change" : `${rows.length} changes`;
+  const count = changesCount(rows.length);
   const refused = rows.some((row) => row.status === "refused");
   return (
     <div

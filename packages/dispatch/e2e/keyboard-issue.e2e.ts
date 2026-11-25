@@ -8,6 +8,7 @@ import { navigateInApp } from "./sends";
 import {
   chunkFile,
   entryScriptPath,
+  failAssetWhen,
   holdAsset,
   holdAssetUntilReleased,
   ranChunk,
@@ -1069,15 +1070,15 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await page.goto("/");
       await expect(page.getByText("Signed in as alice")).toBeVisible();
       const spent = await recordTabReloads(page, [3, 2, 1]);
-      let asked = 0;
-      await page.route(chunkFile("CreateIssueDialog"), (route) => {
-        asked += 1;
-        return route.abort();
-      });
+      const failed = await failAssetWhen(
+        page,
+        chunkFile("CreateIssueDialog"),
+        async () => undefined
+      );
       const patched = await patchesOf(page, issue.key);
       await openIssue(page, issue.key, "Keys after a failed c");
       await expect
-        .poll(() => asked, "the page's own prefetch of the chunk went out")
+        .poll(failed, "the page's own prefetch of the chunk never went out")
         .toBeGreaterThan(0);
 
       await page.keyboard.press("c");
@@ -1099,9 +1100,9 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect
         .poll(() => onBody(page), "the alert gave the focus back to no opener")
         .toBe(true);
-      const before = asked;
+      const before = failed();
       await page.keyboard.press("c");
-      await expect.poll(() => asked, "the next c asked for no chunk").toBeGreaterThan(before);
+      await expect.poll(failed, "the next c asked for no chunk").toBeGreaterThan(before);
       await expect(alert).toBeVisible();
     } finally {
       await context.close();

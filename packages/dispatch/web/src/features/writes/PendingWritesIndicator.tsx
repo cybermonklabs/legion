@@ -22,7 +22,13 @@ import { focusOnDocument } from "../shell/roving";
 import { conflictWords } from "./conflicts";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
-import { heldForSignOut, indicatorWrites, uploadedPercent, waitingToSend } from "./shown-writes";
+import {
+  changesCount,
+  heldForSignOut,
+  indicatorWrites,
+  uploadedPercent,
+  waitingToSend,
+} from "./shown-writes";
 import { useWriteSelection, useWrites, writeDraft } from "./write-store";
 
 /** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
@@ -231,7 +237,7 @@ export function PendingWritesIndicator(): ReactNode {
       waitingToSend(row) ||
       uploadedPercent(row) !== undefined
   );
-  const count = out.length === 1 ? "1 change" : `${out.length} changes`;
+  const count = changesCount(out.length);
   const actionable = rows.some((row) => row.status === "late" || row.status === "refused");
   return (
     <section

@@ -35,6 +35,7 @@ import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import {
   entryScriptPath,
+  failAssetWhen,
   fetchedChunk,
   holdAsset,
   PENDING_WRITES_CHUNK,
@@ -1532,18 +1533,14 @@ test("a pending-writes indicator whose chunk fails to download online at every a
     await expect(changesNotSent(page)).toHaveText("1 change not sent");
     // Playwright tries the last route added first, so this one fails every later request for the
     // indicator's chunk, which `holdFirstRequest` would let through.
-    const failed: string[] = [];
-    await page.route(PENDING_WRITES_CHUNK, (route) => {
-      failed.push(route.request().url());
-      return route.abort();
-    });
+    const failed = await failAssetWhen(page, PENDING_WRITES_CHUNK, async () => undefined);
 
     await statusChange.fulfill(STATUS_REFUSED);
     await expect(
       changesNotSent(page),
       "the line in the indicator's place did not say the refused change is not saved"
     ).toHaveText("1 change not sent — Not saved");
-    expect(failed, "the refusal did not ask for the indicator's chunk again").not.toEqual([]);
+    expect(failed(), "the refusal did not ask for the indicator's chunk again").toBeGreaterThan(0);
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "the failures reloaded the page").toEqual(spent);
@@ -2019,6 +2016,18 @@ function kindsRequests(page: Page): { asked: Set<Request>; ended: Set<Request> }
   return { asked, ended };
 }
 
+/** The login (`Dispatch-Login`) of each PATCH of `path` that `page` sends from here on, in the
+ *  order they go out. */
+function patchLogins(page: Page, path: string): (string | undefined)[] {
+  const logins: (string | undefined)[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+      logins.push(request.headers()["dispatch-login"]);
+    }
+  });
+  return logins;
+}
+
 /**
  * Keeps alice's change of the status of the issue `key` through a reload whose take-up of what
  * the reload kept waits for the rest of the row (`Writes.resume`), and answers with a reader of
@@ -2042,12 +2051,7 @@ async function keptWhileTheKindsNeverArrive(
   const path = `/api/v1/issues/${key}`;
   // The reload's own "leave this page?" is accepted.
   page.on("dialog", (dialog) => void dialog.accept());
-  const logins: (string | undefined)[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
-      logins.push(request.headers()["dispatch-login"]);
-    }
-  });
+  const logins = patchLogins(page, path);
   await holdStatusChanges(page, path);
   await keepAStatusChange(page, key);
   await fetchedChunk(page, WRITE_KINDS_CHUNK);
@@ -2210,12 +2214,7 @@ test("a write pending for alice is dropped when bob signs in from another tab, a
   try {
     const page = await alice.newPage();
     const answers = watchAnswers(page, "PATCH", path);
-    const logins: (string | undefined)[] = [];
-    page.on("request", (request) => {
-      if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
-        logins.push(request.headers()["dispatch-login"]);
-      }
-    });
+    const logins = patchLogins(page, path);
     const network = await outage(page, `**${path}`, "PATCH");
     await keepAStatusChange(page, issue.key);
     await expect.poll(() => keptWrites(page)).toBe(1);
