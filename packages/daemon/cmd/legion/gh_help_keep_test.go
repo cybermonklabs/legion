@@ -174,9 +174,9 @@ func TestLegionGhReadsNoHelpForTheGuardsVisibilityReads(t *testing.T) {
 // A repeated `gh api` call that the guard checks whole runs two gh processes: the guard's read
 // of the destination's visibility, then the call. The first call reads gh's help of gh and of gh
 // api once and keeps it; the second reads none, and the guard's read inside it reads none
-// either. The stand-in check is not the one the read rule was proven against, so the guard runs
-// whole and reads the visibility, and the stand-in answers private, which the guard reads again
-// for every call.
+// either. The stand-in check is not the one the read rule was proven against and the deployment
+// names a rule file (the fixture's), so the guard runs whole and reads the visibility, and the
+// stand-in answers private, which the guard reads again for every call.
 func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -185,6 +185,7 @@ func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"XDG_STATE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "HOME": t.TempDir(),
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), "GH_STANDIN_VISIBILITY": "private",
+		leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 	}
 	args := []string{"api", "repos/acme/widgets", "--jq", ".full_name"}
 	read := strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ")

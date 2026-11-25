@@ -384,7 +384,9 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			}
 		}
 	})
-	run := ghGuardRig(t)
+	// The guard's own lookup is a whole guard's, which reads the visibility only where the
+	// deployment names its rule file.
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, tc := range []struct {
 		args                   []string
 		checkLooks, guardLooks bool

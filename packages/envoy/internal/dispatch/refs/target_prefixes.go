@@ -48,12 +48,14 @@ type ShortID struct {
 // answers every other id of the call too. ambiguous is nil when no id is ambiguous. An id that
 // ids holds twice is read once.
 //
-// Every candidate is read as the zero Viewer reads it. A short message id in a reference always
+// Every candidate is read as a Viewer that is no person and no session reads it, with serverURL
+// the deployment whose dashboard URLs a first line cuts around (FirstLine), as ResolvePrefix reads
+// it with that Viewer. A short message id in a reference always
 // names the issue of its message (PrefixScope), so a message is resolved within its issue alone.
 // Thus no direct message is ever a candidate, and this function needs no part that decides
 // which session can read the first line of a direct message, as ResolvePrefix has. A message id
 // whose scope names no issue is no match.
-func ResolvePrefixes(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
+func ResolvePrefixes(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, serverURL string) (whole map[ShortID]Candidate, ambiguous map[ShortID]bool, err error) {
 	var asks, comments, messages, documents, latest, pinned, order []ShortID
 	seen := make(map[ShortID]bool, len(ids))
 	for _, id := range ids {
@@ -84,12 +86,12 @@ func ResolvePrefixes(ctx context.Context, q Queryer, who *model.Actor, ids []Sho
 	}
 	found := make(map[ShortID][]Candidate, len(order))
 	for _, read := range []func() error{
-		func() error { return itemShortIDCandidates(ctx, q, who, "ask", asks, found) },
-		func() error { return itemShortIDCandidates(ctx, q, who, "comment", comments, found) },
-		func() error { return messageShortIDCandidates(ctx, q, who, messages, found) },
-		func() error { return artifactShortIDCandidates(ctx, q, who, documents, found) },
-		func() error { return blockShortIDCandidates(ctx, q, who, latest, false, found) },
-		func() error { return blockShortIDCandidates(ctx, q, who, pinned, true, found) },
+		func() error { return itemShortIDCandidates(ctx, q, who, "ask", asks, serverURL, found) },
+		func() error { return itemShortIDCandidates(ctx, q, who, "comment", comments, serverURL, found) },
+		func() error { return messageShortIDCandidates(ctx, q, who, messages, serverURL, found) },
+		func() error { return artifactShortIDCandidates(ctx, q, who, documents, serverURL, found) },
+		func() error { return blockShortIDCandidates(ctx, q, who, latest, false, serverURL, found) },
+		func() error { return blockShortIDCandidates(ctx, q, who, pinned, true, serverURL, found) },
 	} {
 		if err := read(); err != nil {
 			return nil, nil, err
@@ -119,7 +121,7 @@ func ResolvePrefixes(ctx context.Context, q Queryer, who *model.Actor, ids []Sho
 // or the document that its scope names, or among every item of the kind where its scope names
 // neither. An item who may not see is none of them. Each carries the marks its row's
 // postMarkColumns read, as itemPrefixCandidates' do.
-func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, ids []ShortID, found map[ShortID][]Candidate) error {
+func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -160,7 +162,7 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kin
 		if err := rows.Scan(append([]any{&ordinal, &id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan the %ss that %d short ids name: %w", kind, len(ids), err)
 		}
-		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, marks)
+		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
 		if err != nil {
 			return err
 		}
@@ -174,7 +176,7 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kin
 // its prefix names, oldest id first, as messagePrefixCandidates reads them for one id within an
 // issue, each with its marks. Every id names an issue (ResolvePrefixes), so no direct message is
 // read. A message who may not see is none of them.
-func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, found map[ShortID][]Candidate) error {
+func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -204,7 +206,7 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		if err := rows.Scan(append([]any{&ordinal, &id, &issueKey, &project, &body}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan the messages that %d short ids name: %w", len(ids), err)
 		}
-		candidate, err := itemCandidate("message", id, issueKey, project, "", body, marks)
+		candidate, err := itemCandidate("message", id, issueKey, project, "", body, serverURL, marks)
 		if err != nil {
 			return err
 		}
@@ -218,7 +220,7 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 // that its prefix names, oldest id first, as artifactPrefixCandidates reads them for one id:
 // within the issue that its scope names, or among every document where its scope names none. A
 // document who may not see is none of them.
-func artifactShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, found map[ShortID][]Candidate) error {
+func artifactShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -247,7 +249,7 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor,
 			return fmt.Errorf("scan the documents that %d short ids name: %w", len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], artifactCandidate(document, name))
+		found[short] = append(found[short], artifactCandidate(document, name, serverURL))
 	}
 	return rows.Err()
 }
@@ -260,7 +262,7 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor,
 // latest of those texts each, and none at all unless a block-aware build indexed that version.
 // A block who may not see is none of them, at its node's id, the document's ref_key, '#' and the
 // block id, whichever version names it.
-func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, pinned bool, found map[ShortID][]Candidate) error {
+func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, pinned bool, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -319,7 +321,7 @@ func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, id
 			return fmt.Errorf("scan the blocks that %d short ids name: %w", len(ids), err)
 		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], blockCandidate(blockID, body, document))
+		found[short] = append(found[short], blockCandidate(blockID, body, document, serverURL))
 	}
 	return rows.Err()
 }
