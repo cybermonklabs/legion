@@ -25,6 +25,7 @@ import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
 import type { OutlineRequest } from "../IssueTree";
+import { CLEARANCE } from "../identity-block";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
@@ -3468,11 +3469,12 @@ const nextWords = (count: number, left: number) =>
   `${DECISIONS_WORDS.page_next} ${count} (${left} ${DECISIONS_WORDS.page_left})`;
 
 // R2, root R40, decision 424: each part draws its first 20 entries, and under a part that holds
-// more stands one control, a plain button in the tab order, whose name says how many are left -
-// the part's entries less those drawn - and which draws the next 20 at most when pressed, by the
-// keyboard or the pointer, until none is left and it goes, the focus going to the first entry
-// its last press drew. A part of 20 draws them all and no control. Each part pages on its own,
-// and each count counts every entry of its part, drawn or not.
+// more stands one control, a row of the tree out of the tab order, whose name says how many are
+// left - the part's entries less those drawn - and which draws the next 20 at most when pressed,
+// by `j` on the part's last drawn row or by the pointer, until none is left and it goes; each
+// press puts the focus on the first entry it drew (decision 459). A part of 20 draws them all and
+// no control. Each part pages on its own, and each count counts every entry of its part, drawn or
+// not.
 test("each part draws 20 entries at a time, with the count left", async () => {
   const user = userEvent.setup();
   const { ids, issue } = longIssue({ foot: 45, questions: 45, review: 20 });
@@ -3495,23 +3497,21 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   });
   expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
   expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(20, 25), rows: foot(20) });
-  // Each control's name holds the number left, and Tab reaches it.
+  // Each control's name holds the number left.
   const named: (HTMLElement | null)[] = view.getAllByRole("button", {
     name: (name) => name.includes(`25 ${DECISIONS_WORDS.page_left}`),
   });
   expect(named).toEqual([nextControlOf(view, "open_questions"), nextControlOf(view, "agents")]);
-  await act(async () => rowOf(view, "q01").focus());
-  await user.tab();
-  expect(document.activeElement).toBe(nextControlOf(view, "open_questions"));
 
   // The questions by the keyboard, then by the pointer; the foot draws what it drew.
-  await user.keyboard("{Enter}");
+  await act(async () => rowOf(view, "q20").focus());
+  await user.keyboard("j");
   expect(drawnIn("open_questions")).toEqual({
     count: "45",
     next: nextWords(5, 5),
     rows: questions(40),
   });
-  expect(document.activeElement).toBe(nextControlOf(view, "open_questions"));
+  expect(focusedRow(view), "the press by j does not focus the first entry it drew").toBe("q21");
   expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(20, 25), rows: foot(20) });
   await user.click(nextControlOf(view, "open_questions") as HTMLElement);
   expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
@@ -3522,8 +3522,14 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   // The foot by the pointer, then by the keyboard; the questions draw what they drew.
   await user.click(nextControlOf(view, "agents") as HTMLElement);
   expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(5, 5), rows: foot(40) });
-  expect(document.activeElement).toBe(nextControlOf(view, "agents"));
-  await user.keyboard(" ");
+  await waitFor(() =>
+    expect(
+      focusedRow(view),
+      "the press by the pointer does not focus the first entry it drew"
+    ).toBe(D("foot21"))
+  );
+  await act(async () => rowOf(view, D("foot40")).focus());
+  await user.keyboard("j");
   expect(drawnIn("agents")).toEqual({ count: "45", next: null, rows: foot(45) });
   await waitFor(() =>
     expect(focusedRow(view), "the last press does not focus the first entry it drew").toBe(
@@ -3532,6 +3538,205 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   );
   expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
   expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
+  view.unmount();
+});
+
+// R2, decision 366: the control under a part is drawn as the outline draws its page control, a
+// row of the tree out of the tab order, with its button out of it too, since the tree is one tab
+// stop: under a headed part at the level of its rows, and under the foot a level down, in the
+// group of the foot's rows that the tree owns. Tab from the part's last drawn row goes past it,
+// `j` and Down on that row press it, and a press of the pointer takes no focus as it goes down.
+test("the next-entries control is a treeitem out of the tab order", async () => {
+  const user = userEvent.setup();
+  const { ids, issue } = longIssue({ foot: 45, questions: 65, review: 0 });
+  const view = renderBody(issue);
+  const button = nextControlOf(view, "open_questions");
+  const item = button?.closest<HTMLElement>("[data-decisions-next]") ?? null;
+  expect(item?.getAttribute("role"), "the control under the questions is no treeitem").toBe(
+    "treeitem"
+  );
+  expect(item?.tabIndex, "the control under the questions is in the tab order").toBe(-1);
+  expect(
+    button?.tabIndex,
+    "the button of the control under the questions is in the tab order"
+  ).toBe(-1);
+  expect(
+    item?.getAttribute("aria-level"),
+    "the control under the questions does not stand at the level of their rows"
+  ).toBe("1");
+  const footItem = nextControlOf(view, "agents")?.closest<HTMLElement>("[data-decisions-next]");
+  expect(
+    [footItem?.getAttribute("role"), footItem?.getAttribute("aria-level")],
+    "the control under the foot is no treeitem a level down, as the foot's rows are"
+  ).toEqual(["treeitem", "2"]);
+  expect(
+    footItem?.closest('[role="group"]')?.id,
+    "the control under the foot stands outside the group of its rows the tree owns"
+  ).toBe(view.getByRole("tree").getAttribute("aria-owns") ?? "");
+
+  // Tab from the questions' last drawn row goes past their control.
+  await act(async () => rowOf(view, "q20").focus());
+  await user.tab();
+  expect(
+    document.activeElement,
+    "Tab from the part's last drawn row stopped on its control"
+  ).not.toBe(item);
+  expect(
+    document.activeElement,
+    "Tab from the part's last drawn row stopped on its control's button"
+  ).not.toBe(button);
+
+  // `j` on that row presses the control, and Down on the part's next last drawn row presses it.
+  await act(async () => rowOf(view, "q20").focus());
+  await user.keyboard("j");
+  expect(
+    rowsOfPart(view, "open_questions"),
+    "j on the part's last drawn row did not press its control"
+  ).toEqual(ids.questions.slice(0, 40));
+  await act(async () => rowOf(view, "q40").focus());
+  await user.keyboard("{ArrowDown}");
+  expect(
+    rowsOfPart(view, "open_questions"),
+    "Down on the part's last drawn row did not press its control"
+  ).toEqual(ids.questions.slice(0, 60));
+
+  // A press of the pointer on the control's button leaves the focus on the row it was on as it
+  // goes down, and draws the part's last entries as it ends.
+  await act(async () => rowOf(view, "q41").focus());
+  const pressed = nextControlOf(view, "open_questions") as HTMLElement;
+  await user.pointer({ keys: "[MouseLeft>]", target: pressed });
+  expect(document.activeElement, "the press on the control's button took the focus").toBe(
+    rowOf(view, "q41")
+  );
+  await user.pointer({ keys: "[/MouseLeft]", target: pressed });
+  expect(
+    rowsOfPart(view, "open_questions"),
+    "the press on the control's button did not draw the part's last entries"
+  ).toEqual(ids.questions);
+  view.unmount();
+});
+
+// Decision 459, R2: a press of the control under a part, by the pointer or by `j` on the part's
+// last drawn row, puts the focus on the first entry it drew, and that row is brought on screen
+// by the page's one rule as it takes the focus (`identity-block.ts`' `bringOnScreen`): a row
+// drawn below the window's foot is scrolled up to it, and one already on screen moves nothing,
+// neither as the focus lands on it nor after. happy-dom lays nothing out, so the one row off
+// screen is given its box, and every other row none, which reads as on screen.
+test("a press of a part's next-entries control puts the focus on its first new entry, in view", async () => {
+  const user = userEvent.setup();
+  const { issue } = longIssue({ foot: 0, questions: 65, review: 0 });
+  let below: string | undefined = "q21";
+  // On Element, which owns the method (`docs/testing.md`).
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return this.matches(`[data-node-row][data-node-id="${below}"]`)
+      ? new DOMRect(0, window.innerHeight + 2000, 800, 40)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(
+    (() => {}) as typeof window.scrollBy
+  );
+  try {
+    const view = renderBody(issue);
+    // By the pointer, from the list's first question, with the first new entry drawn 2,000 px
+    // below the window's foot: its foot is brought 8 px clear of the window's.
+    await act(async () => rowOf(view, "q01").focus());
+    scrolled.mockClear();
+    await user.click(nextControlOf(view, "open_questions") as HTMLElement);
+    await waitFor(() =>
+      expect(
+        focusedRow(view),
+        "the press by the pointer does not put the focus on the first entry it drew"
+      ).toBe("q21")
+    );
+    expect(document.activeElement, "the focus is not on the first new entry's row itself").toBe(
+      rowOf(view, "q21")
+    );
+    await waitFor(() =>
+      expect(
+        scrolled,
+        "the first new entry, drawn below the window's foot, was not brought on screen"
+      ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE })
+    );
+
+    // By `j` on the last question drawn, the first new entry drawn on screen: nothing scrolls.
+    below = undefined;
+    await act(async () => rowOf(view, "q40").focus());
+    scrolled.mockClear();
+    await user.keyboard("j");
+    expect(
+      focusedRow(view),
+      "j on the part's last drawn row does not put the focus on the first entry it drew"
+    ).toBe("q41");
+    await act(() => nextFrame());
+    expect(
+      scrolled,
+      "the first new entry, already on screen, moved the page"
+    ).not.toHaveBeenCalled();
+
+    // The press is spent once its row holds the focus: the list drawn again moves nothing.
+    view.again({});
+    await act(() => nextFrame());
+    expect(focusedRow(view), "the list drawn again moved the focus off the first new entry").toBe(
+      "q41"
+    );
+    expect(scrolled, "the list drawn again moved the page").not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
+// R6, decision 110: a part draws the page that holds the entry the reader is on, so a read that
+// puts entries before it takes neither its row nor the focus off the page. The review list is
+// newest first: of 21 decisions that wait the list draws 20, and a newer decision moves the 20th
+// to place 21. Its row stays drawn, never drawn again, with the focus and the Change the reader is
+// typing in it, which the view keeps no draft of.
+test("an entry a read pushes past its part's pages keeps the focus and its Change", async () => {
+  const user = userEvent.setup();
+  const { ids, issue } = longIssue({ foot: 0, questions: 0, review: 21 });
+  const view = renderBody(issue);
+  expect(rowsOfPart(view, "review"), "the review list does not draw its first 20").toEqual(
+    ids.review.slice(0, 20).map(D)
+  );
+  await act(async () => rowOf(view, D("review20")).focus());
+  const row = rowOf(view, D("review20"));
+  const change = row.querySelector<HTMLElement>('button[data-row-action="change"]');
+  if (change === null) throw new Error("the 20th decision's row draws no Change");
+  await user.click(change);
+  const typed = "Name the read, please.";
+  await user.type(view.getByLabelText(CONTROL_LABELS.your_change), typed);
+  const field = view.getByLabelText(CONTROL_LABELS.your_change);
+  expect(document.activeElement, "the Change form's field does not hold the focus").toBe(field);
+
+  // A read brings a decision newer than every other to the head of the review list.
+  const newer = decision("review00", {
+    decision: { changed_at: "2026-11-20T12:00:00Z", links: [shaped(specRef("s1"))] },
+  });
+  const read = treeAnswer([newer, ...issue.made]);
+  await act(async () => {
+    view.client.setQueryData(conversationTreeKey(KEY), read);
+    view.client.setQueryData(viewKey(KEY, "decisions"), read);
+    view.again({ children: [...issue.children, decisionNode("review00")] });
+  });
+  await waitFor(() =>
+    expect(
+      rowsOfPart(view, "review")[0],
+      "the read did not bring the newer decision to the head of the review list"
+    ).toBe(D("review00"))
+  );
+  expect(
+    rowsOfPart(view, "review"),
+    "the read took the 20th decision's row off the page"
+  ).toContain(D("review20"));
+  expect(rowOf(view, D("review20")), "the 20th decision's row was drawn again").toBe(row);
+  expect(document.activeElement, "the 20th decision's Change field lost the focus").toBe(field);
+  expect(
+    (field as HTMLTextAreaElement).value,
+    "the 20th decision's Change lost the words typed in it"
+  ).toBe(typed);
   view.unmount();
 });
 
@@ -3572,52 +3777,6 @@ test("a read that takes the foot's control away while it holds the focus leaves 
     document.body
   );
   expect(focusedRow(view), "a row of the list took the focus the control held").toBeUndefined();
-  view.unmount();
-});
-
-// Decision 351, as decision 457 applies it to the control under a part: the reader's press that
-// draws the part's last entries takes the control away and hands the focus on to the first entry
-// it drew, but a read, or another session's write, that leaves the part no more than it draws
-// takes the control away by no press. That leave moves no focus, whatever an earlier press drew:
-// the focus stays on the page's body, and neither the entry that press drew nor the list's tab
-// stop takes it.
-test("a read that takes a part's next-entries control away with no press leaves the focus on the page's body, even after an earlier press", async () => {
-  const user = userEvent.setup();
-  const { ids, issue } = longIssue({ foot: 0, questions: 45, review: 0 });
-  const view = renderBody(issue);
-  // One press by the pointer draws the next 20 questions, the first of them the 21st; five are
-  // left, so the control stays.
-  await user.click(nextControlOf(view, "open_questions") as HTMLElement);
-  expect(rowsOfPart(view, "open_questions"), "the press did not draw the next 20").toEqual(
-    ids.questions.slice(0, 40)
-  );
-  const control = nextControlOf(view, "open_questions");
-  expect(words(control), "the control does not say five questions are left").toBe(nextWords(5, 5));
-  // The reader goes up to the list's first question, which takes the tab stop, and back to the
-  // control.
-  await act(async () => rowOf(view, "q01").focus());
-  await act(async () => control?.focus());
-  expect(document.activeElement, "the focus is not back on the control").toBe(control);
-
-  // A read leaves the part 40 questions, every one drawn, as another session's write that took
-  // the last five away would, and the control leaves the page with no press.
-  view.again({
-    children: [statement("s1"), ...ids.questions.slice(0, 40).map((id) => openAsk(id))],
-  });
-  expect(rowsOfPart(view, "open_questions"), "the read did not leave 40 questions").toEqual(
-    ids.questions.slice(0, 40)
-  );
-  expect(nextControlOf(view, "open_questions"), "the control is still on the page").toBeNull();
-  await act(async () => {});
-  await act(() => nextFrame());
-  expect(
-    document.activeElement,
-    "the control's leave with no press moved the focus off the page's body"
-  ).toBe(document.body);
-  expect(
-    focusedRow(view),
-    "a row took the focus: the 21st question the earlier press drew, or q01, the list's tab stop"
-  ).toBeUndefined();
   view.unmount();
 });
 

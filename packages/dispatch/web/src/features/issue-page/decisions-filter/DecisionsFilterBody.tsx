@@ -21,7 +21,6 @@ import {
   textMutedOnCanvas,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { focusOnDocument } from "../../shell/roving";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
@@ -42,9 +41,10 @@ import {
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
 import { focusIsLoose } from "../tree-focus";
-import type { DrawnRow } from "../tree-fold";
+import type { DrawnRow, PageRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { useTreeKeymap } from "../useTreeKeymap";
+import { abortOnReaderAct } from "../useNodeEditing";
+import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -83,9 +83,13 @@ const PAGE = 20;
  * on, which the page folds only when the reader folds them (R2, root R6). Each part draws its
  * first `PAGE` entries, and under a part that holds others a control says how many are left and
  * draws the next of them (`NextEntries`, root R40, decision 424): a page is no fold, each entry
- * drawn is whole, and each count counts every entry of its part, drawn or not. An address, a
- * key, the Contents pane's go-to or the header's count that goes to an entry not yet drawn draws
- * the pages of its part up to it first (`reach`).
+ * drawn is whole, and each count counts every entry of its part, drawn or not. The control is a
+ * row of the tree out of the tab order, as the outline's page control is (decision 366), which
+ * `j` and Down on the part's last drawn row press, and a press puts the focus on the first entry
+ * it drew (decision 459). An address, a key, the Contents pane's go-to or the header's count that
+ * goes to an entry not yet drawn draws the pages of its part up to it first (`reach`), and a part
+ * draws the pages up to the entry the reader is on and the one the tab stop rests on, so a read
+ * that puts entries before either takes neither off the page (`drawnPages`, R6).
  * Which entry stands in which part is `decisions-parts.ts`, which is pure, read through the seam
  * (`decisions-entries.ts`); this draws it. A part that holds nothing is not drawn, and no
  * sentence explains the parts: their headings are the whole of it (R22). Before the parts
@@ -230,8 +234,9 @@ export function DecisionsFilterBody({
   // The foot is drawn unfolded as the list opens, and folds only when the reader folds it (R2,
   // root R6).
   const [footShown, setFootShown] = useState(true);
-  // How many pages of `PAGE` entries each part draws: one as the list opens, and one for a part
-  // not named here.
+  // How many pages of `PAGE` entries the reader drew in each part, by its control or by going to
+  // an entry (`reach`): one as the list opens, and one for a part not named here. A part draws
+  // more where the focus or the tab stop stands further down it (`drawnPages`).
   const [pages, setPages] = useState<Readonly<Partial<Record<DecisionsPart, number>>>>({});
   // The key that cycles how much is drawn: the list as it opens, then everything - every body
   // open, the foot unfolded - then the list as it opens again.
@@ -252,16 +257,33 @@ export function DecisionsFilterBody({
     setReport(said === "" ? undefined : { line: said, ...(row === undefined ? {} : { row }) });
   }, []);
 
-  // The entries each part draws: its first pages (`pages`). The part itself holds every entry,
-  // so its count counts each one, a page not yet drawn included.
+  // How many pages of `PAGE` entries each part draws: those the reader drew (`pages`), and at
+  // least those up to the entry the reader is on and the entry the list's tab stop rests on,
+  // where either stands in the part. A read that puts entries before one of them - a new
+  // decision at the head of the review list, which is newest first - would push it past the
+  // pages drawn and take its row off the page, and with it the focus and a Change being typed
+  // there, which this view keeps no draft of. So the page that holds it is drawn in the render
+  // that read causes, and its row, and what the row holds, stays on the page (R6, decision 110).
+  const drawnPages = useMemo<Readonly<Record<PagedPart, number>>>(() => {
+    const reaching = (part: PagedPart): number =>
+      Math.max(pages[part] ?? 1, pageHolding(parts[part], focused), pageHolding(parts[part], stop));
+    return {
+      agents: reaching("agents"),
+      open_questions: reaching("open_questions"),
+      review: reaching("review"),
+      yours: reaching("yours"),
+    };
+  }, [focused, pages, parts, stop]);
+  // The entries each part draws: its first pages (`drawnPages`). The part itself holds every
+  // entry, so its count counts each one, a page not yet drawn included.
   const shown = useMemo(
     () => ({
-      agents: pagesOf(parts.agents, pages.agents),
-      open_questions: pagesOf(parts.open_questions, pages.open_questions),
-      review: pagesOf(parts.review, pages.review),
-      yours: pagesOf(parts.yours, pages.yours),
+      agents: pagesOf(parts.agents, drawnPages.agents),
+      open_questions: pagesOf(parts.open_questions, drawnPages.open_questions),
+      review: pagesOf(parts.review, drawnPages.review),
+      yours: pagesOf(parts.yours, drawnPages.yours),
     }),
-    [pages, parts]
+    [drawnPages.agents, drawnPages.open_questions, drawnPages.review, drawnPages.yours, parts]
   );
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
   // node the address names first, then the parts, then the foot's rows while it is unfolded,
@@ -288,15 +310,36 @@ export function DecisionsFilterBody({
     ],
     [parts]
   );
-  // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
-  // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
-  // on a row of the parts finds no row above it and says so, as on a top-level row of the
-  // outline. Left on a row of the foot is the body's own, taken before the keys read it
-  // (`footRowLeft`).
-  const rows = useMemo<DrawnRow[]>(() => {
+  // The rows as the outline's keys read them: the nth node row is the nth row drawn. Each sits
+  // at the list's one level, under the root the keys are given, which is the view (`keyOrder`),
+  // so Left on a row of the parts finds no row above it and says so, as on a top-level row of
+  // the outline. Left on a row of the foot is the body's own, taken before the keys read it
+  // (`footRowLeft`). After the last drawn row of a part that holds more entries than it draws
+  // stands the row of the control under it, as the outline's row that pages a node's children
+  // stands after them (`tree-fold.ts`' `PageRow`), here paging the view's own entries: `j` and
+  // Down on that last row press the control (`useTreeKeymap.ts`' `tree-next`), and `pageParts`
+  // says which part's control it is.
+  const { pageParts, rows } = useMemo(() => {
     const trail = [view.id];
-    return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
-  }, [drawn, view.id]);
+    const nodeRow = (entry: DecisionsEntry | NamedEntry): DrawnRow => ({
+      kind: "node",
+      level: 1,
+      node: entry.node,
+      trail,
+    });
+    const pageParts = new Map<PageRow, PagedPart>();
+    const rows = parts.named.map(nodeRow);
+    for (const part of footShown ? [...HEADED, "agents" as const] : HEADED) {
+      const entries: readonly (DecisionsEntry | NamedEntry)[] = shown[part];
+      rows.push(...entries.map(nodeRow));
+      const left = parts[part].length - entries.length;
+      if (left <= 0) continue;
+      const page = { kind: "page", left, level: 1, of: view, trail: [] } as const;
+      rows.push(page);
+      pageParts.set(page, part);
+    }
+    return { pageParts, rows };
+  }, [footShown, parts, shown, view]);
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
   // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
@@ -356,8 +399,7 @@ export function DecisionsFilterBody({
   // press, never leaves the list and `releaseFocus` does not act. The focus is off every row
   // all the same, so it does what the list's leave does, and the panel goes back to the issue's
   // own facts. A refused read's line is inside the list too, and a focus on it, by Shift+Tab
-  // from a row say, is off every row the same way, and so is a focus on the control under a
-  // part that draws its next entries.
+  // from a row say, is off every row the same way.
   const footFocused = useCallback(() => {
     leave();
     setFocusedNode(undefined);
@@ -386,8 +428,7 @@ export function DecisionsFilterBody({
       const part = partOf.get(id);
       if (part === undefined) return;
       if (part === "agents") setFootShown(true);
-      const entries: readonly (DecisionsEntry | NamedEntry)[] = parts[part];
-      const needed = Math.floor(entries.findIndex((entry) => entry.node.id === id) / PAGE) + 1;
+      const needed = pageHolding(parts[part], id);
       setPages((held) => ((held[part] ?? 1) >= needed ? held : { ...held, [part]: needed }));
     },
     [partOf, parts]
@@ -620,37 +661,6 @@ export function DecisionsFilterBody({
       footPlaced.current = false;
     };
   }, []);
-  // The control under a part goes once the part has nothing left to draw, and the browser moves
-  // the focus it held to the page's body. It goes in one of two ways. The reader's press draws
-  // the part's last entries: the reader moved, so the focus goes on to the first entry that press
-  // drew, which the press marks (`pagedTo`), else to the list's tab stop, else to the tree, once
-  // that render is on the page. Or a read, or another session's write, leaves the part with no
-  // more than it draws, by no press of the reader's: that leave finds no mark and moves no focus,
-  // which stays on the page's body, where the page's keys work (decision 351, which decision 457
-  // applies to this control). The mark is one press's: `showNext` sets it, the leave in the
-  // commit that press causes reads it as the control leaves, since React runs a ref's cleanup in
-  // the commit's mutation phase, and the layout effect below clears it after that commit, before
-  // the focus moves, so a leave a later read causes never finds the mark of an earlier press. One
-  // function for every render, which the control reads as it leaves (`NextEntries`).
-  const pagedTo = useRef<string | undefined>(undefined);
-  const nextLeaves = useCallback(() => {
-    const drew = pagedTo.current;
-    if (drew === undefined) return;
-    queueMicrotask(() => {
-      if (!focusOnDocument()) return;
-      (
-        rowOf(body.current, drew) ??
-        body.current?.querySelector<HTMLElement>(STOP_ROW) ??
-        tree.current
-      )?.focus();
-    });
-  }, []);
-  // React runs a commit's layout effects after its refs' cleanups, so by now a leave in this
-  // commit has read the mark of the press that caused it, and the mark goes with that commit.
-  useLayoutEffect(() => {
-    pagedTo.current = undefined;
-  });
-
   // An entry the reader is on can move to another part of the list, and its row is drawn
   // again there, which drops the focus to the page: a decision they kept or asked to change
   // leaves the review list for their own decisions, a question another person answered goes
@@ -755,6 +765,41 @@ export function DecisionsFilterBody({
     [goTo, keyOrder, navigate, partOf]
   );
 
+  // A press of the control under a part, by the pointer or by `j` or Down on the part's last
+  // drawn row, draws the part's next page, after the pages it draws (`drawnPages`), and puts the
+  // focus on the first entry that page holds once its row is drawn, as the control after a
+  // view's last row does (`NextViewPage`, decision 459): the row places itself on screen as it
+  // takes the focus (`moveToRow`), and one already on screen moves nothing. The reader's next
+  // act before then ends the landing (`abortOnReaderAct`), as the next press does. Nothing but a
+  // press lands: a read that draws or takes away entries moves no focus (decision 351).
+  const landing = useRef<{ readonly acts: AbortController; readonly id: string } | undefined>(
+    undefined
+  );
+  useEffect(() => () => landing.current?.acts.abort(), []);
+  const showNext = (part: PagedPart): void => {
+    const entries: readonly DecisionsEntry[] = parts[part];
+    const first = entries[shown[part].length];
+    if (first === undefined) return;
+    landing.current?.acts.abort();
+    landing.current = { acts: abortOnReaderAct(), id: first.node.id };
+    setPages((held) => ({ ...held, [part]: drawnPages[part] + 1 }));
+  };
+  // The press's page is drawn in the render it causes, and its first row is looked for after
+  // every commit until it is there or the landing has ended.
+  useLayoutEffect(() => {
+    const to = landing.current;
+    if (to === undefined) return;
+    if (to.acts.signal.aborted) {
+      landing.current = undefined;
+      return;
+    }
+    const row = rowOf(body.current, to.id);
+    if (row === null) return;
+    landing.current = undefined;
+    to.acts.abort();
+    moveToRow(row);
+  });
+
   useTreeKeymap({
     container: body,
     // The view edits no row: Enter opens the node in the conversation (`onEdit`), so no row's
@@ -775,6 +820,11 @@ export function DecisionsFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
+    // `j` and Down on a part's last drawn row press the control under it (`rows`).
+    onPage: (row) => {
+      const part = pageParts.get(row);
+      if (part !== undefined) showNext(part);
+    },
     // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
     // pins a row by its node's id, as the row's own control does.
     onPin: (rowKey) => {
@@ -828,24 +878,12 @@ export function DecisionsFilterBody({
       />
     );
   };
-  // A press of the control under `part` draws the part's next page, whose first entry it marks
-  // for the focus to go to should the control leave the page holding it in the commit that press
-  // causes (`nextLeaves`), which clears the mark.
-  const showNext = (part: PagedPart): void => {
-    const entries: readonly DecisionsEntry[] = parts[part];
-    pagedTo.current = entries[shown[part].length]?.node.id;
-    setPages((held) => ({ ...held, [part]: (held[part] ?? 1) + 1 }));
-  };
-  // The control under `part` while it draws fewer entries than it holds.
+  // The control under `part` while it draws fewer entries than it holds, at the level of the
+  // part's rows.
   const nextFor = (part: PagedPart): ReactNode => {
     const left = parts[part].length - shown[part].length;
     return left <= 0 ? null : (
-      <NextEntries
-        left={left}
-        onFocus={footFocused}
-        onLeave={nextLeaves}
-        onNext={() => showNext(part)}
-      />
+      <NextEntries left={left} level={part === "agents" ? 2 : 1} onNext={() => showNext(part)} />
     );
   };
   const foot = `${headings}-agents`;
@@ -883,13 +921,14 @@ export function DecisionsFilterBody({
           retrying={retrying.includes(read)}
         />
       ))}
-      {/* The foot's rows stand after its control, outside this element, and are this tree's
-          all the same (`aria-owns`), so the page holds one tree. The element itself takes the
-          focus only to pass it on (`passFocus`), and only from a script: a press on it outside
-          a row, on a part's heading, its count or the gap between two rows, would otherwise
-          focus it, as the nearest element that takes the focus, and the focus would go on to
-          the tab stop, scroll the page to it and open its body. The outline's tree takes no
-          focus from a press either (`IssueTree.tsx`). */}
+      {/* The foot's rows, and the control under them that draws its next entries, stand after
+          the foot's control, outside this element, and are this tree's all the same
+          (`aria-owns`), so the page holds one tree. The element itself takes the focus only to
+          pass it on (`passFocus`), and only from a script: a press on it outside a row, on a
+          part's heading, its count or the gap between two rows, would otherwise focus it, as the
+          nearest element that takes the focus, and the focus would go on to the tab stop, scroll
+          the page to it and open its body. The outline's tree takes no focus from a press either
+          (`IssueTree.tsx`). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
@@ -996,9 +1035,9 @@ export function DecisionsFilterBody({
               role="group"
             >
               {shown.agents.map((entry) => rowFor(entry, "agents"))}
+              {nextFor("agents")}
             </div>
           ) : null}
-          {footShown ? nextFor("agents") : null}
         </div>
       )}
       {/* The issue holds no question and no decision the view draws. The node an address
@@ -1042,48 +1081,37 @@ function FoldMark({ open }: { open: boolean }): ReactNode {
 /**
  * The control under a part whose entries are not all drawn (R2, root R40, decision 424): it
  * says how many are left, the part's entries less those drawn, and draws the next of them, at
- * most `PAGE`, when pressed. It is a plain button in the tab order, as the foot's control is,
- * which Enter and Space press, and a press of it moves no focus until the click lands, for the
- * foot's control's reason. Its focus is off every row (`onFocus`). It goes once nothing is left
- * to draw, by the press that draws the last entries or by a read that leaves the part no more
- * than it draws, and says so as it leaves holding the focus (`onLeave`), since the browser then
- * moves the focus to the page's body: the body hands the focus on after the reader's press, and
- * leaves it on the page's body after a read (`nextLeaves`).
+ * most `PAGE`, when pressed. It is drawn as the outline draws its page control (`TreeRows.tsx`'s
+ * `PageControl`, decision 366): a row of the tree at `level`, the level of the part's rows, out
+ * of the tab order as every control inside the tree is, since the tree is one tab stop. The keys
+ * press it from the row beside it, `j` and Down on the part's last drawn row (`useTreeKeymap.ts`'
+ * `tree-next`), and a press of the pointer takes no focus (`preventDefault` on `mousedown`), so
+ * it never holds the focus: the press puts it on the first entry it drew (`showNext`).
  */
 function NextEntries({
   left,
-  onFocus,
-  onLeave,
+  level,
   onNext,
 }: {
   /** How many of the part's entries are not drawn yet. */
   left: number;
-  onFocus: () => void;
-  /** Told as the control leaves the page holding the focus. */
-  onLeave: () => void;
+  /** The level of the part's rows. */
+  level: number;
   onNext: () => void;
 }): ReactNode {
-  // One function for every render, so React runs the cleanup only when the control leaves.
-  const leaves = useCallback(
-    (control: HTMLButtonElement | null) => {
-      if (control === null) return undefined;
-      return () => {
-        if (document.activeElement === control) onLeave();
-      };
-    },
-    [onLeave]
-  );
   return (
-    <div className="mt-1 mb-0.5 flex min-w-0" data-decisions-next="">
+    <div
+      aria-level={level}
+      className="mt-1 mb-0.5 flex min-w-0"
+      data-decisions-next=""
+      role="treeitem"
+      tabIndex={-1}
+    >
       <button
         className={`dispatch-inline-link rounded py-1 text-left text-sm leading-5 font-medium hover:text-page-ink ${pageMutedText} ${focusVisibleRing}`}
-        onClick={(event) => {
-          onNext();
-          event.currentTarget.focus({ preventScroll: true });
-        }}
-        onFocus={onFocus}
+        onClick={onNext}
         onMouseDown={(event) => event.preventDefault()}
-        ref={leaves}
+        tabIndex={-1}
         type="button"
         {...pageChrome}
       >
@@ -1097,9 +1125,19 @@ function NextEntries({
   );
 }
 
-/** The first `pages` pages of `entries`, `PAGE` entries each; one page where `pages` is unset. */
-function pagesOf<Entry>(entries: readonly Entry[], pages: number | undefined): readonly Entry[] {
-  return entries.slice(0, PAGE * (pages ?? 1));
+/** The first `pages` pages of `entries`, `PAGE` entries each. */
+function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entry[] {
+  return entries.slice(0, PAGE * pages);
+}
+
+/** The page of `entries` that holds the entry of node `id`, counted from 1, or 0 where none
+ *  does. */
+function pageHolding(
+  entries: readonly (DecisionsEntry | NamedEntry)[],
+  id: string | undefined
+): number {
+  const at = id === undefined ? -1 : entries.findIndex((entry) => entry.node.id === id);
+  return at === -1 ? 0 : Math.floor(at / PAGE) + 1;
 }
 
 /** The row of node `id` inside `container`, or null where it draws none. */
@@ -1137,7 +1175,6 @@ const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   decisions: STATE_LINES.issue_decisions_unreadable,
 };
 
-/** The row that holds the list's one tab stop, which `placeFoot` and the leave of a part's
- *  next-entries control look for in the whole list, and `passFocus` in the tree element: the
- *  foot's rows stand outside it. */
+/** The row that holds the list's one tab stop, which `placeFoot` looks for in the whole list,
+ *  and `passFocus` in the tree element: the foot's rows stand outside it. */
 const STOP_ROW = '[data-node-row][tabindex="0"]';
