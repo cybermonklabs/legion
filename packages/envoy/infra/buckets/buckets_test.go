@@ -443,36 +443,42 @@ func fixtureSecret(tag string) string {
 	return tag + "+" + rand.Text()
 }
 
-// A --nats URL whose user info a parse does not read where it is written prints no part of itself.
-// One that does not parse fails nats.go's own parse with a *url.Error, whose text quotes the whole
-// URL, password included; one whose user or password holds a `/` ends its authority there, so it
-// parses with the credential's head as its host, which nats.go dials, and the failed lookup names
-// that head. The command refuses both before any dial. One with a space before it reads well once
-// bus trims it, so it reaches nats.go, which parses it as given and fails with that *url.Error:
-// connectFailure prints fixed text for it. The command reaches nats.go with any URL, since it sets
-// bus.AllowRemoteEnvVar. Both connects, the normal path's and --break-glass's, print the same fixed
-// text for each: no part of the URL, not even the host. At ff9c03a4a0 the two URLs that parse
-// printed `lookup <the credential's head>: no such host`.
+// A --nats URL the command cannot read prints no part of itself. One whose user info does not parse
+// fails nats.go's own parse with a *url.Error, whose text quotes the whole URL, password included;
+// one whose user or password holds a `/` ends its authority there, so it parses with the
+// credential's head as its host, which nats.go dials, and the failed lookup names that head; one
+// with white space at either end reads well once bus trims it, while nats.go parses it as given. The
+// command refuses each before any dial, the last naming the white space. One with no user info that
+// nats.go cannot parse, such as a port that is no number, passes those refusals and fails nats.go's
+// parse with that *url.Error, which the command prints as the first's fixed text. The command
+// reaches nats.go with any URL, since it sets bus.AllowRemoteEnvVar. Both connects, the normal
+// path's and --break-glass's, print the same text for each: no part of the URL, not even the host.
+// At ff9c03a4a0 the two URLs that parse printed `lookup <the credential's head>: no such host`, and
+// at 1b40766dfc a URL with white space at either end was tried ten times, a second apart, and then
+// refused with the first's text, which does not name the white space.
 func TestAConnectToAURLThatDoesNotParsePrintsNoPartOfIt(t *testing.T) {
 	at := string(rune(64))
 	user, head, tail := fixtureSecret("user"), fixtureSecret("head"), fixtureSecret("tail")
+	const unreadable = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)\n"
+	const padded = "envoy-infra buckets: connect: the --nats URL starts or ends with white space (a space, a tab or a line break), so it is not dialed and no part of it is printed: give it with none\n"
 	for _, c := range []struct {
-		name, url string
-		secrets   []string
+		name, url, want string
+		secrets         []string
 	}{
-		{"a password holding a slash, which does not parse", "nats://" + user + ":" + head + "/" + tail + at + "db.example:4222", []string{user, head, tail}},
-		{"a token holding a slash, its head read as the host", "nats://" + head + "/" + tail + at + "db.example:4222", []string{head, tail}},
-		{"a password holding a slash after digits, the user read as the host", "nats://" + user + ":2024/" + tail + at + "db.example:4222", []string{user, tail}},
-		{"a space before the URL, which nats.go does not trim", " nats://" + user + ":" + tail + at + "db.example:4222", []string{user, tail}},
+		{"a password holding a slash, which does not parse", "nats://" + user + ":" + head + "/" + tail + at + "db.example:4222", unreadable, []string{user, head, tail}},
+		{"a token holding a slash, its head read as the host", "nats://" + head + "/" + tail + at + "db.example:4222", unreadable, []string{head, tail}},
+		{"a password holding a slash after digits, the user read as the host", "nats://" + user + ":2024/" + tail + at + "db.example:4222", unreadable, []string{user, tail}},
+		{"a space before the URL, which nats.go does not trim", " nats://" + user + ":" + tail + at + "db.example:4222", padded, []string{user, tail}},
+		{"a tab after the URL, which nats.go does not trim", "nats://" + user + ":" + tail + at + "db.example:4222\t", padded, []string{user, tail}},
+		{"no user info and a port that is no number, which nats.go's parse refuses", "nats://db.example:4x22", unreadable, nil},
 	} {
 		for _, args := range [][]string{
 			{"create", "--nats", c.url, "--this-machine"},
 			{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--nats", c.url},
 		} {
 			code, stdout, stderr := runCommand(t, &world{}, nil, args...)
-			const want = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)\n"
-			if code != 1 || !strings.Contains(stderr, want) {
-				t.Errorf("%s, %s = %d, want 1 and %q\n%s%s", c.name, args[1], code, want, stdout, stderr)
+			if code != 1 || !strings.Contains(stderr, c.want) {
+				t.Errorf("%s, %s = %d, want 1 and %q\n%s%s", c.name, args[1], code, c.want, stdout, stderr)
 			}
 			for _, part := range append(c.secrets, "db.example") {
 				if strings.Contains(stdout+stderr, part) {

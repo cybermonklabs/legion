@@ -500,41 +500,47 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 	return 0
 }
 
-// unreadableURL is the line a --nats URL whose user info a parse does not read where it is written
-// prints, and that of one nats.go cannot parse: no part of the URL, not even the host, which such a
-// URL can hold credential text in.
-const unreadableURL = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)"
+// The fixed lines connect prints for a --nats URL it cannot use, which name no part of the URL, not
+// even the host: such a URL can hold credential text there.
+const (
+	unreadableURL = "envoy-infra buckets: connect: the --nats URL does not parse as user info and a server, so no part of it is printed: percent-encode every character of its user and its password but letters, digits and `-._~` (`/`, `?`, `#`, `@` and `:` among them)"
+	paddedURL     = "envoy-infra buckets: connect: the --nats URL starts or ends with white space (a space, a tab or a line break), so it is not dialed and no part of it is printed: give it with none"
+)
 
 // connect is both paths' connect to natsURL, or nil once it has written why there is none. The
-// command hands nats.go any URL, since it sets bus.AllowRemoteEnvVar, so it refuses, before any
-// dial, a URL whose user info a parse does not read where it is written (bus.NATSURLUserinfoParses):
-// a `/`, `?` or `#` in its user or password ends the authority there, nats.go dials the credential's
-// head as the host, and the failed lookup names it. A connect that fails prints connectFailure's line.
+// command hands nats.go any URL, since it sets bus.AllowRemoteEnvVar, so before any dial it refuses:
+//
+//   - a URL with white space at either end (paddedURL): bus reads the URL trimmed, and nats.go as
+//     given, so the two would read different URLs, and nats.go's parse would fail only after the
+//     connect's ten tries a second apart;
+//   - a URL whose user info a parse does not read where it is written (bus.NATSURLUserinfoParses,
+//     unreadableURL): a `/`, `?` or `#` in its user or password ends the authority there, nats.go
+//     dials the credential's head as the host, and the failed lookup names it.
+//
+// A connect that fails prints one line. A URL nats.go still cannot parse - one with no user info,
+// such as a port that is no number - fails with a *url.Error, whose text quotes the whole URL: that
+// prints unreadableURL. Any other failure names the server without the URL's user info
+// (bus.NATSURLWithoutUserinfo) and the error, which then quotes no URL.
 func connect(stderr io.Writer, natsURL string, options ...bus.ConnectOption) *bus.Client {
+	if natsURL != strings.TrimSpace(natsURL) {
+		fmt.Fprintln(stderr, paddedURL)
+		return nil
+	}
 	if !bus.NATSURLUserinfoParses(natsURL) {
 		fmt.Fprintln(stderr, unreadableURL)
 		return nil
 	}
 	nc, err := bus.Connect([]string{natsURL}, options...)
-	if err != nil {
-		fmt.Fprintln(stderr, connectFailure(natsURL, err))
+	var unparsed *url.Error
+	switch {
+	case errors.As(err, &unparsed):
+		fmt.Fprintln(stderr, unreadableURL)
+		return nil
+	case err != nil:
+		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", bus.NATSURLWithoutUserinfo(natsURL), err)
 		return nil
 	}
 	return nc
-}
-
-// connectFailure is the line a failed connect to natsURL prints. A URL nats.go cannot parse fails
-// with a *url.Error, whose text quotes the whole URL: that failure prints unreadableURL. connect
-// refuses each such URL that holds an "@" first; one with none, or one with a space at either end,
-// which nats.go parses as given where bus trims it, still fails here. Any other failure names the
-// server without the URL's user info (bus.NATSURLWithoutUserinfo) and the error, which then quotes
-// no URL.
-func connectFailure(natsURL string, err error) string {
-	var unparsed *url.Error
-	if errors.As(err, &unparsed) {
-		return unreadableURL
-	}
-	return fmt.Sprintf("envoy-infra buckets: connect to %s: %v", bus.NATSURLWithoutUserinfo(natsURL), err)
 }
 
 // fence is the proof that no writer of the buckets runs.

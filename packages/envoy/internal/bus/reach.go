@@ -106,8 +106,9 @@ func NATSURLWithoutUserinfo(raw string) string {
 // raw holds no "@", or it parses and its userinfo holds every "@" in it. It is false exactly where
 // NATSURLWithoutUserinfo falls back to what follows the last "@": a URL that does not parse, or one
 // whose user or password holds a "/", "?" or "#", which ends the authority before the "@", so the
-// parse reads credential text as the host. nats.go dials that host, and a failure to resolve it
-// names it, so a caller that prints a failed connect refuses such a URL before it dials.
+// parse reads credential text as the host. nats.go dials that host, and a failed lookup names it,
+// both in the error Connect returns and in the reconnect log line. raw is read trimmed, as
+// LocalNATSURL reads it, while nats.go parses a URL as given.
 func NATSURLUserinfoParses(raw string) bool {
 	_, parses := natsURLWithoutUserinfo(raw)
 	return parses
