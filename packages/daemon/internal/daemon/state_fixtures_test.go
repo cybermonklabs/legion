@@ -141,13 +141,13 @@ func TestTheStateFixturesSettingsAreReadFromInternalAPIsGoldens(t *testing.T) {
 
 // The state fixtures are the daemon's own answer over a seeded record. Each case seeds a cloned
 // database through the stores' own writers, builds this daemon's state source over it as serve
-// builds it (stateSource), over a supervision built from the stored claims and capability reports
-// as openSupervision builds one and the workflow's own admission (workflowAdmission), and asks GET
-// /legion/v1/state of the API server over that source as `legion state` asks it (served). So each
-// fixture is what (*source).State, the deployment as supervision.deploymentWith states it and the
-// state route's own reads beside its source answer over the seed: a value no writer accepts fails
-// the seed, a field the source adds, drops or moves moves the fixture, and a value no rule of the
-// daemon serves over the seed cannot reach one.
+// builds it (stateSource), over a supervision of the stored claims and capability reports as
+// openSupervision builds one (newSupervision) and the workflow's own admission (workflowAdmission),
+// and asks GET /legion/v1/state of the API server over that source as `legion state` asks it
+// (served). So each fixture is what (*source).State, the deployment as
+// supervision.deploymentWith states it and the state route's own reads beside its source answer
+// over the seed: a value no writer accepts fails the seed, a field the source adds, drops or
+// moves moves the fixture, and a value no rule of the daemon serves over the seed cannot reach one.
 //
 // Each fixture is the body as the route serves it to a caller at this daemon's own contract, less
 // the route's `contract` mark (api's stateFor; withoutMark): both of its numbers name this
@@ -242,17 +242,17 @@ func (s *seeding) served(c composition) []byte {
 	if c.secretsIssued {
 		p.secretsLogin = issuedSecretsLogin(s.t)
 	}
-	supervising := &supervision{
-		cfg: cfg, log: log, plan: p, supervisor: supervisorOf(s.t, claims...), claims: claims,
-		reports: reportsOfClaims(reports, claims), refreshGate: supervise.NewRefreshGate(0),
-		imageReport: c.image, probed: c.probed,
-	}
+	// The supervision the boot builds over them (newSupervision, as openSupervision builds it),
+	// with no runtime: the composition runs none, and gives the repository caches and the Dispatch
+	// token counts by hand. The image probe's report is set after, as run sets it.
+	supervising := newSupervision(cfg, log, p, nil, supervisorOf(s.t, claims...), claims, reports, supervise.NewRefreshGate(0))
+	supervising.imageReport, supervising.probed = c.image, c.probed
 	if c.caches != nil {
 		supervising.cacheStatuses = func() []sandbox.CacheStatus { return c.caches }
 	}
-	// The workflow's records, engine and admission (openWorkflow): the admission's reading is the
-	// state's architect-stalled arms.
-	records := projectRecords{Store: record.NewStore(), project: cfg.Project}
+	// The workflow's records, engine and admission (openWorkflow), over the seed's own record store:
+	// the admission's reading is the state's architect-stalled arms.
+	records := projectRecords{Store: s.records, project: cfg.Project}
 	engineCfg := engineConfig(cfg, "", nil)
 	engineCfg.Clock = clock.Now
 	admission := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log)
@@ -387,7 +387,7 @@ func issuedSecretsLogin(t *testing.T) *cipher.Client {
 }
 
 // seeding is one cloned database of this package's template, written through the stores' own
-// writers, and the one record store every writer of the seed writes through.
+// writers, and the one record store every writer of the seed writes through and the state reads.
 type seeding struct {
 	t       *testing.T
 	ctx     context.Context

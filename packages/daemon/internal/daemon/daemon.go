@@ -2081,17 +2081,34 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		pauses.supervisor = sup
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
-		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
-	}
+	// The part the state route reads is newSupervision's, which the state fixtures build theirs
+	// with too; the rest is what runs the claims.
+	supervisionOf := newSupervision(cfg, log, p, rt, sup, claims, reports, refreshGate)
+	supervisionOf.stream, supervisionOf.tokens, supervisionOf.reportStore, supervisionOf.pauses = listener, tokens, st, pauses
+	supervisionOf.cancel, supervisionOf.draining, supervisionOf.endDrain, supervisionOf.decided = cancel, draining, endDrain, api.NewRouteDecisions()
+	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	return supervisionOf, nil
+}
+
+// newSupervision is the supervision the boot builds over sup, whose machines hold claims: the
+// daemon's configuration, logger and plan, the runtime rt and its repository caches
+// (repositoryCachesOf), the supervisor, the claims, their sessions' stored capability reports
+// (reportsOfClaims), and the daemon's one refresh gate, which every supervision holds. The state
+// route reads nothing else the boot gives a supervision (stateSource); the image probe's report
+// comes after, from run. openSupervision builds the daemon's supervision with it and adds
+// what runs the claims, and the state fixtures build theirs with it
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), so a field set here reaches the
+// fixtures as it reaches the daemon's state.
+func newSupervision(cfg config.Config, log *slog.Logger, p plan, rt runtime.Runtime, sup *supervisor, claims []supervise.Claim,
+	reports []capabilities.Report, refreshGate supervise.RefreshAdmitter) *supervision {
+	return &supervision{
+		cfg: cfg, log: log, plan: p, runtime: rt, supervisor: sup, claims: claims,
+		reports: reportsOfClaims(reports, claims), refreshGate: refreshGate, cacheStatuses: repositoryCachesOf(rt),
+	}
 }
 
 // cleanSessionStop is what a machine calls once a claim's agent process has ended — a probe

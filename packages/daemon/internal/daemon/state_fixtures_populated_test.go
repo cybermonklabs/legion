@@ -426,7 +426,7 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Token: implementer208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 3,
 			State: supervise.StateWorking, Session: "ses_implementer_208", Locator: implementerLocator, PluginContract: api.ServingFloor,
 			ServingGeneration: 3, GivenEntry: 4, UpdateRound: round, UpdateReasons: podUpdateReasons, UpdateTaskedAt: &tasked,
-			ProviderErrorRun: 2, Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.running208, 10), Task: "Implement the plan's default task.", Phase: phase.Implementing,
+			ProviderErrorRun: 2, Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.running208, 10), Task: populatedTask, Phase: phase.Implementing,
 				QueuedAt: at(22, 9, 16, 58), Generation: 3, Entry: 4},
 			Step: supervise.StepRecord{
 				At: at(22, 9, 17, 12), TurnStartedAt: at(22, 9, 16, 30), Tool: "bash", CallID: "toolu_impl_11",
@@ -447,7 +447,7 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		// issue's own tree has not been opened, so the rule names it nowhere.
 		{Token: token("LEGION-211", claim.RoleImplementer), Project: "legion", Tree: "LEGION-200", Issue: "LEGION-211", Role: claim.RoleImplementer,
 			Generation: 2, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses_implementer_211", GivenEntry: 1,
-			Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.started211, 10), Task: "Implement the plan's default task.", Phase: phase.Implementing, QueuedAt: at(22, 8, 54, 20),
+			Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.started211, 10), Task: populatedTask, Phase: phase.Implementing, QueuedAt: at(22, 8, 54, 20),
 				Generation: 2, Entry: 1, SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"}},
 		// LEGION-220's own architect failed and nothing has launched it since; the daemon starts it
 		// again at the child's next phase start, so the rule names it nowhere (workflow.Stranded's
@@ -510,6 +510,11 @@ func populatedClaims(s *seeding, rows populatedRows) {
 	s.must("the capability report of "+string(implementer208), s.st.PutCapabilityReport(s.ctx, report))
 }
 
+// populatedTask is the task of the populated outbox's two implementer starts (populatedOutbox),
+// which the pending deliveries that name those rows hold (populatedClaims). No writer checks that
+// a delivery's task is its row's, so the rows and the deliveries read this one text.
+const populatedTask = "Implement the plan's default task."
+
 // populatedRows is the outbox rows whose tasks the populated claims hold (the delivery's id names
 // the row, the outbox's `outbox:<id>`).
 type populatedRows struct {
@@ -527,15 +532,14 @@ type populatedRows struct {
 // catch-up waits on its row for the moment the wake pacing reserved (the outbox's start writes it
 // in place of a launch, workflow.Config.Reserve).
 func populatedOutbox(s *seeding) populatedRows {
-	const task = "Implement the plan's default task."
 	started := s.enqueue("LEGION-211", record.SuperviseRequest{Op: "start", Tree: "LEGION-200", Role: claim.RoleImplementer,
-		Generation: 2, Phase: phase.Implementing, Entry: 1, Task: task}, at(22, 8, 54, 0))
+		Generation: 2, Phase: phase.Implementing, Entry: 1, Task: populatedTask}, at(22, 8, 54, 0))
 	ran := s.lease(started, at(22, 8, 54, 10), time.Minute)
 	s.in("the finish of LEGION-211's start", func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.FinishOutbox(ctx, tx, ran.ID, ran.LeaseToken)
 	})
 	running := s.enqueue("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
-		Generation: 3, Phase: phase.Implementing, Entry: 4, Task: task}, at(22, 9, 14, 0))
+		Generation: 3, Phase: phase.Implementing, Entry: 4, Task: populatedTask}, at(22, 9, 14, 0))
 	lease := s.lease(running, at(22, 9, 14, 30), 10*time.Minute)
 	s.enqueue("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, Entry: 2}, at(22, 9, 15, 30))
 	s.enqueue("LEGION-208", record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: at(22, 9, 18, 3), PacedFrom: at(22, 9, 16, 58),
