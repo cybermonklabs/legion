@@ -57,8 +57,9 @@ func (r *ownerStepsRig) planningRow() record.Assignment {
 // share is on the second group, whose issues run the project's default steps. The issue drawn
 // there starts at planning. While its implementer works, its owner gives plan.md with the one
 // block default and a new text. register_plan answers 200 and names step 2, the implementer. The
-// issue keeps its group, and the tester's and the reviewer's start tasks hold the new text and
-// the project's default steps. While the reviewer works, the owner gives a version whose block
+// issue keeps its group, the version keeps the source default, and the tester's and the
+// reviewer's start tasks hold the new text and the project's default steps. While the reviewer
+// works, the owner gives a version whose block
 // default names steps. Legion refuses it PLAN_NOT_TAKEN, not PLAN_REFUSED, and keeps the version
 // in force. The control takes out the exception for a change of the text alone: Legion then
 // refuses the first version PLAN_NOT_TAKEN, and the test fails there.
@@ -82,6 +83,11 @@ func TestTheSecondGroupTakesAChangeOfTheTextOfDefault(t *testing.T) {
 	}
 	if got := r.planningRow(); got != secondGroup {
 		t.Fatalf("%s holds %+v after its owner's version 1, want it still in %+v", r.key, got, secondGroup)
+	}
+	var source string
+	if err := r.st.Pool().QueryRow(context.Background(), `select source from issue_plans where issue = $1 and generation = 1 and version = 1`, r.key).
+		Scan(&source); err != nil || source != record.PlanSourceDefault {
+		t.Fatalf("version 1 of %s's plan is stored with the source %q (%v), want %q: the issue still runs the project's default steps", r.key, source, err, record.PlanSourceDefault)
 	}
 
 	if !r.github.opened(r.number) {

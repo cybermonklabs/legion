@@ -79,30 +79,23 @@ func fenceLength(text string) int {
 }
 
 // ownersOpening is the sentence the owners part of a standing opens with (ownersText), the
-// daemon's own words before the opening fence line. Legion writes the text of the task default
-// only where its owner gave none: an owner can give that task a text of its own, a decision for an
-// agent among it, in a later version of the plan.
+// daemon's own words before the opening fence line, which start with the label ` Task text: `.
+// Legion writes the text of the task default only where its owner gave none: an owner can give
+// that task a text of its own, a decision for an agent among it, in a later version of the plan.
+// ownersPart finds the part by the label and the fence, not by these words, so a release may
+// change them and still read every task a release before stored.
 const ownersOpening = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
 	defaultTask + " where its owner gave none), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
 
-// ownersOpeningBefore is the opening a release before ownersOpening wrote, which the start tasks
-// it stored still hold: a phases row's entry task, and a task a claim holds.
-const ownersOpeningBefore = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
-	defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
-
-// ownersOpenings is every opening ownersPart reads an owners part by, the one ownersText writes
-// first.
-var ownersOpenings = []string{ownersOpening, ownersOpeningBefore}
-
 // WithTaskText is task, a start's task as a store keeps it, with the owners part it ends with
 // holding text, the text of the task's block as the plan in force gives it now, in place of the
-// text it was composed with (ownersPart). It is the one rewrite of a start's task whose task's text
-// a later version of the plan changed while the task ran (plan.RunningChange takes such a
-// version): the stored task of the running step's entry (record.PhaseRow.EntryTask, retext), which
-// the send of an owed entry sends again, and a task a claim holds that is sent again (the daemon's
-// send-time read of a held task, supervise's Deps.TaskText). A task that holds text already, as a
-// task composed after the version does, and a task that holds no owners part (HoldsTaskText), are
-// answered as they are, with no copy made.
+// text it was composed with (ownersPart), and today's opening sentence. It is the one rewrite of a
+// start's task whose task's text a later version of the plan changed while the task ran
+// (plan.RunningChange takes such a version): a task a claim holds, rewritten at its send (the
+// daemon's send-time read of a held task, supervise's Deps.TaskText), which every start task sent
+// after the version passes, the stored task of an owed entry (record.PhaseRow.EntryTask) among
+// them. A task that holds text already, as a task composed after the version does, and a task that
+// holds no owners part (HoldsTaskText), are answered as they are, with no copy made.
 func WithTaskText(task, text string) string {
 	before, held, round, ok := ownersPart(task)
 	if !ok {
@@ -125,13 +118,15 @@ func HoldsTaskText(task string) bool {
 // ownersPart reads the owners part task ends with (ownersText): what stands before it, the
 // owner's text inside its fence, and the two sentences of a reviewer's round after it, which only
 // follow it (namingTheReviewRound, reviewround.Split). The owners part is the last of what a task
-// composes (task, resumeText), so it is read from the end: the closing fence is the last line of
-// the task before those sentences, a line of three backticks or more and nothing else, and the
-// opening is the last of ownersOpenings followed by that same fence line before it, so a task
-// stored by a release before still parses. The text between must be one ownersText fences with
-// that fence (fenceLength), so it holds no run of backticks as long as the fence and no line of it
-// is that fence. A task that does not end so holds no owners part: the task of an issue with no
-// plan rows, of the merge, of an architect, and every task an operator wrote.
+// composes (task, resumeText), so it is read from the end, by its fence and its label alone and
+// never by the words of its opening sentence, which a release may change: the closing fence is the
+// last line of the task before those sentences, a line of three backticks or more and nothing
+// else; the opening fence is the last line before it that is that same fence; and the part starts
+// at the last label ` Task text: ` of the line before the opening fence. The text between the
+// fences must be one ownersText fences with that fence (fenceLength), so it holds no run of
+// backticks as long as the fence and no line of it is that fence. A task that does not end so
+// holds no owners part: the task of an issue with no plan rows, of the merge, of an architect, and
+// every task an operator wrote, a fenced text of its own among them.
 func ownersPart(task string) (before, text, round string, ok bool) {
 	body, round, _ := reviewround.Split(task)
 	closed, ok := strings.CutSuffix(body, "\n")
@@ -143,19 +138,19 @@ func ownersPart(task string) (before, text, round string, ok bool) {
 	if len(fence) < 3 || strings.Trim(fence, "`") != "" {
 		return "", "", "", false
 	}
-	at, opening := -1, ""
-	for _, candidate := range ownersOpenings {
-		if found := strings.LastIndex(closed[:end], candidate+fence+"\n"); found > at {
-			at, opening = found, candidate+fence+"\n"
-		}
-	}
-	if at < 0 {
+	open := strings.LastIndex(closed[:end+1], "\n"+fence+"\n")
+	if start := open + len(fence) + 2; open < 0 || start > end {
 		return "", "", "", false
 	}
-	if text = closed[at+len(opening) : end]; fenceLength(text) != len(fence) {
+	line := strings.LastIndexByte(closed[:open], '\n') + 1
+	label := strings.LastIndex(closed[line:open], " "+taskTextLabel+": ")
+	if label < 0 {
 		return "", "", "", false
 	}
-	return body[:at], text, round, true
+	if text = closed[open+len(fence)+2 : end]; fenceLength(text) != len(fence) {
+		return "", "", "", false
+	}
+	return body[:line+label], text, round, true
 }
 
 // standingPart is where the work of a worker started in issue's phase stands, the part of its
@@ -200,7 +195,7 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 		return Standing{}, fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}
 	lines := at.lines + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
-	words := plan.Words(namedSteps(w.Steps))
+	words := plan.Words(record.NamedSteps(w.Steps))
 	switch place.Kind {
 	case record.PlaceMerge:
 		return Standing{lines: lines + stepsLine(words)}, nil

@@ -302,7 +302,7 @@ func stepAt(place int, role claim.Role) runningAct {
 }
 
 // takesOne fails the test unless register_plan takes version of the document artifact with task
-// as the plan's one task, whose one step that runs or waits is act.
+// as the plan's one task, which runs at act.
 func (r *ownerStepsRig) takesOne(artifact string, version int, task string, act runningAct) {
 	r.t.Helper()
 	running := r.registeredRunning(artifact, version)

@@ -1196,11 +1196,12 @@ func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, new
 // The id is kept, as currentRootTask keeps it across a rewrite of the text: a send under that id
 // that reached the agent before is one the shim answers from its record, and the agent then keeps
 // the start task it already read. A task taken back from a turn carries a new id already
-// (rotateTaskID), so its send is a new prompt. The daemon's own delivery of a relaunch's record has
-// no task text to rewrite, and a delivery of no phase or no run is no phase worker's start.
+// (rotateTaskID), so its send is a new prompt. A delivery of no phase or no run is no phase
+// worker's start and is answered as it is: an operator's own, and the daemon's own delivery of a
+// relaunch's record (Delivery.Relaunch), which queueRelaunch queues with no phase and no run.
 func (m *Machine) currentTaskText(ctx context.Context) (Delivery, error) {
 	p := m.claim.Pending
-	if m.deps.TaskText == nil || p.Relaunch() || p.Phase == "" || p.Generation == 0 {
+	if m.deps.TaskText == nil || p.Phase == "" || p.Generation == 0 {
 		return *p, nil
 	}
 	task, news, err := m.deps.TaskText(ctx, m.claim, *p)

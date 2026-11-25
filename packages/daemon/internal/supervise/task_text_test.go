@@ -113,8 +113,8 @@ func TestATaskTakenBackFromATurnIsSentAgainWithTheTextOfItsTaskThen(t *testing.T
 	}
 }
 
-// A delivery that names no phase or no run is no phase worker's start, and the daemon's own
-// delivery of a relaunch's record holds no task text: neither is put to TaskText.
+// A delivery that names no phase or no run is no phase worker's start, and none is put to
+// TaskText: an operator's own delivery and a delivery of no phase.
 func TestADeliveryOfNoPhaseOrNoRunIsNeverPutToTaskText(t *testing.T) {
 	for _, request := range []RequestDeliver{
 		{Claim: testToken, Task: textOneTask, ID: "operator:1", Generation: 7},
@@ -130,6 +130,26 @@ func TestADeliveryOfNoPhaseOrNoRunIsNeverPutToTaskText(t *testing.T) {
 		if sent := h.wantPrompts(1)[0]; sent.Message != textOneTask {
 			t.Fatalf("prompt = %+v, want the task as it was queued", sent)
 		}
+	}
+}
+
+// The daemon's own delivery of a relaunch's record, which the machine queues once the process of
+// an idle claim is gone and launched again (queueRelaunch), names no phase and no run, so the phase
+// test of currentTaskText leaves it out and it is never put to TaskText: it is sent as its
+// sentence alone. The fault is a relaunch delivery that carried a phase, which a test of its id
+// alone would have had to keep out.
+func TestTheDeliveryOfARelaunchsRecordIsNeverPutToTaskText(t *testing.T) {
+	answer := &taskTextAnswer{task: textTwoTask}
+	h := taskTextHarness(t, answer)
+	h.reach(StateIdle)
+	h.observe(runtime.Gone)
+	h.relaunched()
+	p := h.pending()
+	if !p.Relaunch() || p.Phase != "" || p.Generation != 0 {
+		t.Fatalf("the relaunched idle claim holds %+v, want the daemon's own delivery of the relaunch's record, with no phase and no run", p)
+	}
+	if prompts := h.prompts(); len(prompts) == 0 || prompts[len(prompts)-1].DeliveryID != p.ID || len(answer.asked) != 0 {
+		t.Fatalf("the claim was sent %+v and TaskText was asked about %+v, want the relaunch's delivery sent last and no ask", prompts, answer.asked)
 	}
 }
 

@@ -31,7 +31,10 @@ const (
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
 	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
-	// its owner: version 0, no document and no giver.
+	// its owner: version 0, no document and no giver. A later version an owner gives an issue of
+	// that group, which changes nothing but the text of its running task default (the workflow's
+	// versionRefusal), keeps this source, since the issue still runs the default steps, and names
+	// its document, its version and its giver.
 	PlanSourceDefault = "default"
 )
 
@@ -62,7 +65,8 @@ const (
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a
 // generation is the plan in force. An owner's version is the version of its document (ArtifactID)
 // it gave, and GivenBy the claim token of the owner that gave it; a default plan has version 0, no
-// document and no giver.
+// document and no giver, and a later version of it an owner gave (PlanSourceDefault) names all
+// three.
 type PlanVersion struct {
 	Issue      string
 	Generation uint64
@@ -180,33 +184,71 @@ type RunningStep struct {
 	Role  claim.Role
 }
 
-// builtinRoles is the roles a step of this release runs as (plan.BuiltinRoles), read once: Running
-// reads a step's phase from it, as the workflow's walk does.
-var builtinRoles = plan.BuiltinRoles()
+// BuiltinDeployment is the roles a step of this release runs as (plan.BuiltinRoles), read once:
+// the one Deployment the type of a stored step (the workflow's planSteps) and the phase it runs as
+// (Line) are read from.
+var BuiltinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+
+// NamedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
+// names: what a task's line is read from (Line), what a run's plan node and a started worker's
+// task write (plan.Words) and what a later version is compared with (the workflow's heldPlan).
+func NamedSteps(steps []PlanStep) []plan.Step {
+	named := make([]plan.Step, len(steps))
+	for i, step := range steps {
+		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
+	}
+	return named
+}
+
+// Line is the line of phases a task on steps walks (plan.Line over BuiltinDeployment): the phase
+// of each step's role in the steps' order, then the retro and the merge. A step whose role runs as
+// no phase stands in it as "".
+func Line(steps []PlanStep) []phase.Phase {
+	return plan.Line(NamedSteps(steps), BuiltinDeployment)
+}
+
+// PhaseAt is the one mapping of where a task stands to a phase: the phase an issue whose one task
+// stands at place in state, on line (Line), stands in. It is done for a task that is done or left
+// the workflow before it was done (TaskLeft), whatever its place, which is the phase of an issue
+// out of the workflow; the phase of the step at place, retro or merging at the task's retro or
+// merge; and admitted for a task at no act, which has not started. A task stopped or held keeps
+// its place, and the hold overlays this phase (Hold.From). A step place the line does not hold
+// derives no phase. The workflow writes an issue's phase from it (moveTask, writeIssueOn), and
+// Running reads the role of a running task's act from it.
+func PhaseAt(line []phase.Phase, place TaskPlace, state TaskState) phase.Phase {
+	if state == TaskDone || state == TaskLeft {
+		return phase.Done
+	}
+	switch place.Kind {
+	case PlaceRetro:
+		return phase.Retro
+	case PlaceMerge:
+		return phase.Merging
+	case PlaceStep:
+		if steps := len(line) - 2; place.Position >= 1 && place.Position <= steps {
+			return line[place.Position-1]
+		}
+		return ""
+	}
+	return phase.Admitted
+}
 
 // Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
-// of p's tasks, which is the order of their ids; nil where no task runs. A step runs as the phase
-// of its role (builtinRoles), the retro as retro and the merge as merging. A running task at no
-// act, at a step its steps do not hold, or at a step whose role runs as no phase is an error: no
-// plan this release takes writes one, and no answer names a running task with no role.
+// of p's tasks, which is the order of their ids; nil where no task runs. The role is the one that
+// works the phase its act runs as (PhaseAt on the task's Line, phase.RoleFor). A running task at no
+// act, which PhaseAt reads as admitted and so as the architect's, at a step its steps do not hold,
+// or at a step whose role runs as no phase is an error: no plan this release takes writes one, and
+// no answer names a running task with no role.
 func (p *StoredPlan) Running() ([]RunningStep, error) {
 	var running []RunningStep
 	for _, task := range p.Tasks {
 		if task.State != TaskRunning {
 			continue
 		}
-		var runsAs phase.Phase
-		switch task.Place.Kind {
-		case PlaceRetro:
-			runsAs = phase.Retro
-		case PlaceMerge:
-			runsAs = phase.Merging
-		case PlaceStep:
-			if steps := p.Steps[task.Task]; task.Place.Position >= 1 && task.Place.Position <= len(steps) {
-				runsAs = builtinRoles[steps[task.Place.Position-1].Role].Phase
-			}
+		var role claim.Role
+		if task.Place.Started() {
+			role = phase.RoleFor(PhaseAt(Line(p.Steps[task.Task]), task.Place, task.State))
 		}
-		role := phase.RoleFor(runsAs)
 		if role == "" {
 			return nil, fmt.Errorf("task %s of %s runs at %q %d, which no role of this release works", task.Task, task.Issue, task.Place.Kind, task.Place.Position)
 		}

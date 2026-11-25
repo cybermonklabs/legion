@@ -75,7 +75,7 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which
-// holds the derivation (issuePhaseOf) to the line as well as to itself.
+// holds the derivation (record.PhaseAt) to the line as well as to itself.
 func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place record.TaskPlace, state record.TaskState, want phase.Phase) error {
 	t.Helper()
 	var got string
@@ -89,7 +89,7 @@ func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 	if stood != place || stoodState != state {
 		return fmt.Errorf("the task of %s stands at %+v, %s; want %+v, %s", key, stood, stoodState, place, state)
 	}
-	derived := issuePhaseOf(walkOf(t, pool, engine, key), stood, stoodState)
+	derived := record.PhaseAt(walkOf(t, pool, engine, key).Line, stood, stoodState)
 	if phase.Phase(got) != derived || phase.Phase(got) != want {
 		return fmt.Errorf("issues.phase of %s = %s with its task at %+v, %s, which derives %s; want %s", key, got, stood, stoodState, derived, want)
 	}

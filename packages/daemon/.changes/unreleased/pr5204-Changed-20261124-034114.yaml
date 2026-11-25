@@ -2,7 +2,9 @@ kind: Changed
 body: |-
   An issue of an experiment's group that runs the project's default steps takes a later version
   that changes nothing but the text of its running task `default`. The task goes on at its step,
-  and every later start of it holds the new text. Every other plan of such an issue is still
+  and every later start of it holds the new text. The version keeps the plan's source `default`,
+  which Dispatch's plan of the run names, since the issue still runs the default steps. Every
+  other plan of such an issue is still
   answered `409 PLAN_NOT_TAKEN`, a version that changes the steps of `default` included. The
   refusal's sentence names the one version Legion takes. The refusal of a `stop_task` on such an
   issue now says that Legion takes no stop of its tasks from its owner.

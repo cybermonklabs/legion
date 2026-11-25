@@ -24,30 +24,35 @@ type Block struct {
 	Attributes map[string]string
 	Text       string
 	// Parent is the id of the block of the same version that this block stands directly
-	// under, as its reader resolved it (ParentOf before the tree). It is "" for a block with
-	// no parent and for a parent that is no block of this plan.
+	// under, which Places reads. FromBlocks reads it from a task block's `parent` (ParentOf)
+	// before the tree, in place of what the caller set. It is "" for a block with no parent and
+	// for a parent that is no block of this plan's document.
 	Parent string
 }
 
 // FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
 // other block is skipped. document is the plan's document as a reference to one of its blocks
-// names it, as ParentOf takes it. Places says where each task block stands: a task at the top, a
-// part of a task, which is a task of the plan with that task in its PartOf, or an element of a
-// task, which is no task of the plan and is kept in Elements for Validate. Each task keeps who its
-// parent is, its `parent` whole, in ParentRef. A task block whose Parent names an id that no block
-// of blocks holds stands at the top with that id in Task.MissingParent, which Validate refuses. A
+// names it, as ParentOf takes it: each task block's Parent is read from its `parent` against it,
+// so a `parent` puts a block under a block of this document alone. Places says where each task
+// block stands: a task at the top, a part of a task, which is a task of the plan with that task in
+// its PartOf, or an element of a task, which is no task of the plan and is kept in Elements for
+// Validate. Each task keeps who its parent is, its `parent` whole, in ParentRef. A task block whose
+// Parent names an id that no block of blocks holds stands at the top with that id in
+// Task.MissingParent, which Validate refuses. A
 // `needs` word that names an element of document moves to Task.ElementNeeds (elementNeeds). A
 // document with no task block is read as a plan with no task, which Validate refuses. It answers an
 // error only for a block it cannot read at all: a task or a role with no id, one id on two such
-// blocks, a task block whose `steps` is outside the grammar (ParseSteps), and task blocks whose
-// parents make a cycle (Places); the error names the block.
+// blocks, a task block whose `parent` is not one reference or names a block of document by an id
+// that does not decode (ParentOf), or whose `steps` is outside the grammar (ParseSteps), and task
+// blocks whose parents make a cycle (Places); the error names the block. blocks is not changed.
 func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
 	var taskBlocks []Block
 	var read []Task
-	for _, block := range blocks {
+	blocks = slices.Clone(blocks)
+	for i, block := range blocks {
 		if block.Type != TaskBlockType && block.Type != RoleBlockType {
 			continue
 		}
@@ -62,6 +67,11 @@ func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan,
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
 		}
+		parent, err := ParentOf(block.Attributes["parent"], document)
+		if err != nil {
+			return Plan{}, fmt.Errorf("task block %s: %w", block.ID, err)
+		}
+		block.Parent, blocks[i].Parent = parent, parent
 		task, err := taskOf(block)
 		if err != nil {
 			return Plan{}, err

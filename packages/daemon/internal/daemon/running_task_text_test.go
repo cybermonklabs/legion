@@ -76,8 +76,9 @@ type runningAct struct {
 	Role  string `json:"role"`
 }
 
-// registeredRunning is register_plan's answer of artifact at version, which must be 200, and each
-// step that runs or waits of each task of it, in their order, by task: nil for a task with none.
+// registeredRunning is register_plan's answer of artifact at version, which must be 200, and the
+// `running` of each task of it, the act a running task stands at, by task: nil for a task that does
+// not run.
 func (r *ownerStepsRig) registeredRunning(artifact string, version int) map[string][]runningAct {
 	r.t.Helper()
 	status, body := r.registerPlan(artifact, version)
@@ -162,8 +163,10 @@ func (r *ownerStepsRig) processEnds(c *stepClaimant, method string) {
 // Check c-text-change. Issue A runs its owner's task a, `implementer reviewer`, with the text
 // "Text one". While the implementer works, the owner gives version 2, whose one change is the text
 // "Text two": register_plan answers 200 and names step 1, the implementer; task a keeps its state,
-// its place and its counts; and the implementer is sent nothing. The implementer's session is then
-// lost, and the fresh session's first task holds "Text two". The process ends again and resumes
+// its place and its counts; and the implementer is sent nothing. Every start task Legion sends for
+// task a after version 2 holds "Text two": the send of the implementer's stored start task, which
+// still holds "Text one" as its start wrote it, does. The implementer's session is then lost, and
+// the fresh session's first task holds "Text two". The process ends again and resumes
 // its session, and the task sent to it again holds "Text two". So do the first reviewer's task, the
 // implementer's after the review's return, the second reviewer's and the retro's, and none holds
 // "Text one". While the second reviewer works, version 3 changes the steps of a, and Legion refuses
@@ -197,13 +200,21 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 		t.Fatalf("the implementer at work was sent %q for version 2, want nothing", prompt.Message)
 	case <-time.After(liveSettle):
 	}
-	// The stored start task of the implementer's entry holds version 2's text (retext): the send of
-	// an owed entry sends it again. This is where the check's second control fails: with retext
-	// taken out, this stored task still holds "Text one". The fresh session below gets "Text two"
-	// all the same, from the task its claim holds, which the send rewrites apart (Deps.TaskText).
-	if stored := r.entryTask(claim.RoleImplementer); !strings.Contains(stored, "\n"+two+"\n") || strings.Contains(stored, one) {
-		t.Fatalf("the implementer's stored start task after version 2 = %q, want it to hold %q and not %q", stored, two, one)
+	// Nothing is written for version 2: the stored start task of the implementer's entry is the one
+	// its start wrote, with "Text one", and every send of it carries "Text two", by the daemon's
+	// send-time read of a held task (Deps.TaskText, taskText), which the send of an owed entry passes
+	// through as every start does. This is where the check's second control fails: with the send's
+	// rewrite taken out, the send of the stored task, and the fresh session's start below, carry
+	// "Text one".
+	stored := r.entryTask(claim.RoleImplementer)
+	holdsText(t, "stored implementer", stored, one, two)
+	sender := &workflowRuntime{pool: r.st.Pool(), records: r.records}
+	sent, _, err := sender.taskText(context.Background(), supervise.Claim{Token: implementer.token, Issue: r.key},
+		supervise.Delivery{Task: stored, Phase: phase.Implementing, Generation: 1})
+	if err != nil {
+		t.Fatalf("the send-time read of the implementer's stored start task: %v", err)
 	}
+	holdsText(t, "sent stored implementer", sent, two, one)
 
 	// The implementer's session is lost: no store holds it, so the relaunch spawns a fresh agent.
 	r.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",

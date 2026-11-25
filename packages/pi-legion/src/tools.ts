@@ -598,8 +598,8 @@ export function createLegionTool(deps: {
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
         "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
-        "plan Legion took, each task with its steps. A task that runs carries `running`, a list of each of its steps that runs or waits " +
-        "now. Each names its place and the role whose agent works it. That agent reads no new start, so send it a message for a decision " +
+        "plan Legion took, each task with its steps. A task that runs carries `running`, a list of one entry: the act it stands at " +
+        "now, with its place and the role whose agent works it. That agent reads no new start, so send it a message for a decision " +
         "that is for it now. Legion records nothing when it refuses a " +
         "plan it does not carry out, with one reason for each cause (PLAN_REFUSED, which also refuses a version that removes a running task " +
         "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
