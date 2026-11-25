@@ -5,6 +5,7 @@ import { runTool } from "../word-rewrite/main.ts";
 import { builtInMap, type MapEntry, parseExtraMap } from "../word-rewrite/name-map.ts";
 import { loggingFetch, RequestRate, requestLog } from "../word-rewrite/request-log.ts";
 import {
+  deps,
   FakeClock,
   FakeDispatch,
   FakeModel,
@@ -207,22 +208,9 @@ describe("report mode", () => {
 
   /** A report run over a fake Dispatch, its printed lines kept. */
   async function fakeReport(dispatch: FakeDispatch, extraEntries: readonly MapEntry[] = []) {
-    const lines: string[] = [];
-    expect(
-      await runTool(options(), {
-        reads: dispatch.reads(),
-        writes: undefined,
-        model: undefined,
-        daemonStates: { read: async () => ({}) },
-        ancestry: NO_ANCESTRY,
-        clock: new FakeClock(),
-        contract: 220,
-        extraEntries,
-        out: (line) => lines.push(line),
-        requests: () => 0,
-      })
-    ).toBe(0);
-    return lines.filter((line) => line.startsWith("check-name"));
+    const run = deps(dispatch, { extraEntries });
+    expect(await runTool(options(), run)).toBe(0);
+    return run.lines.filter((line) => line.startsWith("check-name"));
   }
 
   test("a check block that names an old name of the map is listed under that name", async () => {

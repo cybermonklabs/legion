@@ -87,38 +87,27 @@ describe("confined", () => {
     ).toBe(false);
   });
 
-  test("checks a kept occurrence by its place: a renamed kept name beside a judged use left as it was is refused", () => {
-    const one = "The parked-decision notice says the tree is parked.";
-    const [kept, judged] = occurrenceSpans(one);
-    if (kept === undefined || judged === undefined) throw new Error("two occurrences");
-    const asked = question(one, { judged: [judged], kept: [kept] });
-    const renamed = "The kept-decision notice says the tree is parked.";
-    expect(confined(one, renamed, [judged], [kept])).toBe(false);
-    expect(checkAnswer(asked, { kind: "rewrite", paragraph: renamed })).toEqual({
-      kind: "judge-refused",
-      reason: 'the rewrite changed "parked-decision", which had to stay',
-    });
-    const right = "The parked-decision notice says the tree is moved to backlog.";
-    expect(checkAnswer(asked, { kind: "rewrite", paragraph: right })).toEqual({
-      kind: "rewrite",
-      paragraph: right,
-    });
-  });
-
-  test("names the kept name a rewrite changed, though the rewrite holds no trace of the word", () => {
+  test("checks a kept occurrence by its place: a rewrite that renames or drops the kept name is refused naming it, whether or not it leaves the judged use, and one that keeps it is taken", () => {
     const one = "The parked-decision notice says the tree is parked.";
     const [kept, judged] = occurrenceSpans(one);
     if (kept === undefined || judged === undefined) throw new Error("two occurrences");
     const asked = question(one, { judged: [judged], kept: [kept] });
     for (const changed of [
+      "The kept-decision notice says the tree is parked.",
       "The kept-decision notice says the tree is moved to backlog.",
       "The notice says the tree is moved to backlog.",
     ]) {
+      expect(confined(one, changed, [judged], [kept])).toBe(false);
       expect(checkAnswer(asked, { kind: "rewrite", paragraph: changed })).toEqual({
         kind: "judge-refused",
         reason: 'the rewrite changed "parked-decision", which had to stay',
       });
     }
+    const right = "The parked-decision notice says the tree is moved to backlog.";
+    expect(checkAnswer(asked, { kind: "rewrite", paragraph: right })).toEqual({
+      kind: "rewrite",
+      paragraph: right,
+    });
   });
 
   test("refuses a rewrite that adds a sentence to the marked sentences or drops one, and takes one that keeps their number", () => {
@@ -265,7 +254,6 @@ describe("the answer", () => {
     expect(flat).toContain(
       'Never write "held", "on hold", "paused", "shelved", "set aside", "deferred", "suspended" or any other word for a status use'
     );
-    // A status use speaks of work in the tracker: an issue, a tree, a plan, a branch of work.
-    expect(system).toContain("an issue, a tree, a plan, a branch of work or a release");
+    expect(flat).toContain("an issue, a tree, a plan, a branch of work or a release");
   });
 });

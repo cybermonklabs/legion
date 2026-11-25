@@ -248,14 +248,19 @@ describe("the verdicts a rewrite leaves in its paragraph (spec versions 39 and 4
     return { dispatch, document, paragraph, quoteAt: paragraph.indexOf('"') + 1 };
   }
 
-  test("a rewrite that leaves a marked occurrence saves its verdict under the new paragraph's hash, and no later run asks again", async () => {
-    const { dispatch, document, paragraph, quoteAt } = quoteAndStatus();
-    const model = new FakeModel((user) =>
+  /** A model that rewrites by the rules and leaves the quote at `quoteAt`. */
+  function quoteLeavingModel(quoteAt: number): FakeModel {
+    return new FakeModel((user) =>
       JSON.stringify({
         rewrite: rewriteByRules(promptParagraph(user)),
         left: { [String(quoteAt)]: "quote" },
       })
     );
+  }
+
+  test("a rewrite that leaves a marked occurrence saves its verdict under the new paragraph's hash, and no later run asks again", async () => {
+    const { dispatch, document, paragraph, quoteAt } = quoteAndStatus();
+    const model = quoteLeavingModel(quoteAt);
     const clock = new FakeClock();
     expect(await runTool(writeOptions(), deps(dispatch, { model, clock }))).toBe(0);
     const rewritten = rewriteByRules(paragraph);
@@ -273,13 +278,7 @@ describe("the verdicts a rewrite leaves in its paragraph (spec versions 39 and 4
 
   test("the run that writes an item lists each occurrence it judged as rewritten or under the verdict it saved, never as not judged", async () => {
     const { dispatch, quoteAt } = quoteAndStatus();
-    const model = new FakeModel((user) =>
-      JSON.stringify({
-        rewrite: rewriteByRules(promptParagraph(user)),
-        left: { [String(quoteAt)]: "quote" },
-      })
-    );
-    const run = deps(dispatch, { model });
+    const run = deps(dispatch, { model: quoteLeavingModel(quoteAt) });
     expect(await runTool(writeOptions(), run)).toBe(0);
     expect(results(run.lines)).toEqual(["written"]);
     const listed = run.lines

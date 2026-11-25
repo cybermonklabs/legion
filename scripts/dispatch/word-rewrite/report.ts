@@ -8,13 +8,13 @@ import type { RefusedOccurrence } from "./state.ts";
 import { VERDICT_CODES, type VerdictCode, verdictName } from "./verdicts.ts";
 
 /**
- * What a run prints: one line per occurrence, with the place that leaves it, the verdict a state
- * holds for it, `judge-refused` with its item and key, or `not-judged`; the counts by kind of item
- * and project and by reason; the check blocks of open issues that name an old name of the map; in
- * report mode, the occurrences not judged that an event after the last write-mode run's cursor
- * changed (`changes.ts`); and, from the run, the daemons, Dispatch's build, the pace and the size
- * the state would reach. No line holds a text of an item: keys, ids, slugs, offsets and fixed
- * words alone.
+ * What a run prints: one line per occurrence, with the place that leaves it, `rewritten` for one
+ * this run's write rewrote, the verdict a state holds for it, `judge-refused` with its item and
+ * key, or `not-judged`; the counts by kind of item and project and by reason; the check blocks of
+ * open issues that name an old name of the map; in report mode, the occurrences not judged that
+ * an event after the last write-mode run's cursor changed (`changes.ts`); and, from the run, the
+ * daemons, Dispatch's build, the pace and the size the state would reach. No line holds a text of
+ * an item: keys, ids, slugs, offsets and fixed words alone.
  *
  * A place a program can tell comes first: a judge-refused occurrence in such a place is listed
  * under it while the place holds, and as judge-refused again once it ends. A judge-refused
@@ -157,7 +157,8 @@ export class Tally {
     }
   }
 
-  /** The counts, in a fixed order: kind and project, reason, verdict, the check names. */
+  /** The counts, in a fixed order: kind and project, reason and verdict, then the occurrences
+   *  rewritten, judge-refused and not judged, and the items read. */
   summary(): string[] {
     const lines = [...this.byKind.entries()]
       .sort(([a], [b]) => a.localeCompare(b))

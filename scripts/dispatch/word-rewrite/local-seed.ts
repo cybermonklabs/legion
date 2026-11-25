@@ -1,8 +1,10 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { z } from "zod";
+import type { DispatchReads } from "./dispatch-api.ts";
 import { readContract } from "./name-map.ts";
-import { emptyState, newestEventId, PROJECT_KEY, serializeState } from "./state.ts";
+import { emptyState, newestEventId, PROJECT_KEY, readLog, serializeState } from "./state.ts";
 
 /**
  * The seed of check k6 on a local Dispatch (`bun run dispatch:local`): every item k6 lists, the
@@ -145,11 +147,14 @@ async function requestApproval(id: string): Promise<string> {
 
 const close = (key: string) => call("PATCH", `/api/v1/issues/${key}`, { status: "done" }, "agent");
 
-const newest = () =>
-  newestEventId({
-    eventLog: (after, limit) =>
-      call("GET", `/api/v1/events/log?after=${after}&limit=${limit}`, undefined, "agent"),
-  });
+/** The event log's reads, as the agent. */
+const logReads: Pick<DispatchReads, "eventLog"> = {
+  eventLog: (after, limit) =>
+    call("GET", `/api/v1/events/log?after=${after}&limit=${limit}`, undefined, "agent"),
+};
+
+/** The payload of a person's edit notice: the document it names. */
+const EditNotice = z.looseObject({ artifact_id: z.string() });
 
 /** The field of Dispatch's priorities answer, under its old name. */
 const FIELD_TEXT = "The rail reads priority_work_parked from the priorities answer.\n";
@@ -168,7 +173,7 @@ if (values["field-only"] === true) {
   const tree = await issue("Tree of the word rewrite", "The subject of this tree.\n");
   const field = await issue("Priorities field", "Specification.\n");
   const fieldDocument = await upload(field.key, "priorities.md", FIELD_TEXT);
-  const cursor = await newest();
+  const cursor = await newestEventId(logReads);
   const state = {
     ...emptyState(),
     cursor,
@@ -459,22 +464,21 @@ await close(closed.key);
 // last edit, people.md's, by which time the sweep has sent every notice due before it, so that
 // event-log.json holds that step's three events alone.
 for (let waited = 0; ; waited += 1) {
-  const log: { type: string; payload?: { artifact_id?: string } }[] = await call(
-    "GET",
-    "/api/v1/events/log?after=0&limit=1000",
-    undefined,
-    "agent"
-  );
-  const noticed = log.some(
-    (event) => event.type === "artifact.human_edited" && event.payload?.artifact_id === people
-  );
+  let noticed = false;
+  await readLog(logReads, 0, (page) => {
+    noticed ||= page.some(
+      (event) =>
+        event.type === "artifact.human_edited" &&
+        EditNotice.safeParse(event.payload).data?.artifact_id === people
+    );
+  });
   if (noticed) break;
   if (waited === 120) throw new Error("no edit notice of alice's last edit came in 2 minutes");
   await Bun.sleep(1_000);
 }
 
 // The last seed step, which the fixture event-log.json reads: an upload, an edit and a title.
-const logAfter = await newest();
+const logAfter = await newestEventId(logReads);
 const logUpload = await upload(log.key, "log-b.md", "Uploaded after the cursor.\n");
 await insert(logDocument, "Second.");
 await call("PATCH", `/api/v1/issues/${log.key}`, { title: "Log steps, renamed" }, "agent");
