@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -50,7 +52,9 @@ const storeStepWait = 20 * time.Second
 //     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
 //     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
 //     of a project document (editArtifact, through commitArtifactVersionEvent), and an issue's
-//     create with its spec (createIssue).
+//     create with its spec (createIssue). The upload and the create also write the node of what
+//     they create - the document's, and the issue's and its spec's - before the row that names
+//     it, and so before the version whose insert writes the fence row, which names that row.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -539,32 +543,43 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 }
 
 // documentUpload is an upload creating a document of the issue (storeArtifact). It takes the
-// issue's row, writes the document and its text, then its version, whose insert writes the
-// document's revision fence row (document_block_versions_owe), and indexes that version: the
-// fence row again (refs' queueStand), the blocks' nodes in ascending (kind, id), then their
-// document_blocks rows, which name those nodes (refs' BlockIndexing.Queue). It then appends
-// artifact.created and appends what the index stated under it (graphstore.QueueCaused). The document
-// is new, so no transaction can hold its fence row, its nodes or its rows before the upload
-// writes them, and each of those steps is held as the table it writes. Its artifacts row names
-// the issue's project, so the upload holds that project's row `for key share` (projectKeyShare).
+// issue's owner lock, writes the document's node and then the document's row, which names it, the
+// document's text, then its version, whose insert writes the document's revision fence row
+// (document_block_versions_owe), and indexes that version: the fence row again (refs'
+// queueStand), the blocks' nodes in ascending (kind, id), then their document_blocks rows, which
+// name those nodes (refs' BlockIndexing.Queue). It then appends artifact.created and appends what
+// the node write and the index stated under it (graphstore.QueueCaused). The document's node comes
+// before the fence: the fence row's foreign key names the document's row, whose node comes before
+// it, and the fence orders the document's block statement alone. The document is new, so no
+// transaction can hold its node, its row, its fence row or its block rows before the upload writes
+// them, and each of those steps is held as the table it writes. The block nodes are the second
+// write of graph_nodes, so they are held by the node of the block the run's document names
+// (heldBlockNodesStep). Its artifacts row names the issue's project, so the upload holds that
+// project's row `for key share` (projectKeyShare). Its controls are the document's node written
+// after its row, and after the fence and the block index: held at the document's node, the upload
+// then already holds the locks of the later steps it took first, and held at its row or the fence,
+// it holds no lock of its node.
 func (r *storeWriterRig) documentUpload() storeWriter {
 	return storeWriter{
 		name: "storeArtifact creating a document", projectKeyShare: true,
-		steps: []storeStep{
-			ownerLockStep(store.IssueOwner(r.issue)),
+		steps: append(append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
+			objectNodeSteps("the document", "artifacts", "insert into artifacts (")[:2]...),
 			newFenceStep(),
-			blockNodesStep(),
+			heldBlockNodesStep(),
 			blockRowsStep(),
 			eventAppendStep(),
 			blockTuplesStep(),
-		},
+		),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			name := r.fresh("Lock steps upload")
-			return storeWriterRun{write: func() error {
-				return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-					"name": name, "content": "# " + name + "\n\nWhat the upload indexes.\n",
-				}, "alice"), http.StatusCreated)
-			}}
+			return storeWriterRun{
+				made: r.heldBlockNode(graphstore.ArtifactRefKey(r.issue, "", "", artifactSlug(name))),
+				write: func() error {
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+						"name": name, "content": "# " + name + "\n\n" + heldBlockMarkdown("What the upload indexes."),
+					}, "alice"), http.StatusCreated)
+				},
+			}
 		},
 	}
 }
@@ -606,29 +621,58 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 }
 
 // issueCreate is an issue's create with a spec (createIssue). The issue does not exist before it,
-// so the owner it takes first is its project, whose row numbers the issue; it then writes the
-// issue, its spec and the spec's version 1, whose insert writes the spec's fence row, indexes that
-// version as an upload does, appends issue.created, and appends what the index stated under it.
-// Each run's create is forced past the near-copy gate, which would otherwise take each run's
-// issue for a copy of the one before it.
+// so the owner it takes first is its project, whose row numbers the issue. It then writes the
+// issue's node and its spec's in one write, then the issue's row and the spec's row, which name
+// them, and the spec's version 1, whose insert writes the spec's fence row. It indexes that
+// version as an upload does, appends issue.created, and appends what the index and the node write
+// stated under it. The nodes come before the fence for the reason an upload's does. The spec's
+// block nodes are held by the node of the block the spec names, whose address is the spec's: the
+// issue's key is its project's next number, read before the run. Each run's create is forced past
+// the near-copy gate, which would otherwise take each run's issue for a copy of the one before it.
+// Its control is the two nodes written after the issue's row, which fails as the upload's controls
+// do.
 func (r *storeWriterRig) issueCreate() storeWriter {
+	const nodes = "the issue's and its spec's nodes"
 	return storeWriter{
 		name: "createIssue", projectOwner: true,
 		steps: []storeStep{
 			ownerLockStep(store.ProjectOwner(r.project)),
+			{
+				name: nodes, order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the issue's row", order: projectionStep, names: nodes,
+				hold: holdTableWrites("issues"), at: "insert into issues (",
+				takes: []tableLock{{"issues", rowExclusiveMode}},
+			},
+			{
+				name: "the spec's row", order: projectionStep, names: nodes,
+				hold: holdTableWrites("artifacts"), at: "insert into artifacts (",
+				takes: []tableLock{{"artifacts", rowExclusiveMode}},
+			},
 			newFenceStep(),
-			blockNodesStep(),
+			heldBlockNodesStep(),
 			blockRowsStep(),
 			eventAppendStep(),
 			blockTuplesStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			title := r.fresh("The lock steps of a created issue")
-			return storeWriterRun{write: func() error {
-				return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues", map[string]any{
-					"project": r.project, "title": title, "spec": "# Spec\n\nWhat " + title + " holds.\n", "force": true,
-				}, "alice"), http.StatusCreated)
-			}}
+			var next int
+			if err := r.database.Pool.QueryRow(ctx, `select next_number from projects where key = $1`, r.project).Scan(&next); err != nil {
+				t.Fatalf("read the number project %s gives its next issue: %v", r.project, err)
+			}
+			key := fmt.Sprintf("%s-%d", r.project, next)
+			return storeWriterRun{
+				made: r.heldBlockNode(graphstore.ArtifactRefKey(key, r.project, "", "spec")),
+				write: func() error {
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues", map[string]any{
+						"project": r.project, "title": title, "spec": "# Spec\n\n" + heldBlockMarkdown("What "+title+" holds."), "force": true,
+					}, "alice"), http.StatusCreated)
+				},
+			}
 		},
 	}
 }
@@ -730,6 +774,36 @@ func blockNodesStep() storeStep {
 		name: "the block nodes", order: nodeStep, fenced: true,
 		hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
 		takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+	}
+}
+
+// heldBlockNodesStep is the block index's node write in a path that wrote the node of what it
+// creates before it: holding graph_nodes would stop the path at that earlier write, so the step is
+// held by one node of the statement, the run's held block (heldBlockNode), whose upsert waits for
+// the holder's uncommitted row of the same key.
+func heldBlockNodesStep() storeStep {
+	step := blockNodesStep()
+	step.hold = holdNewNode
+	return step
+}
+
+// heldBlockID is the id the run's document gives one of its blocks, a callout, so the address of
+// that block's node is known before the write makes it: the document's ref_key, '#' and this id
+// (refs' blockNodeAddress). Every other block's id is drawn when its document is written.
+const heldBlockID = "held-by-the-lock-steps"
+
+// heldBlockMarkdown is the callout of id heldBlockID, holding text.
+func heldBlockMarkdown(text string) string {
+	return ":::callout{#" + heldBlockID + ` kind="note" title=""}` + "\n" + text + "\n:::\n"
+}
+
+// heldBlockNode is the node of the held callout of the document at refKey, in the rig's project,
+// as refs.IndexBlocks writes a block's node.
+func (r *storeWriterRig) heldBlockNode(refKey string) graphstore.Node {
+	return graphstore.Node{
+		Kind: refs.BlockNodeKind, ID: refKey + "#" + heldBlockID, Supertag: refs.BlockSupertag,
+		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: r.project,
+		MadeAt: time.Now().UTC(), MadeBy: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
 	}
 }
 

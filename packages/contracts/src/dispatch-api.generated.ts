@@ -7138,8 +7138,12 @@ export interface components {
       cut: null | string;
       /** @enum {string} */
       kind: "agent";
+      /** @enum {string} */
+      member_kind?: "restricted";
       owner: null | string;
+      private_projects?: string[];
       project: null | string;
+      projects?: string[];
       scopes: string[] | null;
       service: null | string;
       session: null | string;
@@ -7149,6 +7153,8 @@ export interface components {
       /** @enum {string} */
       kind: "user";
       login: string;
+      /** @enum {string} */
+      member_kind?: "restricted";
       scopes: string[] | null;
     };
     WorkUnderNoPriority: {

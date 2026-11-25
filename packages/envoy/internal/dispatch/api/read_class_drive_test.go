@@ -91,7 +91,7 @@ var readRowDrives = map[string]rowDrive{
 		target:    "/api/v1/projects/$relatedProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
 		statement: statementOf(`\btext_lexemes\s+as\s*\(`),
 	},
-	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
+	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+where\b.*\border\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {target: "/api/v1/github/app-installation/acme/widgets",
@@ -104,7 +104,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
-		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
+		statement: statementOf(`\bselect\s+key,\s*case\s+when\b.*\bthen\s+default_assignee\s+else\b.*\bfrom\s+projects\b`)},
 	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
 	"GET /api/v1/settings/delivery":            {target: "/api/v1/settings/delivery", statement: statementOf(`\bfrom\s+delivery_settings\b`)},
 	"GET /api/v1/projects/{key}/legion/daemon": {target: "/api/v1/projects/$project/legion/daemon", statement: statementOf(`\bfrom\s+legion_settings\s+where\s+project\b`)},
@@ -131,7 +131,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},
 	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_stated\s+as\b`)},
 	"GET /api/v1/issues/resolve":          {target: "/api/v1/issues/resolve?ref=$issue", statement: statementOf(`\bselect\s+key\s+from\s+issues\s+where\s+key\s*=\s*\$1\b`)},
-	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
+	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+g\s+where\s+g\.issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
 	"GET /api/v1/issues/{key}/events":     {target: "/api/v1/issues/$issue/events", statement: statementOf(`\bselect\s+last_seq,\s*created_at\s+from\s+issues\b`)},
 	// refs.Closure tags each statement it runs (refs.ClosureTag), its one-hop reads in each direction.
@@ -144,7 +144,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/block-links":          {target: "/api/v1/block-links?from=$decisionsRef&to=$specRef", statement: statementOf(`\bblock_refs\b`)},
 	"GET /api/v1/issues/{key}/subscribers": {target: "/api/v1/issues/$issue/subscribers",
 		fromMemory: "it lists the listener's interests and sessions, and reads no row"},
-	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/artifacts": {target: "/api/v1/issues/$issue/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+issue_key\s*=\s*\$1\s+and\b.*\border\s+by\s+created_at\b`)},
 	// The after_merge and default_branch checks' read of whether a commit is on their branch.
 	"GET /api/v1/issues/{key}/results": {target: "/api/v1/issues/$issue/results", statement: statementOf(`\bfrom\s+branch_commits\s+where\s+repo\b`),
 		volatile: []volatileMember{
@@ -183,7 +183,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/near-copy-checks/{id}":                {target: "/api/v1/near-copy-checks/$nearCopy", statement: statementOf(`\bfrom\s+near_copy_checks\b`)},
 	"GET /api/v1/going/capability":                     {target: "/api/v1/going/capability", fromMemory: "it answers whether the deployment configured a model"},
 	"GET /api/v1/agents":                               {target: "/api/v1/agents", statement: statementOf(`\ba\.author->>'kind'\s*=\s*'session'`)},
-	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
+	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+session_seen\s+as\b.*\breached\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
@@ -233,7 +233,7 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+artifact_versions\s+v\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`)},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": {target: "/api/v1/projects/$project/artifacts/$guideSlug/blocks",
 		statement: statementOf(`\bselect\s+anchor_block_id,\s*count\(\*\)`)},
-	"GET /api/v1/me/state":                 {target: "/api/v1/me/state", statement: statementOf(`\bfrom\s+user_issue_state\s+where\s+login\b`)},
+	"GET /api/v1/me/state":                 {target: "/api/v1/me/state", statement: statementOf(`\bfrom\s+user_issue_state\s+state\s+join\s+issues\b.*\bwhere\s+state\.login\b`)},
 	"GET /api/v1/me/agents/state":          {target: "/api/v1/me/agents/state", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
 	"GET /api/v1/me/documents/{id}/read":   {target: "/api/v1/me/documents/$notes/read", statement: statementOf(`\bfrom\s+user_document_reads\b`)},
 	"GET /api/v1/events/log":               {target: "/api/v1/events/log?after=0", statement: statementOf(`\bselect\s+e\.id,\s*e\.issue_key,\s*e\.artifact_id::text\b`)},
@@ -606,7 +606,8 @@ func (w *driveWorld) precheck(t *testing.T) {
 
 	w.staleRoster(t)
 	roster := send("the pre-check's read of a stale roster", "/api/v1/agents")
-	upserts, unmarked := count(roster, statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
+	// The upsert stands alone, or inside the statement that announces what it stored (storeRouteRosterQuery).
+	upserts, unmarked := count(roster, statementOf(`^\s*(with\s+stored\s+as\s*\(\s*)?insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
 	if upserts != 1 || unmarked != 1 {
 		t.Fatalf("the pre-check's read of a stale roster made %d upserts of route_roster, %d of them on the server's own context, want one there: %v",
 			upserts, unmarked, writesIn(roster))

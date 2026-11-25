@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -23,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"golang.org/x/text/unicode/norm"
 )
 
 // results.go records and reads the results of an issue's checks. A check is a `check` block of
@@ -254,8 +255,8 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	}
 	// The check may be on an issue of another project, which a parent of another project puts
 	// above the recording issue, and the result is appended to that issue. The pre-handler
-	// check read only the path's issue, so a full member's broker token scoped to one project is
-	// refused such a check here, before anything is written.
+	// check read only the path's issue, so a credential scoped to one project is refused such a
+	// check here, before anything is written.
 	if err := refuseCheckOutsideCallerProject(r.Context(), pool, who, check.IssueKey); err != nil {
 		return refused(err)
 	}
@@ -525,7 +526,8 @@ type issueCheckResults struct {
 	VerificationArtifactID string             `json:"verification_artifact_id"`
 }
 
-// GET /api/v1/issues/{key}/results  (any authenticated caller)
+// GET /api/v1/issues/{key}/results  (a caller that sees the issue's project; to any other, the
+// issue is one nobody holds)
 //
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
@@ -860,12 +862,15 @@ func unknownCheck(value string) error {
 // (docs/read_cache.go), so the one case it would answer differently is the one it would answer
 // slowest in. The redo reads the words, with every lock given back
 // (recordResultWithFreshWords).
+//
+// The block is read as who reads its document (documentVisible): a block of a document who does
+// not see is a block the index does not hold.
 func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check checkBlockRef, named string) (indexedCheck, error) {
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256)
+		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+documentVisible("$1::uuid", "$3")+`
+	`, check.ArtifactID, check.BlockID, refs.VisibilityArg(who)).Scan(&indexed.Version, &indexed.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexedCheck{}, unknownCheck(named)
 	}
@@ -1033,7 +1038,8 @@ func (s *server) checkBlocksIn(ctx context.Context, who model.Actor, artifactID 
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
+// does not hold yet still answers a reference every check can be addressed by. The index is read
+// as who reads it.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, who, artifact.ID, trees)
 	if err != nil {
@@ -1049,8 +1055,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, 
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
-	`, artifact.ID)
+		from document_blocks where artifact_id = $1 and type = 'check' and `+documentVisible("$1", "$2")+`
+	`, artifact.ID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}

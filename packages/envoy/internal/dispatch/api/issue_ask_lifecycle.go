@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -36,7 +37,8 @@ func withdrawnReason(issueKey string) string {
 // the close proceeds; its blocks are not asks yet, and the close's sweep marks them resolved
 // (sweepClosedIssueAsks). For an issue already closed, or none, this settles nothing first: its
 // close is refused, and the resumption settles what a closed issue's documents owe
-// (docs.Service.RunSettlementResumption).
+// (docs.Service.RunSettlementResumption). Nor does it for an issue of a project who, the closer as
+// a read binds it, does not see: its close answers as a key no issue holds.
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
 // whether or not the client waits for the close, as the settlement it stands in for would. On a
@@ -326,7 +328,7 @@ func (s *server) readIssueAsks(ctx context.Context, tx pgx.Tx, query string, arg
 	for index := range asks {
 		pointers[index] = &asks[index]
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, pointers); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, pointers); err != nil {
 		return nil, err
 	}
 	return asks, nil

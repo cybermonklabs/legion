@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -249,8 +250,9 @@ func itemNotFound(notFound, prefix string) string {
 }
 
 // documentRefKey is the ref_key of the document id names, the address refs.Scope holds a
-// document under; "" for an id that is no uuid or that no document has, which is an id the
-// route behind this is about to refuse anyway.
+// document under; "" for an id that is no uuid, that no document has, or whose document who may
+// not read (access.DocumentClause), which is an id the route behind this is about to refuse
+// anyway.
 //
 // The id is the one this layer canonicalized a step earlier (canonicalizeUUIDPath), so it is
 // sent as it stands, and the parse here decides one thing only: whether the value is an id at

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,11 +19,12 @@ import (
 )
 
 // lockedComment is the prologue of every change to an existing comment that a closed owner
-// refuses - resolve, reopen, accept, reject: read the comment as who may read it, take its owner's
-// lock and refuse a closed owner, then read it again, as who may read it, in a statement after that
-// lock, so the mutation decides on the comment as the lock's previous holder left it. It takes no
-// row lock: every writer of a comment holds its owner's lock, so the comment holds still until this
-// transaction ends. A comment who may not read is pgx.ErrNoRows, as an id no comment holds is.
+// refuses - resolve, reopen,
+// accept, reject: read the comment as who may read it, take its owner's lock and refuse a closed
+// owner, then read it again, as who may read it, in a statement after that lock, so the mutation
+// decides on the comment as the lock's previous holder left it. It takes no row lock: every writer
+// of a comment holds its owner's lock, so the comment holds still until this transaction ends. A
+// comment who may not read is pgx.ErrNoRows, as an id no comment holds is.
 func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Comment, error) {
 	open, err := s.lockOwnerOfComment(ctx, tx, who, id)
 	if err != nil {

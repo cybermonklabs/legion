@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -57,6 +58,14 @@ const (
 // artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
 // coalesce because model.Artifact carries it as "" when the document plays no role.
 const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
+
+// documentVisible is access.DocumentClause over the artifact whose id idExpr names, for a
+// statement that reads a row its document owns - a version, a review, a comment anchored to it -
+// rather than the artifact's own row: the row is read only where its reader may read the document.
+func documentVisible(idExpr, viewerParam string) string {
+	return `exists (select 1 from artifacts visible_document where visible_document.id = ` + idExpr +
+		` and ` + access.DocumentClause("visible_document", viewerParam) + `)`
+}
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)
@@ -595,15 +604,32 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 	s.writeHandlerError(w, uploadNoTokenRefusal(name))
 }
 
-// queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
-// insert will leave it. Its id, which the document's own writes name before the row is written, is
-// taken here (gen_random_uuid, which assigns no transaction id), in the statement that reads its
-// created_at, the column's default, the transaction's now(), which the insert writes explicitly;
-// its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
+// queueNewArtifact queues the insert of the artifact an upload creates, and before it the write of
+// its node, and returns the row as the insert will leave it and the node's write, which waits for
+// the event the upload appends (graphstore.QueueCaused). Its id, which the document's own writes
+// name before the row is written, is taken here (gen_random_uuid, which assigns no transaction
+// id); its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
 // (artifactTarget.refPrefix). role is the part the new document plays, which its slug decided
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will.
+//
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
+// row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
+// past every statement about the address, so a read as of a time reads them in the order the
+// store appends them. Which row the node's live statement names is read from its cause, this
+// upload's artifact.created (graphcensus's ownLiveStatement), not from this time.
+//
+// The node is written in the project of the issue or the project that owns the document, or
+// between the parties of the conversation that does. A ref_key past the store's address bound is
+// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address out,
+// and the write is then the zero Uncaused. No row stands at the address, since the slug is free
+// under the owner lock this transaction holds, so a node there that is not gone stands behind no
+// row: a document a build before this one removed, stating nothing, live or at a state a later
+// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
+// both under this upload's event, so the new document's node carries no statement of the removed
+// one's as its own; it states the two itself, so the node write states no state of its own
+// beside them.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -613,20 +639,48 @@ func (s *server) queueNewArtifact(
 	slug, name, kind string,
 	role *string,
 	actor model.Actor,
-) (model.Artifact, error) {
+) (model.Artifact, graphstore.Uncaused, error) {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, graphstore.Uncaused{}, err
 	}
 	artifact := model.Artifact{
 		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
 		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
 	}
 	if err := json.Unmarshal(actorJSON, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	if artifact.CreatedAt, err = graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	var documentNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		node := graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, artifact.CreatedAt)
+		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		var stated []graphstore.Tuple
+		if found && held.State != graphstore.StateGone {
+			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
+				stated = append(stated, graphstore.Tuple{
+					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,
+					Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: state,
+					At: artifact.CreatedAt, Who: actor, Asserted: true,
+				})
+			}
+		}
+		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
@@ -637,8 +691,9 @@ func (s *server) queueNewArtifact(
 	// address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
 		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
+		Project: deref(project), Session: deref(session),
 	})
-	return artifact, queueExec(ledger, `
+	return artifact, documentNode, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
 	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt)
@@ -785,6 +840,12 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -809,7 +870,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		artifact, documentNode, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1010,6 +1071,13 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, documentNode, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
 	// reads it: an upload to an existing document always writes a version, so a replacement of an
 	// approved spec closes its design gate as an edit does, unless the restore above carried the
@@ -1025,7 +1093,7 @@ func (s *server) storeArtifact(
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, ledger, who, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read off the ledger the move above and the restore's carry are queued on,
@@ -1205,7 +1273,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), who, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, missingArtifactIfNoRows(err))
 		return
 	}
 	if err := s.describeBlocks(r.Context(), who, artifact.ID, blocks); err != nil {
@@ -1259,7 +1327,7 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.deps.Docs.BlockPath(r.Context(), who, artifact.ID, r.PathValue("block_id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, missingArtifactIfNoRows(err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, path)
@@ -1269,9 +1337,11 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 // getArtifactBlocks adds a table's descendant-cell counts before it serves the
 // table block. The predicate is two conjuncts (is not null, then not the empty
 // string) rather than nullif(...) is not null so the planner can use the partial
-// comments_/asks_anchor_block_id_idx indexes. Each comment and ask is counted only where who may
-// read it (access.ItemOwnerClause over its own owner): a stored anchor that names this document
-// from a comment or an ask of a project who does not see counts as one no row holds.
+// comments_/asks_anchor_block_id_idx indexes. The rows are counted only where who may read the
+// document (documentVisible), one test of the document for the whole statement, and each comment
+// and ask only where who may read it (access.ItemOwnerClause over its own owner): a stored anchor
+// that names this document from a comment or an ask of a project who does not see counts as one no
+// row holds.
 func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactID string) (map[string]model.BlockReferences, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select anchor_block_id,
@@ -1288,6 +1358,7 @@ func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactI
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
 			  and `+access.ItemOwnerClause("asks.issue_key", "asks.artifact_id", "$2")+`
 		) anchored
+		where `+documentVisible("$1::uuid", "$2")+`
 		group by anchor_block_id
 	`, artifactID, refs.VisibilityArg(who))
 	if err != nil {
@@ -1459,8 +1530,9 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	var contentType, sha *string
 	var size *int64
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		select content, mime, sha256, size from artifact_versions where artifact_id = $1 and number = $2
-	`, artifact.ID, number).Scan(&content, &contentType, &sha, &size); err != nil {
+		select content, mime, sha256, size from artifact_versions
+		where artifact_id = $1 and number = $2 and `+documentVisible("$1", "$3")+`
+	`, artifact.ID, number, refs.VisibilityArg(who)).Scan(&content, &contentType, &sha, &size); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1468,14 +1540,15 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
-// one read; a number the document has no version of has no entry. Both readers of named versions'
-// own text read it here: the change set (twoVersionsMarkdown) and the decisions of each named
-// version (decisionSumsAt).
-func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
+// one read; a number the document has no version of has no entry, and neither has any number of
+// a document viewer (refs.VisibilityArg) may not read (documentVisible), whose read is the one an
+// id nobody holds gets. Both readers of named versions' own text read it here: the change set
+// (twoVersionsMarkdown) and the decisions of each named version (decisionSumsAt).
+func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int, viewer any) (map[int]string, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, numbers)
+		where artifact_id = $1::uuid and number = any($2::int[]) and `+documentVisible("$1::uuid", "$3")+`
+	`, artifactID, numbers, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -1823,7 +1896,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, ledger, who, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read off the ledger that version's move (docs.MoveApprovalAsk) and any
@@ -1917,17 +1990,19 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 	return participants
 }
 
-// issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
-// reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
-// a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
-const issueArtifactsStatement = `
+// issueArtifactsStatement lists an issue's artifacts, $1 the issue key and $2 the reader's
+// visibility argument (refs.VisibilityArg), in the order every reader of the issue shows them;
+// collectArtifacts reads its rows. The issue read queues it in a batch with its other reads
+// (getIssue), so the statement and the scan live apart from the sequential loader that every
+// other route calls. An issue its reader does not see lists no artifact, as an issue nobody holds.
+var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and ` + access.DocumentClause("artifacts", "$2") + `
+		order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, who model.Actor, issueKey string) ([]model.Artifact, error) {
-	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)
+	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -1986,7 +2061,7 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 func queueArtifactDetails(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
-		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
+		b.Queue(artifactVersionsStatement, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
@@ -2347,13 +2422,21 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, who model.Actor
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifact(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
-	}
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, missingArtifactIfNoRows(err)
 	}
 	return artifact, nil
+}
+
+// missingArtifactIfNoRows is err with pgx.ErrNoRows answered as the 404 an artifact no row holds
+// answers: a read of an artifact's row that finds none (scanArtifactOrNotFound), and a document
+// read that finds its reader may not read the document (docs' readStoredHead), which answers as
+// the id nobody holds the route's first read of the row would have answered.
+func missingArtifactIfNoRows(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+	}
+	return err
 }
 
 // loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval
@@ -2438,12 +2521,14 @@ func lookupArtifactByNameOrSlug(ctx context.Context, q queryer, target artifactT
 const versionColumns = `v.number, v.named, v.summary, v.authors, v.created_at, ` + model.VersionSize + `, v.mime, v.sha256`
 
 // artifactVersionsStatement reads the versions of every artifact in $1 at once, so a list of
-// artifacts costs one statement rather than one per artifact. Ordering by the artifact first
-// leaves each artifact's own versions in `order by v.number`, the order one artifact's read
-// answers; scanVersionsByArtifact keys them by the artifact id the columns end on.
-const artifactVersionsStatement = `
+// artifacts costs one statement rather than one per artifact, each only where the reader whose
+// visibility argument is $2 may read its document. Ordering by the artifact first leaves each
+// artifact's own versions in `order by v.number`, the order one artifact's read answers;
+// scanVersionsByArtifact keys them by the artifact id the columns end on.
+var artifactVersionsStatement = `
 		select ` + versionColumns + `, v.artifact_id::text
-		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
+		from artifact_versions v where v.artifact_id = any($1::uuid[]) and ` + documentVisible("v.artifact_id", "$2") + `
+		order by v.artifact_id, v.number
 	`
 
 // scanVersion reads versionColumns from row; extra receives the columns after them. It states no
@@ -2521,8 +2606,8 @@ func (s *server) loadVersion(ctx context.Context, q queryer, who model.Actor, ar
 	var authors []byte
 	if err := q.QueryRow(ctx, `
 		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
-		from artifact_versions v where v.artifact_id = $1 and v.number = $2
-	`, artifactID, number).Scan(
+		from artifact_versions v where v.artifact_id = $1 and v.number = $2 and `+documentVisible("v.artifact_id", "$3")+`
+	`, artifactID, number, refs.VisibilityArg(who)).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
 		&version.MIME, &version.SHA256, markdown,
 	); err != nil {
@@ -2759,7 +2844,8 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 //
 // The row is read again under that lock, so every refusal of the handler, and the document its
 // event carries, read the row as it is now: the first read ran before the lock and a correction
-// or a removal of the same document may have committed since.
+// or a removal of the same document may have committed since. Both reads are made as who, the
+// caller's reader, so a document who may not read is one neither finds.
 //
 // The caller rolls back the transaction it is answered, as it commits it; a preamble that
 // refuses rolls its own transaction back and writes the refusal itself.

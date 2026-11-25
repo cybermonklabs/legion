@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // standingReview is the review a question's issue already carries on its specification: the
@@ -81,11 +83,15 @@ func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *do
 // not yet written: a review it queued is newer than every stored one
 // (docs.Ledger.PendingReview), and a version it queued is the document's newest
 // (docs.Ledger.PendingVersionNumber), so each answers for the table where it is there.
+//
+// who is the asker as a read binds it (readerOf): the document and its version are read as who
+// reads them (documentVisible), so a document the asker may not see reports nothing.
 func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, who model.Actor, issueKey string) (*standingReview, error) {
 	var artifactID string
 	if err := q.QueryRow(ctx, `
 		select id::text from artifacts where issue_key = $1 and is_primary and kind = 'doc'
-	`, issueKey).Scan(&artifactID); err != nil {
+		  and `+documentVisible("artifacts.id", "$2")+`
+	`, issueKey, refs.VisibilityArg(who)).Scan(&artifactID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}

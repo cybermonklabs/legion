@@ -12,9 +12,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,6 +78,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member sets, changes and clears no issue's repository
+	// (refuseRepoOfRestrictedMember): refused here, before the issue is read and before the
+	// settlement a close runs first, so nothing of the write is made.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	callerProject, _ := namedProjectOf(who.Viewer, resolvedCredential(r.Context()))
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
 		writer:        writer,
@@ -87,6 +95,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		adviceRoute:   "PATCH /api/v1/issues/{key}",
 	})
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &written.issue, nil); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -324,16 +336,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if parent != nil {
 		parentKey = *parent
 	}
-	// A full member's broker token scoped to one project (namedProjectOf) is refused a target or a
-	// parent outside it where its project is read, since this route's own address names neither
-	// (project_scope.go). It is read first here, with no lock held and before a close settles the
-	// issue's documents or the transaction begins, so a write the credential may not make settles
-	// nothing; the pre-handler check already held the issue to the credential's project, which is
-	// therefore the issue's own, and a status change holds each issue a step of it writes to that
-	// project before its first step (refuseStepsOutsideCallerProject). The lock step refuses it
-	// again before any lock, and writeBlockedBy or validateIssueParent under them.
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go). It is read
+	// first here, with no lock held and before a close settles the issue's documents or the
+	// transaction begins, so a write the credential may not make settles nothing; the
+	// pre-handler check already held the issue to the credential's project, which is therefore
+	// the issue's own, and a status change holds each issue a step of it writes to that project
+	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
+	// before any lock, and writeBlockedBy or validateIssueParent under them.
 	if call.callerProject != "" && (parentKey != "" || len(blockers) > 0) {
-		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, blockers, parentKey); err != nil {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, who, call.callerProject, blockers, parentKey); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -366,12 +378,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// The lock step below reads each target's project again and refuses a scoped caller one
 	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
+		// The issue's project as the caller reads it: an issue of a project it does not see is
+		// the missing row loadIssue answers below, and takes no lock of that project first.
 		var project string
-		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&project); err != nil {
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers, parentKey); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, who, call.callerProject, blockers, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -382,10 +397,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 
-	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
-	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
+	// A PATCH takes the owner lock of every issue it names that its caller sees in one lock order
+	// before it reads what it decides on: the issue, its current parent when a status change or a
+	// reparent appends to it, the proposed parent and the rank neighbours (lockPatchOwners,
+	// lockPatchOwnersAndParent). Which of them the caller sees is read first, with nothing locked,
+	// so an issue it does not see is refused, or left to the read that refuses it, without waiting
+	// behind its project's writers, as a key no issue holds is (lockIssueOwners). It never holds one
+	// of those locks while waiting for another that a second write holds. Validation, the
 	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
 	named := make([]string, 0, 3)
 	if parent != nil {
@@ -463,7 +481,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		moved = &move
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
+		if err := validateIssueParent(ctx, tx, who, key, call.callerProject, *parent); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -520,6 +538,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		if conflict != nil {
 			return issueWriteResult{}, conflict
 		}
+	}
+	// A repository the GitHub proxy hides from the writer is not theirs to name
+	// (refuseRepoHidden): read once the issue is read as the writer reads it, under its owner lock,
+	// and before the first row is written.
+	if err := refuseRepoHidden(ctx, tx, who, repo); err != nil {
+		return issueWriteResult{}, err
 	}
 	if input.RefuseOpenForeignChildren {
 		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
@@ -694,7 +718,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(ctx, tx, key, before.Project, call.callerProject, blockers); err != nil {
+		if err := writeBlockedBy(ctx, tx, key, who, blockers); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -723,10 +747,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			}
 			// A URL links exactly one issue (issue_external_links_url). This issue's own
 			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
+			// (or the same URL repeated earlier in this request). The owner is named only
+			// where who reads it: an owner of a project who does not see is "another issue",
+			// the words the insert's own refusal below answers in. The 409 stands either way,
+			// since the URL cannot link two issues.
 			var owner string
-			err := tx.QueryRow(ctx, `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
+			var seen bool
+			err := tx.QueryRow(ctx, `
+				select l.issue_key, `+access.IssueProjectClause("l.issue_key", "$2")+`
+				from issue_external_links l where l.url = $1`, link.URL, refs.VisibilityArg(who)).Scan(&owner, &seen)
 			if err == nil {
+				if !seen {
+					owner = "another issue"
+				}
 				return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {

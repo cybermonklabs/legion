@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -57,6 +58,12 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
+//
+// The owner's check comes first, in the validator's own read (commentListWatermark): an owner of
+// a project the caller does not see reads as an owner no row holds - watermark 0, last_seq 0, not
+// held - so its list is the empty list under the ETag a missing owner answers, and nothing is
+// kept. Only then is the kept answer looked up, so an answer kept for a reader who sees the owner
+// is never handed to one who does not, whatever the cache holds.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -72,17 +79,32 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	key := listAnswerKeyFor(r, commentListRoute, name, etag)
-	if s.listAnswers.answer(w, key) {
+	// The kept answer is filed under what the caller sees beside the owner (commentListViewOf): a
+	// mention or a delivery names a session, which the answer leaves out for a caller that does
+	// not see it (leaveOutHiddenCommentSessions), so an answer kept for one reader is handed only to
+	// a reader who sees what it saw. A reader that sees every object files under the owner alone.
+	// While a project is private, a reader that does not see every object is handed no kept answer
+	// and keeps none (keepsListAnswerFor): which sessions it sees moves with rows the key does not
+	// name.
+	key, keep := listAnswerKeyFor(r, commentListRoute, name+commentListViewOf(who), etag), keepsListAnswerFor(who)
+	if keep && s.listAnswers.answer(w, key) {
 		return
 	}
-	// The answer is kept and handed to every reader whose request names this owner and ETag
-	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
-	// author must never be the answer kept for the next.
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The comments are read as everyReader: one reader's view of a block reserved for its author
+	// must never be the answer kept for the next. Only the sessions they name are left out for
+	// the caller, which the key above files. An owner the check did not find holds no comment to
+	// read.
+	comments := []model.Comment{}
+	if ownerHeld {
+		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := leaveOutHiddenCommentSessions(r.Context(), s.deps.Store.Pool, who, comments); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(comments, reader)
@@ -92,7 +114,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, ownerHeld)
+	s.writeListAnswer(w, key, encoded, ownerHeld && keep)
 }
 
 // commentListWatermark is the pair a comment list's validator is built on, read in one statement
@@ -176,6 +198,9 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 	return s.listETag(hash, trees)
 }
 
+// loadOwnerComments is every comment of one owner, oldest first, scoped by artifactFilter to the
+// comments anchored in one document, read for who: an owner of a project who does not see holds
+// none (ownerClause).
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Actor, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {
@@ -186,12 +211,12 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 	default:
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, fmt.Sprintf(`
+	rows, err := q.Query(ctx, `
 		select `+commentColumns+`
 		from comments
-		where %s = $1 and ($2 = '' or anchor->>'artifact_id' = $2)
+		where `+ownerColumn+` = $1 and ($2 = '' or anchor->>'artifact_id' = $2) and `+ownerClause(owner, "$1", "$3")+`
 		order by created_at, id
-	`, ownerColumn), ownerValue, artifactFilter)
+	`, ownerValue, artifactFilter, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -208,13 +233,6 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 		return nil, err
 	}
 	return s.hydrateCommentSideTables(ctx, q, who, comments)
-}
-
-func commentHasOwner(comment model.Comment, owner owner) bool {
-	if owner.IssueKey != nil {
-		return comment.IssueKey != nil && *comment.IssueKey == *owner.IssueKey
-	}
-	return owner.ArtifactID != nil && comment.ArtifactID != nil && *comment.ArtifactID == *owner.ArtifactID
 }
 
 // commentRead is the body GET /api/v1/comments/{id} answers.
@@ -236,50 +254,56 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, []model.Comment{comment})
+	replies, err := s.scanReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, comments[0].Anchor)
+	// The comment and its replies are hydrated in one pass: one read each of their mentions, their
+	// deliveries and their reply blocks, and one of which sessions those name the reader sees.
+	thread, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, append([]model.Comment{comment}, replies...))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	read := commentRead{Replies: shapedComments(replies, reader)}
-	read.Comment.Comment = comments[0]
+	read := commentRead{Replies: shapedComments(thread[1:], reader)}
+	read.Comment.Comment = thread[0]
 	read.Comment.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
 }
 
 // replyChainQuery is every comment transitively replying to the row(s) matching
-// "<seedColumn> = $1", oldest first; %s is that seed column. comments.reply_to has no
-// acyclicity constraint, so the walk unions on the visited row: a cycle repeats a row already
-// in the set and adds nothing, rather than spinning the request. query_plan_test.go plans
-// this exact text, so the plan it checks is the one the server runs.
-const replyChainQuery = `
+// "<seedColumn> = $1", oldest first, of those the viewer bound at $2 may read (access.ItemOwnerClause).
+// comments.reply_to has no acyclicity constraint, so the walk unions on the visited row: a cycle
+// repeats a row already in the set and adds nothing, rather than spinning the request.
+// query_plan_test.go plans this exact text, so the plan it checks is the one the server runs.
+func replyChainQuery(seedColumn string) string {
+	return `
 		with recursive replies as (
 			select ` + commentThreadColumns + `
-			from comments c where c.%s = $1
+			from comments c where c.` + seedColumn + ` = $1
 			union
 			select ` + commentThreadColumns + `
 			from comments c join replies r on c.reply_to = r.id
 		)
 		select ` + commentColumns + `
 		from replies
+		where ` + access.ItemOwnerClause("replies.issue_key", "replies.artifact_id", "$2") + `
 		order by created_at, id`
+}
 
 // inboxAskReplyChainsQuery hydrates every Inbox card's thread in one walk: the same recursion
 // as replyChainQuery, seeded from a set of asks and carrying the ask each row belongs to, so a
-// comment under two asks yields one row per ask. Planned by query_plan_test.go too.
-const inboxAskReplyChainsQuery = `
+// comment under two asks yields one row per ask, of those the viewer bound at $2 may read.
+// Planned by query_plan_test.go too.
+var inboxAskReplyChainsQuery = `
 		with recursive replies as (
 			select c.ask_id as thread_id, ` + commentThreadColumns + `
 			from comments c
@@ -290,16 +314,27 @@ const inboxAskReplyChainsQuery = `
 		)
 		select ` + commentColumns + `, thread_id::text
 		from replies
+		where ` + access.ItemOwnerClause("replies.issue_key", "replies.artifact_id", "$2") + `
 		order by thread_id, created_at, id`
 
 // loadReplyChain returns every comment transitively replying to the row(s)
-// matching "<seedColumn> = seedValue", ordered oldest first, each reply's block read for who.
-// seedColumn selects the thread root: "reply_to" for a comment's own replies, "ask_id"
-// for an ask's directly-replying comments (plus, either way, every comment
+// matching "<seedColumn> = seedValue", ordered oldest first, of those who may read, each reply's
+// block read for who. seedColumn selects the thread root: "reply_to" for a comment's own
+// replies, "ask_id" for an ask's directly-replying comments (plus, either way, every comment
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
 func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
-	rows, err := q.Query(ctx, fmt.Sprintf(replyChainQuery, seedColumn), seedValue)
+	replies, err := s.scanReplyChain(ctx, q, who, seedColumn, seedValue)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateCommentSideTables(ctx, q, who, replies)
+}
+
+// scanReplyChain is loadReplyChain's comments as their rows hold them, before their side tables
+// are read (hydrateCommentSideTables), for a read that hydrates them with others in one pass.
+func (s *server) scanReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
+	rows, err := q.Query(ctx, replyChainQuery(seedColumn), seedValue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -312,10 +347,7 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor,
 		}
 		replies = append(replies, reply)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return s.hydrateCommentSideTables(ctx, q, who, replies)
+	return replies, rows.Err()
 }
 
 // withReply is replies, a chain loadReplyChain read, with reply, a reply to the chain's root this
@@ -441,7 +473,10 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 
 // hydrateCommentSideTables loads mentions, delivery attempts and the block each reply answers once
 // per comment page, avoiding a per-comment query while keeping all reads of a Comment's visible
-// delivery state consistent.
+// delivery state consistent. Each read holds the comment it hydrates to who in the statement
+// itself (access.ItemOwnerClause), so a comment made hidden after the read of it answers no
+// mention and no delivery. A mention or a delivery names a session, which is left out where who
+// does not see it (leaveOutHiddenCommentSessions).
 func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) ([]model.Comment, error) {
 	ids := make([]string, len(comments))
 	replies := make([]*model.Comment, len(comments))
@@ -464,7 +499,7 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		comments[index].Mentions = mentions[comments[index].ID]
 		comments[index].Deliveries = deliveries[comments[index].ID]
 	}
-	return comments, nil
+	return comments, leaveOutHiddenCommentSessions(ctx, q, who, comments)
 }
 
 // leaveOutHiddenCommentSessions writes comments as who reads them (the rule of references,

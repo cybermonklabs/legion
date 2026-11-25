@@ -30220,17 +30220,35 @@
             ],
             "type": "string"
           },
+          "member_kind": {
+            "enum": [
+              "restricted"
+            ],
+            "type": "string"
+          },
           "owner": {
             "type": [
               "null",
               "string"
             ]
           },
+          "private_projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "project": {
             "type": [
               "null",
               "string"
             ]
+          },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "scopes": {
             "items": {
@@ -30278,6 +30296,12 @@
             "type": "string"
           },
           "login": {
+            "type": "string"
+          },
+          "member_kind": {
+            "enum": [
+              "restricted"
+            ],
             "type": "string"
           },
           "scopes": {

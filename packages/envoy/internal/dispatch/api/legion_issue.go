@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -113,9 +114,10 @@ type legionIssueRead struct {
 	Error *string   `json:"error"`
 }
 
-// getLegionIssue answers GET /api/v1/issues/{key}/legion, for any authenticated caller who reads
-// the issue, as the board is. Its one refusal beside authentication is a key of no issue the
-// caller reads, which is 404 NOT_FOUND as GET /api/v1/issues/{key} answers it (readLegionIssue).
+// getLegionIssue answers GET /api/v1/issues/{key}/legion, for any authenticated caller, as the
+// board is. Its one refusal beside authentication is a key Dispatch holds no issue of, or one of a
+// project the caller does not see, which is 404 NOT_FOUND as GET /api/v1/issues/{key} answers it
+// (readLegionIssue).
 func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -132,13 +134,13 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// readLegionIssue is GET /api/v1/issues/{key}/legion's body for key, read as who reads it,
+// readLegionIssue is GET /api/v1/issues/{key}/legion's body for key, computed from the key alone,
 // so the route and the live view of one issue answer one body through one function. Every read it
 // makes is one read-only, repeatable-read transaction, as the board's readSampled is, so
 // `configured`, the state and the read answer one moment:
 //
-//   - the issue's row, for its project, read as who reads it (access.ProjectClause). A key
-//     Dispatch holds no issue of, and one of a project who does not see, is 404 NOT_FOUND in the
+//   - the issue's row, for its project, as who sees it (access.ProjectClause). A key Dispatch
+//     holds no issue of, or one of a project who does not see, is 404 NOT_FOUND in the
 //     code and the words writeHandlerError answers pgx.ErrNoRows with, which is GET
 //     /api/v1/issues/{key}'s refusal of that key (readIssue), so a mistyped key never reads as an
 //     issue the daemon does not record. It is an *apiError, so a live view, which writes no HTTP
@@ -155,22 +157,23 @@ func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key strin
 		return legionIssueResponse{}, err
 	}
 	defer tx.Rollback(ctx)
+	viewer := refs.VisibilityArg(who)
 	answer := legionIssueResponse{Issue: key}
 	if err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-		key, refs.VisibilityArg(who)).Scan(&answer.Project); err != nil {
+		key, viewer).Scan(&answer.Project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return legionIssueResponse{}, errorf(http.StatusNotFound, "NOT_FOUND", "not found")
 		}
 		return legionIssueResponse{}, err
 	}
-	_, err = legion.GetSettings(ctx, tx, answer.Project)
+	_, err = legion.GetSettings(ctx, tx, answer.Project, viewer)
 	switch {
 	case errors.Is(err, legion.ErrNoSettings):
 	case err != nil:
 		return legionIssueResponse{}, err
 	default:
 		answer.Configured = true
-		read, err := readDaemonRead(ctx, tx, answer.Project)
+		read, err := readDaemonRead(ctx, tx, answer.Project, viewer)
 		if err != nil {
 			return legionIssueResponse{}, err
 		}
@@ -183,7 +186,7 @@ func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key strin
 		}
 		answer.State = legionIssueStateOf(key, current)
 	}
-	if answer.RunsRevision, err = workflowstore.IssueRunsRevision(ctx, tx, key); err != nil {
+	if answer.RunsRevision, err = workflowstore.IssueRunsRevision(ctx, tx, who, key); err != nil {
 		return legionIssueResponse{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -16,8 +16,8 @@ import (
 // (loadAskAnswersByAsk), since a row that document settlement retracted while it was answered
 // keeps its answer nowhere else; those events are read only when the page holds a resolved ask.
 // One query reads every ask hit's row, and a page with no ask hit reads nothing. An ask removed
-// after the search ran has no row left and keeps Ask and Author nil, as does one who may not read
-// (access.ItemOwnerClause).
+// after the search ran has no row left and keeps Ask and Author nil, as does one who may not
+// read (access.ItemOwnerClause).
 func (s *server) attachAskStates(ctx context.Context, q queryer, who model.Actor, results []model.SearchResult, reader *displayTreeReader) error {
 	indexByID := map[string]int{}
 	var askIDs []string

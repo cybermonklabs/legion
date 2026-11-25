@@ -7,8 +7,10 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // projectListQuery counts every project's open asks in one grouped read, in place of a subquery
@@ -16,7 +18,10 @@ import (
 // inbox reads it; a project with no open ask has no row of that count, which the coalesce reads
 // as the 0 the subquery answered. It is named here rather than written inside the handler so
 // the plan test explains the statement the route runs.
-const projectListQuery = `
+//
+// It lists only the projects the reader whose visibility argument is $1 sees
+// (access.ProjectClause).
+var projectListQuery = `
 		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.created_at
 		from projects p
 		left join (
@@ -28,14 +33,16 @@ const projectListQuery = `
 			  and (i.key is null or i.closed_at is null)
 			group by coalesce(i.project_key, ar.project_key)
 		) open_asks on open_asks.project_key = p.key
+		where ` + access.ProjectClause("p.key", "$1") + `
 		order by p.key
 	`
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -87,6 +94,40 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
+	}
+	// The person the call acts for, if any, owns what it creates, and a restricted member creates
+	// no project: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+	// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
+	// RESTRICTED_MEMBER, before this handler runs; the check below holds the same rule for a caller
+	// the gate reads as open, before anything is checked or written.
+	creator, acts := actorPerson(actor)
+	// owns says whether the creator owns what they create: an owner is a full member who has
+	// signed in, as access.SetOwner holds every later owner to. A person no people row holds, whom
+	// only a broker token can act for, owns nothing; the create then reads as one by a credential
+	// acting for nobody, below, and the project goes to its default assignee.
+	owns := false
+	if acts {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, creator)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind == model.MemberRestricted {
+			writeError(w, codeRestrictedMember, http.StatusForbidden, "a restricted member cannot create a project")
+			return
+		}
+		owns = kind == model.MemberFull
+	}
+	// Otherwise the owner is left to the insert, which gives a project with none its default
+	// assignee (projects_owner_from_default).
+	var owner *string
+	if owns {
+		owner = new(model.CanonicalLogin(creator))
 	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
@@ -140,6 +181,27 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A create the creator does not own leaves the owner to the insert, which makes the project
+	// its default assignee's (projects_owner_from_default). An owner is a full member, as access
+	// SetOwner holds every later owner to, so a default the insert would make a restricted member's
+	// owner is refused before anything is written.
+	if !owns {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, projectDefault)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind != model.MemberFull {
+			writeError(w, "OWNER_NOT_ALLOWED", http.StatusBadRequest,
+				"the project's owner is its default_assignee, since this credential acts for no full member who has signed in, and an owner is a full member")
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -148,9 +210,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
-		insert into projects (key, name, default_assignee) values ($1, $2, $3)
+		insert into projects (key, name, default_assignee, owner) values ($1, $2, $3, $4)
 		returning key, name, gated_steps, default_repo, default_assignee, created_at
-	`, input.Key, input.Name, projectDefault).Scan(
+	`, input.Key, input.Name, projectDefault, owner).Scan(
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")

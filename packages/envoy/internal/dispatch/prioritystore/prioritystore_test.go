@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -175,8 +176,8 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 	}
 
 	// The whole history of the priority, newest first: the retraction, then the assertion, then
-	// the rename, and every attribute it was created with below them.
-	timeline, err := Timeline(ctx, pool, id)
+	// the rename, and every attribute it was created with below them. Every issue is seen here.
+	timeline, err := Timeline(ctx, pool, id, refs.VisibilityArg(model.ServerReader))
 	if err != nil {
 		t.Fatalf("read the priority's history: %v", err)
 	}
