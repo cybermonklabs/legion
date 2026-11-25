@@ -28,7 +28,9 @@ const pendingOpeningRelease = "the release that marks an opening's task on a cla
 // back, the last paragraph of the migration's header (migrations.WayBack), drops the column and
 // deletes the migration's own version row, and leaves every column the release before reads and
 // writes as it was. The roll-forward runs the migration again, and each delivery takes the empty
-// string once more.
+// string once more. The claim the deliveries are of is written before the migration with SQL that
+// names the columns of the schema the migration finds, as the release before writes it; today's
+// store writes a claim only once every migration has run.
 func TestThePendingDeliveryOpeningAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -42,8 +44,12 @@ func TestThePendingDeliveryOpeningAndItsWayBackLeaveWhatTheReleaseBeforeReads(t 
 		t.Fatalf("the database the release before left read pending_task_deliveries.opening = %v, want no such column (42703): the migration would prove nothing", err)
 	}
 	c := tmuxClaim("legion-LEGION-209-implementer")
-	if err := store.PutClaim(ctx, c); err != nil {
-		t.Fatalf("put the claim: %v", err)
+	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), c.Session, c.SessionFile, string(c.State),
+		c.Budgets.LaunchFailures, c.Budgets.PromptFailures, c.Budgets.PromptRetires, c.UncertainStreak); err != nil {
+		t.Fatalf("write the release before's claim: %v", err)
 	}
 	// The release before's own write of a delivery, whose upsert names no opening.
 	const releaseBeforesWrite = `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at)

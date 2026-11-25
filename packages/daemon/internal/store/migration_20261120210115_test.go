@@ -28,7 +28,10 @@ const approvalRouteRelease = "the release that answers the approval route"
 // run after the way back of 20261122072401, which a later migration of the same table adds, drops
 // the table and the column and deletes the migration's own version row, and leaves every column
 // of handed_over_roots the release before reads and writes as it was. The roll-forward runs both
-// migrations again: the column comes back at its default and the table comes back empty.
+// migrations again: the column comes back at its default and the table comes back empty. The
+// issues the rows are of are written before the migration with SQL that names the columns of the
+// schema the migration finds, as the release before writes them; today's store writes an issue
+// only once every migration has run.
 func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -50,19 +53,18 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 	}
 	wantNeither("the database the release before left reads")
 
-	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: "admitted", Generation: 3,
-		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	carried := record.Issue{Key: "LEGION-209", Tree: "LEGION-209", Project: "LEGION", Title: "carried", Phase: "admitted", Generation: 2,
-		Status: "in_progress", Rank: "V", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		for _, issue := range []record.Issue{root, carried} {
-			if err := record.NewStore().PutIssue(ctx, tx, issue); err != nil {
-				return err
-			}
+	// The release before's own write of the two issues, which names each column it knows.
+	for _, issue := range []struct {
+		key, title string
+		generation int
+		rank       string
+	}{{"LEGION-208", "root", 3, "U"}, {"LEGION-209", "carried", 2, "V"}} {
+		if _, err := store.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+			repo, default_branch, github_repo)
+			values ($1, $1, 'LEGION', $2, 'admitted', $3, 'in_progress', $4, 0, 'acme/widgets', 'main', 'acme/widgets')`,
+			issue.key, issue.title, issue.generation, issue.rank); err != nil {
+			t.Fatalf("record the issue %s: %v", issue.key, err)
 		}
-		return nil
-	}); err != nil {
-		t.Fatalf("record the issues: %v", err)
 	}
 	// The release before's own write of a hand-over, which names each column it knows.
 	if _, err := store.Pool().Exec(ctx, `insert into handed_over_roots (issue, generation, gate_carried) values ('LEGION-208', 3, false)`); err != nil {

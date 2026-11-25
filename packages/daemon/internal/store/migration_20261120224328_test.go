@@ -26,7 +26,9 @@ const claimSourceHoldRelease = "the release that stops a tree's work under the w
 // claim the hold stopped to the operator — the one source of the release before that keeps the
 // claim's session and pending task and that no rule resumes — leaves every other claim's source as
 // it was, writes the check as the release before wrote it, which refuses 'hold' again, and deletes
-// the migration's own version row, so the roll-forward runs it again.
+// the migration's own version row, so the roll-forward runs it again. The row the release before is
+// asked to take is written with SQL that names the columns of the schema the migration finds, as
+// the release before writes it; today's store writes a claim only once every migration has run.
 func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOperator(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -41,7 +43,11 @@ func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOpera
 		var pgErr *pgconn.PgError
 		return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "claims_suspended_by_check"
 	}
-	if err := store.PutClaim(ctx, held); !refusedByTheCheck(err) {
+	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+		launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ($1, $2, $3, $4, $5, $6, $7, '', $8, 0, 0, 0, 0, $9)`,
+		string(held.Token), held.Project, held.Tree, held.Issue, string(held.Role), int64(held.Generation), held.Session,
+		string(held.State), string(held.SuspendedBy)); !refusedByTheCheck(err) {
 		t.Fatalf("the database the release before left stored a claim suspended by the hold = %v, want its source check to refuse it (23514)", err)
 	}
 

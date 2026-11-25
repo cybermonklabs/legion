@@ -37,7 +37,10 @@ func clearedApprovalsWayBackFirst(t *testing.T, store *Store) {
 // migration's header (migrations.WayBack), drops the column and deletes the migration's own
 // version row, and leaves every column the release before reads and writes as it was, so that
 // release's write, which names no latest version, works again. The roll-forward runs the migration
-// again, and each record takes its approved version as its latest version once more.
+// again, and each record takes its approved version as its latest version once more. The issues
+// the records are of are written before the migration with SQL that names the columns of the
+// schema the migration finds, as the release before writes them; today's store writes an issue
+// only once every migration has run.
 func TestTheClearedSpecApprovalsLatestVersionAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -51,16 +54,13 @@ func TestTheClearedSpecApprovalsLatestVersionAndItsWayBackLeaveWhatTheReleaseBef
 		t.Fatalf("the database the release before left read cleared_spec_approvals.latest_version = %v, want no such column (42703): the migration would prove nothing", err)
 	}
 	records := record.NewStore()
-	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		for _, key := range []string{"LEGION-208", "LEGION-300"} {
-			if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: "admitted", Generation: 3,
-				Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
-				return err
-			}
+	// The release before's own write of the two issues, which names each column it knows.
+	for _, key := range []string{"LEGION-208", "LEGION-300"} {
+		if _, err := store.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+			repo, default_branch, github_repo)
+			values ($1, $1, 'LEGION', $1, 'admitted', 3, 'in_progress', 'U', 0, 'acme/widgets', 'main', 'acme/widgets')`, key); err != nil {
+			t.Fatalf("record the issue %s: %v", key, err)
 		}
-		return nil
-	}); err != nil {
-		t.Fatalf("record the issues: %v", err)
 	}
 	// The release before's own write of a record, which names each column it knows.
 	const releaseBeforesWrite = `insert into cleared_spec_approvals (issue, artifact_id, approved_version, approved_seq, approved_at) values ($1, $2, $3, $4, null)
