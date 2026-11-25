@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -72,7 +73,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader := filepath.Join(dir, "leader")
-		client := fakeTmuxClient(t, dir, "echo $$ >'"+leader+"'\necho answered\n"+heldChild(t)+"\nexit 3")
+		client := fakeTmuxClient(t, dir, "echo $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\nexit 3")
 		r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 		reaped := make(chan time.Time, 1)
 		go func() {
@@ -528,7 +529,8 @@ func killPIDFile(pidFile string) {
 // output pipes, as a tmux server that took the client's stdio can, and go on once the child has
 // written its pid. The child runs until the test's cleanup writes its release, and kills it, or
 // until this test process is gone: never for a span of its own, so no run ends, and no assertion
-// holds, by the child's own exit.
+// holds, by the child's own exit. The child's paths reach it as arguments, quoted once
+// (shellprefix.Literal).
 func heldChild(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -539,12 +541,11 @@ func heldChild(t *testing.T) string {
 		}
 		killPIDFile(pidFile)
 	})
-	script := fmt.Sprintf("echo $$ >'%[1]s.tmp' && mv '%[1]s.tmp' '%[1]s'\nwhile [ ! -e '%[2]s' ] && kill -0 %[3]d 2>/dev/null; do sleep 0.05; done\n",
-		pidFile, release, os.Getpid())
+	script := fmt.Sprintf("echo $$ >\"$1.tmp\" && mv \"$1.tmp\" \"$1\"\nwhile [ ! -e \"$2\" ] && kill -0 %d 2>/dev/null; do sleep 0.05; done\n", os.Getpid())
 	if err := os.WriteFile(holder, []byte(script), 0o600); err != nil {
 		t.Fatalf("write the held child's script: %v", err)
 	}
-	return "sh '" + holder + "' &\nwhile [ ! -s '" + pidFile + "' ]; do sleep 0.01; done"
+	return "sh " + shellprefix.Literal(holder) + " " + shellprefix.Literal(pidFile) + " " + shellprefix.Literal(release) + " &\nwhile [ ! -s " + shellprefix.Literal(pidFile) + " ]; do sleep 0.01; done"
 }
 
 // pidIn is the pid a client's shell wrote to path, once the whole line is there, and 0 before.

@@ -724,7 +724,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := testexec.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
+		if err := testexec.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> "+shellprefix.Literal(sink)+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path

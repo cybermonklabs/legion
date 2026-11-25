@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -90,9 +91,9 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	})
 	omp := filepath.Join(dir, "omp")
 	script := fmt.Sprintf("#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in\n"+
-		"*slow.yml) while [ ! -e '%s' ] && kill -0 %d 2>/dev/null; do sleep 0.05; done ;;\n"+
-		"*bad.yml) : >>'%s'; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1 ;;\n"+
-		"esac\necho '{\"value\": false}'\n", release, os.Getpid(), badRan)
+		"*slow.yml) while [ ! -e %s ] && kill -0 %d 2>/dev/null; do sleep 0.05; done ;;\n"+
+		"*bad.yml) : >>%s; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1 ;;\n"+
+		"esac\necho '{\"value\": false}'\n", shellprefix.Literal(release), os.Getpid(), shellprefix.Literal(badRan))
 	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
