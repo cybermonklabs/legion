@@ -389,6 +389,12 @@ type Claims struct {
 	// projects under ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token,
 	// which names no project. The slice is this Claims' own.
 	Projects []string
+	// Job is whether a job entry made this decision, which grant sets from the entry's job list
+	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
+	// person and the list's projects. Like Principal it is no claim of the minted token: the
+	// exchange reads it to refuse a job's trade that asks for read (oauth's decide), since the
+	// broker narrows no job's token.
+	Job bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
 	// token naming a session another principal writes under, unless the broker pairs the caller's
@@ -421,13 +427,6 @@ type Claims struct {
 	// and an introspection answers it (oauth.ClaimMachine), beside the RFC 8693 'act' claim the
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
-}
-
-// Job answers whether c is a job entry's token: one that names a service and no person and
-// carries projects under ProjectScopeNamed, or any token under ProjectScopePublic. An account
-// entry's token naming no person names no project, so it is no job's.
-func (c Claims) Job() bool {
-	return c.Scope == ProjectScopePublic || (c.Scope == ProjectScopeNamed && c.Person == "" && len(c.Projects) > 0)
 }
 
 // Reservation is a session name an entry fixes and the principal it belongs to. The broker holds
@@ -844,7 +843,7 @@ func jobProjects(identity string, job JobProjects, asked []string) ([]string, er
 func (c *Claims) grant(identity, service, person, project string, job JobProjects, asked []string) error {
 	var err error
 	if job.Listed() {
-		c.Service, c.Scope = service, job.Scope()
+		c.Job, c.Service, c.Scope = true, service, job.Scope()
 		c.Projects, err = jobProjects(identity, job, asked)
 	} else {
 		c.Person, c.Scope = person, ProjectScopeNamed

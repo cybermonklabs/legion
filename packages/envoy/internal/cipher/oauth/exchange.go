@@ -810,7 +810,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 		// names what to fix, and repeats nothing of the token but the public identity it claimed.
 		return "", oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: %s.", err).WithWrap(err).WithDebugError(err)
 	}
-	if read && claims.Job() {
+	if read && claims.Job {
 		// A job's token holds no OAuth scope and the broker has no narrowed word for it, so a
 		// trade that asks for read would mint a token no verifier takes.
 		return "", oauth2.ErrInvalidRequest.WithHintf("The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", oauthwire.ScopeRead)

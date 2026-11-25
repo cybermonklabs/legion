@@ -151,13 +151,13 @@ func TestPodAnswersAJobAccountAsItsOwnService(t *testing.T) {
 		refused error
 	}{
 		{name: "a named job account", token: podToken(jobAccount, podUID), session: "example-job-1",
-			want: exchange.Claims{Session: "example-job-1", Service: jobAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: jobPrincipal, Instance: podUID}},
+			want: exchange.Claims{Session: "example-job-1", Service: jobAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Job: true, Principal: jobPrincipal, Instance: podUID}},
 		{name: "a public job account with a list", token: podToken(publicJobAccount, podUID), session: "example-job-2",
-			want: exchange.Claims{Session: "example-job-2", Service: publicJobAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Principal: publicJobPrincipal, Instance: podUID}},
+			want: exchange.Claims{Session: "example-job-2", Service: publicJobAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Job: true, Principal: publicJobPrincipal, Instance: podUID}},
 		{name: "a session the job entry fixes, the request naming none", token: podToken(fixedJobAccount, podUID), session: "",
-			want: exchange.Claims{Session: jobPodSession, Service: fixedJobAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: fixedJobPrincipal}},
+			want: exchange.Claims{Session: jobPodSession, Service: fixedJobAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Job: true, Principal: fixedJobPrincipal}},
 		{name: "a free session carries the pod uid as Instance", token: podToken(publicJobAccount, "another-pod-uid"), session: "example-job-3",
-			want: exchange.Claims{Session: "example-job-3", Service: publicJobAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Principal: publicJobPrincipal, Instance: "another-pod-uid"}},
+			want: exchange.Claims{Session: "example-job-3", Service: publicJobAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Job: true, Principal: publicJobPrincipal, Instance: "another-pod-uid"}},
 		{name: "no session named", token: podToken(jobAccount, podUID), session: "", refused: exchange.ErrSessionRequired},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,9 +188,9 @@ func TestWorkflowAnswersAJobWorkflowAsItsOwnService(t *testing.T) {
 		want    exchange.Claims
 	}{
 		{name: "a public job workflow, the session the request names", path: jobWorkflow, session: "example-run-1",
-			want: exchange.Claims{Session: "example-run-1", Service: repository + "/" + jobWorkflow + "@" + ref, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Principal: jobWorkflowPrincipal}},
+			want: exchange.Claims{Session: "example-run-1", Service: repository + "/" + jobWorkflow + "@" + ref, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Job: true, Principal: jobWorkflowPrincipal}},
 		{name: "a named job workflow, the session its entry fixes", path: fixedJobWorkflow, session: "",
-			want: exchange.Claims{Session: jobRunSession, Service: repository + "/" + fixedJobWorkflow + "@" + ref, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: fixedJobWorkflowPrincipal}},
+			want: exchange.Claims{Session: jobRunSession, Service: repository + "/" + fixedJobWorkflow + "@" + ref, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Job: true, Principal: fixedJobWorkflowPrincipal}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			claims, err := set.Workflow(actionsToken(repository, c.path, ref), c.session, nil)
@@ -214,9 +214,9 @@ func TestGoogleAnswersAJobAccountAsItsOwnService(t *testing.T) {
 		want    exchange.Claims
 	}{
 		{name: "a public job machine, the session the request names", token: googleToken(jobMachineAccount, true, "", ""), session: "example-job-machine-1",
-			want: exchange.Claims{Session: "example-job-machine-1", Service: jobMachineAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Principal: jobMachinePrincipal, Fleet: jobService}},
+			want: exchange.Claims{Session: "example-job-machine-1", Service: jobMachineAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Job: true, Principal: jobMachinePrincipal, Fleet: jobService}},
 		{name: "a named job machine where its entry pins it, the session its entry fixes", token: googleToken(fixedJobMachineAccount, true, cloudProject, instanceName), session: "",
-			want: exchange.Claims{Session: jobMachineSession, Service: fixedJobMachineAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: fixedJobMachinePrincipal, Fleet: jobService}},
+			want: exchange.Claims{Session: jobMachineSession, Service: fixedJobMachineAccount, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Job: true, Principal: fixedJobMachinePrincipal, Fleet: jobService}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			claims, err := set.Google(c.token, c.session, nil)
