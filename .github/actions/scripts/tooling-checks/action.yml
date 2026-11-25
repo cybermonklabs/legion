@@ -2,11 +2,12 @@ name: tooling-checks
 description: >-
   The tooling-checks leg of ci.yaml's scripts job, which carries main's check-run name
   `tooling-checks / tooling-checks`: the checks of this repository's own tooling a pull request
-  runs - the Claude Code plugin build as the release builds it and its build input list, the
-  changelog fold, the guides' semantic line breaks, and the lint and typecheck of the scripts under
-  scripts/ that are no workspace. The `*.test.sh` harnesses and the Bun suites of scripts/ are the
-  test leg's of the scripts-held job (.github/actions/scripts/test), which the merge queue runs.
-  The leg runs on ubuntu-24.04-arm, after the job's checkout.
+  runs - the Claude Code plugin build as the release builds it, the changelog fold, the guides'
+  semantic line breaks, and the lint and typecheck of the scripts under scripts/ that are no
+  workspace. The test of the plugin's build input list (tests/build-inputs.test.ts) runs in the
+  pi job's claude-envoy leg, with the package's other tests. The `*.test.sh` harnesses and the
+  Bun suites of scripts/ are the test leg's of the scripts-held job (.github/actions/scripts/test),
+  which the merge queue runs. The leg runs on ubuntu-24.04-arm, after the job's checkout.
 # why: .github/ci-notes/ci.md#what-the-tooling-checks-job-runs
 runs:
   using: composite
@@ -26,13 +27,6 @@ runs:
       shell: bash
       working-directory: packages/claude-envoy
       run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
-
-    # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
-    # missing from it is one no release bumps a version for.
-    - name: Check the Claude Code plugin's build input list covers what the build reads
-      shell: bash
-      working-directory: packages/claude-envoy
-      run: bun test tests/build-inputs.test.ts
 
     - uses: ./.github/actions/install-changie
 

@@ -481,30 +481,39 @@ def leg_values(leg: dict) -> str:
     return ", ".join(str(v).lower() if isinstance(v, bool) else str(v) for v in leg.values())
 
 
+def leg_check_names(document: dict) -> list:
+    """Each leg of each job of a workflow as (its job, the check-run name it gives): the name
+    ci-ok.jq reads, a leg whose job carries no name named as GitHub names it, `<job> (<values>)`,
+    and None where the job's name is no form ci-ok.jq reads."""
+    legs, _ = jq_names(document)
+    out = []
+    for entry in legs:
+        name = entry["name"]
+        if name is None and not entry["named"]:
+            name = entry["job"] + (f" ({leg_values(entry['leg'])})" if entry["leg"] else "")
+        out.append((entry["job"], name))
+    return out
+
+
+def called_workflow_of(document: dict, job_id: str, documents: dict) -> str | None:
+    """The workflow of this repository a job of `document` calls, as a key of `documents`, or None."""
+    called = str((((document.get("jobs") or {}).get(job_id)) or {}).get("uses", "")).removeprefix("./")
+    return called if called in documents else None
+
+
 def check_run_names(documents: dict) -> dict:
     """Every check-run name the layout's jobs give, each to where it comes from: a job of ci.yaml
     and each leg of its matrix, and a job of a workflow it calls as `<caller> / <job>`. A leg
     whose job carries no name is named as GitHub names it, `<job> (<values>)`."""
-    def leg_names(document: dict) -> list:
-        legs, _ = jq_names(document)
-        out = []
-        for entry in legs:
-            name = entry["name"]
-            if name is None and not entry["named"]:
-                name = entry["job"] + (f" ({leg_values(entry['leg'])})" if entry["leg"] else "")
-            out.append((entry["job"], name))
-        return out
-
     names: dict = {}
     top = documents[WORKFLOW]
-    calls = {job_id: str((job or {}).get("uses", "")).removeprefix("./")
-             for job_id, job in (top.get("jobs") or {}).items() if (job or {}).get("uses")}
-    for job_id, name in leg_names(top):
+    for job_id, name in leg_check_names(top):
         if job_id in REQUIRED_CHECKS and name is None:
             name = job_id
-        if job_id in calls and calls[job_id] in documents:
-            for inner, inner_name in leg_names(documents[calls[job_id]]):
-                names[f"{name or job_id} / {inner_name or inner}"] = f"{calls[job_id]} job {inner}"
+        called = called_workflow_of(top, job_id, documents)
+        if called is not None:
+            for inner, inner_name in leg_check_names(documents[called]):
+                names[f"{name or job_id} / {inner_name or inner}"] = f"{called} job {inner}"
         elif name is not None:
             names[name] = f"{WORKFLOW} job {job_id}"
     return names
@@ -1212,13 +1221,24 @@ def reads_context(name: str) -> bool:
                for word in CONTEXT_NAME.findall(STRING_LITERAL.sub("''", found.group(1))))
 
 
-def check_expression_names(documents: dict, problems: list) -> None:
+def check_expression_names(documents: dict, pins, problems: list) -> None:
     """Rule 25: every job of ci.yaml, and every job of a workflow it calls, that a run can skip
     carries a `name:` that is an expression reading a context, so its skipped record carries the
     expression's text rather than a name a reader takes for a check that ran. GitHub evaluates a
     name that reads no context even for a job it skips: pull request run 45440587594 wrote check
     run 138611450495, skipped, as `kind / image` for `${{ 'kind / image' }}`, while pr-title's
-    name, which reads github.event_name, left its own text on check run 138610203753."""
+    name, which reads github.event_name, left its own text on check run 138610203753.
+
+    A job of ci.yaml that calls a reusable workflow of this repository is the exception: GitHub
+    writes its skipped record under the name it evaluates, although the name reads a context. Run
+    45523492636 wrote job 138901138215, skipped, as `worker-image` for
+    `${{ github.event_name && 'worker-image' }}`, and job 138901137695 as `dispatch-browser-pr` for
+    its sibling's name of the same form. The text cannot keep such a record apart from a check
+    that ran, so the rule holds the evaluated name instead: the name ci-ok.jq reads for each leg of
+    a caller is no check-run name the layout writes (check_run_names, which holds each called
+    job's `<caller> / <job>`) and none a check reads (ci_pins.MAIN_CHECK_RUN_NAMES, the names rule
+    30 keeps for other readers). A skipped caller then writes a name that no reader takes for a
+    check that ran."""
     for path, document in documents.items():
         for job_id, job in (document.get("jobs") or {}).items():
             condition = (job or {}).get("if")
@@ -1235,6 +1255,27 @@ def check_expression_names(documents: dict, problems: list) -> None:
                                         + ", so its skipped record carries a plain name; give it a name that is an "
                                           f"expression reading a context, such as "
                                           f"`${{{{ github.event_name && '{job_id}' }}}}`"))
+    top = documents[WORKFLOW]
+    written = check_run_names(documents)
+    read = set(pins.MAIN_CHECK_RUN_NAMES)
+    for job_id, name in leg_check_names(top):
+        called = called_workflow_of(top, job_id, documents)
+        if called is None:
+            continue
+        if name is None:
+            text = (((top.get("jobs") or {}).get(job_id)) or {}).get("name")
+            problems.append(error(WORKFLOW, f"job {job_id} of {WORKFLOW} calls {called}, and its name `{text}` is no "
+                                            "form ci-ok.jq reads, so this check cannot tell the name GitHub writes "
+                                            "for its skipped record"))
+            continue
+        holders = ([f"{written[name]} writes"] if name in written else []) + (
+            ["a check reads (ci_pins.MAIN_CHECK_RUN_NAMES)"] if name in read else [])
+        if holders:
+            problems.append(error(WORKFLOW, f"job {job_id} of {WORKFLOW} calls {called}, so GitHub writes its skipped "
+                                            f"record under its evaluated name `{name}`, which is the check-run name "
+                                            f"`{name}` that {' and that '.join(holders)}; a reader takes that skipped "
+                                            "record for the check, so give the job a name that no called job writes "
+                                            "and no check reads"))
 
 
 # ---------------------------------------------------------------- rule 26: runners
@@ -1669,7 +1710,7 @@ def check() -> int:
     check_split_lists(runs, problems)
     check_changes_tests(documents, problems)
     check_retry(runs, pins, problems)
-    check_expression_names(documents, problems)
+    check_expression_names(documents, pins, problems)
     check_runners(document, pins, problems)
     check_live_groups(document, pins, problems)
     check_event_gates(documents, pins, problems)

@@ -640,16 +640,20 @@ pick a job
 ## What the tooling-checks job runs
 
 The steps of the old test job that a pull request runs: the Claude Code plugin's build, check
-and pack as the release runs them, the check that the plugin's build-input list covers what the
-build reads, the render check of every changelog fragment with the changie it installs, the
-guides' layout step, which runs whenever the job does (its area names the guides), and the
-lints and typechecks of scripts/dispatch, scripts/github-apps, scripts/sessions and
-scripts/approval-eval, with the typecheck of scripts/e2e/lib's plan ratings read test. They are
-builds, lints and typechecks, which a pull request runs whatever their time, and they came to
-1.0 minutes at the 90th percentile over 2026-11-22's pull-request runs (main's #5175, which
-sorted each job by that time). It is the scripts job's tooling-checks leg
-(.github/actions/scripts/tooling-checks) and fails open as that job does
-(.github/ci-notes/ci.md#the-fail-open-jobs).
+and pack as the release runs them, the render check of every changelog fragment with the
+changie it installs, the guides' layout step, which runs whenever the job does (its area names
+the guides), and the lints and typechecks of scripts/dispatch, scripts/github-apps,
+scripts/sessions and scripts/approval-eval, with the typecheck of scripts/e2e/lib's plan
+ratings read test. They are builds, lints and typechecks, which a pull request runs whatever
+their time, and they came to 1.0 minutes at the 90th percentile over 2026-11-22's pull-request
+runs (main's #5175, which sorted each job by that time). It is the scripts job's tooling-checks
+leg (.github/actions/scripts/tooling-checks) and fails open as that job does
+(.github/ci-notes/ci.md#the-fail-open-jobs). The check that the plugin's build input list
+covers what the build reads (packages/claude-envoy/tests/build-inputs.test.ts) is not one of
+them: the pi job's claude-envoy leg runs it with the package's other tests (`bun run test`), so
+no test runs in two jobs of one run. The pi area (.github/ci-areas.yaml) names each file the
+test and the build read, but release.yaml, .github/scripts/release-push.sh and
+.github/actions/setup-bun, which no area names, so a change to one selects every job.
 
 ## The go-daemon job
 
@@ -1942,9 +1946,19 @@ same form. A name that reads a context stays unevaluated: pr-title's left its ex
 job a run can skip, in this file or in a workflow it calls, whose name is one string writes it
 `${{ github.event_name && '<name>' }}`: github.event_name is a non-empty string on every event
 (the caller's, in a called workflow), so the job's check run carries `<name>` when it runs, and
-its skipped record the text `github.event_name && '<name>'`. check-ci-layout.sh's rule 25 refuses
-a job a run can skip whose name is no expression or one that reads no context, and ci-ok.jq reads
-the guarded form as the string it gives.
+its skipped record the text `github.event_name && '<name>'`, but for a caller (below).
+check-ci-layout.sh's rule 25 refuses a job a run can skip whose name is no expression or one
+that reads no context, and ci-ok.jq reads the guarded form as the string it gives.
+
+A job of ci.yaml that calls a reusable workflow is the exception: GitHub writes its skipped
+record under the name it evaluates, although the name reads a context. Run 45523492636 wrote
+`worker-image` (job 138901138215) and `dispatch-browser-pr` (job 138901137695), skipped, for
+`${{ github.event_name && 'worker-image' }}` and its sibling. The text cannot keep such a record
+apart, so rule 25 holds the evaluated name itself: a caller's name, as ci-ok.jq reads it, is no
+check-run name the layout writes, the `<caller> / <job>` of a job it calls among them, and none a
+check reads (ci_pins.MAIN_CHECK_RUN_NAMES, the names rule 30 keeps). A skipped worker-image then
+writes `worker-image`, which stands for no check: the checks it runs are `worker-image / build`
+and `worker-image / attest`.
 
 ## A lane label turns on one held job on a pull request
 

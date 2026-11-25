@@ -58,7 +58,12 @@
 #       name: GitHub evaluates a name of string literals alone even for a skipped job (pull request
 #       run 45440587594's skipped check run 138611450495 carries `kind / image`, from
 #       `${{ 'kind / image' }}`), and leaves a name that reads one, `${{ github.event_name && … }}`,
-#       as its text.
+#       as its text. A job of ci.yaml that calls a reusable workflow of this repository is the
+#       exception: GitHub writes its skipped record under the name it evaluates all the same (run
+#       45523492636's jobs 138901138215, `worker-image`, and 138901137695,
+#       `dispatch-browser-pr`). So a caller's evaluated name, as ci-ok.jq reads it, that is a
+#       check-run name the layout writes (a called job's `<caller> / <job>` among them) or one a
+#       check reads (ci_pins.MAIN_CHECK_RUN_NAMES) is refused too.
 #   26. a job of ci_pins.ARM_JOBS on another runner.
 #   27. a group of liveGroups that is not in exactly one kind leg's -run (ci_pins.LIVE_GROUPS).
 #   28. an if: of a job, a leg, a step or an inner job, or a matrix entry, that names the event or

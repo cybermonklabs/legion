@@ -14,7 +14,9 @@
 # reconcile step renamed and its hold step's if: drifted from the term the reconcile negates,
 # an AUDITED_SCRIPTS pin a script's text has moved past, pr-title needing changes, a literal name
 # on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual), a
-# name of string literals alone on one (kind-image, dispatch-browser.yaml's recordings),
+# name of string literals alone on one (kind-image, dispatch-browser.yaml's recordings), a caller
+# of a reusable workflow whose evaluated name is a check-run name a check reads (worker-image as
+# `worker-image / build`) or the layout writes (docs as `kind / image`),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
 # action and a cache path drifting inside one ci-caches.yaml runs too, an install that loses its
@@ -249,6 +251,24 @@ check "and passes over every name that reads a context" \
   "$(is "$(grep -c 'an expression that reads no context' <<<"$out" || true)" 2)"
 check "names the matrix without fail-fast: false (rule 29)" "$(has "$out" "job lint's matrix does not set fail-fast: false")"
 check "names main's check-run name the layout lost (rule 30)" "$(has "$out" "carries the check-run name \`text-checks / text-checks\`")"
+
+echo "case: a caller of a reusable workflow whose evaluated name is a check's"
+# GitHub writes a skipped caller's record under the name it evaluates (run 45523492636 wrote
+# `worker-image` for `${{ github.event_name && 'worker-image' }}`), so a caller named as a check
+# run leaves a skipped record that a reader takes for that check: worker-image named as the build
+# a check reads, and docs named as kind-image's check run.
+root=$(fresh caller-names)
+ci=$root/.github/workflows/ci.yaml
+replace "$ci" "name: \${{ github.event_name && 'worker-image' }}" "name: \${{ github.event_name && 'worker-image / build' }}"
+replace "$ci" "name: \${{ github.event_name && 'docs' }}" "name: \${{ github.event_name && 'kind / image' }}"
+run_check "$root"
+check "fails (rule 25)" "$(is "$status" 1)"
+check "names worker-image, its evaluated name and the check-run name a check reads" \
+  "$(has "$out" "job worker-image of .github/workflows/ci.yaml calls .github/workflows/worker-image.yaml, so GitHub writes its skipped record under its evaluated name \`worker-image / build\`, which is the check-run name \`worker-image / build\` that a check reads (ci_pins.MAIN_CHECK_RUN_NAMES)")"
+check "names docs, its evaluated name and the check-run name the layout writes" \
+  "$(has "$out" "job docs of .github/workflows/ci.yaml calls .github/workflows/docs-site.yaml, so GitHub writes its skipped record under its evaluated name \`kind / image\`, which is the check-run name \`kind / image\` that .github/workflows/ci.yaml job kind-image writes;")"
+check "and no other caller" \
+  "$(is "$(grep -c 'so GitHub writes its skipped record under its evaluated name' <<<"$out" || true)" 2)"
 
 echo "case: the indexes the legs of a split job name"
 root=$(fresh shards)
