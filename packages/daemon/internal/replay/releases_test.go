@@ -18,6 +18,7 @@ import (
 // another reason at 09:30 is one of a hold the trace does not hold, a fact of a hold it cannot
 // place, as before.
 func TestAnOperatorsRetryOfAWorkerInNoHoldReleasesNothing(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(8, 0), clock(12, 0))
 	b.boot(clock(8, 0))
 	implementing := builtMove{clock(9, 0), phase.Implementing, workflow.TriggerPlannerCompleted}

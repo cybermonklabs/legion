@@ -17,6 +17,7 @@ import (
 // and fails where its buildCommit is not the commit given (or unknown), or where its startedAt is
 // not a UTC time from the moment the test read the wall clock before the run to the moment after it.
 func TestRunJSONNamesTheBuildCommitAndTheStart(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := fixtureWindow(t, clockWindow)
 	const given = "0123456789abcdef0123456789abcdef01234567"
@@ -27,6 +28,7 @@ func TestRunJSONNamesTheBuildCommitAndTheStart(t *testing.T) {
 		{name: "no commit given", want: "unknown"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			out := t.TempDir()
 			before := time.Now()
 			if _, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,

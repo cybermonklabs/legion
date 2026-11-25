@@ -65,6 +65,7 @@ const deathsRanOut = "deaths with work outstanding ran out"
 // unrecorded; and the older registrations name no gated steps. A line of a shape no release wrote,
 // or with a member of another JSON type, is still refused.
 func TestTheTraceReadsTheOlderShapesAsTheirReleasesMeantThem(t *testing.T) {
+	t.Parallel()
 	window := func(t *testing.T, older bool) Window {
 		shape := func(written gateShape) gateShape {
 			if older {

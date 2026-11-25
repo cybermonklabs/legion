@@ -954,6 +954,7 @@ func ranOwnTreeWindow(t *testing.T) Window {
 // start, for which the replay's daemon finds no run of ACME-3's own, adopts it into ACME-1's tree
 // at 10:30, and holds it there behind ACME-1's design.
 func TestARootThatRanAsATreeOfItsOwnBeforeTheWindowIsNotAdopted(t *testing.T) {
+	t.Parallel()
 	_, log := knobRun(t, ranOwnTreeWindow(t), mainRule(t), "main")
 	joined := linesAt(log, func(line replayLine) bool {
 		return line.Msg == "workflow: a queued root joined a live tree" && line.Issue == "ACME-3"
@@ -1269,6 +1270,7 @@ func treeNotRunningWindow(t *testing.T) Window {
 // hold, and a later issue of tree A that can start, such as the open child of the row of open
 // children, goes ahead of heldChildB.
 func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	for _, c := range []struct {
 		hold   string
@@ -1284,6 +1286,7 @@ func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
 		{hold: "an accepted ancestor", window: acceptedAncestorHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
 	} {
 		t.Run(c.hold, func(t *testing.T) {
+			t.Parallel()
 			ranks := map[string]string{}
 			out := t.TempDir()
 			cfg := RunConfig{Window: c.window(t), Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn, Out: out}
@@ -1357,6 +1360,7 @@ func acceptingLoopRecord(t *testing.T) *windowBuilder {
 // wrote at 11:40 enters the replay's copy of Dispatch at 11:40. It fails where the version moves
 // with that accepting work, for which it enters at 10:40.
 func TestARootArchitectsDesignVersionPastAPassedOverLoopKeepsItsRecordedTime(t *testing.T) {
+	t.Parallel()
 	var copied *shadow
 	out := t.TempDir()
 	cfg := RunConfig{Window: acceptingLoopWindow(t), Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out}
@@ -1408,6 +1412,7 @@ func acceptingOpenLoopWindow(t *testing.T) Window {
 // starts its implementer's turns after 10:00 at other moments, keeps other than the one conflict,
 // leaves another count of conflicts to the merger, or refuses a move.
 func TestAConflictInAcceptingTakesTheRulesPath(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	window := acceptingOpenLoopWindow(t)
 	movedBack := func(trigger workflow.TriggerKind) []fixtureMove {
@@ -1428,6 +1433,7 @@ func TestAConflictInAcceptingTakesTheRulesPath(t *testing.T) {
 		{rule: "main", toMerger: 1},
 	} {
 		t.Run(c.rule, func(t *testing.T) {
+			t.Parallel()
 			result, log, _ := replayLoopWindow(t, window, c.rule, 1)
 			afterTen := func(line replayLine) bool { return line.Issue == "ACME-2" && line.Time.After(clock(10, 0)) }
 			var moves []fixtureMove
@@ -1553,6 +1559,7 @@ type writtenCoefficient struct {
 // It fails for a model with no term of a phase, which a rate fitted on the base and the merges term
 // alone is, and for a term recovered elsewhere than its true value.
 func TestAFittedRateRecoversEachPhasesTermFromBuiltStretches(t *testing.T) {
+	t.Parallel()
 	window := phaseStretchesWindow(t)
 	trace := placedTrace(t, window)
 	raw, err := json.Marshal(windowConflicts(trace, newBaseMerges(window, trace)))
@@ -1629,6 +1636,7 @@ func acceptingLoopChildWindow(t *testing.T) Window {
 // 11:40 enters then, and ACME-3 gives its slot back for the wait at 11:40, as recorded. It fails
 // where the link moves with the accepting work, for which ACME-3 gives its slot back at 10:40.
 func TestAMovedPiecesEventOnAnotherIssueKeepsItsRecordedTime(t *testing.T) {
+	t.Parallel()
 	_, log := knobRun(t, acceptingLoopChildWindow(t), mainRule(t), "main")
 	released := linesAt(log, func(line replayLine) bool { return line.Msg == slotReleasedLine && line.Issue == "ACME-3" })
 	if want := []time.Time{clock(11, 40)}; !slices.EqualFunc(released, want, time.Time.Equal) {
@@ -1703,6 +1711,7 @@ func startedAt(log []replayLine, key string) []time.Time {
 // second fails where a filing of work that never runs is left with it, for which ACME-3 is never
 // filed.
 func TestAChildsFilingMovesWithItsParentsStartAndNeverVanishes(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name           string
 		tail           func(b *windowBuilder)
@@ -1720,6 +1729,7 @@ func TestAChildsFilingMovesWithItsParentsStartAndNeverVanishes(t *testing.T) {
 		}, filed: []time.Time{clock(10, 30)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			log, copied := replayCopied(t, lateRootWindow(t, c.tail), "keep-past-review")
 			if filed := eventsApplied(t, copied, "ACME-3", "issue.created"); !slices.EqualFunc(filed, c.filed, time.Time.Equal) {
 				t.Errorf("ACME-3 was filed in the copy of Dispatch at %s, want at %s", describeTimes(filed), describeTimes(c.filed))
@@ -1741,6 +1751,7 @@ func TestAChildsFilingMovesWithItsParentsStartAndNeverVanishes(t *testing.T) {
 // at 11:30. It fails where the release keeps its recorded time ahead of the late filing, for which
 // the filing's triage stands last, ACME-3 leaves the workflow and never starts.
 func TestAnArchitectsReleaseOfAChildKeepsItsOrderWithTheFiling(t *testing.T) {
+	t.Parallel()
 	log, _ := replayCopied(t, lateRootWindow(t, func(b *windowBuilder) {
 		headerChild(b, clock(10, 20), "triage")
 		b.daemonWrites(clock(10, 21), "ACME-3", "todo")
@@ -1789,6 +1800,7 @@ func earlyAcceptingWindow(t *testing.T) Window {
 // applied first, the architect's title edit carrying ACME-3 in progress, which then stands as a
 // session's status and ACME-3 never enters.
 func TestADaemonWriteIsJudgedInTheRecordsOrder(t *testing.T) {
+	t.Parallel()
 	_, log := knobRun(t, earlyAcceptingWindow(t), mainRule(t), "main")
 	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(10, 31)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-3 started at %s, want at %s, once its release enters", describeTimes(started), describeTimes(want))
@@ -1837,6 +1849,7 @@ func reopenLateWindow(t *testing.T) Window {
 // move is refused. It fails where the reopen is applied while ACME-3's first generation runs,
 // which starts the second over it and refuses the first one's moves.
 func TestAKeptReopenWaitsForTheReplaysOwnLeave(t *testing.T) {
+	t.Parallel()
 	result, log := knobRun(t, reopenLateWindow(t), replayedRule(t, "keep-past-review"), "main")
 	var given []string
 	for _, slot := range slotsGiven(log) {
@@ -1904,6 +1917,7 @@ func restartedRootWindow(t *testing.T) Window {
 // state opens no lifecycle for that run, for which ACME-1's tree is closed, ACME-2 is held by no
 // word the daemon has and takes no slot, and the turn is counted as one begun with no lifecycle.
 func TestATreeThatRanWithNoSlotLineRunsFromTheStart(t *testing.T) {
+	t.Parallel()
 	result, log := knobRun(t, restartedRootWindow(t), mainRule(t), "main")
 	if given := slotsGiven(log); !slices.Contains(given, "ACME-2 at 10:10") {
 		t.Errorf("the replay gave the slots %v, want ACME-2's at 10:10", given)
@@ -1922,6 +1936,7 @@ func TestATreeThatRanWithNoSlotLineRunsFromTheStart(t *testing.T) {
 // had it not been under way (clonePieces): an accepting piece, whose start is the move into
 // accepting, on that move; every other on its role's start.
 func TestACloneOfASeededPieceOpensAsItsPhaseOpens(t *testing.T) {
+	t.Parallel()
 	seeded := []*piece{
 		{issue: "ACME-1", phase: phase.Accepting, role: claim.RoleArchitect, opens: opensAtSeed},
 		{issue: "ACME-1", phase: phase.Testing, role: claim.RoleTester, opens: opensAtSeed},
@@ -1983,6 +1998,7 @@ func seededSendBackWindow(t *testing.T) Window {
 // waits for a start no move into accepting writes, for which ACME-1 stands in accepting from 10:10
 // to the window's end.
 func TestAClonedAcceptingPieceOpensOnItsPhase(t *testing.T) {
+	t.Parallel()
 	_, log, _ := replayLoopWindow(t, seededSendBackWindow(t), "legion-v20.42.5", 1)
 	retro := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.To == string(phase.Retro)
@@ -2019,6 +2035,7 @@ func bootAtStartWindow(t *testing.T) Window {
 // where the first fact of the window, the filing at 10:00:10, runs the first pass, for which the
 // slot goes back at 10:00:10.
 func TestTheFirstPassWaitsForTheRunningBootsReconcile(t *testing.T) {
+	t.Parallel()
 	result, log := knobRun(t, bootAtStartWindow(t), mainRule(t), "main")
 	released := linesAt(log, func(line replayLine) bool { return line.Msg == slotReleasedLine && line.Issue == "ACME-1" })
 	if want := []time.Time{clock(10, 0).Add(40 * time.Second)}; !slices.EqualFunc(released, want, time.Time.Equal) {
@@ -2078,6 +2095,7 @@ func freshSessionWindow(t *testing.T) Window {
 // where the replay enters no such retry, for which the merger's work waits for the gate and ACME-2
 // stands in merging to the window's end.
 func TestAnOperatorsFreshSessionRunsTheWorkerOutsideTheFence(t *testing.T) {
+	t.Parallel()
 	result, log, _ := replayLoopWindow(t, freshSessionWindow(t), "legion-v20.42.5", 1)
 	back := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Merging)
@@ -2129,6 +2147,7 @@ func bootConflictsWindow(t *testing.T) Window {
 // where a conflict enters at its stretch's end, for which ACME-1 moves back at 10:50 and ACME-2 at
 // 10:55.
 func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
+	t.Parallel()
 	for seed := int64(1); seed <= 3; seed++ {
 		_, log, _ := replayLoopWindow(t, bootConflictsWindow(t), "legion-v20.42.5", seed)
 		for _, key := range []string{"ACME-1", "ACME-2"} {
@@ -2153,6 +2172,7 @@ func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
 // at 11:30. It fails where the filing's triage stands over the todo, for which ACME-3 leaves the
 // workflow and never starts.
 func TestALateFilingTakesBackNoLaterChange(t *testing.T) {
+	t.Parallel()
 	log, _ := replayCopied(t, lateRootWindow(t, func(b *windowBuilder) {
 		headerChild(b, clock(10, 10), "triage")
 		b.changed(clock(10, 20), "ACME-3", b.session("ACME-2", claim.RoleArchitect), func(issue *builtIssue) {
@@ -2221,6 +2241,7 @@ func lateBlockerWindow(t *testing.T) Window {
 // fails where that work's move is entered at the record's first generation, which the daemon refuses
 // for its generation.
 func TestAnUnrunGenerationsWorkMovesAtTheReplaysGeneration(t *testing.T) {
+	t.Parallel()
 	result, log := knobRun(t, lateBlockerWindow(t), replayedRule(t, "keep-past-review"), "main")
 	planned := linesAt(log, func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-3" && line.From == string(phase.Planning) && line.To == string(phase.Implementing)
@@ -2270,6 +2291,7 @@ func bootAcceptingWindow(t *testing.T) Window {
 // running piece whose own move ends its stretch, for which ACME-1 is signed off at 11:30 and moves
 // back from merging at 12:30.
 func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
+	t.Parallel()
 	for seed := int64(1); seed <= 3; seed++ {
 		_, log, _ := replayLoopWindow(t, bootAcceptingWindow(t), "legion-v20.42.5", seed)
 		back := linesAt(log, func(line replayLine) bool {
@@ -2294,6 +2316,7 @@ func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
 // passed over and no conflict added, then none passed over and one added. It fails for a run that
 // counts neither.
 func TestARunCountsTheLoopsItPassesOverAndAdds(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name           string
 		window         Window
@@ -2304,6 +2327,7 @@ func TestARunCountsTheLoopsItPassesOverAndAdds(t *testing.T) {
 		{"a conflict added", bootAcceptingWindow(t), "legion-v20.42.5", 0, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			out := t.TempDir()
 			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1,
 				Slowdown: 1, PGDSN: replayDSN(t), Out: out})
@@ -2356,6 +2380,7 @@ func runOutWindow(t *testing.T) Window {
 // slot or a loop after 13:00. It fails where the replay stops at the window's end, for which the
 // rejection never comes.
 func TestARunOutReplaysPastTheWindowAndMeasuresInsideIt(t *testing.T) {
+	t.Parallel()
 	window := runOutWindow(t)
 	result, log := knobRun(t, window, mainRule(t), "main")
 	rejected := linesAt(log, func(line replayLine) bool {

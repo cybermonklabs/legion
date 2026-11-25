@@ -127,6 +127,7 @@ var refusingNoMove = map[string]string{"conflict-from-fitted-rate": "legion-v20.
 // first, so a window whose files do not match the sha256 its window.json records fails before it
 // is replayed.
 func TestFixtureWindows(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	names := allFixtureWindowNames(t)
 	if len(names) == 0 {
@@ -134,6 +135,7 @@ func TestFixtureWindows(t *testing.T) {
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			skipUntilBuilt(t)
 			window, expect := readFixture(t, name)
 			runs, err := expect.runs()
@@ -143,6 +145,7 @@ func TestFixtureWindows(t *testing.T) {
 			recorded := partsRule(window.Parts)
 			for _, run := range runs {
 				t.Run(run.name, func(t *testing.T) {
+					t.Parallel()
 					out := t.TempDir()
 					result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, run.rule), Branch: run.branch,
 						Seed: run.want.Seed, Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})
@@ -229,6 +232,7 @@ func checkFixtureOutput(t *testing.T, out string, want fixtureChecks) {
 // input whose sha256 is not the one window.json records among the reasons), or one whose
 // expect.json names no replay to run.
 func TestTheFixtureWindowsCoverK1(t *testing.T) {
+	t.Parallel()
 	for _, fact := range k1Facts {
 		dir := filepath.Join(fixtureWindowsDir, fact)
 		missing := false

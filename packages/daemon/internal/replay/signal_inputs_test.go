@@ -48,6 +48,7 @@ type guardReading struct {
 // hand from the file. It fails for a file a reader refuses or misreads, for a file under
 // signalsDir this test holds no reading of, and for a reading of a file that is not there.
 func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
+	t.Parallel()
 	ended := MemoryGuardLine{Kind: "ended", Fields: map[string]string{"pid": "56126", "role": "implementer", "size": "2315661312",
 		"reading": "7305846784", "counter": "8205848576", "shmem": "466944", "limit": "8589934592", "executable": "node"}}
 	stopped := MemoryGuardLine{Kind: "stopped for this rise", Fields: map[string]string{"reason": "nothing to end", "reading": "7303979008",
@@ -289,6 +290,7 @@ func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
 // each timeline event its id and the url <API>/repos/<owner>/<name>/issues/events/<id>. A line
 // with both is read, the API at another host and path too.
 func TestParseQueueLineRefusesALineWithNoIDOrRepository(t *testing.T) {
+	t.Parallel()
 	line := func(item string) []byte {
 		return []byte(`{"pullRequest":7,"item":{` + item + `"event":"added_to_merge_queue","created_at":"2001-03-05T09:40:00Z",` +
 			`"actor":{"login":"acme-person"}}}`)

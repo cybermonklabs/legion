@@ -68,6 +68,7 @@ type pauseSettle struct {
 // row waiting: a row due at the moment the replay ran, after the window, waits to the resume,
 // which deletes it unrun.
 func TestAPausesStopRowsRunAtItsRecordedMoment(t *testing.T) {
+	t.Parallel()
 	var settles []pauseSettle
 	_, err := Run(context.Background(), RunConfig{Window: pausedWorkWindow(t), Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
 		PGDSN: replayDSN(t), Out: t.TempDir(), atSettled: func(ctx context.Context, st *store.Store, at time.Time) error {

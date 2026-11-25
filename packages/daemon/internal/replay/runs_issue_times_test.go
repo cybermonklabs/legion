@@ -59,6 +59,7 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 // file of a comparison whatever the window names (readPart), so the part holds a second branch,
 // main+timing=wall, whose times only the window's rule kept, and the test reads both.
 func TestAValidationOfAWindowNamingNoRuleKeepsTheReplaysIssueTimes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const window, rule = "no-parts", "legion-v20.42.5"
 	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
@@ -98,6 +99,7 @@ func TestAValidationOfAWindowNamingNoRuleKeepsTheReplaysIssueTimes(t *testing.T)
 // the window no-times, under the rule its record names, holds a run of the main branch and one of
 // main+timing=wall, neither giving ACME-1 the first slot the record gives it at 01:00.
 func TestAValidationWhoseReplaysGiveNoIssueTimeIsRefused(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const window, rule = "no-times", "legion-v20.42.5"
 	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
@@ -124,6 +126,7 @@ func TestAValidationWhoseReplaysGiveNoIssueTimeIsRefused(t *testing.T) {
 // issueTimesRuns and then takes urgentWaits out of one run's scorecard.json, and, apart, out of the
 // window's record.json.
 func TestRunsWrittenBeforeTheUrgentWaitsAreRefused(t *testing.T) {
+	t.Parallel()
 	const window, rule = "old-runs", "legion-v20.42.5"
 	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
 	strip := func(t *testing.T, path string) {
@@ -199,6 +202,7 @@ func lineReadings(card Scorecard) Scorecard {
 // test writes the runs of issueTimesRuns and then takes each reading out of the main branch's line
 // scorecard, and, apart, out of the window's record.json.
 func TestRunsWrittenBeforeTheLineReadingsAreRefused(t *testing.T) {
+	t.Parallel()
 	const window, rule = "old-line-runs", "legion-v20.42.5"
 	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
 	for _, reading := range []string{"filed", "slotsGiven", "dailyMaxima", "urgentMeans"} {

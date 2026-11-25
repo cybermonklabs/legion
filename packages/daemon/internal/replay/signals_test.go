@@ -21,6 +21,7 @@ import (
 )
 
 func TestEverySignalOfR11HasOneDefinition(t *testing.T) {
+	t.Parallel()
 	inventory := []struct {
 		name      string
 		inputs    []string
@@ -222,6 +223,7 @@ func queueWindow(t *testing.T) Window {
 // 07:00 until it is dropped at 08:00; and #4, in the former name's file alone, waits from 09:00
 // to 10:00. It fails where the waits are built from each file apart.
 func TestQueueWaitsCountEachEventOnceAcrossARenamedRepository(t *testing.T) {
+	t.Parallel()
 	const current, former = "acme/new-name", "acme/old-name"
 	event := func(id, n int, kind string, at time.Time) json.RawMessage {
 		return queueLineOf(current, id, n, kind, at)
@@ -409,6 +411,7 @@ func approvalsWindow(t *testing.T) Window {
 // The test fails for each reading that differs from the hand-worked one, and for each moment at
 // which the approvals count asks other than those worked out.
 func TestEachSignalAtAMoment(t *testing.T) {
+	t.Parallel()
 	t.Run("idle", func(t *testing.T) {
 		w := idleWindow(t)
 		checkReadings(t, SignalIdle, signalRecordOf(t, w, time.Hour), idleAt, []reading{
@@ -532,6 +535,7 @@ func describeCrossing(at time.Time, due bool) string {
 // it is recorded and at or above its limit, so the end of its record is a crossing of a signal that
 // binds there (assumption 47).
 func TestEachSignalsNextCrossing(t *testing.T) {
+	t.Parallel()
 	t.Run("idle", func(t *testing.T) {
 		checkCrossings(t, SignalIdle, signalRecordOf(t, idleWindow(t), time.Hour), idleNext, []crossing{
 			{at: clock(10, 0), limit: 0.5, next: clock(10, 30), why: "up: ACME-1, idle from 09:30, reaches an hour at 10:30, one of the two holders"},
@@ -585,6 +589,7 @@ var stateGolden = filepath.Join("..", "..", "..", "contracts", "fixtures", "daem
 // and fails where they differ or where either differs from the share worked out by hand: none
 // before d has passed, the whole after.
 func TestTheIdleShareFromTheStateJSON(t *testing.T) {
+	t.Parallel()
 	body, err := os.ReadFile(stateGolden)
 	if err != nil {
 		t.Fatal(err)

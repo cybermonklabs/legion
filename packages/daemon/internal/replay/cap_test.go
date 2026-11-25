@@ -22,6 +22,7 @@ import (
 // cap of 2 the pass that records ACME-2 at 09:01 has a free slot and gives it, and run.json names
 // the cap the run served under.
 func TestARunsOwnCapReplacesTheRecordsCap(t *testing.T) {
+	t.Parallel()
 	window := firstStartsWindow(t)
 	for _, c := range []struct {
 		cap   int
@@ -167,6 +168,7 @@ type capSpanJSON struct {
 // flat cap gives out each span's one slot as the record did: the backtest fails, and the result says
 // that the tool cannot tell a change of the cap.
 func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
+	t.Parallel()
 	const flat = 73
 	backtest := func(t *testing.T, name string, window Window) (capBacktestJSON, string) {
 		t.Helper()
@@ -203,6 +205,7 @@ func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 	}
 
 	t.Run("spans the flat cap tells apart", func(t *testing.T) {
+		t.Parallel()
 		read, printed := backtest(t, "cap-spans", capSpansWindow(t))
 		if read.CapBacktest == nil {
 			t.Fatalf("the validation gives no cap backtest:\n%s", printed)
@@ -235,6 +238,7 @@ func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 	})
 
 	t.Run("caps that hold nothing back", func(t *testing.T) {
+		t.Parallel()
 		read, printed := backtest(t, "unbound-caps", unboundCapWindow(t))
 		if read.CapBacktest == nil {
 			t.Fatalf("the validation gives no cap backtest:\n%s", printed)

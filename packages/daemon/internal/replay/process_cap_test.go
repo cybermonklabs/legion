@@ -18,6 +18,7 @@ import (
 // one every raise of the cap was served one restart late, and the cap backtest gave out 35 slots
 // where the record gave 49.
 func TestABootServesUnderTheCapItsOwnLinesName(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
 	b.capped(1)
 	b.boot(clock(9, 0))
@@ -49,6 +50,7 @@ func TestABootServesUnderTheCapItsOwnLinesName(t *testing.T) {
 // outside the process: a change before its start, one after the line saying it finished its boot,
 // and one at or after the next process's start each leave it the cap that stood at its start.
 func TestTheCapOfAProcessIsTheFirstChangeItsOwnLinesName(t *testing.T) {
+	t.Parallel()
 	w := Window{Caps: []CapAt{{At: clock(8, 0), Cap: 10}, {At: clock(10, 3), Cap: 20}, {At: clock(11, 0), Cap: 30}}}
 	for _, c := range []struct {
 		name                 string

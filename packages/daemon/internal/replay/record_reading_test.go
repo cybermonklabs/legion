@@ -91,6 +91,7 @@ func failedClaimsGoOnWindow(t *testing.T) Window {
 // reviewing rather than held, ACME-4, held at the start, is released at 10:20, ACME-2 and ACME-3 at
 // their ends, and each makes its recorded move: no move is refused and none is left out.
 func TestAHoldTheRecordShowsGoingOnEndsWhereItGoesOn(t *testing.T) {
+	t.Parallel()
 	window := failedClaimsGoOnWindow(t)
 	trace := placedTrace(t, window)
 	for _, want := range []struct {
@@ -159,6 +160,7 @@ func childOfAReadmittedTreeWindow(t *testing.T) Window {
 // one, for which the replay refuses each recorded move of it ("ACME-5 stands at generation 2, and
 // the recorded move of planning by planner_completed is generation 1's").
 func TestAChildFiledInTheWindowMovesAtItsTreesGeneration(t *testing.T) {
+	t.Parallel()
 	window := childOfAReadmittedTreeWindow(t)
 	trace := placedTrace(t, window)
 	if root := trace.Issues["ACME-4"]; root.Generation() != 2 {
@@ -224,6 +226,7 @@ func adoptedRootWindow(t *testing.T) Window {
 // of planning by planner_completed is generation 2's") and ACME-6 holds its slot in planning with no
 // turn.
 func TestAnAdoptedRootMovesAtTheGenerationAfterItsAdoption(t *testing.T) {
+	t.Parallel()
 	window := adoptedRootWindow(t)
 	trace := placedTrace(t, window)
 	entries := trace.Issues["ACME-6"].Entries
@@ -299,6 +302,7 @@ func slotTakenWithNoLineWindow(t *testing.T) Window {
 // writes the three slots in the order they were taken, ACME-1's, ACME-3's and ACME-2's, counts one
 // inferred, reports no difference, writes ACME-4's owed start, and names no issue.
 func TestTheTraceInfersASlotTakenWithNoLineAtTheStart(t *testing.T) {
+	t.Parallel()
 	window := slotTakenWithNoLineWindow(t)
 	trace := placedTrace(t, window)
 	sentBack := trace.Issues["ACME-2"].Slots

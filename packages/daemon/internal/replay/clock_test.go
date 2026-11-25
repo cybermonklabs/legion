@@ -17,10 +17,11 @@ import (
 const clockWindow = "clock-far-from-now"
 
 // notSimulated names each time column a replay's database holds that the simulated clock does not
-// write, with the reason. schema_version.applied_at is the moment the replay migrated its own
-// database, before its first fact: the run's own setup, which no pass of the window writes.
+// write, with the reason. schema_version.applied_at is the moment the template the replay's
+// database is copied from was migrated (openReplayDatabase), before the run began: setup, which no
+// pass of the window writes.
 var notSimulated = map[string]string{
-	"schema_version.applied_at": "the migration of the replay's own database, before the window's first fact",
+	"schema_version.applied_at": "the migration of the template the replay's own database is copied from, before the run",
 }
 
 // A replay runs the daemon's own pass on a simulated clock, and every time the pass writes or
@@ -41,6 +42,7 @@ var notSimulated = map[string]string{
 // (record.Waiting), so the two sort in the order the pass wrote them only where created_at is
 // before the mark.
 func TestReplayWritesNoWallClockTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dsn := replayDSN(t)
 	window := fixtureWindow(t, clockWindow)

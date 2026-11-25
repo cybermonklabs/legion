@@ -81,6 +81,7 @@ var hostFields = []string{"startedAt", "wallSeconds", "meanPassMillis", "peakMem
 // pull request the number of another's key. It fails for each output in which the two differ,
 // naming its first differing line.
 func TestAReplayIsTheSameAtEveryRun(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	for _, c := range []struct {
 		name, rule string
@@ -91,6 +92,7 @@ func TestAReplayIsTheSameAtEveryRun(t *testing.T) {
 		{name: "many-pairs", rule: "legion-v20.42.5", window: manyPairsWindow(t)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			rule := replayedRule(t, c.rule)
 			var outs [2]string
 			var results [2]RunResult

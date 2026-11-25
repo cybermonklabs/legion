@@ -67,6 +67,7 @@ func sampleCard(hours int) Scorecard {
 // the issues the start state could not place, the first day apart, and priority taken in today's
 // line's order (priorityTakenBanded), which is not one of R5's tests — fail no branch.
 func TestValidationGaps(t *testing.T) {
+	t.Parallel()
 	date := compareFrom.Format(time.DateOnly)
 	shiftFirstSlots := func(minutes float64) func(*Scorecard) {
 		return func(card *Scorecard) {
@@ -156,6 +157,7 @@ func TestValidationGaps(t *testing.T) {
 // the window's end, 360 minutes on, and the seeds' at 60 and at the end (150). The median of 15,
 // 30 and 150 is 30 and the 90th percentile by the nearest rank is 150; the one done error is 15.
 func TestValidationPrintsEveryMeasureAndIssueError(t *testing.T) {
+	t.Parallel()
 	recorded := sampleCard(compareHours)
 	recorded.Source = "record"
 	seed := func(n int64, firsts map[string]float64, done float64, doneAt bool) Scorecard {
@@ -214,6 +216,7 @@ func TestValidationPrintsEveryMeasureAndIssueError(t *testing.T) {
 // whose main branch fails gives none at all; the validation names each such branch, and says
 // whether the main branch passes every test of R5 or how many of them it fails (spec R5).
 func TestBranchThatFailsGivesNoComparison(t *testing.T) {
+	t.Parallel()
 	recorded := sampleCard(compareHours)
 	good := sampleCard(compareHours)
 	bad := sampleCard(compareHours)
@@ -283,6 +286,7 @@ func TestBranchThatFailsGivesNoComparison(t *testing.T) {
 // each within twice its gap (spec R5): a window half as long with half the work forecasts the same
 // rates, and each kind passes at twice its gap and fails past it.
 func TestForecastScoresRatesNeverTotals(t *testing.T) {
+	t.Parallel()
 	after := sampleCard(100)
 	after.Done, after.SlotsGivenByDay = 100, map[string]int{"2001-03-05": 100, "2001-03-06": 100}
 	after.Loops = map[string]LoopHours{string(CauseReviewChanges): {Rounds: 4, Hours: 10}, string(CauseConflict): {Rounds: 2, Hours: 10},
@@ -362,6 +366,7 @@ func forecastAgainst(before, after, forecast Scorecard) []ForecastCheck {
 // checks where the window after had conflicts and send-backs passes on both totals, holds no number
 // of a redefined cause apart, and fails a cause defined the same way that it misses.
 func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
+	t.Parallel()
 	after := sampleCard(compareHours)
 	after.Loops = map[string]LoopHours{string(CauseConflict): {Rounds: 10, Hours: 50}, string(CauseSendBack): {Rounds: 10, Hours: 50},
 		string(CauseReviewChanges): {Rounds: 5, Hours: 20}, string(CauseTestFailed): {Rounds: 5, Hours: 10}}
@@ -423,6 +428,7 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 // costs, and better on at least one (spec R7). Main's costs are 100 issues finished, 50 hours
 // waiting only for a slot, 0.2 of priority taken and 400 hours of other delays.
 func TestBestRuleDecision(t *testing.T) {
+	t.Parallel()
 	main := Costs{Done: 100, WaitOnlyForSlot: 50, PriorityTaken: 0.2, OtherDelays: 400}
 	with := func(change func(*Costs)) Costs {
 		c := main
@@ -516,6 +522,7 @@ func TestBestRuleDecision(t *testing.T) {
 // is the first at which its standing against main differs from its standing at 1.0, or none (spec
 // R3, assumption 1).
 func TestBreakEvenFactor(t *testing.T) {
+	t.Parallel()
 	factors := BreakEvenSlowdowns()
 	if want := []float64{1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2}; !slices.Equal(factors, want) {
 		t.Fatalf("the break-even search runs %v, want %v", factors, want)
@@ -561,6 +568,7 @@ func TestBreakEvenFactor(t *testing.T) {
 // one process's runs and what is written from the runs of parts, each run in a process of its own,
 // are the same, and the document names the build commit the runs were given.
 func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
+	t.Parallel()
 	skipUntilBuilt(t)
 	dir := t.TempDir()
 	to := compareFrom.Add(compareHours * time.Hour)
@@ -918,6 +926,7 @@ var specRules = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v
 // keep beyond the spec's fails here until its reason is given. A reason names no issue key and no
 // Dispatch link, since the repository is public.
 func TestTheDocumentGivesEachAddedCandidatesReason(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeMadeUpRuns(t, dir, madeUpWindows("legion-v19.57.3", "legion-v20.42.5"), record.SlotRules(),
 		runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1}, madeUpRun)
@@ -984,6 +993,7 @@ func TestTheDocumentGivesEachAddedCandidatesReason(t *testing.T) {
 // at a fraction of the runs. Without it a validation runs every branch the tool offers (Branches),
 // each with the same seeds; and a test's own plan replaces either.
 func TestAMainOnlyValidationRunsTheMainBranchAlone(t *testing.T) {
+	t.Parallel()
 	for _, run := range []struct {
 		name     string
 		cfg      ValidateConfig
@@ -1024,6 +1034,7 @@ func branchNames(branches []BranchAt) []string {
 // before ACME-4 by their replayed first slots; under returned-by-first-slot ACME-3 holds no slot,
 // and ACME-4 and ACME-6 are in no row.
 func TestTheIssuesFileGivesEachIssuesTimesUnderEachRule(t *testing.T) {
+	t.Parallel()
 	const none = -1
 	type seeds [3]int
 	replays := map[string]struct{ firstSlot, doneAt map[string]seeds }{
@@ -1131,6 +1142,7 @@ func TestTheIssuesFileGivesEachIssuesTimesUnderEachRule(t *testing.T) {
 // gives ACME-1, ACME-3 and ACME-4 one, and seed 2 ACME-2 alone: seed 1 made two starts the record
 // did not and missed one, and seed 2 made none and missed one.
 func TestTheValidationCountsTheFirstStartsOnlyOneSideMade(t *testing.T) {
+	t.Parallel()
 	recorded := sampleCard(compareHours)
 	recorded.Source = "record"
 	seed := func(n int64, keys ...string) Scorecard {
@@ -1170,6 +1182,7 @@ func TestTheValidationCountsTheFirstStartsOnlyOneSideMade(t *testing.T) {
 // starts ACME-1 at 10:40 and not ACME-2, errors of 40 and 180, median 110. R5's statistic stays the
 // median of the issues' mean errors, 25 and 105, which is 65, and fails its bound of 60 minutes.
 func TestTheValidationGivesEachSeedsMedianFirstSlotError(t *testing.T) {
+	t.Parallel()
 	recorded := Scorecard{From: clock(9, 0), To: clock(13, 0), FirstSlot: map[string]time.Time{"ACME-1": clock(10, 0), "ACME-2": clock(10, 0)}}
 	cards := []Scorecard{
 		{Seed: 3, FirstSlot: map[string]time.Time{"ACME-1": clock(10, 10), "ACME-2": clock(10, 30)}},
@@ -1213,6 +1226,7 @@ func TestTheValidationGivesEachSeedsMedianFirstSlotError(t *testing.T) {
 // more), and one of them ACME-3's for half an hour, which the record never closes: ACME-1 and ACME-3
 // are named, and ACME-2 is not.
 func TestTheValidationNamesTheTreesWhoseGateHoursMoved(t *testing.T) {
+	t.Parallel()
 	recorded := sampleCard(compareHours)
 	recorded.Source, recorded.GateClosedHours = "record", map[string]float64{"ACME-1": 2, "ACME-2": 1}
 	seeds := []Scorecard{sampleCard(compareHours), sampleCard(compareHours)}
@@ -1244,6 +1258,7 @@ func TestTheValidationNamesTheTreesWhoseGateHoursMoved(t *testing.T) {
 // made up: two windows under main, each record with 20 issues done by Legion and 25 by anyone, and
 // runs whose line scorecards count 23 done by anyone.
 func TestTheDocumentGivesDoneByAnyoneBesideLegionsDone(t *testing.T) {
+	t.Parallel()
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
 	for i := range windows {
 		windows[i].Scorecard.DoneByAnyone = 25
@@ -1279,6 +1294,7 @@ func TestTheDocumentGivesDoneByAnyoneBesideLegionsDone(t *testing.T) {
 // branch. The runs are made up: the main branch passes R5, and the branch of the recorded conflicts,
 // whose issues finished stand at twice the record's at each factor, fails it.
 func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
+	t.Parallel()
 	for _, run := range []struct {
 		name string
 		cfg  ValidateConfig
@@ -1360,6 +1376,7 @@ func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 // ACME-3 and ACME-6 and files neither, and at f 1.6 it starts and files what the record did. The main
 // branch passes R5, and the names move neither its verdict nor which branches give a comparison.
 func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
+	t.Parallel()
 	var labels []string
 	for _, at := range DiagnosticBranches() {
 		labels = append(labels, at.Label())
@@ -1578,6 +1595,7 @@ func priorityWorkWindow(t *testing.T) Window {
 // and to its done, both cut for two of its three issues, and no P1 issue counts, so its median and
 // percentile read none; under p0-at-once the waits are the record's.
 func TestTheComparisonGivesTheWaitOfUrgentWorkOfEachRecordAndRule(t *testing.T) {
+	t.Parallel()
 	card, err := Score(priorityWorkWindow(t))
 	if err != nil {
 		t.Fatal(err)

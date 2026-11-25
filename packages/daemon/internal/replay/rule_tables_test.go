@@ -21,6 +21,7 @@ import (
 )
 
 func TestEveryCandidateOfTheDesignIsARule(t *testing.T) {
+	t.Parallel()
 	skipUntilBuilt(t)
 	inventory := []struct{ name, reason string }{
 		{"cover", "keep the slot until done, with a cover"},
@@ -105,6 +106,7 @@ func inRolledBackTx(t *testing.T, st *store.Store, fn func(tx pgx.Tx)) {
 // the covers kept are the covers read, and a second keep replaces the first; under every other rule
 // the facts carry none.
 func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	ctx := context.Background()
 	_, st := replayStore(t, dsn)
@@ -195,6 +197,7 @@ func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 // the generation at 09:00; its next generation reads no first slot until a pass reads the slot
 // it holds in it. Under main no pass keeps any.
 func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	ctx := context.Background()
 	_, st := replayStore(t, dsn)
@@ -306,6 +309,7 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 // alone, the one the pass kept, and, under a rule that places by arrival (readsArrivals), the
 // arrival of ACME-1 alone, the moment its record was written, which the pass kept.
 func TestTheStartViewKeepsNothingAndReadsWhatThePassesKept(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	ctx := context.Background()
 	window, _ := readFixture(t, "send-back-at-full-cap")
@@ -323,6 +327,7 @@ func TestTheStartViewKeepsNothingAndReadsWhatThePassesKept(t *testing.T) {
 		}
 		replayed++
 		t.Run(rule.Name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := Run(ctx, RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn,
 				Out: t.TempDir()}); err != nil {
 				t.Fatalf("the replay of send-back-at-full-cap under %s failed: %v", rule.Name, err)

@@ -37,6 +37,7 @@ import (
 // release is a move into accepting or to done. A comparison of no rule with a grace writes nothing
 // of the graces.
 func TestAGraceKeepsTheWaitsNoLongerThanItInTheRecord(t *testing.T) {
+	t.Parallel()
 	short, long := keptGraceRule(t, "wait-grace", 5*time.Minute), keptGraceRule(t, "wait-grace-1h", time.Hour)
 	type kept struct {
 		grace time.Duration

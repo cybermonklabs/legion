@@ -432,11 +432,19 @@ go -C packages/daemon build -o <dir>/legion ./cmd/legion
 ```
 
 `run`, `validate`, `forecast` and `compare` need a Postgres server on which the user of `--pg-dsn` can create a database.
-Each run makes a database of its own there, from `template1` with the daemon's migrations, and drops it at the end.
+Each run makes a database of its own there and drops it at the end.
+The run copies its database from a template that holds the daemon's migrations and the replay's own tables, `legion_replay_template_<key>`.
+The key is a hash of those migrations and tables, so a `legion` binary with other migrations uses a template of its own.
+The first run on a server makes the template from `template1`, and every later run copies it.
 `run --keep-db` keeps the database of its run.
 No run writes to the database that `--pg-dsn` names.
 Use a test server.
 `scorecard`, `signals` and `rules` need no database.
+
+The templates stay on the server.
+To remove them, stop every replay on the server, and then drop each database whose name begins with `legion_replay_template_`.
+Also drop a database whose name begins with `legion_replay_build_`, which a run that stopped while it made a template leaves.
+The next run makes the template again.
 
 A comparison of rules takes these steps:
 

@@ -28,11 +28,13 @@ func filedAfterLeaveWindow(t *testing.T) Window {
 // once. Left with the planning that never opened, it never entered and the replay never filed
 // ACME-3; under main, the rule the record ran, it enters at 11:00 as recorded.
 func TestTheEventsOfWorkThatNeverOpenedEnterWhenTheIssueLeaves(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		rule string
 		at   time.Time
 	}{{"main", clock(11, 0)}, {"keep-past-review", clock(11, 5)}} {
 		t.Run(c.rule, func(t *testing.T) {
+			t.Parallel()
 			var copied *shadow
 			cfg := RunConfig{Window: filedAfterLeaveWindow(t), Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1, Slowdown: 1,
 				PGDSN: replayDSN(t), Out: t.TempDir()}

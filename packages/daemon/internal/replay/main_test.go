@@ -8,5 +8,6 @@ import (
 )
 
 // TestMain drops the migrated template seedStore clones its databases from (testpg.Main). A replay
-// makes and migrates a database of its own (openReplayDatabase) and clones none.
+// copies its database from a template of its own (openReplayDatabase), which stays on the server
+// for the next run: this does not drop it.
 func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_replay_test", m.Run)) }

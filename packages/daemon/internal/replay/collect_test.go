@@ -640,6 +640,7 @@ func collectCaptured(t *testing.T) collectRun {
 // record of what each served holds no other method, and holds requests (a collect that read
 // nothing would pass a check of its methods alone).
 func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
+	t.Parallel()
 	run := collectCaptured(t)
 	read, err := ReadWindow(run.out)
 	if err != nil {
@@ -862,6 +863,7 @@ func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 // review rounds, a six-hour stalled-tree notice, 30 minutes of worker silence and four hours of
 // background work.
 func TestCollectDefaultsToTheDaemonsSettings(t *testing.T) {
+	t.Parallel()
 	got, err := DaemonSettings()
 	if err != nil {
 		t.Fatalf("DaemonSettings: %v", err)
@@ -876,6 +878,7 @@ func TestCollectDefaultsToTheDaemonsSettings(t *testing.T) {
 // A collect writes a window into a directory of its own: an output that holds a file already is
 // refused before anything is read, and the file is left as it was.
 func TestCollectRefusesAnOutputThatHoldsFiles(t *testing.T) {
+	t.Parallel()
 	out := t.TempDir()
 	if err := os.WriteFile(filepath.Join(out, "notes.txt"), []byte("mine"), 0o644); err != nil {
 		t.Fatal(err)
@@ -906,6 +909,7 @@ func TestCollectRefusesAnOutputThatHoldsFiles(t *testing.T) {
 // Dispatch stub answering three events of ACME-9 at the same moments. It fails where a collect stops
 // at the span's end or records no margin.
 func TestCollectReadsTheRunOutAfterTheWindow(t *testing.T) {
+	t.Parallel()
 	moments := []time.Time{collectTo.Add(-time.Hour), collectTo.Add(time.Hour), collectTo.Add(2 * time.Hour)}
 	var log bytes.Buffer
 	var lines, events []json.RawMessage

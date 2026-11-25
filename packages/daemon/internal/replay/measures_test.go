@@ -66,6 +66,7 @@ func stateAt(c *Course, at time.Time) (IssueState, bool) {
 // issues past their review stand apart: ACME-3 with its slot from 13:00 to 14:00, ACME-4 with none
 // from 13:00 to 15:00.
 func TestStartedWorkWithoutASlotTwoReadings(t *testing.T) {
+	t.Parallel()
 	returned := func(blocked bool) IssueState {
 		return IssueState{InFlight: true, Part: record.PartReturned, Blocked: blocked, Waiting: !blocked}
 	}
@@ -104,6 +105,7 @@ func TestStartedWorkWithoutASlotTwoReadings(t *testing.T) {
 //
 // The average is (0.5 + 0.5 + 1 + 0.5)/4 = 0.625.
 func TestPriorityInversionShare(t *testing.T) {
+	t.Parallel()
 	holder := func(key, rank string) IssueState {
 		return IssueState{Tree: key, Rank: rank, RootRank: rank, InFlight: true, Holds: true}
 	}
@@ -218,6 +220,7 @@ func urgentWorkWindow(t *testing.T) Window {
 //
 // ACME-6, at P2, counts in neither.
 func TestUrgentWorkWaits(t *testing.T) {
+	t.Parallel()
 	card, err := Score(urgentWorkWindow(t))
 	if err != nil {
 		t.Fatal(err)
@@ -241,6 +244,7 @@ func TestUrgentWorkWaits(t *testing.T) {
 // 10:15, the end of the window's run-out, not at 10:00. The window's replay under main waits for
 // that start (pendingUntilBuilt); the record reads the waits by the same code (Measure).
 func TestTheRecordOfUrgentWorkWaitsGivesItsHandWorkedWaits(t *testing.T) {
+	t.Parallel()
 	window, expect := readFixture(t, "urgent-work-waits")
 	card, err := Score(window)
 	if err != nil {
@@ -284,6 +288,7 @@ func bothOrdersWindow(t *testing.T) Window {
 //
 // By rank the share is (0 + 0.5)/2 = 0.25; with the band, (1 + 0.5)/2 = 0.75.
 func TestPriorityInversionShareInBothOrders(t *testing.T) {
+	t.Parallel()
 	card, err := Score(bothOrdersWindow(t))
 	if err != nil {
 		t.Fatal(err)
@@ -313,6 +318,7 @@ func TestPriorityInversionShareInBothOrders(t *testing.T) {
 // 15:00 (1 hour); and ACME-4's from 10:00 to 16:00, which still stands at 15:00 and so is open
 // whatever ended it later (5 hours).
 func TestLoopHoursByCause(t *testing.T) {
+	t.Parallel()
 	move := func(at time.Time, from, to phase.Phase, trigger workflow.TriggerKind) CourseMove {
 		return moveOf(at, from, to, trigger, "")
 	}
@@ -375,6 +381,7 @@ func TestLoopHoursByCause(t *testing.T) {
 // 09:00 with no slot. In a turn: 1 + 2 = 3 hours; in none: 1 hour. The issues in flight, ACME-1
 // and ACME-3 for three hours and ACME-2 for two: 8 hours, an average of 8/3, at most 3.
 func TestSlotHoursByTurn(t *testing.T) {
+	t.Parallel()
 	tl := Timeline{From: clock(9, 0), To: clock(12, 0), Issues: map[string]*Course{
 		"ACME-1": {States: []Stint{handStint(clock(9, 0), IssueState{InFlight: true, Holds: true, InTurn: true}),
 			handStint(clock(10, 0), IssueState{InFlight: true, Holds: true}), handStint(clock(11, 0), IssueState{InFlight: true, InTurn: true})}},
@@ -397,6 +404,7 @@ func TestSlotHoursByTurn(t *testing.T) {
 // timeline (forecastReadings), which the replay's snapshot scorecard in expect.json holds none of,
 // is not compared here.
 func TestScorecardOfTheRecord(t *testing.T) {
+	t.Parallel()
 	scored := 0
 	for _, name := range fixtureWindowNames(t) {
 		window, expect := readFixture(t, name)
@@ -431,6 +439,7 @@ func TestScorecardOfTheRecord(t *testing.T) {
 // state: its claims, the claims nothing will wake (workflow.Stranded) and the holders' claims as
 // the tick reads them.
 func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	const name = "two-waiters-one-blocker"
 	window := fixtureWindow(t, name)
@@ -552,11 +561,14 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 // checks in TestFixtureWindows, and childrenFirstWindow, acceptedAncestorWindow and ancestryWindow
 // in TestEveryHoldHasASourceInTheReplay, on the replays those tests make (checkTimelines).
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	t.Run("deployment-shaped", func(t *testing.T) {
+		t.Parallel()
 		timelinesAgree(t, dsn, deploymentShapedWindow(t), record.MainRule)
 	})
 	t.Run("queue-drop", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, queueDropWindow(t), record.MainRule)
 		for _, timeline := range []struct {
 			name string
@@ -570,44 +582,53 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 		}
 	})
 	t.Run("returned-part", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, returnedPartWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1"}, {key: "ACME-2", b: 1, a: 1}, {key: "ACME-3", b: 2, a: 1.0 / 3}})
 	})
 	t.Run("restart-and-tree", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, restartAndTreeWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.5, a: 1.5}, {key: "ACME-2", b: 2}, {key: "ACME-3", b: 4.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitBlockerDone: {Count: 1, Hours: 5.0 / 3}})
 	})
 	t.Run("lingering-parent", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, lingeringParentWindow(t), stopsPhaseRule())
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 2}, {key: "ACME-2", b: 4.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitChildDone: {Count: 1, Hours: 5.0 / 3}})
 	})
 	t.Run("children-again", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, childrenAgainWindow(t), stopsPhaseRule())
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 11.0 / 3}, {key: "ACME-2", b: 1}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 11.0 / 3}, WaitChildDone: {Count: 2, Hours: 1}})
 	})
 	t.Run("link-past-review", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, linkPastReviewWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitMovedOn: {Count: 1, Hours: 1.0 / 3}})
 	})
 	t.Run("done-blocker", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, doneBlockerWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{})
 	})
 	t.Run("gate-version", func(t *testing.T) {
+		t.Parallel()
 		// ACME-1 waits on ACME-2 from the gate's opening at 10:20 to its closing at 11:00, and again
 		// from its opening at 12:00 to the window's end at 13:00.
 		result := timelinesAgree(t, dsn, gateVersionWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitGateClosed: {Count: 1, Hours: 2.0 / 3}, WaitOpen: {Count: 1, Hours: 1}})
 	})
 	t.Run("touching-waits", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, touchingWaitsWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 11.0 / 6}})
 	})
 	t.Run("told-before-start", func(t *testing.T) {
+		t.Parallel()
 		result := timelinesAgree(t, dsn, toldBeforeStartWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 1}})
 	})
@@ -757,6 +778,7 @@ func gateHoursWindow(t *testing.T) Window {
 // from 11:00 to 12:00: the record's scorecard gives it 2 hours, and so does the line scorecard of its
 // replay under main, the rule that recorded it. Neither gives another tree.
 func TestTheScorecardGivesEachTreesClosedGateHours(t *testing.T) {
+	t.Parallel()
 	window := gateHoursWindow(t)
 	card, err := Score(window)
 	if err != nil {
@@ -804,6 +826,7 @@ func doneByAnyoneWindow(t *testing.T) Window {
 // ACME-1's and ACME-2's, ACME-3's coming before the window, in the record's scorecard and in the
 // line scorecard of its replay under main, the rule that recorded it.
 func TestTheScorecardCountsTheIssuesDoneByAnyone(t *testing.T) {
+	t.Parallel()
 	window := doneByAnyoneWindow(t)
 	card, err := Score(window)
 	if err != nil {

@@ -200,6 +200,7 @@ func startStateWindow(t *testing.T) (Window, int64) {
 // and the pull requests of the issues past implementing. The trace places every line and the seed
 // every issue.
 func TestSeedPlacesTheStartState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := seedStore(t)
 	window, asked := startStateWindow(t)
@@ -432,6 +433,7 @@ func withoutRepository(t *testing.T, w Window, key string) Window {
 // turn stands at the start in a tree the record never opened. No issue of a fixture window is
 // unplaced, at its start or at any hour of it, and the trace of each places every line.
 func TestSeedNamesWhatItCannotPlace(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	cases := []struct {
 		name   string
@@ -522,6 +524,7 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 // state writes, so ACME-1 is placed; the second leaves ACME-2's slot in doubt, so the seed names
 // ACME-2, with the reason. The trace holds the two facts, each of its kind.
 func TestSeedNamesAnIssueOnlyForAFactItsStartStateRestsOn(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
 	b.reaches(2 * time.Hour)

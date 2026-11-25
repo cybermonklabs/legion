@@ -96,6 +96,7 @@ func lastTurnOf(iss *IssueTrace, role claim.Role) (Turn, bool) {
 // each retired; ACME-3, back in the workflow when its check closes, keeps its tester's turn of the
 // new run open. The trace reads the line and places every fact.
 func TestAProductionChecksTurnEndsWhereTheCheckCloses(t *testing.T) {
+	t.Parallel()
 	if !TraceReads(checkClosedLine) {
 		t.Errorf("the trace does not read %q, which ends a production check's turn", checkClosedLine)
 	}
@@ -123,6 +124,7 @@ func TestAProductionChecksTurnEndsWhereTheCheckCloses(t *testing.T) {
 // ACME-2 check turn is left out and counted, and the one claim written is ACME-3's tester's, of the
 // turn its new run stands in; no issue is named.
 func TestSeedLeavesOutTheTurnOfAnIssueOutsideTheWorkflow(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	window := checkedWindow(t)
 	_, report := seedReported(t, st, window, window.From, func(tx pgx.Tx) {
@@ -154,6 +156,7 @@ func TestSeedLeavesOutTheTurnOfAnIssueOutsideTheWorkflow(t *testing.T) {
 // linger that stands then; seeded at 11:00, after both closes, neither is. The trace holds both
 // closes as facts of a linger.
 func TestSeedNamesALingerItDoesNotHoldOnlyWhereItStandsAtTheStart(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
 	b.reaches(2 * time.Hour)
@@ -217,6 +220,7 @@ func heldFromBeforeTheReach(t *testing.T, recorded ...string) Window {
 // Seeded at 10:00, the start state writes ACME-1's slot before ACME-2's, counts it inferred,
 // reports the difference and names no issue.
 func TestTheTraceInfersASlotHeldFromBeforeTheReach(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	for _, tc := range []struct {
 		name       string
@@ -263,6 +267,7 @@ func TestTheTraceInfersASlotHeldFromBeforeTheReach(t *testing.T) {
 // architect in its run (seeder.lifecycles) — so no claim of the 10:30 turn can be admitted: the run
 // writes none, counts the turn as one begun with no lifecycle, and finishes the window.
 func TestARunGoesOnPastATurnInATreeThatRunsNoLifecycle(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
 	b.reaches(2 * time.Hour)
@@ -298,6 +303,7 @@ func TestARunGoesOnPastATurnInATreeThatRunsNoLifecycle(t *testing.T) {
 // 10:00. ACME-3, a root handed to Legion at 09:10, has never run. Seeded at 10:00, ACME-1 alone
 // carries the mark: ACME-2's promotion holds its slot, and ACME-3 is at its first generation.
 func TestSeedOwesTheMembersOfARootReadmittedBeforeTheStart(t *testing.T) {
+	t.Parallel()
 	st := seedStore(t)
 	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
 	b.reaches(2 * time.Hour)

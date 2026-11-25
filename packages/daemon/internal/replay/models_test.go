@@ -202,6 +202,7 @@ func passFailWindow(t *testing.T) Window {
 // model that fails a day fails, and the output says it gives no limit for its signal; the provider,
 // of which the window holds no record, is not fitted and gives no test.
 func TestModelsPassAndFailRsDailyTest(t *testing.T) {
+	t.Parallel()
 	window := passFailWindow(t)
 	models := fittedModels(t, window)
 	checkDaysInFlight(t, window, models)
@@ -322,6 +323,7 @@ func missingRecordWindow(t *testing.T) Window {
 // pass, while the provider's 4 refusals are kept as recorded. The merge queue's model, with no
 // record anywhere, is not fitted, gives no test and gives no limit.
 func TestAModelIsNotFittedWhereItsRecordIsMissing(t *testing.T) {
+	t.Parallel()
 	window := missingRecordWindow(t)
 	models := fittedModels(t, window)
 	checkDaysInFlight(t, window, models)

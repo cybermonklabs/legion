@@ -13,6 +13,7 @@ import (
 // whatever n and m are. The test holds slowed to each of those at f 1, 1.2 and 1.6, and to the
 // square root of f halfway, for a segment of 90 minutes.
 func TestSegmentTimeUnderSlowdown(t *testing.T) {
+	t.Parallel()
 	const recorded = 90 * time.Minute
 	scaled := func(by float64) time.Duration { return time.Duration(math.Round(float64(recorded) * by)) }
 	for _, f := range []float64{1, 1.2, 1.6} {

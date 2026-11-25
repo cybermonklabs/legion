@@ -22,6 +22,7 @@ var everySignal = []string{SignalIdle, SignalQueue, SignalProvider, SignalKills,
 // run-out, and no input of a signal, no default assignee and no P0 bound held. Each of the 17 older
 // k1 windows is such a window, and TestFixtureWindows holds each to the values it gave before.
 func TestAWindowWithNoSignalInputReadsEverySignalUnrecorded(t *testing.T) {
+	t.Parallel()
 	names := fixtureWindowNames(t)
 	if len(names) != 17 {
 		t.Fatalf("the older k1 windows are %d, want 17: %v", len(names), names)
@@ -56,6 +57,7 @@ func TestAWindowWithNoSignalInputReadsEverySignalUnrecorded(t *testing.T) {
 // at 09:07. A span is half open, so a window holds no record of a signal at its span's end, and no
 // record of a signal its signals map does not name.
 func TestTheK1WindowsOfTheSignalsRead(t *testing.T) {
+	t.Parallel()
 	at := func(hour, minute int) time.Time { return time.Date(2001, time.March, 5, hour, minute, 0, 0, time.UTC) }
 	kill := func(minute, pid int) LauncherLine {
 		return LauncherLine{Time: at(9, 0).Add(time.Duration(minute) * time.Minute), Pod: "legion-acme-acme-1",
@@ -146,6 +148,7 @@ func signalWindow(t *testing.T) Window {
 // assignee, the P0 bounds and the signals' spans. An input held empty is a file with no line,
 // which reads back held: a record of no line, unlike an input not held at all.
 func TestTheSignalInputsWriteAndReadBack(t *testing.T) {
+	t.Parallel()
 	w := signalWindow(t)
 	dir := filepath.Join(t.TempDir(), "window")
 	if err := w.Write(dir); err != nil {
@@ -206,6 +209,7 @@ func TestTheSignalInputsWriteAndReadBack(t *testing.T) {
 // an input that is not that input's form, an input file of the format's directories with a name
 // the format does not give, and a negative P0 bound.
 func TestReadWindowRefusesABadSignalRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		header func(h map[string]any)

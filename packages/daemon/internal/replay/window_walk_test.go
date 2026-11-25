@@ -229,6 +229,7 @@ func changedFiles(before, after map[string]fileState) []string {
 // acme/widgets's main replaced by the listing's commit in the span, written whole by Window.Write.
 // It fails where a command writes the window whole, for which every input shows a later time.
 func TestCollectQueueAndMergesLeaveEveryOtherInputAsItWas(t *testing.T) {
+	t.Parallel()
 	for _, command := range inputsCommands {
 		t.Run(command.name, func(t *testing.T) {
 			dir := writtenAged(t, inputsWindow(t))
@@ -281,6 +282,7 @@ func TestCollectQueueAndMergesLeaveEveryOtherInputAsItWas(t *testing.T) {
 // own refusal, before any read of GitHub and with nothing written. It fails where a command reads
 // only the inputs it keeps something of.
 func TestCollectQueueAndMergesRefuseWhatReadWindowRefuses(t *testing.T) {
+	t.Parallel()
 	for _, command := range inputsCommands {
 		t.Run(command.name, func(t *testing.T) {
 			for _, tc := range []struct {
@@ -365,6 +367,8 @@ func liveHeap() int64 {
 // window's samples as it reads GitHub, as one that reads the whole window before it reads GitHub
 // does.
 func TestCollectQueueAndMergesHoldOneLineAtATime(t *testing.T) {
+	// Serial: the test measures the process's heap (liveHeap), which the allocations of a test
+	// running beside it would move, so it runs before the parallel tests start.
 	dir, size := largeMemoryWindow(t)
 	bound := size / 4
 	for _, command := range []struct {
@@ -421,6 +425,8 @@ func TestCollectQueueAndMergesHoldOneLineAtATime(t *testing.T) {
 // than that by the file's last line. It fails where the walk holds an input whole as it hands its
 // lines to the visitor, as one that reads each file whole before it splits it does.
 func TestTheWalkOfAWindowHoldsOneLineAtATime(t *testing.T) {
+	// Serial: the test measures the process's heap (liveHeap), which the allocations of a test
+	// running beside it would move, so it runs before the parallel tests start.
 	dir, size := largeMemoryWindow(t)
 	head, err := readWindowHead(dir)
 	if err != nil {
@@ -490,6 +496,7 @@ func lineLengths(lines []json.RawMessage) []int {
 // more than three buffers, and whose events hold an event as long, reads back as written. It fails
 // where the walk cuts a line at its buffer's end, or refuses a line its buffer does not hold.
 func TestTheWalkReadsALineLongerThanItsBuffer(t *testing.T) {
+	t.Parallel()
 	short := json.RawMessage(`{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"a short line"}`)
 	long := strings.Repeat("x", 3*inputBuffer+17)
 	w := Window{Project: "ACME", From: clock(9, 0), To: clock(11, 0), Before: Duration(time.Hour), Caps: []CapAt{{At: clock(8, 0), Cap: 2}},

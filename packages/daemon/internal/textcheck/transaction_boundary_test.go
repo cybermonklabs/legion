@@ -84,6 +84,13 @@ var allowances = []allowance{
 	// connection to read on (internal/ompsessions' reason below).
 	{"internal/replay", "openReplayDatabase", "R3", 2},
 	{"internal/replay", "(replayDatabase).drop", "R3", 1},
+	// The template a replay's database is copied from is made on that same connection, once for
+	// each set of migrations: a session advisory lock, taken and released there, spans the read of
+	// whether the template stands, its CREATE DATABASE, which runs in no transaction block, and the
+	// ALTER DATABASE that closes it to connections and renames it to its keyed name, one statement
+	// string the server runs as one implicit transaction. No transaction of Transact's can hold a
+	// lock across a CREATE DATABASE, and the connection is the one *pgx.Conn above.
+	{"internal/replay", "replayTemplate", "R3", 5},
 }
 
 // excludedPackages are the packages the guard does not walk, each with its reason.

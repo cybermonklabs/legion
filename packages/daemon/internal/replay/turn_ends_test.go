@@ -66,6 +66,7 @@ func processEnds(b *windowBuilder, at time.Time, key string, role claim.Role, by
 // every line. The trace reads the three kinds of line that end a turn and none of those the same
 // decisions write beside them.
 func TestATurnEndsWhereItsProcessEnds(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(8, 0), clock(12, 0))
 	b.boot(clock(8, 0))
 	ends := []struct {
@@ -117,6 +118,7 @@ func TestATurnEndsWhereItsProcessEnds(t *testing.T) {
 }
 
 func TestClaimCauseTraceDatesTheSeededDeathFromItsOwnLine(t *testing.T) {
+	t.Parallel()
 	from := clock(10, 0)
 	b := newWindowBuilder(t, from, clock(12, 0))
 	b.reaches(2 * time.Hour)

@@ -76,6 +76,7 @@ func heldMergeWindow(t *testing.T, rule string) Window {
 // 11:00 to 11:15 and ends by held_merge; its one stretch, from its move into testing at 09:45, ends
 // at 11:15 with no conflict; and the trace places every line.
 func TestTheTraceReadsAHeldMergeAtItsOwnLine(t *testing.T) {
+	t.Parallel()
 	window := heldMergeWindow(t, record.MainRule.Name)
 	trace, err := BuildTrace(window)
 	if err != nil {
@@ -173,6 +174,7 @@ func checkHeldMerge(t *testing.T, result RunResult, log []replayLine) {
 // pull_request_merged, the replay entering no move of its own. The run counts one held merge and
 // refuses no move.
 func TestAHeldMergeIsAppliedAtItsTimeAndClosesAtTheLastLeave(t *testing.T) {
+	t.Parallel()
 	result, log, states := heldMergeRun(t, record.MainRule.Name)
 	checkHeldMerge(t, result, log)
 	held := 0
@@ -202,6 +204,7 @@ func TestAHeldMergeIsAppliedAtItsTimeAndClosesAtTheLastLeave(t *testing.T) {
 // done and no cover is left. The merge and the close come as under main, with one held merge and no
 // refused move.
 func TestAHeldMergeIsAWaitACoverHolds(t *testing.T) {
+	t.Parallel()
 	result, log, states := heldMergeRun(t, "cover")
 	checkHeldMerge(t, result, log)
 	covered := 0

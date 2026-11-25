@@ -57,6 +57,7 @@ func readCoverState(ctx context.Context, st *store.Store, at time.Time, parent, 
 // covered by ACME-3, which holds one; and once ACME-3 is done the cover is gone and ACME-1 holds its
 // slot again, at the same settle as the cover's end.
 func TestAHeldSignOffIsAWaitACoverHolds(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	var states []coverState
 	cfg := RunConfig{Window: fixtureWindow(t, "every-trigger"), Rule: replayedRule(t, "cover"), Branch: MainBranch, Seed: 1,

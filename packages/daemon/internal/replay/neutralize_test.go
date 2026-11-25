@@ -242,6 +242,7 @@ func neutralizePrivate(t *testing.T) (in, out string, names NeutralMap) {
 // commits and times under their renamed repositories. The map is written outside the window,
 // readable by its owner alone, and holds the names it returned.
 func TestNeutralizeLeavesNoPrivateNameAndKeepsTheShapes(t *testing.T) {
+	t.Parallel()
 	in, out, names := neutralizePrivate(t)
 	assertNoneHeld(t, out, privateNames, true)
 
@@ -320,6 +321,7 @@ func TestNeutralizeLeavesNoPrivateNameAndKeepsTheShapes(t *testing.T) {
 // claim of the issue its neutral title names, the child's architect claim, and the laptop's
 // session, the same id under a title outside Legion, as running none.
 func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
+	t.Parallel()
 	_, out, names := neutralizePrivate(t)
 	root, child, other := names.Keys["NIMBUS-400"], names.Keys["NIMBUS-412"], names.Keys["ORION-77"]
 	if root != "ACME-1" || child != "ACME-2" || other != "OTHERA-1" {
@@ -410,6 +412,7 @@ func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
 // window is: a map inside the output is refused, and so is a map already there, which a second
 // run would otherwise write over; neither refusal writes the output or the map.
 func TestNeutralizeRefusesAMapInsideTheOutputOrAlreadyThere(t *testing.T) {
+	t.Parallel()
 	in := privateWindow(t)
 	scratch := t.TempDir()
 	out := filepath.Join(scratch, "neutral")
@@ -441,6 +444,7 @@ func TestNeutralizeRefusesAMapInsideTheOutputOrAlreadyThere(t *testing.T) {
 // daemon's, which the trace reads lines by — fails the neutralization rather than passing it
 // through, and the output and the map are not left behind.
 func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
+	t.Parallel()
 	in := privateWindow(t)
 	scratch := t.TempDir()
 	out, mapFile := filepath.Join(scratch, "neutral"), filepath.Join(scratch, "map.json")
@@ -465,6 +469,7 @@ func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
 // holds a private name, every line of an input keeps its shape, and each name is the one it
 // becomes in the other inputs.
 func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
+	t.Parallel()
 	w := privateRecord(t)
 	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
 	pod := "legion-nimbus-nimbus-412"
@@ -590,6 +595,7 @@ func privateSettings(t *testing.T, id int64, kind string, at time.Time, actor, p
 // is refused before the window is read: its replacement would hold it again, and the check of the
 // bytes written would refuse every window that holds it. Nothing is written.
 func TestNeutralizeRefusesADenyWordItsReplacementHolds(t *testing.T) {
+	t.Parallel()
 	in := privateWindow(t)
 	scratch := t.TempDir()
 	out, mapFile := filepath.Join(scratch, "neutral"), filepath.Join(scratch, "map.json")
@@ -615,6 +621,7 @@ func TestNeutralizeRefusesADenyWordItsReplacementHolds(t *testing.T) {
 // and documentation addresses are kept. The map holds each address renamed, and the neutral
 // window none of them.
 func TestNeutralizeRenamesEveryAddressToADocumentationOne(t *testing.T) {
+	t.Parallel()
 	recorded, err := ReadWindow(privateWindow(t))
 	if err != nil {
 		t.Fatal(err)

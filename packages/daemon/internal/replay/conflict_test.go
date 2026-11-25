@@ -29,6 +29,7 @@ import (
 // M = 0 merged), the fit reaches a chance below 10⁻⁶ at M = 0 and above 1 − 10⁻⁶ at M = 1, the
 // limits its README requires, and gives each coefficient an interval with no end.
 func TestConflictRateFit(t *testing.T) {
+	t.Parallel()
 	t.Run("synthetic stretches", func(t *testing.T) {
 		const base, term, draws, size = -2.0, 0.8, 40, 2000
 		covered, sums := [2]int{}, [2]float64{}
@@ -153,6 +154,7 @@ func linkedPullRequest(t *testing.T, window Window, key, url string) Window {
 // (the 12:00 merge) and is counted. The squash suffix the merges are read from is ` (#<n>)` at the
 // end of a commit's first line.
 func TestAStretchCountsNoMergeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	merges := []Merge{
 		{SHA: "7a", At: clock(10, 30), Branch: "main", PR: 7},
 		{SHA: "41b", At: clock(12, 44), Branch: "main", PR: 41},
@@ -264,6 +266,7 @@ func reachedConflictWindow(t *testing.T) Window {
 // pooled (the log-odds of 6 to 35, about −1.76); where the printed model does not give the span;
 // and where the window's record in a directory of runs counts other stretches than the model.
 func TestTheConflictModelIsFittedOnTheWindowAlone(t *testing.T) {
+	t.Parallel()
 	window := reachedConflictWindow(t)
 	trace, err := BuildTrace(window)
 	if err != nil {
@@ -442,10 +445,12 @@ func checkImplementerTurns(t *testing.T, seed int64, log []replayLine, wantStart
 // own recorded testing, 40 minutes, to its tester's failure at 10:35. The test fails for a seed
 // whose replay moves ACME-1 otherwise or at other moments, or refuses a move.
 func TestADrawnConflictIsGivenALoopLeftFromItsPhase(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	window := phaseLoopsWindow(t, true)
 	for seed := int64(1); seed <= 5; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			t.Parallel()
 			checkACME1Moves(t, window, seed, backInTesting, []time.Time{clock(9, 30), clock(9, 55), clock(10, 35)})
 		})
 	}
@@ -503,10 +508,12 @@ func unendedLoopWindow(t *testing.T) Window {
 // replay moves ACME-1 otherwise or at other moments, starts or ends its implementer's turns from
 // 09:30 to 10:00 otherwise, or refuses a move.
 func TestADrawnConflictIsGivenNoLoopTheRecordShowsUnended(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	window := unendedLoopWindow(t)
 	for seed := int64(1); seed <= 8; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			t.Parallel()
 			log := checkACME1Moves(t, window, seed, backInTesting, []time.Time{clock(9, 30), clock(9, 55), clock(10, 35)})
 			checkImplementerTurns(t, seed, log, []time.Time{clock(9, 30), clock(9, 45)}, []time.Time{clock(9, 40), clock(9, 55)})
 		})
@@ -562,6 +569,7 @@ func openLoopWindow(t *testing.T) Window {
 // other than one conflict kept or does not name assumption 35, and for a replay under main that
 // asks ACME-1's merge forward at another moment or lands it.
 func TestAStretchWhoseLoopRunsToTheWindowsEndKeepsItsConflict(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	window := openLoopWindow(t)
 	replay := func(t *testing.T, rule string, seed int64) (RunResult, []replayLine, map[string][]fixtureMove) {
@@ -575,6 +583,7 @@ func TestAStretchWhoseLoopRunsToTheWindowsEndKeepsItsConflict(t *testing.T) {
 	}
 	for seed := int64(1); seed <= 5; seed++ {
 		t.Run(fmt.Sprintf("legion-v20.42.5/seed-%d", seed), func(t *testing.T) {
+			t.Parallel()
 			result, log, moved := replay(t, "legion-v20.42.5", seed)
 			checkMovesAt(t, seed, "ACME-1", log, moved, []fixtureMove{{From: phase.Testing, To: phase.Implementing, Trigger: workflow.TriggerConflict}},
 				[]time.Time{clock(9, 30)})
@@ -587,6 +596,7 @@ func TestAStretchWhoseLoopRunsToTheWindowsEndKeepsItsConflict(t *testing.T) {
 		})
 	}
 	t.Run("main", func(t *testing.T) {
+		t.Parallel()
 		_, log, _ := replay(t, "main", 1)
 		asked := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardAskedLine && line.Issue == "ACME-1" })
 		landed := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardLandedLine && line.Issue == "ACME-1" })
@@ -606,6 +616,7 @@ func TestAStretchWhoseLoopRunsToTheWindowsEndKeepsItsConflict(t *testing.T) {
 // implementing, and runs its own recorded testing to its tester's failure at 10:25, rather than
 // going on to reviewing by the loop's testing.
 func TestALoopFromALaterPhaseReturnsTheIssueToThePhaseItsConflictLeft(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	checkACME1Moves(t, phaseLoopsWindow(t, false), 1, backInTesting, []time.Time{clock(9, 30), clock(9, 45), clock(10, 25)})
 }
@@ -651,6 +662,7 @@ func earlierLoopWindow(t *testing.T) Window {
 // the loop's 20 minutes of implementing, runs a copy of its own testing, 30 minutes, to reviewing
 // at 10:30, and runs its own recorded reviewing, 30 minutes, to its reviewer's send-back at 11:00.
 func TestALoopFromAnEarlierPhaseTakesTheIssueBackThroughItsOwnWork(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	want := []fixtureMove{
 		{From: phase.Testing, To: phase.Reviewing, Trigger: workflow.TriggerTesterPassed},
@@ -695,6 +707,7 @@ func cyclingLoopWindow(t *testing.T) Window {
 // moments, where a draw's place does not count the draws its stretch made before it in the run, or
 // where the replay refuses a move.
 func TestAStretchAfterADrawnLoopTakesADrawOfItsOwn(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	var draws []conflictDraw
 	out := t.TempDir()
@@ -732,6 +745,7 @@ func TestAStretchAfterADrawnLoopTakesADrawOfItsOwn(t *testing.T) {
 // loop of conflict is counted, and ACME-1 goes on with its last merging segment from 11:00 and is
 // done at 11:15.
 func TestTheZeroBranchDrawsWithoutTheMergesTerm(t *testing.T) {
+	t.Parallel()
 	base, testingTerm := -1.5, 0.7
 	fitted := ConflictModel{Stretches: 10, Conflicts: 4, Base: Coefficient{Estimate: base}, Term: Coefficient{Estimate: 0.9}, Level: conflictLevel,
 		Phases: map[phase.Phase]PhaseFit{phase.Testing: {Term: &Coefficient{Estimate: testingTerm}}}}
@@ -787,6 +801,7 @@ func TestTheZeroBranchDrawsWithoutTheMergesTerm(t *testing.T) {
 // that also holds the 11:00 commit has M = 2 and another chance where the term is not zero, and
 // the same under the zero branch; and a commit at a stretch's own start or end is not inside it.
 func TestAConflictDependsOnTheWaitOnlyThroughMerges(t *testing.T) {
+	t.Parallel()
 	window := Window{Merges: map[string][]Merge{builtRepository: {
 		{SHA: "1a", At: clock(10, 0), Branch: "main"}, {SHA: "2b", At: clock(10, 30), Branch: "release"}, {SHA: "3c", At: clock(11, 0), Branch: "main"},
 	}}}
@@ -911,6 +926,7 @@ func pastReviewConflictWindow(t *testing.T) Window {
 // refuses a move, counts other than the conflicts it left to the merger (two under main, none
 // under legion-v20.42.5), or names assumption 37 otherwise than where it left one.
 func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	window := pastReviewConflictWindow(t)
 	type course struct {
@@ -966,6 +982,7 @@ func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 	} {
 		for seed := int64(1); seed <= 3; seed++ {
 			t.Run(fmt.Sprintf("%s/seed-%d", c.rule, seed), func(t *testing.T) {
+				t.Parallel()
 				result, log, moved := replayLoopWindow(t, window, c.rule, seed)
 				for _, key := range []string{"ACME-1", "ACME-2"} {
 					want := c.want[key]
@@ -1125,6 +1142,7 @@ func byPlace(draws []conflictDraw) map[string]conflictDraw {
 // after 13:50 under keep-past-review, draws under main alone, and every other stretch draws alike
 // under both.
 func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
+	t.Parallel()
 	replayDSN(t)
 	places := func(draws []conflictDraw) []string {
 		out := make([]string, len(draws))
@@ -1134,6 +1152,7 @@ func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
 		return out
 	}
 	t.Run("no stretch moves", func(t *testing.T) {
+		t.Parallel()
 		window := sharedDrawsWindow(t, clock(18, 0))
 		main, kept := drawsUnder(t, window, record.MainRule.Name), drawsUnder(t, window, "keep-past-review")
 		if len(main) != 5 || len(kept) != 5 {
@@ -1156,6 +1175,7 @@ func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
 		}
 	})
 	t.Run("one stretch moves", func(t *testing.T) {
+		t.Parallel()
 		window := sharedDrawsWindow(t, clock(13, 30))
 		main, kept := byPlace(drawsUnder(t, window, record.MainRule.Name)), byPlace(drawsUnder(t, window, "keep-past-review"))
 		moved := drawPlace(stretchDraw{issue: "ACME-3", start: clock(12, 30), phase: phase.Merging})
@@ -1241,6 +1261,7 @@ func mergerConflictWindow(t *testing.T) Window {
 // backward move. The record's scorecard counts two rounds of conflict, ACME-1's loop and ACME-3's
 // merge forward, and one of send_back, ACME-2's loop.
 func TestAMergersSendBackForAConflictingHeadCountsAsAConflict(t *testing.T) {
+	t.Parallel()
 	window := mergerConflictWindow(t)
 	trace, err := BuildTrace(window)
 	if err != nil {
@@ -1297,6 +1318,7 @@ func TestAMergersSendBackForAConflictingHeadCountsAsAConflict(t *testing.T) {
 // 09:30; ACME-2 moves as the record moves it, back from reviewing by conflict at 10:45 and back in
 // reviewing at 11:15. No stretch draws, and a window's record runs the branch at the seed 1 alone.
 func TestTheRecordedConflictsBranchKeepsTheRecordsConflicts(t *testing.T) {
+	t.Parallel()
 	window := phaseLoopsWindow(t, false)
 	recorded := DiagnosticBranches()[0].Branch
 	if !recorded.recordedConflicts() {
@@ -1408,6 +1430,7 @@ func releasePartsWindow(t *testing.T) Window {
 // 0.25, and each draw of one that ends at 12:40 reads 0.75. It fails for one rate over both parts,
 // for which every draw reads 0.5.
 func TestTheMergingRateIsFittedForEachReleasePart(t *testing.T) {
+	t.Parallel()
 	window := releasePartsWindow(t)
 	in, err := newWindowInputs(window)
 	if err != nil {
@@ -1496,6 +1519,7 @@ func bootSpanWindow(t *testing.T) Window {
 // standard deviations each side of 20 and of 60. It fails where a boot keeps the chance and moves
 // only the moment, for which every draw reads 0.5.
 func TestAStretchSpanningABootDrawsThereAtItsOwnChance(t *testing.T) {
+	t.Parallel()
 	window := bootSpanWindow(t)
 	in, err := newWindowInputs(window)
 	if err != nil {
@@ -1565,6 +1589,7 @@ func TestAStretchSpanningABootDrawsThereAtItsOwnChance(t *testing.T) {
 // 14:30 leaves it implementing to the end. The loops that left testing and end are the hour and the
 // hour and a half. It fails where the pool leaves out the reach's loop.
 func TestTheLoopPoolHoldsEveryLoopThatEndsBeforeTheRunOutsEnd(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.reaches(3 * time.Hour)
 	b.window.After = Duration(2 * time.Hour)

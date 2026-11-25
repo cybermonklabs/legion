@@ -17,6 +17,7 @@ import "testing"
 // and for ACME-9 in acme/tools. It fails for an issue numbered otherwise, and for a number asked
 // twice that changes.
 func TestEachPullRequestRecordHasANumberOfItsOwn(t *testing.T) {
+	t.Parallel()
 	const widgets, gadgets, tools = "acme/widgets", "Acme/Gadgets", "acme/tools"
 	trace := Trace{Issues: map[string]*IssueTrace{
 		"ACME-3":  {Key: "ACME-3", Repo: widgets},

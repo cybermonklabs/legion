@@ -58,6 +58,7 @@ type capturedEntry struct {
 // spec as the step, no changes request and no gated steps for the older gate registrations, and
 // the unrecorded cause for the failed claim with no cause.
 func TestTheTraceReadsEveryCapturedShape(t *testing.T) {
+	t.Parallel()
 	lines, events, merges := capturedLineReadings(t), capturedEventReadings(t), capturedMergeReadings(t)
 	var read []string
 	for name := range lines {
@@ -131,6 +132,7 @@ func TestTheTraceReadsEveryCapturedShape(t *testing.T) {
 // moment, a claim runs the latest of its sessions whose first event is at or before it, and before
 // the first, the first; a claim the record shows no session of runs none.
 func TestTheTraceReadsTheSessionsThatRanEachClaim(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
 	b.boot(clock(9, 0))
 	first := recordedSession("ACME-1", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c1")

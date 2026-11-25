@@ -108,6 +108,7 @@ func madeUpForecast(t *testing.T, change func(window, rule string, card *Scoreca
 // laterStartWindow, recorded under keep-past-review, forecast under main against firstStartsWindow,
 // recorded under main, replays firstStartsWindow under keep-past-review too.
 func TestForecastControlSaysWhereItCannotTell(t *testing.T) {
+	t.Parallel()
 	f, read := madeUpForecast(t, func(window, rule string, card *Scorecard) {
 		switch {
 		case window == "window-1" && rule == forecastBefore:
@@ -232,6 +233,7 @@ func TestForecastControlSaysWhereItCannotTell(t *testing.T) {
 // window-2's replay under its own rule and 40 in window-1's, so the error is 10, and the forecast's 55
 // stands 25 from the record after, past twice it. Each number the forecast had keeps R5's gap.
 func TestForecastHasAQuantityForEveryMeasure(t *testing.T) {
+	t.Parallel()
 	maxima := func(inFlight float64) map[string]any {
 		return map[string]any{"waitOnlyForSlot": 3.0, "startedWithoutSlot": 4.0, "pastReviewHolding": 2.0, "pastReviewNotHolding": 2.0, "inFlight": inFlight}
 	}

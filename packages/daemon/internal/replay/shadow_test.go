@@ -99,6 +99,7 @@ type approvalRead struct {
 // one the answer closed; and the person's done of ACME-2 at 11:00 is applied, no fence dropping it,
 // so ACME-2 leaves the workflow then.
 func TestAPlacedIssuesDispatchWritesApplyAfterAMidwayStart(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window, artifact := midwayWindow(t)
 	if trace, err := BuildTrace(window); err != nil || len(trace.Unplaced) != 0 {
@@ -213,6 +214,7 @@ func TestAPlacedIssuesDispatchWritesApplyAfterAMidwayStart(t *testing.T) {
 // todo with the label at 10:23 (a hand-over's write). The replay applies the writes of 09:10,
 // 09:20, 09:21, 09:31, 09:41 and 10:13, and leaves every other to its outbox.
 func TestADaemonWriteNoOutboxRowMakesIsAppliedAsRecorded(t *testing.T) {
+	t.Parallel()
 	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
 	b.boot(clock(9, 0))
 	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "backlog", Rank: "a1", Labels: handedToLegion})
@@ -299,6 +301,7 @@ func apiStatusWindow(t *testing.T) Window {
 // the person's done at 11:00; ACME-2, set back to backlog by the daemon's session at 10:00, leaves
 // the workflow then.
 func TestAStatusTheDaemonsAPIWritesIsAppliedAsRecorded(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := apiStatusWindow(t)
 	if trace, err := BuildTrace(window); err != nil || len(trace.Unplaced) != 0 {
@@ -332,6 +335,7 @@ func TestAStatusTheDaemonsAPIWritesIsAppliedAsRecorded(t *testing.T) {
 // one event that puts the label on ACME-2, the echo of the replay's own write, whose id is past
 // every recorded one (echoIDBase).
 func TestAHandOverStaysTheReplaysOwnWrite(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := treeClosedWindow(t)
 	var copied *shadow
@@ -408,6 +412,7 @@ func heldRootTodoWindow(t *testing.T) Window {
 // daemon's own code releases ACME-1's hold at 11:20, and ACME-1 makes its recorded move to testing
 // at 11:50, no move refused.
 func TestTheControllersTodoOnAHeldRootReleasesTheHold(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := heldRootTodoWindow(t)
 	if trace, err := BuildTrace(window); err != nil || len(trace.Unplaced) != 0 {
@@ -468,6 +473,7 @@ func outsideDaemonWindow(t *testing.T) Window {
 // that close is taken for a write of the window's own daemon and left out, for which OTHER-7 stays
 // todo and ACME-2 never starts.
 func TestAnotherProjectsDaemonWritesItsIssuesAsRecorded(t *testing.T) {
+	t.Parallel()
 	log, copied := replayCopied(t, outsideDaemonWindow(t), record.MainRule.Name)
 	if closed, want := eventsApplied(t, copied, "OTHER-7", "issue.closed"), []time.Time{clock(10, 20)}; !slices.EqualFunc(closed, want, time.Time.Equal) {
 		t.Errorf("OTHER-7's close was applied at %s, want at %s", describeTimes(closed), describeTimes(want))

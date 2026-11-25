@@ -56,6 +56,7 @@ func sessionClaimWindow(t *testing.T, retitled bool) Window {
 // no claim of the architect between its turns, or claims that run another session than the
 // record's, releases the root at the retitle, and ACME-2 never starts.
 func TestARootWaitingOnAPersonKeepsItsArchitectsSession(t *testing.T) {
+	t.Parallel()
 	_, log := knobRun(t, sessionClaimWindow(t, true), mainRule(t), "main")
 	if released := linesAt(log, func(line replayLine) bool { return line.Msg == releasedRootLine && line.Issue == "ACME-1" }); len(released) != 0 {
 		t.Errorf("the replay released ACME-1 at %s, which the record kept waiting on the person", describeTimes(released))
@@ -89,6 +90,7 @@ func TestARootWaitingOnAPersonKeepsItsArchitectsSession(t *testing.T) {
 // every fact: from the first fact on it is the claim of the architect's session, and the root is
 // kept, its gate opening at the person's approval at 10:20.
 func TestTheStartStateMirrorsTheDispatchClaimTheRecordShows(t *testing.T) {
+	t.Parallel()
 	records := record.NewStore()
 	var read []string
 	look := func(ctx context.Context, pool *store.Pool, _ *shadow) error {
@@ -186,6 +188,7 @@ func withSessionsAsRecorded(t *testing.T, w Window) (Window, int) {
 // Placed at their recorded times instead, the version would move ACME-2 into planning at 11:40 and
 // the link its slot back at 12:10.
 func TestAWorkersEventMovesWithItsWorkWhateverNamesItsSession(t *testing.T) {
+	t.Parallel()
 	window, renamed := withSessionsAsRecorded(t, laterStartWindow(t))
 	if renamed != 3 {
 		t.Fatalf("laterStartWindow names %d sessions by their claim tokens, want 3: the architects of ACME-1 and ACME-2 and ACME-2's planner", renamed)

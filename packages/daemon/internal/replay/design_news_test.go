@@ -55,6 +55,7 @@ func approvedAgainWindow(t *testing.T) Window {
 // is owed nothing and waits for nothing, its turn starts at 11:30, and ACME-1 merges at 11:45, as in
 // the record.
 func TestTheNewsOfAnApprovedVersionIsToldOnceAndHoldsNoMerger(t *testing.T) {
+	t.Parallel()
 	window := approvedAgainWindow(t)
 	out := t.TempDir()
 	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
@@ -105,6 +106,7 @@ func TestTheNewsOfAnApprovedVersionIsToldOnceAndHoldsNoMerger(t *testing.T) {
 // named through the owner walk and not here. A tree whose root names no project token holds no
 // claim for any member.
 func TestOnlyAPhaseWorkerHoldsAMembersPhaseInTheReplay(t *testing.T) {
+	t.Parallel()
 	root := record.Issue{Key: "ACME-1", Project: "ACME", Phase: phase.Implementing}
 	claims := record.NewNewsClaims(root, &record.NewsFacts{Members: []record.Issue{root}})
 	project, err := claim.ProjectToken(root.Project)

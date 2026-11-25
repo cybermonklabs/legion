@@ -62,6 +62,7 @@ func wantCause(move SendBack) Cause {
 // two groups a forecast across a recorded change scores the causes in, as the design decides them:
 // the causes the change redefines and the ones both releases define the same way.
 func TestEveryBackwardMoveHasACause(t *testing.T) {
+	t.Parallel()
 	want := []Cause{"review_changes", "send_back", "conflict", "red_checks_or_conflict", "test_failed", "queue_drop", "other_backward"}
 	if !slices.Equal(Causes, want) {
 		t.Errorf("Causes is %q, want the design's words %q", Causes, want)

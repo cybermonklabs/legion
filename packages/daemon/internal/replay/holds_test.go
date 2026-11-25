@@ -117,6 +117,7 @@ var noRecordedWindowHolds = map[string]string{
 // ancestry, children_first and accepted_ancestor keep their two timelines agreeing, with the waits
 // and the first starts their holds keep (TestSnapshotAndLineTimelinesAgree).
 func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
+	t.Parallel()
 	cases := holdCases()
 	for _, word := range record.HeldReasons {
 		_, covered := cases[string(word)]
@@ -147,6 +148,7 @@ func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		hold := cases[name]
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			window := hold.window(t)
 			result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1,
 				PGDSN: dsn, Out: t.TempDir(), TraceSegments: true})

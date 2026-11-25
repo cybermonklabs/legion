@@ -90,6 +90,7 @@ func returnedPartWindow(t *testing.T) Window {
 // Reading (b): 3 hours, an average of 0.6, at most 2 (11:30 to 12:00). Reading (a): 4/3 hours, an
 // average of 0.26666…, at most 2 (11:40 to 12:00).
 func TestAnIssueWithNoSlotWaitsForOneOnlyWhereTheLinePlacesIt(t *testing.T) {
+	t.Parallel()
 	card := assertRecordedHours(t, returnedPartWindow(t), []issueHours{
 		{key: "ACME-1", inFlight: 5},
 		{key: "ACME-2", inFlight: 4 + 55.0/60, b: 1, a: 1},
@@ -173,6 +174,7 @@ func restartAndTreeWindow(t *testing.T) Window {
 // Reading (b): 29/6 hours, an average of 29/24, at most 3 (10:30 to 11:20). Reading (a): 1.5 hours,
 // an average of 0.375, at most 1.
 func TestARetriedHoldOwesItsStartAndATreeThatIsNotLiveWaitsForNoSlot(t *testing.T) {
+	t.Parallel()
 	card := assertRecordedHours(t, restartAndTreeWindow(t), []issueHours{
 		{key: "ACME-1", inFlight: 4, b: 1.5, a: 1.5},
 		{key: "ACME-2", inFlight: 2.25, b: 2},

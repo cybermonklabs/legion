@@ -339,9 +339,10 @@ replacement would hold it again.`,
 const replayRunLong = `Replay the recorded window in --window through the daemon's own handler chain (the Dispatch
 mirror, the workflow engine and the admission pass) under the slot rule --rule names, on a
 simulated clock, in a database of the replay's own that it makes on the Postgres server
---pg-dsn names (from template1, with the daemon's migrations) and drops at the end unless
---keep-db. It writes nothing to the database --pg-dsn names itself, and refuses a server it
-cannot make a database on, with the server's reason.
+--pg-dsn names (a copy of a template database it makes once on that server for each set of the
+daemon's migrations) and drops at the end unless --keep-db. It writes nothing to the database
+--pg-dsn names itself, and refuses a server it cannot make a database on, with the server's
+reason.
 
 The window's Dispatch events, its recorded phase moves, ticks and boots are applied at their
 recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes would take after

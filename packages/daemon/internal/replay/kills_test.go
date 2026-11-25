@@ -32,6 +32,7 @@ func guardKillTold(b *windowBuilder, at time.Time, key string, role claim.Role, 
 // lacks, and the window must score as it does without the daemon's kill lines, which move nothing
 // of the trace.
 func TestTheKillMatcherNamesEachKillOneRecordLacks(t *testing.T) {
+	t.Parallel()
 	write := func(kills bool) Window {
 		b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
 		b.boot(clock(9, 0))

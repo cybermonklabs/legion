@@ -143,6 +143,7 @@ func toldBeforeStartWindow(t *testing.T) Window {
 // the moment its wait for the child filed then begins, and the record's scorecard counts one wait,
 // from 09:10 to the child's close at 11:00, ended by it: child_done for 1 hour 50 minutes.
 func TestAWaitThatBeginsWhereAnotherEndsIsOneWait(t *testing.T) {
+	t.Parallel()
 	card, err := Score(touchingWaitsWindow(t))
 	if err != nil {
 		t.Fatalf("score the record: %v", err)
@@ -158,6 +159,7 @@ func TestAWaitThatBeginsWhereAnotherEndsIsOneWait(t *testing.T) {
 // record.GateOpen opens a step (gateReader): an approval of another document, or of an older
 // version, opens nothing, and with the lines no verdict moves the gate at all.
 func TestAVerdictMovesTheGateOnlyOnItsDocumentAtItsVersion(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name  string
 		lines bool
@@ -200,6 +202,7 @@ func TestAVerdictMovesTheGateOnlyOnItsDocumentAtItsVersion(t *testing.T) {
 // writes no line of that wait. Both of its timelines count one wait, from the start to ACME-2's
 // close at 11:00: child_done for an hour.
 func TestTheStartStateMarksAChildrenWaitTheRecordTold(t *testing.T) {
+	t.Parallel()
 	window := toldBeforeStartWindow(t)
 	st := seedStore(t)
 	_, report := seedReported(t, st, window, window.From, func(tx pgx.Tx) {

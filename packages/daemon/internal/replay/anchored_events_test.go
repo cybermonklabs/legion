@@ -102,6 +102,7 @@ func eventsApplied(t *testing.T, copied *shadow, key, kind string) []time.Time {
 // 09:40. Placed in the implementer's segment, the filing never enters: the replay never creates
 // ACME-4, and the release starts nothing; and left with the segment, the comment never enters.
 func TestTheEventsOfAPassedOverLoopAreAppliedOnce(t *testing.T) {
+	t.Parallel()
 	var copied *shadow
 	out := t.TempDir()
 	cfg := RunConfig{Window: passedLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: 1, Slowdown: 1,
@@ -169,6 +170,7 @@ func givenLoopWindow(t *testing.T) Window {
 // segment of the implementer, before the move it ends with. The test fails where no seed gives
 // ACME-3 ACME-4's loop.
 func TestAnEventOfALoopADrawnLoopReplacesGoesWithIt(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := givenLoopWindow(t)
 	given := 0
@@ -266,6 +268,7 @@ func recordCancelledQuestion(b *windowBuilder, before func()) {
 // the version's place in the cancelled segment, the approval would enter at 11:40; and the version,
 // dropped with the segment, never entered at all.
 func TestAnAnswerComesFromItsQuestionsNewPlace(t *testing.T) {
+	t.Parallel()
 	var copied *shadow
 	out := t.TempDir()
 	cfg := RunConfig{Window: cancelledQuestionWindow(t), Rule: replayedRule(t, "keep-past-review"), Branch: MainBranch, Seed: 1,
@@ -327,6 +330,7 @@ func lateChildFilingWindow(t *testing.T) Window {
 // ACME-4 is filed at 10:20, while ACME-3 waits for its slot, and holds ACME-3's start to the window's
 // end.
 func TestAnArchitectsFilingUnderItsIssueMovesWithTheIssuesStart(t *testing.T) {
+	t.Parallel()
 	log, copied := replayCopied(t, lateChildFilingWindow(t), "keep-past-review")
 	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
@@ -454,6 +458,7 @@ func replayRecording(t *testing.T, window Window, key string) ([]replayLine, *sh
 // it and never starts, and the filing that waits for ACME-3's start never enters. The second fails
 // where the edit enters at its recorded time, 12:40, or where it only waits for the filing.
 func TestAnArchitectsActOnAChildItFiledFollowsTheFiling(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name           string
 		edited, enters time.Time
@@ -462,6 +467,7 @@ func TestAnArchitectsActOnAChildItFiledFollowsTheFiling(t *testing.T) {
 		{name: "the act keeps its offset from the filing", edited: clock(12, 40), enters: clock(14, 40)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			window := lateChildRecord(t, func(b *windowBuilder) {
 				shelfLabels(b, clock(10, 20), architectOf("ACME-3"))
 				b.daemonWrites(clock(10, 21), "ACME-4", "todo")
@@ -499,6 +505,7 @@ func TestAnArchitectsActOnAChildItFiledFollowsTheFiling(t *testing.T) {
 // window. It fails where the link keeps its recorded time, for which ACME-3 stands blocked by an
 // unfinished issue from 10:20 and never starts.
 func TestAnArchitectsActOnItsOwnUnstartedIssueMovesWithItsStart(t *testing.T) {
+	t.Parallel()
 	window := lateChildRecord(t, func(b *windowBuilder) {
 		b.file(clock(9, 15), "ACME-5", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "c5"})
 		b.changed(clock(10, 20), "ACME-3", architectOf("ACME-3"), func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-5"} })
@@ -537,6 +544,7 @@ func TestAnArchitectsActOnItsOwnUnstartedIssueMovesWithItsStart(t *testing.T) {
 // recorded time, for which ACME-4 is filed at 10:20, while ACME-3 waits for its slot, and holds
 // ACME-3's start to the window's end.
 func TestAFilingUnderAnIssueMovesWithItsStartWhoeverFiledIt(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		by   eventActor
@@ -545,6 +553,7 @@ func TestAFilingUnderAnIssueMovesWithItsStartWhoeverFiledIt(t *testing.T) {
 		{name: "a person", by: builtPerson},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			log, copied := replayCopied(t, lateChildRecord(t, func(b *windowBuilder) { shelfLabels(b, clock(10, 20), c.by) }), "keep-past-review")
 			if started, want := startedAt(log, "ACME-3"), []time.Time{clock(12, 0)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 				t.Errorf("ACME-3 started at %s, want at %s, as ACME-2 merges", describeTimes(started), describeTimes(want))
@@ -572,6 +581,7 @@ func TestAFilingUnderAnIssueMovesWithItsStartWhoeverFiledIt(t *testing.T) {
 // ACME-3 at 10:30, the daemon records the child then, ACME-3 waits for it and never starts, and the
 // filing that waits for ACME-3's start never enters.
 func TestNoEventOfAnIssueEntersBeforeItsFiling(t *testing.T) {
+	t.Parallel()
 	window := lateChildRecord(t, func(b *windowBuilder) {
 		shelfLabels(b, clock(10, 20), architectOf("ACME-3"))
 		b.daemonWrites(clock(10, 21), "ACME-4", "todo")
@@ -634,6 +644,7 @@ func skippedLoopChildWindow(t *testing.T) Window {
 // child), until the person closes it. It fails where ACME-1 closes before the filing, for which
 // ACME-2 is filed under a tree no longer running and the replay never records it.
 func TestAChildFiledInASkippedLoopEntersAtItsRecordedTime(t *testing.T) {
+	t.Parallel()
 	var copied *shadow
 	var entered time.Time
 	out := t.TempDir()

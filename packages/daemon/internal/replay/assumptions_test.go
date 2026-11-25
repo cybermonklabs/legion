@@ -145,6 +145,7 @@ var specAssumptions = []Assumption{
 // The list must hold each numbered assumption above with its text and direction, and cannot
 // repeat a number. TestTheDocsPageGivesEveryAssumption also checks assumptions the tool adds.
 func TestTheAssumptionsHoldTheSpecsList(t *testing.T) {
+	t.Parallel()
 	byNumber := make(map[int]Assumption, len(Assumptions))
 	for _, assumption := range Assumptions {
 		if _, twice := byNumber[assumption.Number]; twice {
@@ -221,6 +222,7 @@ var assumptionHeading = regexp.MustCompile(`^### Assumption ([0-9]+): (\S.*)$`)
 // in any order, and the direction's list is the bullets between its label and the next label or
 // the section's end, each `- <measure>: <text>` with text after the colon.
 func TestTheDocsPageGivesEveryAssumption(t *testing.T) {
+	t.Parallel()
 	page, err := os.ReadFile(replayPage)
 	if err != nil {
 		t.Fatalf("read the tool's page in the docs, %s, which must give each assumption with its evidence, its direction for each measure and the reading that would test it: %v",
@@ -365,6 +367,7 @@ var boundWord = regexp.MustCompile(`(?i)\bbounds?\b`)
 // or another scenario than the result; and for a file of the output other than the daemon's own
 // log lines and the traced segments that calls anything a bound.
 func TestEveryRunNamesItsAssumptionsAndScenario(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	rule := mainRule(t)
 	branch, err := BranchNamed("main+neverStarted=drawn")

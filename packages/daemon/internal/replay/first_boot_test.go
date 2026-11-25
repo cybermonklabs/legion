@@ -20,6 +20,7 @@ import (
 // timeline takes, at the window's start: under main ACME-1 holds no slot and carries the mark;
 // under cover it holds its slot and carries no mark.
 func TestTheFirstBootOfCoverGivesAReleasedWaiterItsSlot(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := linkDuringImplementingWindow(t)
 	start := clock(10, 15)
@@ -30,6 +31,7 @@ func TestTheFirstBootOfCoverGivesAReleasedWaiterItsSlot(t *testing.T) {
 		holds bool
 	}{{mainRule(t), false}, {replayedRule(t, "cover"), true}} {
 		t.Run(c.rule.Name, func(t *testing.T) {
+			t.Parallel()
 			read := false
 			var first time.Time
 			var holds, marked bool

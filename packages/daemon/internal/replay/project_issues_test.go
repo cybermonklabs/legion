@@ -35,6 +35,7 @@ var unhandedIssue = []json.RawMessage{
 // no slot, and its replay under each rule and never-started scenario expect.json names gives the
 // scorecard the window gives without ACME-9 and the same admission lines, in the same order.
 func TestAnIssueReadOnlyForItsEventsMovesNoReplay(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	without, expect := readFixture(t, "never-starts")
 	with := without
@@ -65,6 +66,7 @@ func TestAnIssueReadOnlyForItsEventsMovesNoReplay(t *testing.T) {
 	}
 	for _, run := range runs {
 		t.Run(run.name, func(t *testing.T) {
+			t.Parallel()
 			replay := func(w Window) (Scorecard, []string) {
 				out := t.TempDir()
 				result, err := Run(context.Background(), RunConfig{Window: w, Rule: replayedRule(t, run.rule), Branch: run.branch,

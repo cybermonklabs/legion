@@ -45,6 +45,7 @@ func knobValuesOf(b Branch) map[string]string {
 // conflicts, main+conflicts=recorded, at each slowdown factor (DiagnosticBranches), which BranchNamed
 // reads back too. A name with a value its knob does not take is refused.
 func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
+	t.Parallel()
 	branches := Branches()
 	if len(branches) != 24 {
 		t.Fatalf("Branches lists %d branches, want 24", len(branches))
@@ -223,6 +224,7 @@ func laterStartWindow(t *testing.T) Window {
 // slot back at 12:10; on main+answer=wall the approval comes at its recorded 11:40, and ACME-2 moves
 // into planning at 11:40.
 func TestTheTimingAndAnswerKnobsPlaceTheirEventsByTheirAnchors(t *testing.T) {
+	t.Parallel()
 	window := laterStartWindow(t)
 	for _, c := range []struct {
 		branch string
@@ -234,6 +236,7 @@ func TestTheTimingAndAnswerKnobsPlaceTheirEventsByTheirAnchors(t *testing.T) {
 		{branch: "main+answer=wall", moved: clock(11, 40)},
 	} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			_, log := knobRun(t, window, mainRule(t), c.branch)
 			if !c.back.IsZero() {
 				taken := linesAt(log, func(line replayLine) bool { return line.Msg == "admission: slot taken" && line.Issue == "ACME-2" })
@@ -287,12 +290,14 @@ func sendBackWindow(t *testing.T) Window {
 // minutes, at 11:35; on main+afterSendBack=less-slot-wait after 30 less the 20 it waited for the
 // slot, at 11:15.
 func TestTheAfterSendBackKnobShortensWorkAfterASendBack(t *testing.T) {
+	t.Parallel()
 	window := sendBackWindow(t)
 	for _, c := range []struct {
 		branch string
 		moved  time.Time
 	}{{"main", clock(11, 35)}, {"main+afterSendBack=less-slot-wait", clock(11, 15)}} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			_, log := knobRun(t, window, mainRule(t), c.branch)
 			moved := linesAt(log, func(line replayLine) bool {
 				return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.From == string(phase.Implementing) && line.To == string(phase.Testing)
@@ -340,11 +345,13 @@ func firstStartsWindow(t *testing.T) Window {
 // with ACME-2 (started second in the record, rank a2) and ACME-3 (started third, rank a1) both
 // waiting: on the main branch ACME-2 takes it, and on main+firstStarts=rank ACME-3 does.
 func TestTheFirstStartsKnobOrdersFirstStartsByTheRecordOrByRank(t *testing.T) {
+	t.Parallel()
 	window := firstStartsWindow(t)
 	for _, c := range []struct {
 		branch, first string
 	}{{"main", "ACME-2"}, {"main+firstStarts=rank", "ACME-3"}} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			result, log := knobRun(t, window, replayedRule(t, "keep-past-review"), c.branch)
 			var taken []string
 			for _, line := range log {
@@ -396,6 +403,7 @@ func setBackRootWindow(t *testing.T) Window {
 // record did, and none to ACME-1. Ranked by its first slot anywhere, ACME-1 led the line at 10:15
 // and held the slot with no recorded work left to open, and neither ACME-2 nor ACME-3 started.
 func TestARootSetBackBeforeTheWindowWaitsBehindTheWindowsFirstStarts(t *testing.T) {
+	t.Parallel()
 	checkRecordedFirstStarts(t, setBackRootWindow(t), map[string]string{"ACME-2": "01", "ACME-3": "02"}, "ACME-2 at 10:15", "ACME-3 at 11:30")
 }
 
@@ -443,6 +451,7 @@ func inFlightTreeWindow(t *testing.T) Window {
 // keeps ACME-3 out of the line at 11:10, so ACME-1's move decides no pass here;
 // TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn holds passes it decides.
 func TestATreeInFlightAtTheStartRanksByItsFirstChildsStart(t *testing.T) {
+	t.Parallel()
 	checkRecordedFirstStarts(t, inFlightTreeWindow(t), map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-5": "02", "ACME-3": "03"},
 		"ACME-2 at 10:10", "ACME-5 at 11:10", "ACME-3 at 12:25")
 }
@@ -537,11 +546,13 @@ func interleavedTreesWindow(t *testing.T) Window {
 // and ACME-6 took it at ACME-5's accepting at 10:40, ahead of ACME-7 and ACME-8, and held it with no
 // work to the window's end.
 func TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn(t *testing.T) {
+	t.Parallel()
 	window := interleavedTreesWindow(t)
 	checkFirstStartRanks(t, window, map[string]string{"ACME-1": "01", "ACME-2": "02", "ACME-4": "01", "ACME-5": "03", "ACME-7": "02", "ACME-8": "04"})
 	want := []string{"ACME-4 at 10:00", "ACME-7 at 10:20", "ACME-5 at 10:40", "ACME-8 at 11:00"}
 	for seed := int64(1); seed <= 3; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			t.Parallel()
 			out := t.TempDir()
 			result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: seed, Slowdown: 1,
 				PGDSN: replayDSN(t), Out: out})
@@ -600,6 +611,7 @@ func returnAfterConflictWindow(t *testing.T) Window {
 // ACME-3's 02 for the whole window, since the replay never makes the return, and ACME-2, which the
 // record never started, took the slot at 10:20 and held it with no work to the window's end.
 func TestAReturnIsNoFirstStart(t *testing.T) {
+	t.Parallel()
 	checkRecordedFirstStarts(t, returnAfterConflictWindow(t), map[string]string{"ACME-3": "01"}, "ACME-3 at 10:20")
 }
 
@@ -649,6 +661,7 @@ func leftBeforeItsStartWindow(t *testing.T) Window {
 // recorded start, ahead of ACME-6, which the record never started. With ACME-1 kept at ACME-2's 01
 // for the rest of the window, ACME-6 took the slot at 11:15 and held it with no work.
 func TestAnIssueThatLeavesBeforeItsStartPinsNoTree(t *testing.T) {
+	t.Parallel()
 	window := leftBeforeItsStartWindow(t)
 	checkFirstStartRanks(t, window, map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-3": "02"})
 	result, log := knobRun(t, window, replayedRule(t, "keep-past-review"), "main")
@@ -666,6 +679,7 @@ func TestAnIssueThatLeavesBeforeItsStartPinsNoTree(t *testing.T) {
 // one taken again after one before the start in the same run, and an inferred slot do not; and the
 // first slot of a run entered after an earlier run's slot does.
 func TestOnlyTheFirstSlotOfARunIsAFirstStart(t *testing.T) {
+	t.Parallel()
 	entry := func(at time.Time) Entry { return Entry{At: at, Tree: "ACME-1", Generation: 1} }
 	returning, waited := record.LineReturning.String(), record.LineWaitingOnIssue.String()
 	for _, c := range []struct {
@@ -732,6 +746,7 @@ func neverStartedWindow(t *testing.T) Window {
 // and after 15 minutes in each of planning, implementing, testing and reviewing its architect's
 // turn in accepting begins at 12:45. Each run names its scenario.
 func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
+	t.Parallel()
 	window := neverStartedWindow(t)
 	drawnArchitect := []time.Time{clock(11, 30), clock(12, 45)}
 	for _, c := range []struct {
@@ -744,6 +759,7 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 		{branch: "main+neverStarted=drawn-done", scenario: "drawn-done", architect: drawnArchitect, planner: []time.Time{clock(11, 45)}},
 	} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			result, log := knobRun(t, window, mainRule(t), c.branch)
 			if result.Scorecard.Scenario != c.scenario {
 				t.Errorf("the run names the scenario %q, want %q", result.Scorecard.Scenario, c.scenario)
@@ -773,6 +789,7 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 // admission of 1.5 slot-hours; on main+neverStarted=drawn it runs drawn work, and nothing is
 // counted.
 func TestANoWorkAdmissionIsCountedWithTheSlotHoursItHolds(t *testing.T) {
+	t.Parallel()
 	window := neverStartedWindow(t)
 	for _, c := range []struct {
 		branch    string
@@ -780,6 +797,7 @@ func TestANoWorkAdmissionIsCountedWithTheSlotHoursItHolds(t *testing.T) {
 		slotHours float64
 	}{{"main", 1, 1.5}, {"main+neverStarted=drawn", 0, 0}} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			branch, err := BranchNamed(c.branch)
 			if err != nil {
 				t.Fatal(err)
@@ -880,6 +898,7 @@ func drawnTreeWindow(t *testing.T) Window {
 // child has, draws from both. A replay on main+neverStarted=drawn counts one draw from each pool,
 // and names them in the line of what it counted.
 func TestADrawnIssueTakesTheWorkOfItsOwnTreeFirst(t *testing.T) {
+	t.Parallel()
 	window := drawnTreeWindow(t)
 	in, err := newWindowInputs(window)
 	if err != nil {
@@ -962,6 +981,7 @@ func conflictWindow(t *testing.T) Window {
 // draws at the base chance, below 10⁻⁶, does not conflict, and ACME-1's last merging segment runs
 // from 11:00: it merges at 11:15, with no merge forward and no round of conflict.
 func TestTheMergesKnobSetsTheTermToZero(t *testing.T) {
+	t.Parallel()
 	window := conflictWindow(t)
 	for _, c := range []struct {
 		branch string
@@ -973,6 +993,7 @@ func TestTheMergesKnobSetsTheTermToZero(t *testing.T) {
 		{branch: "main+merges=zero", done: clock(11, 15)},
 	} {
 		t.Run(c.branch, func(t *testing.T) {
+			t.Parallel()
 			result, log := knobRun(t, window, mainRule(t), c.branch)
 			if result.Conflicts.TermZero != (c.branch != "main") {
 				t.Errorf("the run's conflict model %s, on the branch %s", result.Conflicts, c.branch)

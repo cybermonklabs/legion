@@ -145,6 +145,7 @@ func linkDuringImplementingWindow(t *testing.T) Window {
 // is suspended at 10:00 and starts no turn until the wait ends at 10:30, and the move comes at
 // 11:30, half an hour of the segment's length done after the wait.
 func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	window := linkDuringImplementingWindow(t)
 	implementer := string(builtToken(t, "ACME-1", claim.RoleImplementer))
@@ -157,6 +158,7 @@ func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
 		{rule: stopsPhaseRule(), moved: clock(11, 30), suspended: true},
 	} {
 		t.Run(c.rule.Name, func(t *testing.T) {
+			t.Parallel()
 			out := t.TempDir()
 			if _, err := Run(context.Background(), RunConfig{Window: window, Rule: c.rule, Branch: MainBranch, Seed: 1, Slowdown: 1,
 				PGDSN: dsn, Out: out}); err != nil {
@@ -247,6 +249,7 @@ func checkRecordedStarts(t *testing.T, window Window, result RunResult) {
 // its member until it hands it over, and a held phase holds its worker until the architect retries
 // it.
 func TestHoldsApplyAtTheirRecordedTimes(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	const name = "gate-holds-child-first-phase"
 	window := fixtureWindow(t, name)
@@ -298,6 +301,8 @@ func recordedMoves(t *testing.T, window Window) map[string][]fixtureMove {
 // own log differs from the trace's; for a move the replay refused; and for a start that re-sent an
 // entry its claim had been given already.
 func TestTheEveryTriggerWindowReplaysItsRecordedMovesAndAsksNothingOutside(t *testing.T) {
+	// Serial: the test points the process's environment at its stub (t.Setenv), which every other
+	// test of the process reads, so it runs before the parallel tests start.
 	dsn := replayDSN(t)
 	var mu sync.Mutex
 	var seen []string
@@ -358,9 +363,11 @@ type mirrorRow struct {
 // status, blockers, parent, labels or rank, for a row the shadow holds no issue of, and for an
 // issue whose record's Dispatch sequence (record.Issue.LastDispatchSeq) falls.
 func TestTheShadowMatchesTheMirrorAfterEveryFact(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	for _, name := range fixtureWindowNames(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			window := fixtureWindow(t, name)
 			records := record.NewStore()
 			highest := map[string]int64{}
@@ -525,6 +532,7 @@ func readStartState(t *testing.T, url, project string, steps []record.DesignStep
 // its own. The test fails for each issue whose phase, slot, part of the line, gate, wait on a
 // person or hold differ between the two.
 func TestAWarmStartMatchesTheSeed(t *testing.T) {
+	t.Parallel()
 	dsn := replayDSN(t)
 	ctx := context.Background()
 	window := fixtureWindow(t, "every-trigger")

@@ -209,6 +209,7 @@ func windowFiles(t *testing.T, dir string) map[string][]byte {
 // walkTo) is kept, and the one of 08:00 is walked and not kept. It fails where the listing has an
 // until, which leaves out the parent of 08:00, so that the walk stops at the commit of 04:00.
 func TestCollectMergesWalksThroughAParentCommittedAfterTheSpan(t *testing.T) {
+	t.Parallel()
 	before := stubbed(t, 0x100, "2026-11-19T23:00:00Z", 100, 0x99)
 	first := stubbed(t, 0x101, "2026-11-20T01:00:00Z", 101, 0x100)
 	second := stubbed(t, 0x102, "2026-11-20T02:00:00Z", 102, 0x101)
@@ -227,6 +228,7 @@ func TestCollectMergesWalksThroughAParentCommittedAfterTheSpan(t *testing.T) {
 // history does. It fails where the listing has an until: the first commit listed is then the
 // merged branch's of 05:30, and a walk from it keeps that commit in place of the squash merge.
 func TestCollectMergesWalksFromATipCommittedAfterTheSpan(t *testing.T) {
+	t.Parallel()
 	root := stubbed(t, 0x200, "2026-11-20T03:00:00Z", 0)
 	squash := stubbed(t, 0x201, "2026-11-20T05:00:00Z", 201, 0x200)
 	side := stubbed(t, 0x202, "2026-11-20T05:30:00Z", 0, 0x200)
@@ -243,6 +245,7 @@ func TestCollectMergesWalksFromATipCommittedAfterTheSpan(t *testing.T) {
 // its time, and writes nothing into the window. Here the listing lacks the first parent, of 02:00,
 // of main's commit of 03:00. It fails where the short history is written.
 func TestCollectMergesRefusesAWalkThatEndsInsideTheSpan(t *testing.T) {
+	t.Parallel()
 	lacked := stubbed(t, 0x300, "2026-11-20T02:00:00Z", 300, 0x299)
 	lacked.unlisted = true
 	last := stubbed(t, 0x301, "2026-11-20T03:00:00Z", 301, 0x300)
@@ -270,6 +273,7 @@ func TestCollectMergesRefusesAWalkThatEndsInsideTheSpan(t *testing.T) {
 // listing and that one read, each a GET. It fails where collect-merges refuses the walk or does not
 // read the parent.
 func TestCollectMergesEndsAQuietBranchsWalkAtAParentBeforeTheListing(t *testing.T) {
+	t.Parallel()
 	quiet := stubbed(t, 0x500, "2026-11-16T12:00:00Z", 500, 0x499)
 	first := stubbed(t, 0x501, "2026-11-20T03:00:00Z", 501, 0x500)
 	tip := stubbed(t, 0x502, "2026-11-20T05:00:00Z", 502, 0x501)
@@ -288,6 +292,7 @@ func TestCollectMergesEndsAQuietBranchsWalkAtAParentBeforeTheListing(t *testing.
 // span, and with no until, so a first parent committed after its child is listed: its one request
 // is sha=main, since=2026-11-19T00:00:00Z and per_page=100, with no until.
 func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
+	t.Parallel()
 	below := stubbed(t, 0x400, "2026-11-19T12:00:00Z", 400, 0x399)
 	tip := stubbed(t, 0x401, "2026-11-20T05:00:00Z", 401, 0x400)
 	run := collectWalk(t, tip, below)
@@ -388,6 +393,7 @@ func spentUntil(reset time.Time) stubAnswer {
 // ten seconds of it, and the second request is answered. It fails where the 403 is the answer at
 // once, as a refusal that is no rate limit is, or where the wait ends before the reset.
 func TestGitHubReaderWaitsOutAPrimaryRateLimitUntilItsReset(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	reset := before.Add(20 * time.Minute).Truncate(time.Second)
 	read := readThroughLimits(t, spentUntil(reset), emptyPage)
@@ -408,6 +414,7 @@ func TestGitHubReaderWaitsOutAPrimaryRateLimitUntilItsReset(t *testing.T) {
 // 429 asking for 7 seconds is waited 7 seconds, once, and the read is answered after it. It fails
 // where the 429 is tried again after the first wait of a read GitHub refuses for now, a second.
 func TestGitHubReaderWaitsTheSecondsARetryAfterNames(t *testing.T) {
+	t.Parallel()
 	limited := stubAnswer{status: http.StatusTooManyRequests, body: secondaryLimit, header: map[string]string{"Retry-After": "7"}}
 	read := readThroughLimits(t, limited, emptyPage)
 	if read.err != nil {
@@ -428,6 +435,7 @@ func TestGitHubReaderWaitsTheSecondsARetryAfterNames(t *testing.T) {
 // a minute, the least GitHub asks, and read again. It fails where a permission refusal is waited
 // out, or where the secondary limit's 403 is taken for a refusal.
 func TestGitHubReaderRefusesAForbiddenThatIsNoRateLimitAtOnce(t *testing.T) {
+	t.Parallel()
 	callsLeft := map[string]string{"X-RateLimit-Limit": "15000", "X-RateLimit-Remaining": "14671", "X-RateLimit-Reset": "1795000000"}
 	for _, tc := range []struct {
 		name    string
@@ -463,6 +471,7 @@ func TestGitHubReaderRefusesAForbiddenThatIsNoRateLimitAtOnce(t *testing.T) {
 // operator knows when to run the collector again: a reset two hours ahead, and a retry-after of
 // two hours. It fails where the read waits for it, or refuses without naming the time.
 func TestGitHubReaderRefusesAWaitPastTheLongest(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	reset := before.Add(2 * time.Hour).Truncate(time.Second)
 	for _, tc := range []struct {
@@ -500,6 +509,7 @@ func TestGitHubReaderRefusesAWaitPastTheLongest(t *testing.T) {
 // growing as GitHub asks, and is refused at the sixth refusal, naming GitHub's message. It fails
 // where the read is refused at once, waits a constant time, or waits on.
 func TestGitHubReaderRefusesARateLimitPastItsLastWait(t *testing.T) {
+	t.Parallel()
 	read := readThroughLimits(t, stubAnswer{status: http.StatusForbidden, body: secondaryLimit})
 	if read.err == nil || !strings.Contains(read.err.Error(), "secondary rate limit") {
 		t.Errorf("the read answered %v, want a refusal naming GitHub's message", read.err)
@@ -518,6 +528,7 @@ func TestGitHubReaderRefusesARateLimitPastItsLastWait(t *testing.T) {
 // reset and rateLimitMargin after it, and which of the read's waits it is. It fails where a wait
 // is made untold.
 func TestGitHubReaderTellsEachRateLimitWaitOnStderr(t *testing.T) {
+	t.Parallel()
 	reset := time.Now().Add(20 * time.Minute).Truncate(time.Second)
 	server, _ := limitStub(t, spentUntil(reset), emptyPage)
 	api, err := url.Parse(server.URL)
@@ -546,6 +557,7 @@ func TestGitHubReaderTellsEachRateLimitWaitOnStderr(t *testing.T) {
 // the cancellation, and sends no second request. It fails where the wait outlasts the context, or
 // where the read is tried again after it.
 func TestGitHubReaderEndsARateLimitWaitWithItsContext(t *testing.T) {
+	t.Parallel()
 	server, seen := limitStub(t, spentUntil(time.Now().Add(20*time.Minute)), emptyPage)
 	api, err := url.Parse(server.URL)
 	if err != nil {

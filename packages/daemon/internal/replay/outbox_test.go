@@ -40,6 +40,7 @@ var wantRows = map[RowKind]RowHandling{
 // package intake, for a finished row under no assumption the tool's list holds, and for a
 // handling other than the design's (wantRows).
 func TestEveryOutboxKindIsExecutedOrFinishedUnderAnAssumption(t *testing.T) {
+	t.Parallel()
 	kinds, ops := outboxVocabulary(t)
 	var laned []record.OutboxKind
 	for _, lane := range record.OutboxLanes() {

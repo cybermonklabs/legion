@@ -153,6 +153,7 @@ var wantMoves = map[workflow.TriggerKind]wantMove{
 // merging, so its merge is merging's and its ready move a mark that moves nothing. The rules
 // legion-v20.42.5 and legion-v19.57.3 are the ones the repository keeps (record.SlotRuleNamed).
 func TestEveryRowOfTheTableHasASourceInTheRecord(t *testing.T) {
+	t.Parallel()
 	facts := intakeFactTypes(t)
 	rows := recordedRows(t)
 	triggers := make(map[workflow.TriggerKind]bool)
@@ -270,6 +271,7 @@ var wantFacts = map[string]FactWay{
 // type with no entry, for an entry that names no fact type, for an entry left out under no
 // assumption the tool's list holds, and for a way that differs from the design's (wantFacts).
 func TestEveryFactANonDispatchProducerAppliesHasASource(t *testing.T) {
+	t.Parallel()
 	facts := intakeFactTypes(t)
 	for _, name := range nonDispatchFacts {
 		if !slices.Contains(facts, name) {
