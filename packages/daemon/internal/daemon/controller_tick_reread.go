@@ -49,9 +49,8 @@ type foreignRead struct {
 	// waiting is the issues of this project that wait on key, sorted, as the judgement waitedOn
 	// reads names them (blockers.Blocked); empty for a key the turn reads for another reason.
 	waiting []string
-	// copied is the copy's row of key before the turn, where held says the copy held one.
-	copied record.DispatchIssueRow
-	held   bool
+	// copied is the copy's row of key before the turn, nil where the copy held none.
+	copied *record.DispatchIssueRow
 	// reading is what Dispatch served, where err is nil; err is why the read failed (readBlocker).
 	reading intake.IssueStatus
 	err     error
@@ -64,23 +63,23 @@ type foreignRead struct {
 // where the copy held no row of the key or one at a lower sequence before the turn, the fence of
 // record.Store.PutDispatchIssue; kept where the copy's sequence was not lower, since the fence
 // keeps the copy's value at an equal sequence; read failed; or not written where the apply
-// failed. Every value of a foreign key's row is written by the turn's own whole readings, so the
-// row's sequence is each value's and decides the fence for all of them. With kept and read failed
-// the line names the row the copy held, none where it held no row.
+// failed. Every reading the copy takes carries all five values (blockers.readingOf, the one
+// production path into PutDispatchIssue), so the row's sequence, dispatch_seq, is each value's and
+// decides the fence for all of them. With kept and read failed the line names the row the copy
+// held, left out where it held no row.
 func (w *workflowRuntime) logForeignRead(read foreignRead, written bool) {
 	attrs := []any{"blocker", read.key, "waiting", read.waiting}
 	if read.err != nil {
-		copyStatus, copySeq := any("none"), any("none")
-		if read.held {
-			copyStatus, copySeq = read.copied.Status, read.copied.Seq
+		attrs = append(attrs, "error", read.err, "copy", "read failed")
+		if read.copied != nil {
+			attrs = append(attrs, "copy_status", read.copied.Status, "copy_seq", read.copied.Seq)
 		}
-		attrs = append(attrs, "error", read.err, "copy", "read failed", "copy_status", copyStatus, "copy_seq", copySeq)
 	} else {
 		attrs = append(attrs, "served_status", read.reading.Status, "served_seq", read.reading.Seq)
 		switch {
 		case !written:
 			attrs = append(attrs, "copy", "not written")
-		case read.held && read.copied.Seq >= read.reading.Seq:
+		case read.copied != nil && read.copied.Seq >= read.reading.Seq:
 			attrs = append(attrs, "copy", "kept", "copy_status", read.copied.Status, "copy_seq", read.copied.Seq)
 		default:
 			attrs = append(attrs, "copy", "applied")
@@ -105,19 +104,27 @@ const blockerReadFanout = 25
 // read, since the tick is also the controller's daily-report wake and the only wake a tree
 // waiting on a refused root claim gets.
 func (w *workflowRuntime) observeWaitedOn(ctx context.Context) ([]intake.IssueStatus, []foreignRead) {
-	keys, parents, foreign, err := w.waitedOn(ctx)
+	waiting, err := w.waitedOn(ctx)
 	if err != nil {
 		w.log.Warn("the controller tick's read of what this project waits on failed", "error", err)
 		return nil, nil
 	}
-	if len(keys) == 0 && len(parents) == 0 {
+	if len(waiting.keys) == 0 && len(waiting.parents) == 0 {
 		return nil, nil
 	}
-	return w.readObserved(ctx, keys, parents, foreign)
+	return w.readObserved(ctx, waiting)
 }
 
-// waitedOn is the distinct keys of everything this daemon holds something back for, in one short
-// read-only transaction: the judgement the deciders themselves make, read rather than remade
+// waitingSet is what the turn reads from Dispatch, as waitedOn reads it: keys, what this daemon
+// holds something back for; parents, the issues whose children the turn reads; and foreign, the
+// turn's entry for each key of another project among keys.
+type waitingSet struct {
+	keys, parents []string
+	foreign       map[string]foreignRead
+}
+
+// waitedOn's keys are the distinct keys of everything this daemon holds something back for, in one
+// short read-only transaction: the judgement the deciders themselves make, read rather than remade
 // (blockers.Blocked), over every root on the waiting line (record.Waiting), every recorded child
 // a blocker holds at phase.Admitted, every open Dispatch child holding a parent's own first
 // phase (record.ChildWaitsOf), and every open child a parent waiting in awaiting_children waits
@@ -150,9 +157,8 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) ([]intake.IssueSt
 // foreign is an entry for each key of another project among the keys (foreignReads), read in this
 // same transaction, so the line the turn writes of its read of such a key names the issues
 // waiting on it and the copy's row of it as they stood before the tick wrote anything.
-func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, map[string]foreignRead, error) {
-	var keys, parents []string
-	var foreign map[string]foreignRead
+func (w *workflowRuntime) waitedOn(ctx context.Context) (waitingSet, error) {
+	var waiting waitingSet
 	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
 		if err != nil {
@@ -181,7 +187,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, map
 				return
 			}
 			seen[key] = struct{}{}
-			keys = append(keys, key)
+			waiting.keys = append(waiting.keys, key)
 		}
 		blocked := blockers.Blocked(rows, issues, line, facts)
 		for _, wait := range blocked {
@@ -189,10 +195,10 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, map
 				add(blocker)
 			}
 		}
-		parents = slices.AppendSeq(record.StartedParents(issues, facts.Owed), maps.Keys(facts.RetroHolds))
-		slices.Sort(parents)
-		parents = slices.Compact(parents)
-		for _, parent := range parents {
+		waiting.parents = slices.AppendSeq(record.StartedParents(issues, facts.Owed), maps.Keys(facts.RetroHolds))
+		slices.Sort(waiting.parents)
+		waiting.parents = slices.Compact(waiting.parents)
+		for _, parent := range waiting.parents {
 			for _, child := range facts.StartedParentWaits[parent].Open {
 				add(child.Key)
 			}
@@ -215,10 +221,10 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, map
 				add(chain.At)
 			}
 		}
-		foreign, err = w.foreignReads(ctx, tx, keys, blocked)
+		waiting.foreign, err = w.foreignReads(ctx, tx, waiting.keys, blocked)
 		return err
 	})
-	return keys, parents, foreign, err
+	return waiting, err
 }
 
 // foreignReads is an entry for each key of another project among keys, read in tx: the issues
@@ -254,14 +260,14 @@ func (w *workflowRuntime) foreignReads(ctx context.Context, tx pgx.Tx, keys []st
 	// The read answers the rows those rows wait on as well; only a key asked for is taken.
 	for _, row := range rows {
 		if read, asked := reads[row.Key]; asked {
-			read.copied, read.held = row, true
+			read.copied = &row
 			reads[row.Key] = read
 		}
 	}
 	return reads, nil
 }
 
-// readObserved is Dispatch's answer for keys and for the children of parents. Where no issue has
+// readObserved is Dispatch's answer for waiting's keys and parents' children. Where no issue has
 // started a phase, it is one GetIssue for each key while they number blockerReadFanout or fewer;
 // above that it is one whole-project listing, whose every summary is taken — it is one request
 // for all of them, and a summary of a key not asked for is a reading of Dispatch like any other,
@@ -290,11 +296,10 @@ func (w *workflowRuntime) foreignReads(ctx context.Context, tx pgx.Tx, keys []st
 // until that turn too (blockers.Unfinished). The cost is one request per
 // foreign key, sequential, on the wake path and outside the tick's transaction: it is zero for a
 // project waiting on its own issues alone, and begins with the first foreign link. So each read
-// of a foreign key leaves one line at info, failed or not (logForeignRead): with no event of the
-// key, a read that succeeded and logged nothing left the logs of a root held for hours on a done
-// blocker of another project unable to say whether the turn read the blocker, what Dispatch
-// served, or what the copy did with it. A key of this project has its events besides, and its
-// read logs only where it fails.
+// of a foreign key leaves one line at info, failed or not (logForeignRead): no event of such a key
+// reaches the daemon, so that line is the one record of the read, of what Dispatch served and of
+// what the copy did with it. A key of this project has its events besides, and its read logs only
+// where it fails.
 //
 // A key whose read fails is left out, and so is one Dispatch no longer serves, which is no error
 // at all: the rest of the turn goes on with what was read, and the row of a key left out keeps
@@ -304,7 +309,7 @@ func (w *workflowRuntime) foreignReads(ctx context.Context, tx pgx.Tx, keys []st
 // fails is logged and leaves out what it would have read: above the bound the turn goes on with
 // nothing read, and where a parent stands it leaves out the children of parents, and the turn
 // reads this project's keys one at a time instead, as it reads them where no parent stands.
-func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []string, foreign map[string]foreignRead) ([]intake.IssueStatus, []foreignRead) {
+func (w *workflowRuntime) readObserved(ctx context.Context, waiting waitingSet) ([]intake.IssueStatus, []foreignRead) {
 	var observed []intake.IssueStatus
 	var reads []foreignRead
 	// readSingly is one key read alone (readBlocker): Dispatch's answer joins observed, the read of
@@ -312,7 +317,7 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 	// key of this project is logged.
 	readSingly := func(key string) {
 		status, err := w.readBlocker(ctx, key)
-		if read, other := foreign[key]; other {
+		if read, other := waiting.foreign[key]; other {
 			read.reading, read.err = status, err
 			reads = append(reads, read)
 		} else if err != nil {
@@ -322,17 +327,17 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 			observed = append(observed, status)
 		}
 	}
-	if len(keys) > blockerReadFanout {
+	if len(waiting.keys) > blockerReadFanout {
 		summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
 		if err != nil {
-			w.log.Warn("the controller tick's re-read of the project's issues failed", "blockers", len(keys), "error", err)
+			w.log.Warn("the controller tick's re-read of the project's issues failed", "blockers", len(waiting.keys), "error", err)
 			return nil, nil
 		}
 		observed = make([]intake.IssueStatus, 0, len(summaries))
 		for _, summary := range summaries {
 			observed = append(observed, blockers.Observed(w.dispatchProject, summary))
 		}
-		for _, key := range keys {
+		for _, key := range waiting.keys {
 			if w.ownDispatchKey(key) {
 				continue
 			}
@@ -340,15 +345,15 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 		}
 		return observed, reads
 	}
-	observed = make([]intake.IssueStatus, 0, len(keys))
-	if len(parents) == 0 {
-		for _, key := range keys {
+	observed = make([]intake.IssueStatus, 0, len(waiting.keys))
+	if len(waiting.parents) == 0 {
+		for _, key := range waiting.keys {
 			readSingly(key)
 		}
 		return observed, reads
 	}
-	own := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
+	own := make(map[string]struct{}, len(waiting.keys))
+	for _, key := range waiting.keys {
 		if w.ownDispatchKey(key) {
 			own[key] = struct{}{}
 			continue
@@ -357,8 +362,8 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 	}
 	summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
 	if err != nil {
-		w.log.Warn("the controller tick's read of the children of the issues whose phases have started failed", "parents", len(parents), "error", err)
-		for _, key := range keys {
+		w.log.Warn("the controller tick's read of the children of the issues whose phases have started failed", "parents", len(waiting.parents), "error", err)
+		for _, key := range waiting.keys {
 			if _, waited := own[key]; !waited {
 				continue
 			}
@@ -371,7 +376,7 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 		// parents comes sorted (record.StartedParents), so each summary's parent is one search.
 		started := false
 		if summary.Parent != nil {
-			_, started = slices.BinarySearch(parents, *summary.Parent)
+			_, started = slices.BinarySearch(waiting.parents, *summary.Parent)
 		}
 		if waited || started {
 			observed = append(observed, blockers.Observed(w.dispatchProject, summary))
@@ -411,9 +416,9 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 // errNoProject is readBlocker's reason for an answer that names no project.
 var errNoProject = errors.New("Dispatch's answer names no project")
 
-// logBlockerFailure logs a failed read of a key of this project as the turn always has: a key
-// Dispatch no longer serves at info, since that is no error at all, and a failed request or an
-// answer that names no project as a warning.
+// logBlockerFailure logs a failed read of a key of this project: a key Dispatch no longer serves
+// at info, since that is no error at all, and a failed request or an answer that names no project
+// as a warning.
 func (w *workflowRuntime) logBlockerFailure(key string, err error) {
 	switch {
 	case dispatch.Missing(err):

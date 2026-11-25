@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -51,14 +52,7 @@ func TestAnIssueUnderAParentInAnotherProjectStartsAsARoot(t *testing.T) {
 			if !holdsSlot(t, pool, key) {
 				t.Fatalf("slots after the todo of %s = %#v, want one of them its own", key, slots(t, pool))
 			}
-			var started bool
-			for _, row := range effects(t, pool) {
-				if request, ok := row.payload.(record.SuperviseRequest); ok && row.issue == key && request.Op == "start" &&
-					request.Role == claim.RoleArchitect && request.Tree == key {
-					started = true
-				}
-			}
-			if !started {
+			if !slices.ContainsFunc(roleStarts(t, pool, key, claim.RoleArchitect), func(start record.SuperviseRequest) bool { return start.Tree == key }) {
 				t.Fatalf("outbox = %#v, want the start of %s's own architect in its own tree", effects(t, pool), key)
 			}
 
@@ -66,14 +60,7 @@ func TestAnIssueUnderAParentInAnotherProjectStartsAsARoot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			own, err := claim.NewToken(project, key, claim.RoleArchitect)
-			if err != nil {
-				t.Fatal(err)
-			}
-			above, err := claim.NewToken(project, parent, claim.RoleArchitect)
-			if err != nil {
-				t.Fatal(err)
-			}
+			own, above := architectToken(t, key), architectToken(t, parent)
 			inTx(t, pool, func(tx pgx.Tx) {
 				ctx, records := context.Background(), record.NewStore()
 				walk, err := record.ReadOwnerWalk(ctx, records, tx, testProject, []string{key})

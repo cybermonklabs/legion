@@ -35,11 +35,11 @@ func ProjectToken(project string) (string, error) {
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
 
 // KeyProject is the project a Dispatch key names: its part before its first `-`, the whole key
-// where it has none, as a row keyed by a project itself is. It is the daemon module's one reading
-// of a key's project in Go, which every reader of one takes: KeyOfProject, record's
-// InProjectParent (a chain's project boundary for a parent the copy holds no link to), and the
-// daemon's own-key checks. The SQL that reads a key's project reads the same part,
-// `split_part(key, '-', 1)` (record's dueRowsSQL and inProjectParentSQL).
+// where it has none, as a row keyed by a project itself is. It is the one reading of a key's
+// project in the daemon module's production Go code, which every reader of one there takes:
+// KeyOfProject, record's InProjectParent (a chain's project boundary for a parent the copy holds
+// no link to), and the daemon's own-key checks. The SQL that reads a key's project reads the same
+// part, `split_part(key, '-', 1)` (record's dueRowsSQL and inProjectParentSQL).
 func KeyProject(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return project

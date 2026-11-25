@@ -323,14 +323,6 @@ func TestAChainEndsAtAParentInAnotherProject(t *testing.T) {
 		}
 	})
 
-	project, err := claim.ProjectToken("LEGION")
-	must(t, err)
-	architect := func(key string) claim.Token {
-		t.Helper()
-		token, err := claim.NewToken(project, key, claim.RoleArchitect)
-		must(t, err)
-		return token
-	}
 	everyArchitectRuns := func(claim.Token) bool { return true }
 	inTx(t, st, func(tx pgx.Tx) {
 		pass, err := ReadChains(ctx, tx, records, "LEGION", nil)
@@ -359,12 +351,12 @@ func TestAChainEndsAtAParentInAnotherProject(t *testing.T) {
 					t.Errorf("%s: %s a root %t, its top issue %s and its gate root %s; want a root %t, and %s for both",
 						read.name, tc.key, root, top, gate, tc.key == tc.top, tc.top)
 				}
-				if owner := OwningIssue(project, chains, tc.key, true, everyArchitectRuns); owner != tc.top {
+				if owner := OwningIssue("legion", chains, tc.key, true, everyArchitectRuns); owner != tc.top {
 					t.Errorf("%s: the owner walk from above %s ends at %q, want %s: no issue of another project is above it", read.name, tc.key, owner, tc.top)
 				}
-				if ArchitectActsOn(project, chains, architect(foreign), tc.key) || !ArchitectActsOn(project, chains, architect(tc.top), tc.key) {
+				if ArchitectActsOn("legion", chains, architectToken(t, foreign), tc.key) || !ArchitectActsOn("legion", chains, architectToken(t, tc.top), tc.key) {
 					t.Errorf("%s: on %s %s's architect acts %t and %s's %t; want only %s's", read.name, tc.key,
-						foreign, ArchitectActsOn(project, chains, architect(foreign), tc.key), tc.top, ArchitectActsOn(project, chains, architect(tc.top), tc.key), tc.top)
+						foreign, ArchitectActsOn("legion", chains, architectToken(t, foreign), tc.key), tc.top, ArchitectActsOn("legion", chains, architectToken(t, tc.top), tc.key), tc.top)
 				}
 			}
 		}

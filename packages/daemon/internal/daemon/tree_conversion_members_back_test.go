@@ -312,7 +312,7 @@ func TestTheFirstBootBringsBackEachMemberItsRootsDepartureSuspended(t *testing.T
 	}
 }
 
-// stepStartsOf is each step record the outbox holds for key that starts a run, in id order.
+// stepStartsOf is each start of a step the outbox holds for key, in id order.
 func stepStartsOf(t *testing.T, pool *store.Pool, key string) []record.StepRecord {
 	t.Helper()
 	var starts []record.StepRecord
@@ -324,7 +324,7 @@ func stepStartsOf(t *testing.T, pool *store.Pool, key string) []record.StepRecor
 		if err != nil {
 			t.Fatalf("decode outbox row %d: %v", row.ID, err)
 		}
-		if step := payload.(record.StepRecord); step.EndedAt == nil {
+		if step := payload.(record.StepRecord); step.StartedAt != nil && step.EndedAt == nil {
 			starts = append(starts, step)
 		}
 	}

@@ -34,7 +34,7 @@ func TestAnUnknownChainIsReadAgainUntilKnown(t *testing.T) {
 		const key, parent = "CAPTURE-10", "CAPTURE-11"
 		seedRereadIssue(t, pool, key)
 		seedRereadRow(t, pool, key, parent, 1)
-		client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{parent}[0], LastSeq: 2})
+		client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: new(parent), LastSeq: 2})
 		if rereadKnown(t, pool, key) {
 			t.Fatal("the chain of an issue whose parent has no row in the copy reads known before any re-read")
 		}
@@ -79,7 +79,7 @@ func TestAnUnknownChainIsReadAgainUntilKnown(t *testing.T) {
 			seedRereadRow(t, pool, rereadKey(i), rereadKey(i+1), 1)
 			served := dispatch.Issue{Key: rereadKey(i), Project: "CAPTURE", Status: "in_progress", LastSeq: 2}
 			if i < 232 {
-				served.Parent = &[]string{rereadKey(i + 1)}[0]
+				served.Parent = new(rereadKey(i + 1))
 			}
 			client.serve(served)
 		}
@@ -122,7 +122,7 @@ func TestALoopOfPresentRowsIsReadRightAgain(t *testing.T) {
 	if rereadKnown(t, pool, key) {
 		t.Fatal("a loop of two present rows reads as a known chain")
 	}
-	client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{parent}[0], LastSeq: 3})
+	client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: new(parent), LastSeq: 3})
 	client.serve(dispatch.Issue{Key: parent, Project: "CAPTURE", Status: "in_progress", LastSeq: 3})
 
 	pending := map[string]*chainReread{key: {due: time.Now(), delay: chainRereadFirst, logged: map[string]bool{}}}
@@ -157,8 +157,8 @@ func TestAReReadStopsAtAParentInAnotherProject(t *testing.T) {
 	const key, parent, foreign = "CAPTURE-400", "CAPTURE-401", "OTHER-5"
 	seedRereadIssue(t, pool, key)
 	seedRereadRow(t, pool, key, parent, 1)
-	client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{parent}[0], LastSeq: 2})
-	client.serve(dispatch.Issue{Key: parent, Project: "CAPTURE", Status: "in_progress", Parent: &[]string{foreign}[0], LastSeq: 2})
+	client.serve(dispatch.Issue{Key: key, Project: "CAPTURE", Status: "in_progress", Parent: new(parent), LastSeq: 2})
+	client.serve(dispatch.Issue{Key: parent, Project: "CAPTURE", Status: "in_progress", Parent: new(foreign), LastSeq: 2})
 	client.serve(dispatch.Issue{Key: foreign, Project: "OTHER", Status: "in_progress", LastSeq: 2})
 	if rereadKnown(t, pool, key) {
 		t.Fatal("the chain of an issue whose parent has no row in the copy reads known before any re-read")
