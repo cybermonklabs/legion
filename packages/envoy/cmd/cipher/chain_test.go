@@ -550,6 +550,7 @@ func machineExchanges(broker *chainBroker) []url.Values {
 // ~/.config/agent-secrets/config and trades the machine's own identity there. A variable that is
 // set wins over the file.
 func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	fromFile := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, nil)
@@ -587,6 +588,7 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 // and reaches the machine, which trades its own identity, registers one enrollment and keeps it in
 // the machine cache. Each backend's row reads the injection line its own store names.
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, store := range []string{"aws", "gcp"} {
 		t.Run(store, func(t *testing.T) {
@@ -615,6 +617,7 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 // audience accepts no machine identity, so the machine source is skipped with that reason and the
 // metadata server is never asked.
 func TestAnOlderBrokerWithoutExchangeAudiencesSkipsTheMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", ""))
 	r := newChainRig(t, binary, broker)
@@ -653,6 +656,7 @@ func (r *chainRig) writeConfigFile(settings map[string]string) {
 // not tried: a broker that names no exchange audience, which detection would skip, still sees the
 // forced identity's trade. A machine session already in the cache signs before either.
 func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
@@ -698,6 +702,7 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 // the config file, is a usage error naming the values agent-secrets takes, and nothing is asked of
 // the broker or the metadata server.
 func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
@@ -729,6 +734,7 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:744); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -766,6 +772,7 @@ func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 // machine cache, so the key directory is a launcher's alone again, and signs with it; a cache that
 // already holds a session keeps its own and the key directory's is removed.
 func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	t.Run("an empty cache", func(t *testing.T) {
 		broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -834,6 +841,7 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 // no-source refusal. Each backend's rows that run the command read the injection line its own
 // store names.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	// stoppedHelper is the check of a row whose helper is expected and not running: the command
 	// stops naming the helper's socket, and nothing asks the metadata server or the exchange.
@@ -1061,6 +1069,7 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 // token is minted for it, naming both audiences and the file that keeps the first, by where the
 // machine cache is and never by its path, since the cache holds the machine session's key.pem.
 func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -1094,6 +1103,7 @@ func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 // call that met the refusal is signed again by the new key, its request object included, which the
 // broker holds to the enrollment's own key.
 func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -1133,6 +1143,7 @@ func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
 // at once register one session between them, and every one signs with it: the cache's key.pem is
 // always the key its enrollment was registered for.
 func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	// Each settings read waits, so every process has found the cache empty before the first
@@ -1185,6 +1196,7 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 // session, under the home the password database gives its user, so the unit's second command
 // signs with the session its first registered rather than trading and enrolling again.
 func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:1200); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (passwdHome set at chain_test.go:1198).
 	isolateChain(t)
 	home := t.TempDir()
 	original := passwdHome
@@ -1243,6 +1255,7 @@ func pemThumbprint(t *testing.T, data []byte) string {
 // whenever the helper answered and is not that source; with none it prints nothing on stdout and
 // the chain's refusal on stderr.
 func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
@@ -1268,7 +1281,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		}},
 		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
-			return "machine: " + cipherclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
+			// Found with no setting, so the audience is the broker's and AGENT_SECRETS_MACHINE_AUDIENCE
+			// is not named; the rig's metadata server is the one GCE_METADATA_HOST names.
+			return "machine: this machine's Google identity token for the Google exchange audience the broker names (GCE_METADATA_HOST names the metadata server)\n"
 		}},
 		{name: "machine cache", setup: func(t *testing.T, r *chainRig) string {
 			r.writeMachineCacheFixture("cached-enrollment")

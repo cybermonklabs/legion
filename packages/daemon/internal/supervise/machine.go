@@ -254,10 +254,9 @@ type Claim struct {
 	// retirement, a turn's end, a hold and a let-go's take-back of a confirmation a turn of the
 	// task did take, its prompt's result come or no send or prompt of it outstanding, each leave it.
 	Handshake EntryHandshake
-	// ServingCheckLook is the production check look of the last confirmed delivery this claim
-	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
-	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
-	// look, which is every claim whose last task was a phase's.
+	// ServingCheckLook is the last confirmed look this claim retired. Phase tasks and
+	// tasks without a look leave it alone; a later look replaces it. The request's
+	// checkOpenedAt, not this value, decides whether a completion reports a look.
 	ServingCheckLook CheckLook
 	// LastStartRow is the outbox row id of the newest start run against this claim, and 0 for one
 	// no start has run for. A stop from an older row is one the newer start superseded: it was
@@ -2475,47 +2474,22 @@ func (c Claim) ServingEntry() int64 {
 	return serving(c.Pending, deliveredEntry, c.ServedEntry, c.ServedEntry != 0, c.openRoundHoldsTask())
 }
 
-// ServingCheck is the production check look of the task this claim's worker took, and the zero
-// CheckLook for a claim that has taken none that carried one. It is what says which kind of
-// completion a turn reports: a worker whose live assignment is a check look reports on that look
-// (api/handoff.go, checkReport), and every other worker reports a phase completion. The look is
-// the one the task was given, not whichever look the check has reached, so a report of a look the
-// check has left is held to it and refused by the engine (CHECK_LOOK_NOT_OPEN).
+// ServingCheck is the production check look this worker took, or zero if it took none.
+// A phase task leaves a served look in place: the completion's checkOpenedAt selects the
+// check path, and this accessor only attributes that report to its look. A later look replaces
+// the old one, so a report from an earlier turn is still fenced by the engine.
 //
-// A task of a phase is the one task that takes a look back rather than leaving it: a worker
-// handed phase work again — a root reopened inside its linger, whose check still stands — is back
-// in the workflow, and the completion of that phase is no report on production. Every other task
-// of no look (an operator's own, a resume) leaves the look the claim is serving alone, as it
-// leaves the run and the entry.
-//
-// The look is the one field whose fallback (serving's rule 3) is held to more than its own
-// retired value: a look an unread task carries is taken only by a claim that has served nothing
-// at all. A claim records no look until a look's task is given to it, so a tester in the middle
-// of its testing run reads the zero look while its run and its entry answer the testing
-// task; held to the look alone, the fallback would hand that tester a look it has not begun to
-// serve, and its testing verdict — pass or fail, which a check report also names — would close
-// the check with nobody having looked at production. The look, the run and the entry are
-// one serving, not three. A look whose own turn starts after the daemon's wait for it still
-// reports: the prompt Oh My Pi acknowledged stays outstanding until its result, and the pinned
-// Oh My Pi runs one admitted prompt at a time, so the session's next turn is that prompt's and
-// confirms the look's task (Machine.outstanding, turnStarted). The cost left is a look turn no
-// acknowledged prompt of the task is waiting on, such as one that starts after Oh My Pi answered
-// the look's prompt without a turn: that turn counts as the agent's own, its report is refused,
-// and the task is sent again once the turn ends, so the next turn confirms it and reports. The
-// look's own bound (workflow.CheckLookBound, two hours) is the backstop under that, and a
-// refusal the agent sees beats a silent false pass.
+// An unread look task is taken only on a claim that has served nothing at all (servedAnything).
+// Otherwise the worker could report a look it has not begun. An acknowledged prompt whose own
+// turn starts confirms the task (Machine.outstanding, turnStarted); a turn of the agent's own
+// confirms nothing. If the prompt produced no turn, the report is refused and the task is sent
+// again after that turn. The look's two-hour bound is the backstop (workflow.CheckLookBound).
 func (c Claim) ServingCheck() CheckLook {
-	retired := c.ServingCheckLook
-	if c.Pending != nil && c.Pending.Phase != "" {
-		retired = CheckLook{}
-	}
-	return serving(c.Pending, deliveredCheckLook, retired, c.servedAnything(), c.openRoundHoldsTask())
+	return serving(c.Pending, deliveredCheckLook, c.ServingCheckLook, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// servedAnything is whether this claim's worker has taken any task at all — a run, an entry
-// or a look — which is what older work means for the look alone (ServingCheck). Only that
-// accessor reads it: the retire writes what a confirmed delivery leaves behind, and a confirmed
-// delivery is taken by serving's first rule, before any question of older work.
+// servedAnything keeps a report from borrowing an unread look task while this claim serves
+// earlier work. A confirmed delivery is taken by serving's first rule before this guard.
 func (c Claim) servedAnything() bool {
 	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{})
 }
