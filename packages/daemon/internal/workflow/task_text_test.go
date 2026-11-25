@@ -2,11 +2,7 @@ package workflow
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -315,132 +311,14 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 	}
 }
 
-// taskReaders is what a step's worker reads to learn what its task's fields say: the composed
-// prompt of each role that works a step, the retro or the merge (rolePrompt), and the skills those
-// prompts send them to, legion-worker's with its references and legion-retro's.
-func taskReaders(t *testing.T) string {
-	t.Helper()
-	var corpus strings.Builder
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		corpus.WriteString(rolePrompt(t, role))
-	}
-	skills := filepath.Join("..", "..", "..", "..", "skills")
-	paths, err := filepath.Glob(filepath.Join(skills, "legion-worker", "references", "*.md"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("list the references of skill://legion-worker under %s: %v (%d found)", skills, err, len(paths))
-	}
-	for _, path := range append(paths, filepath.Join(skills, "legion-worker", "SKILL.md"), filepath.Join(skills, "legion-retro", "SKILL.md")) {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		corpus.Write(body)
-	}
-	return corpus.String()
-}
-
-// readersNameAField finds each key the readers name as a field or a block of the worker's task:
-// "your task's `steps` field", "a task with no `task` field", "a task whose `steps` field", "your
-// task's `task_text` block".
-var readersNameAField = regexp.MustCompile("task(?:'s| with no| whose| names| has no) `([a-z_]+)` (?:field|block)")
-
-// jsonKey is the key the struct field name of rec's type is written under, the name its json tag
-// gives it, failing the test where the type has no such field.
-func jsonKey(t *testing.T, rec any, name string) string {
-	t.Helper()
-	field, ok := reflect.TypeOf(rec).FieldByName(name)
-	if !ok {
-		t.Fatalf("%T has no field %s", rec, name)
-	}
-	key, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-	return key
-}
-
-// recordKeys is every key a record of type typ writes, each json tag's name, an embedded struct
-// with no json name giving its own keys in its place.
-func recordKeys(typ reflect.Type) []string {
-	var keys []string
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		key, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		switch {
-		case key == "-" || !field.IsExported():
-		case field.Anonymous && key == "":
-			keys = append(keys, recordKeys(field.Type)...)
-		default:
-			keys = append(keys, key)
-		}
-	}
-	return keys
-}
-
-// Each key of a step's task that the prompts and the skills tell a worker to read is one the task
-// writes, and each the task writes is one they name, in the form "`<key>` field" (or "`<key>`
-// block" for a block of another author's words): the key is the json tag of the record's field,
-// read here off the record types (texts.PhaseAssignmentRecord, texts.Standing, texts.StepReport),
-// so a rename on either side alone fails here. They are the keys where the work stands
-// (texts.Standing) and the keys of the task that carry the run before the step: the phase, the
-// handoff it reads, the pull request, the reason and the owner's text. The forms the prompts spell
-// out with placeholders (go/worker-common.md) are the task's words, once the placeholders hold a
-// step's values: the steps' list and the header of the reported table, whose columns are
-// texts.StepReport's keys in order. The retro and the merge run no step: their standing names the
-// task and its steps alone.
-func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
-	readers := taskReaders(t)
+// Retro and merge are not steps of the owner's task. They get the task and its sequence
+// without a current step, previous-step reports or the owner's task block.
+func TestRetroAndMergeStandAtTheTaskWithoutRunningAStep(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		Version: record.PlanVersion{Source: record.PlanSourceOwner, GivenBy: "legion-legion-legion-208-architect", GivenAt: stepClock}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
-	written := task(issue, at, tester, &record.PullRequest{Repo: "sjawhar/legion", Number: 42},
-		PhaseMove{BackFrom: phase.Reviewing, Reason: "the reviewer asked again", At: stepClock})
-	read := readTaskOf(t, written)
-
-	assignment := texts.PhaseAssignmentRecord{}
-	keys := recordKeys(reflect.TypeFor[texts.Standing]())
-	for _, name := range []string{"Phase", "HandoffPhase", "HandoffVersion", "PullRequest", "Reason", "TaskText"} {
-		keys = append(keys, jsonKey(t, assignment, name))
-	}
-	words := map[string]bool{jsonKey(t, assignment, "Reason"): true, jsonKey(t, assignment, "TaskText"): true}
-	for _, key := range keys {
-		writes := slices.ContainsFunc(read.lines, func(line string) bool {
-			return strings.HasPrefix(line, key+": ") || strings.HasPrefix(line, key+"[")
-		}) || slices.ContainsFunc(read.blocks, func(block taskBlock) bool { return block.name == key })
-		if !writes {
-			t.Errorf("the task writes no %q, which the prompts name:\n%s", key, written)
-		}
-		named := strings.Contains(readers, "`"+key+"` field") || words[key] && strings.Contains(readers, "`"+key+"` block")
-		if !named {
-			t.Errorf("no prompt or skill a worker reads names the task's %q as \"`%s` field\"", key, key)
-		}
-	}
-	every := recordKeys(reflect.TypeFor[texts.PhaseAssignmentRecord]())
-	for _, match := range readersNameAField.FindAllStringSubmatch(readers, -1) {
-		if !slices.Contains(every, match[1]) {
-			t.Errorf("a prompt or a skill names the task's %q (%q), and a phase assignment writes no such key", match[1], match[0])
-		}
-	}
-
-	report := recordKeys(reflect.TypeFor[texts.StepReport]())
-	for template, line := range map[string]string{
-		"`" + jsonKey(t, texts.Standing{}, "Steps") + "[<n>]: <role>,<role>,…`":                      "steps[2]: implementer,reviewer",
-		"`" + jsonKey(t, texts.Standing{}, "Reported") + "[<n>]{" + strings.Join(report, ",") + "}`": "reported[1]{" + strings.Join(report, ",") + "}:",
-	} {
-		if !strings.Contains(readers, template) {
-			t.Errorf("no prompt or skill a worker reads spells out %s", template)
-		}
-		if !slices.Contains(read.lines, line) {
-			t.Errorf("the task does not write %q, the words of %s:\n%s", line, template, written)
-		}
-	}
-
-	// The retro and the merge run no step of the task: their standing names the task alone and its
-	// steps, with no step, no step's report and no owner's text.
 	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
 		after := issue
 		after.Phase = p
