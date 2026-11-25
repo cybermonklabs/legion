@@ -59,8 +59,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--again <case id>]... [--confirm-flagged] \
-  [--allow-runners <digest>[,<digest>...]]
-                                 (--again, --confirm-flagged: confirm only)
+  [--allow-runners <digest>[,<digest>...]] [--store-only <file>]
+                                 (--again, --confirm-flagged: confirm only; --store-only: report only)
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -231,6 +231,11 @@ skill's cases (`cases.ts`), one JSON object per line.
   serve and on served models no screened case ran on. A skill too few of whose reading sessions
   are on served models gets no verdict. Without `--reading-models`, it says the reading sessions
   by model were not given, and the verdict names no models.
+  With `--store-only` (the skill's `<cut id>/store-only/<skill>.json` that `attribute` writes), it also prints, beside the reading sessions by model and whatever the verdict, one line: `counted sessions: N, of which store-only (held by the transcript store alone, so not case sources): M (<host>: k, …)`, with `M` 0 and no hosts for a skill none of whose counted sessions is store-only.
+  Where the skill gets no verdict for fewer than 6 informative cases and `M` is above 0, the reason then ends with `; M of the skill's N counted sessions are store-only, so they were never case sources (<host>: k, …)`.
+  A file that is not JSON or not of that shape is refused (exit 2), naming the file.
+  `screen`, `confirm` and `control` refuse `--store-only` (exit 2).
+  Without `--store-only`, the report says nothing of the transcript store.
 
 The report's spend at list price is the sum of what the case results in `<out>/cases` record
 their calls cost, each call once, and the report prints each part of it: the judge controls (the
@@ -897,6 +902,13 @@ With Claude Code coverage, a Claude-only install has a read count like any other
 sessions; the ranked skills' sessions and corresponding model files for `build-cases` and
 `behaviour` still use Postgres sessions, which the case builder can pull.
 
+With `transcriptStore` configured, `attribute` also writes each ranked skill's `<out>/<cut id>/store-only/<skill>.json`, beside its sessions and models files.
+It holds the skill, its counted sessions (`counted`: the sessions of the cut repository's copy, which the ranking counts), how many of them only the transcript store holds (`storeOnly`: the copy's `transcript_store_sessions`), and each host's of those, most first (`hosts`).
+For example: `{"skill": "alpha", "counted": 40, "storeOnly": 3, "hosts": [{"host": "host-a", "sessions": 2}, {"host": "host-b", "sessions": 1}]}`.
+A store-only session is in no sessions file, since `build-cases` pulls a case's session from a Postgres store, so it is never a case source.
+`behaviour report --store-only` and `build-cases --store-only` read the file.
+Without `transcriptStore`, `attribute` writes no store-only file.
+
 ### `build-cases` and `build-tasks`
 
 ```
@@ -904,7 +916,8 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
   --skill <name> --old <skill dir at the cut's base> [--new <skill dir in the cut>] \
   --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
   --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
-  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] \
+  [--store-only <file>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -1585,6 +1598,10 @@ checked after each session decided, before the build reads another, and the proj
 `not-needed`, and each drop keeps its reason. A run that goes on checks the rule on the sessions
 the earlier runs decided before it reads the store, so a build the rule stopped stops again at
 once with the same bounds.
+
+With `--store-only` (the skill's `<cut id>/store-only/<skill>.json` that `attribute` writes), a build that ends with no case ends its summary line `build-cases: 0 cases of …`, and its stop line `build-cases: stopped …` when it stopped, with `; M of the skill's N counted sessions are store-only, so they were never case sources (<host>: k, …)` when `M` is above 0.
+The file is read before any store read, and one that is not JSON or not of that shape is refused (exit 2), naming the file, as `behaviour report` refuses it.
+It changes no session's outcome, and the summary's inputs do not hold it, so a run that goes on may add it or leave it out.
 
 Each session's transcript is pulled into a file of its own beside the output (`<out>.spool/`,
 removed once the session is decided, and the directory once the build ends), one row of the

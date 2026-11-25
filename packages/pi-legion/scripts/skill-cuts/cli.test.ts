@@ -2292,6 +2292,114 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
   }, 60_000);
 });
 
+// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// alone, so a session only the transcript store holds is counted but is never a case source. Each
+// behaviour report says how many of its skill's counted sessions are such, and a skill with too
+// few informative cases for a verdict says so in its reason.
+describe("behaviour report --store-only", () => {
+  /** Writes `content` (JSON of a value, or a text as it is) to `name` in the directory of `s`, as
+   *  attribute's `<cut id>/store-only/<skill>.json` of its skill, and returns that file. */
+  const storeOnlyFile = (s: Scenario, name: string, content: unknown) => {
+    const file = path.join(s.dir, name);
+    writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content));
+    return file;
+  };
+  const SOME = {
+    skill: "alpha",
+    counted: 40,
+    storeOnly: 3,
+    hosts: [
+      { host: "host-a", sessions: 2 },
+      { host: "host-b", sessions: 1 },
+    ],
+  };
+  const NONE = { skill: "alpha", counted: 12, storeOnly: 0, hosts: [] };
+  const COUNTED_SOME =
+    "counted sessions: 40, of which store-only (held by the transcript store alone, so not case sources): 3 (host-a: 2, host-b: 1)";
+  const COUNTED_NONE =
+    "counted sessions: 12, of which store-only (held by the transcript store alone, so not case sources): 0";
+  const NEVER_SOURCES =
+    "; 3 of the skill's 40 counted sessions are store-only, so they were never case sources (host-a: 2, host-b: 1)";
+  /** The report of `s` with `extra`, as its lines, refused nothing. */
+  const reportLines = async (s: Scenario, ...extra: string[]) => {
+    const ran = await cli([...report(s), ...extra]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    return ran.stdout.split("\n");
+  };
+  const verdictOf = (lines: readonly string[]) =>
+    lines.find((line) => line.startsWith("verdict: "));
+
+  test("prints the counted sessions line, next to the reading sessions, for a skill that gets a verdict, 0 where none is store-only, and nothing of the store without the option", async () => {
+    const six = ["c01", "c02", "c03", "c04", "c05", "c06"];
+    const s = scenario(
+      "store-only-verdict",
+      f1File(2),
+      six.map((id) => ({ id }))
+    );
+    plantSix(s, six, "c01");
+    const plain = await reportLines(s);
+    expect(plain.filter((line) => line.startsWith("counted sessions"))).toEqual([]);
+    expect(plain.join("\n")).not.toContain("transcript store");
+    const keeps = verdictOf(plain);
+    expect(keeps).toStartWith("verdict: no loss detected by the registered rule");
+
+    const some = await reportLines(s, "--store-only", storeOnlyFile(s, "some.json", SOME));
+    const at = some.indexOf(COUNTED_SOME);
+    expect(some[at - 1]).toStartWith("reading sessions by model: ");
+    expect(some[at + 1]).toStartWith("verdict: ");
+    // A verdict's reason is no fewer-than-6 one: it names no store-only session.
+    expect(verdictOf(some)).toBe(keeps);
+
+    const none = await reportLines(s, "--store-only", storeOnlyFile(s, "none.json", NONE));
+    expect(none).toContain(COUNTED_NONE);
+    expect(verdictOf(none)).toBe(keeps);
+  }, 60_000);
+
+  test("a skill with fewer than 6 informative cases ends its reason with how many of its counted sessions are store-only, and with none says nothing of them", async () => {
+    const s = scenario("store-only-few", LOSS_SKILL(), [{ id: "c01" }]);
+    plantResult(s, "c01", { stages: { screen: plantedStage(s, "c01", "screen", FLAGGED) } });
+    const tooFew = `verdict: none: fewer than ${MIN_INFORMATIVE_CASES} informative cases: 1`;
+    expect(verdictOf(await reportLines(s))).toBe(`${tooFew}${unmeasured(1, 1)}`);
+
+    const some = await reportLines(s, "--store-only", storeOnlyFile(s, "some.json", SOME));
+    expect(some).toContain(COUNTED_SOME);
+    expect(verdictOf(some)).toBe(`${tooFew}${NEVER_SOURCES}${unmeasured(1, 1)}`);
+
+    const none = await reportLines(s, "--store-only", storeOnlyFile(s, "none.json", NONE));
+    expect(none).toContain(COUNTED_NONE);
+    expect(verdictOf(none)).toBe(`${tooFew}${unmeasured(1, 1)}`);
+  }, 60_000);
+
+  test("a store-only file that is not JSON or not of its shape is refused, naming it, and so is the option on a stage command; a cases file with no case is still refused", async () => {
+    const s = scenario("store-only-refused", LOSS_SKILL(), [{ id: "c01" }]);
+    const notJson = storeOnlyFile(s, "not-json.json", "{ counted: 40");
+    const notJsonRan = await cli([...report(s), "--store-only", notJson]);
+    expect(notJsonRan.code).toBe(2);
+    expect(notJsonRan.stderr).toContain(`--store-only ${notJson} is not JSON: `);
+    const shape = storeOnlyFile(s, "shape.json", { skill: "alpha", counted: 40 });
+    const shapeRan = await cli([...report(s), "--store-only", shape]);
+    expect(shapeRan.code).toBe(2);
+    expect(shapeRan.stderr).toContain(
+      `--store-only ${shape} is not a skill's store-only sessions (attribute's <cut id>/store-only/<skill>.json): storeOnly: `
+    );
+
+    const from = recorder.requests.length;
+    const screen = await cli(
+      behaviour("screen", s, "--store-only", storeOnlyFile(s, "some.json", SOME))
+    );
+    expect(screen.code).toBe(2);
+    expect(screen.stderr).toContain("--store-only goes with behaviour report only");
+    expect(requestsSince(from)).toHaveLength(0);
+
+    // build-cases' line says what a skill with no case leaves out (build.test.ts); the report
+    // still reads no file with no case.
+    writeFileSync(s.casesFile, "");
+    const empty = await cli([...report(s), "--store-only", storeOnlyFile(s, "some.json", SOME)]);
+    expect(empty.code).toBe(2);
+    expect(empty.stderr).toContain(`${s.casesFile} holds no case`);
+  }, 60_000);
+});
+
 // The architect's ruling on `confirm --confirm-flagged` (2026-11-22T21:46Z): it confirms each
 // flagged case that is not dropped whatever the skill's informative count or other reasons for no
 // verdict, so a case run again alone can be confirmed; it confirms no case its screen did not

@@ -2116,6 +2116,8 @@ test("the command writes the count, its report, each cut's ranking and the model
   };
   expect([modelsOf("beta"), modelsOf("gone")]).toEqual([empty, empty]);
   expect(result.out).toContain(`${path.join(out, "skills-1", "models")}/ (3 files)`);
+  // No transcriptStore is configured: no store-only file (INFRA-4676, 2026-11-25).
+  expect(existsSync(path.join(out, "skills-1", "store-only"))).toBe(false);
 
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
   for (const line of [
@@ -2389,12 +2391,16 @@ function transcriptCoverage(
   };
 }
 
+/** attribute over the transcript-store count of `coverage` and `reads` and the Postgres files
+ *  `pg`, with TRANSCRIPT_CONFIG; with `changed` (a `--changed` file's text), it ranks the cut
+ *  skills-1's changed skills too. Returns the count's rows, its report and `--out`. */
 function transcriptReport(
   name: string,
   coverage: readonly FixtureCoverage[],
   reads: readonly QueryOutput[],
   world: R4Tables,
-  pg: readonly string[] = []
+  pg: readonly string[] = [],
+  changed?: string
 ) {
   const root = path.join(dir, `transcript-${name}`);
   const [firstPg] = pg;
@@ -2427,12 +2433,19 @@ function transcriptReport(
     path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl"),
     "--out",
     out,
+    ...(changed === undefined
+      ? []
+      : [
+          "--changed",
+          `skills-1=${path.join(tree(root, { "changed.txt": changed }), "changed.txt")}`,
+        ]),
   ]);
   expect(result.err).toBe("");
   expect(result.code).toBe(0);
   return {
     rows: parseTsv(readFileSync(path.join(out, "skill-read-count.tsv"), "utf8")),
     report: readFileSync(path.join(out, "skill-read-count.md"), "utf8"),
+    out,
   };
 }
 
@@ -2538,4 +2551,43 @@ test("R1 v3 row 5: the transcript SQL fills the UTC day and window and rejects a
   expect(() => fillTemplate(`${sql}\n{{missing}}`, {})).toThrow(
     "no value for the placeholder missing"
   );
+});
+
+// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// alone, so each behaviour report says how many of its skill's counted sessions only the
+// transcript store holds, from attribute's store-only file of the skill.
+test("with a transcript store, each ranked skill's store-only file gives its counted sessions, those only the transcript store holds and each host's, which its sessions file leaves out", () => {
+  const alpha = { skill: "alpha", copy: `${F1_PROFILE}/alpha/SKILL.md` };
+  const { rows, out } = transcriptReport(
+    "store-only",
+    [transcriptCoverage("host-a", "omp", [H1, H2]), transcriptCoverage("host-b", "omp", [H3])],
+    [
+      query(transcriptHost("host-a"), transcriptDay, [{ ...alpha, hashes: [H1, H2] }]),
+      query(transcriptHost("host-b"), transcriptDay, [{ ...alpha, hashes: [H3] }]),
+    ],
+    f7World(),
+    [H4],
+    "src/alpha\nsrc/beta\n"
+  );
+  // Read as plain JSON: toEqual checks each field, and that there is no other.
+  const storeOnlyOf = (skill: string): unknown =>
+    JSON.parse(readFileSync(path.join(out, "skills-1", "store-only", `${skill}.json`), "utf8"));
+  // H4 is store_a's; H1, H2 and H3 only the transcript store holds.
+  expect(storeOnlyOf("alpha")).toEqual({
+    skill: "alpha",
+    counted: 4,
+    storeOnly: 3,
+    hosts: [
+      { host: "host-a", sessions: 2 },
+      { host: "host-b", sessions: 1 },
+    ],
+  });
+  expect(rows.find((row) => row.name === "alpha")).toMatchObject({
+    sessions: "4",
+    transcript_store_sessions: "3",
+  });
+  expect(readFileSync(path.join(out, "skills-1", "sessions", "alpha.jsonl"), "utf8")).toBe(
+    `${JSON.stringify({ store: "store_a", hash: H4 })}\n`
+  );
+  expect(storeOnlyOf("beta")).toEqual({ skill: "beta", counted: 0, storeOnly: 0, hosts: [] });
 });

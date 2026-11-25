@@ -163,6 +163,15 @@
  *                          byModel, each `{model, anthropic, served, sessions}`, noModel,
  *                          notQueried, notAnthropic, served, withModel): what `behaviour
  *                          --reading-models` reads (ModelCountFile).
+ *   <cut id>/store-only/<skill>.json
+ *                          With a configured transcriptStore, for each `--changed` cut, one file
+ *                          per sessions file (`storeOnlyFiles`): the skill, its counted sessions
+ *                          (the copy's `sessions`, which its ranking counts), those of them only
+ *                          the transcript store holds (its `transcript_store_sessions`), which no
+ *                          sessions file lists and so no case comes from, and each host's of
+ *                          those, as JSON: what `behaviour report --store-only` and `build-cases
+ *                          --store-only` read (StoreOnlyFile). With no transcriptStore it writes
+ *                          none.
  *   models-by-skill.tsv    With --models: MODELS_BY_SKILL_COLUMNS, one row per copy, in
  *                          skill-copies.tsv's order: repository, path, name, sessions, by_model
  *                          (each `<model>=<sessions>`, most first, joined by `; `),
@@ -177,8 +186,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { schemaFaults } from "./common";
+import { Refused, schemaFaults } from "./common";
 import {
   loadConfig,
   type SkillCutsConfig,
@@ -1298,6 +1308,8 @@ export interface CopyCount {
   readonly name: string;
   readonly sessions: number;
   readonly transcriptSessions: number;
+  /** Of `transcriptSessions`, each transcript host's, most first, a tie by host. */
+  readonly transcriptHosts: readonly { readonly host: string; readonly sessions: number }[];
   readonly partialCoverageHosts: readonly string[];
   /** The read sessions (`sessionKey`) that `sessions` counts. */
   readonly readSessions: ReadonlySet<string>;
@@ -2100,6 +2112,7 @@ export function attribute(
     const injected = INJECTED_SKILLS[row.name];
     if (injected !== undefined) loaders.add(injected);
     let transcriptSessions = 0;
+    const transcriptHosts = new Map<string, number>();
     let partialSessions = 0;
     const partialHosts = new Set<string>();
     let ompRead = false;
@@ -2109,9 +2122,11 @@ export function attribute(
       if (format === undefined) continue;
       transcriptSessions++;
       const store = session.slice(0, session.indexOf("\t"));
+      const host = store.slice(TRANSCRIPT_PREFIX.length);
+      transcriptHosts.set(host, (transcriptHosts.get(host) ?? 0) + 1);
       if (partial.has(sessionKey(store, format))) {
         partialSessions++;
-        partialHosts.add(store.slice(TRANSCRIPT_PREFIX.length));
+        partialHosts.add(host);
       }
     }
     for (const session of copySessions.reference.get(key) ?? []) {
@@ -2127,6 +2142,9 @@ export function attribute(
       name: row.name,
       sessions,
       transcriptSessions,
+      transcriptHosts: [...transcriptHosts]
+        .map(([host, count]) => ({ host, sessions: count }))
+        .sort((a, b) => b.sessions - a.sessions || a.host.localeCompare(b.host)),
       partialCoverageHosts:
         partialSessions * 2 > transcriptSessions ? [...partialHosts].sort() : [],
       readSessions,
@@ -2405,22 +2423,32 @@ export function modelsBySkillTsv(attribution: Attribution, models: SessionModels
   );
 }
 
-/** Each ranked changed skill of `ranking`, in rank order, with the read sessions (`sessionKey`) of
- *  the cut repository's copy after every attribution rule: none for a directory the copies output
- *  holds no copy at. */
+/** Each ranked changed skill of `ranking`, in rank order, with the cut repository's copy's counts
+ *  and its read sessions (`sessionKey`) after every attribution rule: no copy and no session for a
+ *  directory the copies output holds no copy at. */
 export function rankedSessions(
   attribution: Attribution,
   ranking: Ranking
-): { rank: number; skill: string; path: string; sessions: ReadonlySet<string> }[] {
+): {
+  rank: number;
+  skill: string;
+  path: string;
+  copy: CopyCount | undefined;
+  sessions: ReadonlySet<string>;
+}[] {
   const copies = new Map(
     attribution.copies.map((copy) => [copyKey(copy.repository, copy.path), copy])
   );
-  return ranking.rows.map((row, index) => ({
-    rank: index + 1,
-    skill: row.skill,
-    path: row.path,
-    sessions: copies.get(copyKey(ranking.repository, row.path))?.readSessions ?? new Set(),
-  }));
+  return ranking.rows.map((row, index) => {
+    const copy = copies.get(copyKey(ranking.repository, row.path));
+    return {
+      rank: index + 1,
+      skill: row.skill,
+      path: row.path,
+      copy,
+      sessions: copy?.readSessions ?? new Set(),
+    };
+  });
 }
 
 /** Each ranked changed skill of `ranking` with its read sessions by model, in rank order. */
@@ -2429,21 +2457,27 @@ export function rankingModels(
   ranking: Ranking,
   models: SessionModels
 ): { rank: number; skill: string; path: string; count: ModelCount }[] {
-  return rankedSessions(attribution, ranking).map(({ sessions, ...row }) => ({
-    ...row,
-    count: modelCount(sessions, models),
+  return rankedSessions(attribution, ranking).map((row) => ({
+    rank: row.rank,
+    skill: row.skill,
+    path: row.path,
+    count: modelCount(row.sessions, models),
   }));
 }
 
 /** The ranked changed skills of `ranking` that get files of their own under its cut's directory,
- *  in rank order, each with the read sessions of the cut repository's copy. A skill whose name is
- *  no file name, or that two ranked directories share, gets none and is named in `skipped`. */
+ *  in rank order, each with the cut repository's copy's counts and its read sessions that a
+ *  Postgres store holds. A skill whose name is no file name, or that two ranked directories
+ *  share, gets none and is named in `skipped`. */
 function filedSkills(
   attribution: Attribution,
   ranking: Ranking
-): { rows: { skill: string; sessions: ReadonlySet<string> }[]; skipped: string[] } {
+): {
+  rows: { skill: string; copy: CopyCount | undefined; sessions: ReadonlySet<string> }[];
+  skipped: string[];
+} {
   const ranked = rankedSessions(attribution, ranking);
-  const rows: { skill: string; sessions: ReadonlySet<string> }[] = [];
+  const rows: { skill: string; copy: CopyCount | undefined; sessions: ReadonlySet<string> }[] = [];
   const skipped: string[] = [];
   for (const row of ranked) {
     const shared = ranked.filter((other) => other.skill === row.skill).length > 1;
@@ -2494,6 +2528,79 @@ export function modelFiles(
     name: path.join("models", `${row.skill}.json`),
     text: `${JSON.stringify(modelCount(row.sessions, models), null, 2)}\n`,
   }));
+}
+
+/** A ranked skill's `<cut id>/store-only/<skill>.json` (`storeOnlyFiles`): its counted sessions
+ *  (`counted`, the cut repository's copy's `sessions`, which its ranking counts), those of them
+ *  only the transcript store holds (`storeOnly`, its `transcript_store_sessions`), and each
+ *  host's of those (`hosts`, most first, a tie by host). A session only the transcript store
+ *  holds is in no sessions file, since build-cases pulls a case's session from a Postgres store:
+ *  it is never a case source. `behaviour report --store-only` and `build-cases --store-only` read
+ *  it (`readStoreOnly`). */
+export const StoreOnlyFile = z.strictObject({
+  skill: z.string().min(1),
+  counted: Count,
+  storeOnly: Count,
+  hosts: z.array(z.strictObject({ host: z.string().min(1), sessions: Count })),
+});
+export type StoreOnly = z.infer<typeof StoreOnlyFile>;
+
+/** The store-only files of `ranking`, `store-only/<skill>.json` under its cut's directory: one per
+ *  sessions file (`sessionFiles`), the StoreOnly of the skill's copy, as JSON. */
+export function storeOnlyFiles(
+  attribution: Attribution,
+  ranking: Ranking
+): { name: string; text: string }[] {
+  return filedSkills(attribution, ranking).rows.map(({ skill, copy }) => {
+    const storeOnly: StoreOnly = {
+      skill,
+      counted: copy?.sessions ?? 0,
+      storeOnly: copy?.transcriptSessions ?? 0,
+      hosts: [...(copy?.transcriptHosts ?? [])],
+    };
+    return {
+      name: path.join("store-only", `${skill}.json`),
+      text: `${JSON.stringify(storeOnly, null, 2)}\n`,
+    };
+  });
+}
+
+/** The StoreOnly `file` holds (`storeOnlyFiles`), for `--store-only <file>`. Throws a refusal
+ *  naming the file when it cannot be read, is not JSON or is not of StoreOnlyFile's shape. */
+export function readStoreOnly(file: string): StoreOnly {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Refused(`cannot read --store-only ${file}: ${messageFor(error)}`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Refused(`--store-only ${file} is not JSON: ${messageFor(error)}`);
+  }
+  const parsed = StoreOnlyFile.safeParse(value);
+  if (!parsed.success) {
+    throw new Refused(
+      `--store-only ${file} is not a skill's store-only sessions (attribute's <cut id>/store-only/<skill>.json): ${schemaFaults(parsed.error)}`
+    );
+  }
+  return parsed.data;
+}
+
+/** Each host of `storeOnly` with its store-only sessions, `<host>: <sessions>`, joined by `, `. */
+export function storeOnlyHosts(storeOnly: StoreOnly): string {
+  return storeOnly.hosts.map(({ host, sessions }) => `${host}: ${sessions}`).join(", ");
+}
+
+/** The end of a reason a skill has no case, or too few informative cases, for a verdict: how many
+ *  of its counted sessions only the transcript store holds, so that none of them was a case
+ *  source, and on which hosts; "" when none is. */
+export function storeOnlyWords(storeOnly: StoreOnly): string {
+  return storeOnly.storeOnly === 0
+    ? ""
+    : `; ${storeOnly.storeOnly} of the skill's ${storeOnly.counted} counted sessions are store-only, so they were never case sources (${storeOnlyHosts(storeOnly)})`;
 }
 
 /** models-by-cut.tsv's text: each cut's ranked changed skills, in rank order. */
@@ -3180,6 +3287,8 @@ export function main(argv: readonly string[], io: Output): number {
       writeDir(ranking.cut, "sessions", sessionFiles(attribution, ranking).files);
       if (models !== undefined)
         writeDir(ranking.cut, "models", modelFiles(attribution, ranking, models.sessions));
+      if (config.transcriptStore !== undefined)
+        writeDir(ranking.cut, "store-only", storeOnlyFiles(attribution, ranking));
     }
     if (models !== undefined) {
       write("models-by-skill.tsv", modelsBySkillTsv(attribution, models.sessions));

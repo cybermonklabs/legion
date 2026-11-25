@@ -16,7 +16,7 @@
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
  *       [--reading-models <file>] [--again <case id>]... [--confirm-flagged] (both confirm only)
- *       [--allow-runners <digest>[,<digest>...]]
+ *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -44,6 +44,7 @@
  *       --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir>
  *       --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
  *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *       [--store-only <file>]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
@@ -181,7 +182,12 @@
  *   result that shows one fails `report`, and every stage command, naming the case (exit 1). A
  *   run any of whose confirms `confirm --confirm-flagged` made gives the case results as any run
  *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
- *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict.
+ *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict. With `--store-only <file>` (attribute.ts's
+ *   `<cut id>/store-only/<skill>.json` of the skill), it prints, beside the reading sessions by
+ *   model and whatever the verdict, the skill's counted sessions and how many of them only the
+ *   transcript store holds, by host, which were never case sources; when a skill gets no verdict
+ *   for fewer than MIN_INFORMATIVE_CASES informative cases and some are, the reason ends with
+ *   their count (attribute.ts's `storeOnlyWords`). Without it, `report` says nothing of the store.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -280,7 +286,16 @@ import {
   InjectionRefused,
   injectionFaults,
 } from "./arms";
-import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
+import {
+  main as attributeMain,
+  type ModelCount,
+  ModelCountFile,
+  modelId,
+  readStoreOnly,
+  type StoreOnly,
+  storeOnlyHosts,
+  storeOnlyWords,
+} from "./attribute";
 import { main as buildMain, fromRecordedIn, pathFormIn } from "./build";
 import {
   type Capture,
@@ -1167,7 +1182,8 @@ const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } 
  *  `readingModels` the skill's reading sessions by model that `--reading-models` names, with its
  *  file (undefined without it). `allowRunners` are the runners `--allow-runners` names, whose
  *  saved stages a stage command takes as this runner's, and whose results report reports with
- *  others' (none without it). */
+ *  others' (none without it). `storeOnly` is the skill's counted and store-only sessions that
+ *  `--store-only` names (report only; undefined without it). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
@@ -1177,6 +1193,7 @@ interface Behaviour {
   readonly servedModels: readonly string[];
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
   readonly allowRunners: readonly string[];
+  readonly storeOnly: StoreOnly | undefined;
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
@@ -2388,6 +2405,17 @@ function modelLines(b: Behaviour, score: SkillScore): string[] {
   ];
 }
 
+/** The report's line on the skill's counted sessions (`--store-only`): how many of them only the
+ *  transcript store holds, with each host's, whatever the verdict; none without `--store-only`. */
+function storeOnlyLines(b: Behaviour): string[] {
+  const storeOnly = b.storeOnly;
+  if (storeOnly === undefined) return [];
+  const hosts = storeOnly.hosts.length === 0 ? "" : ` (${storeOnlyHosts(storeOnly)})`;
+  return [
+    `counted sessions: ${storeOnly.counted}, of which store-only (held by the transcript store alone, so not case sources): ${storeOnly.storeOnly}${hosts}`,
+  ];
+}
+
 /** The end of a verdict's line with `--reading-models`: the reading sessions the verdict speaks
  *  for, on each served model its screened cases ran on (a served model of the file counted under
  *  the one of its id), and those it does not: the sessions on models the gateway does not serve,
@@ -2473,7 +2501,9 @@ const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--co
  *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). A run
  *  any of whose confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT
  *  and no verdict. With `--reading-models`, a skill too few of whose reading sessions are on
- *  served models (`servedScreeningRefusal`) gets none. */
+ *  served models (`servedScreeningRefusal`) gets none. With `--store-only`, the reason of a skill
+ *  with fewer than MIN_INFORMATIVE_CASES informative cases ends with how many of its counted
+ *  sessions only the transcript store holds, so were never case sources (`storeOnlyWords`). */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -2500,7 +2530,13 @@ function verdictLine(
         : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
   }
   const listing = listingWords(b, results, score);
-  if (outcome.verdict === null) return `none: ${outcome.reason}${listing}`;
+  if (outcome.verdict === null) {
+    const storeOnly =
+      b.storeOnly !== undefined && score.informative < MIN_INFORMATIVE_CASES
+        ? storeOnlyWords(b.storeOnly)
+        : "";
+    return `none: ${outcome.reason}${storeOnly}${listing}`;
+  }
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
@@ -2894,7 +2930,7 @@ function reportCommand(b: Behaviour, requestLog: string): void {
       `controls: the planted-loss and false-loss controls are ${control.state === "running" ? "not all run (behaviour control)" : "unscreened: an arm lacks its judged runs"}`
     );
   }
-  lines.push(...modelLines(b, score));
+  lines.push(...modelLines(b, score), ...storeOnlyLines(b));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
@@ -2978,6 +3014,7 @@ const BEHAVIOUR_USAGE = [
   "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
   "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
+  "  [--store-only <file>] (report only: the skill's <cut id>/store-only/<skill>.json, written by attribute)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default",
 ].join("\n");
 
@@ -3020,6 +3057,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       again: { type: "string", multiple: true },
       "confirm-flagged": { type: "boolean" },
       "allow-runners": { type: "string" },
+      "store-only": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -3029,6 +3067,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (values["confirm-flagged"] !== undefined && command !== "confirm") {
     throw new Refused(
       `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const storeOnlyFile = values["store-only"];
+  if (storeOnlyFile !== undefined && command !== "report") {
+    throw new Refused(
+      `--store-only goes with behaviour report only: no stage command reads it. ${BEHAVIOUR_USAGE}`
     );
   }
   const allowRunners = values["allow-runners"]?.split(",").map((each) => each.trim()) ?? [];
@@ -3069,6 +3113,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         ? undefined
         : { file: readingModels, count: readReadingModels(readingModels) },
     allowRunners,
+    storeOnly: storeOnlyFile === undefined ? undefined : readStoreOnly(storeOnlyFile),
   };
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   if (report) {
@@ -3336,7 +3381,7 @@ const USAGE = [
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
-  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--store-only <file>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",

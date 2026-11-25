@@ -13,6 +13,7 @@
  *       cut's head>] --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
  *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
  *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+ *       [--store-only <file>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -46,6 +47,13 @@
  * still open are recorded `not-needed`, and every drop keeps its reason. A run that goes on
  * checks the rule after the sessions the earlier runs decided, before it reads any, so a build
  * the rule stopped stops again at once with the same bounds. The projection needs `--max`.
+ *
+ * **--store-only <file>** (attribute.ts's `<cut id>/store-only/<skill>.json` of the skill, read
+ * before any store read, a file that is not one refused as `behaviour report` refuses it): a
+ * build that ends with no case ends its summary line, and its stop line when it stopped, with
+ * how many of the skill's counted sessions only the transcript store holds, by host, so that
+ * none of them was a case source (`storeOnlyWords`; none when there are none). It changes no
+ * session's outcome, and the summary's inputs do not hold it.
  *
  * Up to `--concurrency` sessions (BUILD_CONCURRENCY unless given) are open at once: pulled (one
  * store query at a time across them) and read, the gateway taking as many calls at once. A
@@ -597,7 +605,9 @@ import {
   type R4Output,
   readCount,
   readR4,
+  readStoreOnly,
   sessionModel,
+  storeOnlyWords,
   type Via,
   vias,
 } from "./attribute";
@@ -6716,7 +6726,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--store-only <file>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
@@ -7953,6 +7963,7 @@ async function reprofileCases(
     "stop-projected-usd",
     "stop-after-sessions",
     "stop-zero-case-usd",
+    "store-only",
   ]) {
     if (values[flag] !== undefined) {
       throw new Refused(
@@ -8442,6 +8453,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       "stop-projected-usd": { type: "string" },
       "stop-after-sessions": { type: "string" },
       "stop-zero-case-usd": { type: "string" },
+      "store-only": { type: "string" },
     },
     BUILD_CASES_USAGE
   );
@@ -8502,6 +8514,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     throw new Refused(`--new ${newDir} is not a directory`);
   }
   mustBeFile(given["key-file"], "--key-file");
+  // The skill's counted sessions that only the transcript store holds, which a build with no case
+  // names at its end: never case sources, since a case's session is pulled from a Postgres store.
+  const storeOnly =
+    values["store-only"] === undefined ? undefined : readStoreOnly(values["store-only"]);
   const files = skillFiles(given.old);
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const candidates = readCandidates(given.sessions, config);
@@ -8890,18 +8906,19 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   // The file must load as the behaviour commands load it.
   loadCases(given.out, given.old);
   const usd = addSpend(priorSpend, run.gateway.spend()).usd;
+  const noCase = casesBuilt === 0 && storeOnly !== undefined ? storeOnlyWords(storeOnly) : "";
   io.out(
-    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}${noCase}\n`
   );
   if (stopped !== undefined) {
-    io.err(`build-cases: stopped: ${stopped}`);
+    io.err(`build-cases: stopped: ${stopped}${noCase}`);
     return EXIT.stopped;
   }
   if (ruleStop !== undefined) {
     const projected =
       ruleStop.projectedUsd === null ? "unbounded" : `$${ruleStop.projectedUsd.toFixed(4)}`;
     io.err(
-      `build-cases: stopped by --${ruleStop.rule}: ${ruleStop.sessions} sessions decided, ${ruleStop.cases} cases, $${ruleStop.spentUsd.toFixed(4)} of readers spent, projected ${projected} to --max ${Number.isFinite(max) ? max : "(none)"} cases`
+      `build-cases: stopped by --${ruleStop.rule}: ${ruleStop.sessions} sessions decided, ${ruleStop.cases} cases, $${ruleStop.spentUsd.toFixed(4)} of readers spent, projected ${projected} to --max ${Number.isFinite(max) ? max : "(none)"} cases${noCase}`
     );
     return EXIT.stoppedByCost;
   }
