@@ -2218,10 +2218,14 @@ export const dispatchToolSpecs = [
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's answer, resolve, decline, close or reopen of an ask writes one version, which " +
+      "A human's answer, resolve, decline, close or reopen of an ask writes one version. When " +
+      "the answer, resolve, decline, close or reopen is that version's whole change, the version " +
       "changes only the server-owned attributes of the ask's block: its state, and who answered " +
       "and when. An approval carries across the version an answer, a resolve or a decline writes, " +
-      "and the request keeps whoever held its turn; a close's version carries none, so the " +
+      "and the request keeps whoever held its turn. The version carries an approval only when the " +
+      "person's answer, resolve or decline is its whole change. If text that a person was editing " +
+      "in the browser is settled into the same version, the approval does not carry, and the " +
+      "request goes back to its agent. A close's version carries none, so the " +
       "approval reads stale until the reopen's version carries it. A new " +
       "version of a Legion root spec closes its armed design gate until a human approves it; a " +
       "carried approval reopens it too. " +

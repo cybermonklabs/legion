@@ -242,11 +242,15 @@ it as a `:::reading` block.
 When every ask block is settled and the spec proposes something the person has not already
 agreed to, run `dispatch request-approval` with a short `--summary` of what is new. The person
 approves that version, or requests changes with a reason. Their answer to an ask block, its
-resolve or decline, and the issue's close or reopen each write one version, whose only change is
-that block's `state` and, where the ask is answered, `answered_by` and `answered_at` (the block of
+resolve or decline, and the issue's close or reopen each write one version. When the answer,
+resolve, decline, close or reopen is that version's whole change, the version changes only that
+block's `state` and, where the ask is answered, `answered_by` and `answered_at` (the block of
 an open ask holds no `state`). No version holds the answer's words or the options chosen: they
 stay on the ask. Such a version carries no approval of its own. Dispatch carries an approval
 across the version an answer, a resolve, a decline or a reopen writes, and not across a close's.
+The version carries an approval only when the person's answer, resolve or decline is its whole
+change. If text that a person was editing in the browser is settled into the same version, the
+approval does not carry, and the request goes back to its agent.
 Any other later version leaves the approval stale, unless Dispatch carries the approval to it.
 Dispatch carries it when that version's text is the approved text, or when every change in
 it is a reading inside a decision or an answered ask, an ask block attribute the server owns, or

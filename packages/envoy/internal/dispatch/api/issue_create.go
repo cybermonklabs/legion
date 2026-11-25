@@ -590,7 +590,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// the store holds no node of it (stateFiledFromNode). The node write and the issue's row go
 	// to the server as one batch (store.WriteBatch), the node write first, as createStoredMessage
 	// writes a message's node and row: the node write adds no round trip while the create holds
-	// its transaction id (INFRA-636).
+	// its transaction id, which the xid window tests count.
 	if err := stateFiledFromNode(r.Context(), tx, filedFrom); err != nil {
 		s.writeHandlerError(w, err)
 		return
