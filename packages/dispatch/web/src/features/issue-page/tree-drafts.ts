@@ -922,36 +922,6 @@ function addTurns(
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
   }
-  // A comment that answers nothing else and is anchored inside a statement - a `requirement`
-  // block of the issue's spec, whose draft `addDocumentBlocks` marked a statement before this
-  // ran (`Draft.statement`) - hangs under that statement, whoever wrote it and wherever: the
-  // issue page's box, a document's margin, an agent. The server stores the lowest block that
-  // holds the anchor's words (`pmdoc.BlockIDForRange`): a one-paragraph statement's paragraph,
-  // and the statement itself for words across two of its paragraphs. So the anchor's block is
-  // mapped to the statement whose range holds that block's range in its document's blocks read.
-  // A `requirement` block of any other document is a block and nothing more, which nothing is
-  // placed under, so a comment anchored inside one keeps its place under the issue, as does one
-  // anchored in no statement or in a document whose blocks are not read yet.
-  const blocksOf = new Map(
-    (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
-  );
-  for (const comment of reads.comments ?? []) {
-    const draft = drafts.get(comment.id);
-    const anchor = comment.anchor;
-    if (draft?.type !== "comment" || draft.parents.length > 0) continue;
-    if (anchor === null || anchor.block_id === null) continue;
-    const blocks = blocksOf.get(anchor.artifact_id) ?? [];
-    const slug = context.slugOf(anchor.artifact_id);
-    const held = blocks.find((block) => block.id === anchor.block_id);
-    if (slug === undefined || held === undefined) continue;
-    const statement = blocks.find(
-      (block) =>
-        drafts.get(blockNodeId(slug, block.id))?.statement === true &&
-        block.from <= held.from &&
-        held.to <= block.to
-    );
-    if (statement !== undefined) draft.parents = [blockNodeId(slug, statement.id)];
-  }
 }
 
 /**

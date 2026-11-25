@@ -30,7 +30,7 @@ import {
   type ReplyItem,
   useOutlineWriter,
 } from "./outline-writer";
-import { ANSWER_LINES, type NodeType } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { publishedTree } from "./projection-fixture";
 
 /**
@@ -430,6 +430,14 @@ export function targetWords(): string | null {
     (one) => one.closest("[hidden]") === null
   );
   return line?.firstElementChild?.textContent ?? null;
+}
+
+/** What the target line reads for a reply, or for a comment on a statement: "Replying to:", the
+ *  name of the target's author where the line names one, and the page's word for its kind, a
+ *  middle dot between the two. */
+export function replyingTo(author: string | undefined, kind: NodeType): string {
+  const named = author === undefined ? [] : [author, "·"];
+  return [CONTROL_LABELS.replying_to, ...named, NODE_TYPE_NAMES[kind]].join(" ");
 }
 
 /** The lines the box draws of the drafts it keeps for other targets than the one it shows, in

@@ -20,7 +20,7 @@
  * `features/issue-page/composer-fixture.tsx` draws it for the box's own cases too: the outline's
  * tree and the box under the page's writer and its words, as `IssueOutlinePage.tsx` draws the
  * stage and the foot slot, and the page's moves are made as the reader makes them - a row's `r`,
- * `a` on a question, the box's own controls and keys - or as the address makes them, drawing the
+ * an Edit, the box's own controls and keys - or as the address makes them, drawing the
  * box in another place on the same mount (a view, a document, the issue closed).
  *
  * | Line · move                                                       | typed  | refused | stopped |
@@ -33,7 +33,7 @@
  * | box · Write on the issue instead                                  | cell   | cell    | cell    |
  * | box · Escape over a reply                                         | cell   | cell    | cell    |
  * | box · Write on the issue instead, the issue keeping a comment ... | cell   | cell    | cell    |
- * | box · an answer opened, then ended (hidden)                       | cell   | cell    | cell    |
+ * | box · an edit opened, then ended (hidden)                         | cell   | cell    | cell    |
  * | box · a view, then back (hidden)                                  | cell   | cell    | cell    |
  * | box · a document opened, then back (hidden)                       | cell   | cell    | cell    |
  * | box · the issue closed, then open again                           | cell   | cell    | cell    |
@@ -60,7 +60,7 @@
  * `keptOnTarget`), so its draft and note never leave. The elsewhere row is a refusal on the
  * issue, which holds the box on no target: Send says where the draft was written for and offers
  * no Retry, and the issue's own Reply brings the box back to it. (hidden) marks a move that keeps
- * the box mounted and out of sight: an answer line drawn in its place, a view or a document on,
+ * the box mounted and out of sight: an edit line drawn in its place, a view or a document on,
  * which hides the box while it holds no send of its own. (off) marks one that takes it off the
  * page: another issue's address draws the page afresh (`IssueOutline` keyed by `route.key`), which
  * the cells make by drawing the page again over the same tab's query client, and a reload ends
@@ -121,6 +121,7 @@ import {
   outlineWithout,
   type Place,
   READER,
+  rowOf,
   STATEMENT_QUOTE,
   STATEMENT_REWRITTEN,
   writeField,
@@ -651,19 +652,20 @@ for (const held of HELD) {
   });
 }
 
-// An open question's `a` draws the answer line in place of the write line, which stays mounted,
-// hidden (`<div hidden={!writing}>`); Escape ends the answer, and the write line is back with
-// its draft and its note. A send on the issue holds the box on no target, so the answer opens.
+// The reader's own comment's Edit draws the edit line in place of the write line, which stays
+// mounted, hidden (`<div hidden={!writing}>`); Escape ends the edit, and the write line is back
+// with its draft and its note. A send on the issue holds the box on no target, so the edit opens.
+// The Edit is pressed where the comment is drawn, so the focus is on its row as the edit opens.
 for (const held of HELD) {
-  test(`${HOST} · an answer opened, then ended · ${held}`, async () => {
+  test(`${HOST} · an edit opened, then ended · ${held}`, async () => {
     const box = await openBox(seeded(held, STOPPED_ON_ISSUE));
     await holdOnIssue(box, held);
-    await box.press("ask-1", "a");
-    const answer = await within(composerBox()).findByRole("textbox", { name: "Answer" });
-    await waitFor(() => expect(answer).toHaveFocus());
+    await act(async () => rowOf("comment-2").focus());
+    await openEdit(box);
+    await waitFor(() => expect(editField()).toHaveFocus());
     const away = writeField().closest("[hidden]") !== null;
     await box.user.keyboard("{Escape}");
-    await waitFor(() => expect(box.writer().answer).toBeUndefined());
+    await waitFor(() => expect(box.writer().editing).toBeUndefined());
     expect({ away, back: writeHeld() }).toEqual({ away: true, back: expectedBack(held) });
   });
 }

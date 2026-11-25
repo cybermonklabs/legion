@@ -172,9 +172,6 @@ const PICKED_QUIET =
  *   (`createAgentMessage`, broadcasts.go);
  * - a decline's note rides the ask's resolution to whoever asked (`declineAsk`, and the outbox's
  *   `addFollowerRoutes`);
- * - an answer written in a box of its own, outside the ask card - the issue page's box - goes
- *   to whoever asked (`answerAsk`, and the outbox's `addFollowerRoutes`), as the card's answer
- *   does;
  * - a reason for asking changes answers the open approval request, which reaches whoever asked
  *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
  *   document's issue (`docs.WriteReview`);
@@ -186,7 +183,6 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   "approval-reason": `${DOORS} ${PICKED_QUIET} An open approval request sends the reason to whoever asked.`,
   "architecture-reason": `${DOORS} ${PICKED_QUIET} A comment on the issue tells a picked agent or role.`,
   ask: `${DOORS} ${PICKED_QUIET} The ask goes to the assignee's Inbox.`,
-  "ask-answer": `${DOORS} ${PICKED_QUIET} The answer goes to whoever asked.`,
   "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
   broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
   "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
@@ -277,13 +273,11 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
   },
-  // The new issue page's one box, at the foot of its outline: with no
-  // target it writes a comment or a question on the issue; aimed at a row of the outline it
-  // writes a reply under it, which under a message goes to that thread's target; on the reader's
-  // own comment it writes a new text of it; and on an open question it draws the answer's own
-  // field in the line's place, whose answer reaches whoever asked. The line's name changes with
-  // what it writes, so it is reached by the attribute its form carries for the purpose, and the
-  // answer's field by its own name.
+  // The new issue page's one box, at the foot of its outline: with no target it writes a comment
+  // or a question on the issue; aimed at a row of the outline it writes a reply under it, which
+  // under a message goes to that thread's target; and on the reader's own comment it writes a new
+  // text of it. It answers no ask: an ask's own body does. The line's name changes with what it
+  // writes, so it is reached by the attribute its form carries for the purpose.
   {
     box: "issue-page-composer",
     covered: true,
@@ -311,9 +305,9 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "[data-issue-composer]",
     write: "message-reply",
   },
-  // Only the Edit control of the reader's own comment opens the box's edit line, and the page
-  // does not draw that control yet, so no reader reaches this write until it is under the box;
-  // the row is covered then, with a driver step through that Edit.
+  // Only an Edit of the reader's own comment opens the box's edit line, and the page draws no
+  // such control yet, so no reader reaches this write until one is under the box; the row is
+  // covered then, with a driver step through that Edit.
   {
     box: "issue-page-composer",
     covered: false,
@@ -322,17 +316,8 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: true,
     reach: "[data-issue-composer]",
     reason:
-      "No reader reaches it yet: only part M's Edit opens the box's edit line, and the row is covered, with a driver step through that Edit, once part M is under the box.",
+      "No reader reaches it yet: only an Edit opens the box's edit line - part M's in the facts, or part T's on the row of the reader's own comment - and the row is covered, with a driver step through that Edit, once the first of them is under the box.",
     write: "comment-edit",
-  },
-  {
-    box: "issue-page-composer",
-    covered: true,
-    delivers: false,
-    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
-    issueRows: true,
-    reach: "Answer",
-    write: "ask-answer",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
   {

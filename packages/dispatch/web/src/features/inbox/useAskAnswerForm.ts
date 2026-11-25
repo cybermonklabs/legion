@@ -61,7 +61,7 @@ interface UseAskAnswerFormOptions {
 }
 
 /** A failed answer, as the card shows it. */
-export interface AskAnswerFailure {
+interface AskAnswerFailure {
   message: string;
   /** False for a refusal the same answer never gets past. */
   retryable: boolean;
@@ -93,10 +93,9 @@ interface ClarificationPress extends AskPress {
  * it, so the next answer is to the new wording), or writing even its server state would leave the
  * document's live state past what the server can decode. An answer the reader stopped may have
  * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
- * may pass on a retry. The issue page's answer line reads a refusal the same way
- * (`IssueComposer.tsx`).
+ * may pass on a retry.
  */
-export function answerFailure(answer: {
+function answerFailure(answer: {
   readonly error: Error;
   readonly method: WriteMethod | undefined;
 }): AskAnswerFailure {

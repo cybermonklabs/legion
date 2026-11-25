@@ -14,12 +14,13 @@ import { rowKeyOf } from "./tree-keys";
  * the same question of the same model.
  *
  * The point is, in this order: what the line at the foot is aimed at, while the reader has aimed
- * it (`OutlineWriter`); else the first open question that waits on the reader, which is the row
- * the page opens on (`IssueTree.tsx`); else the node of the newest act on the issue. A reader who
- * has aimed the line has said what their next turn answers, so nothing else is the point while
- * they hold it, not even a question that waits on them; with nothing aimed, a question that waits
- * on them is the turn that is theirs, whatever was said after it; and with neither, the
- * conversation stands where it last moved.
+ * it (`OutlineWriter`): the entry a reply answers, or the statement a comment is on; else the
+ * first open question that waits on the reader, which is the row the page opens on
+ * (`IssueTree.tsx`); else the node of the newest act on the issue. A reader who has aimed the
+ * line has said what their next turn answers, so nothing else is the point while they hold it,
+ * not even a question that waits on them; with nothing aimed, a question that waits on them is
+ * the turn that is theirs, whatever was said after it; and with neither, the conversation stands
+ * where it last moved. An answer the writer holds aims nothing: the ask's own body answers it.
  *
  * A node drawn under several parents is one placement per parent: every placement but its edited
  * place is transcluded, and the branch under a transcluded placement repeats the edited place's
@@ -32,10 +33,10 @@ import { rowKeyOf } from "./tree-keys";
  *  reader can open their way down to it. */
 export type PointMark = "here" | "path";
 
-/** The writer's three targets as `OutlineWriter` holds them (outline-writer.tsx): the question
- *  the line answers, the entry it replies to and the statement it comments on. Nothing else the
- *  writer holds - its kind, an edit, a landing - says what the reader's next turn answers. */
-export type PointAim = Pick<OutlineWriter, "answer" | "reply" | "statement">;
+/** The writer's two targets as `OutlineWriter` holds them (outline-writer.tsx): the entry the
+ *  line replies to and the statement it comments on. Nothing else the writer holds - its kind, an
+ *  answer, an edit, a landing - says what the reader's next turn answers. */
+export type PointAim = Pick<OutlineWriter, "reply" | "statement">;
 
 /** One edited placement of the tree, with the ids from the root down to it, its own id last. */
 interface Placement {
@@ -60,13 +61,11 @@ function editedPlacements(root: TreeNode): Placement[] {
 
 /**
  * Whether a node is what the line is aimed at, where the reader has aimed it; undefined while
- * they have not. The line holds one target at a time - setting any one ends the others
+ * they have not. The line holds one target at a time - setting either ends the other
  * (`OutlineWriter.statement`) - so the order they are read in here never decides between two.
  */
 function aimedAt(aim: PointAim): ((node: TreeNode) => boolean) | undefined {
-  const { answer, reply, statement } = aim;
-  // The question's own row, by the node id its Answer was taken from.
-  if (answer !== undefined) return (node) => node.id === answer.nodeId;
+  const { reply, statement } = aim;
   // The statement's row, by the node id a held send keeps of it as well, so a line that mounted
   // again over a refused comment on a statement still points at that statement's row.
   if (statement !== undefined) return (node) => node.id === statement.row;
@@ -81,14 +80,14 @@ function aimedAt(aim: PointAim): ((node: TreeNode) => boolean) | undefined {
   return undefined;
 }
 
-/** The kinds whose node is an act on the issue: something a person or an agent said, asked or
- *  recorded, at the time the node carries. A block of a document is no turn of the conversation,
- *  and neither is a decision's last change nor the issue's own creation. */
+/** The kinds whose node is an act on the issue among the rows the conversation draws: a comment,
+ *  a question asked or answered, and a message, at the time the node carries. A block of a
+ *  document is no turn of the conversation, and neither is a check's result, a decision's last
+ *  change nor the issue's own creation. */
 const ACTS: Readonly<Partial<Record<NodeType, true>>> = {
   ask: true,
   comment: true,
   message: true,
-  result: true,
 };
 
 /**
@@ -118,9 +117,9 @@ function newestAct(placements: readonly Placement[]): Placement | undefined {
  * The ids from the root down to the current point, the root first; undefined where there is none.
  *
  * While the reader has aimed the line, the point is the node it is aimed at, and undefined where
- * the tree holds no such node - a question gone from the reads, an entry not read yet - rather
- * than a node the reader did not aim at. Else it is the first question in reading order that
- * waits on the reader, which is where the page opens (`IssueTree.tsx`); else the node of the
+ * the tree holds no such node - an entry not read yet, a statement a new version took out -
+ * rather than a node the reader did not aim at. Else it is the first question in reading order
+ * that waits on the reader, which is where the page opens (`IssueTree.tsx`); else the node of the
  * newest act on the issue (`newestAct`). The path never runs through a transcluded placement.
  */
 export function currentPath(root: TreeNode, aim: PointAim): readonly string[] | undefined {
@@ -170,17 +169,13 @@ export function pointMarks(
 }
 
 /** `currentPath` over `root` for the writer the page holds (`useOutlineWriter`), memoised on the
- *  root and the writer's three targets. The writer is a new object whenever any of its fields
- *  changes - its kind, an edit, a landing - and none of those moves the point, so the aim is built
- *  inside from the three targets alone. Outside an issue page's body there is no writer, and the
- *  point is what it is with nothing aimed. */
+ *  root and the writer's two targets. The writer is a new object whenever any of its fields
+ *  changes - its kind, an answer, an edit, a landing - and none of those moves the point, so the
+ *  aim is built inside from the two targets alone. Outside an issue page's body there is no
+ *  writer, and the point is what it is with nothing aimed. */
 export function useCurrentPoint(root: TreeNode): readonly string[] | undefined {
   const writer = useOutlineWriter();
-  const answer = writer?.answer;
   const reply = writer?.reply ?? null;
   const statement = writer?.statement;
-  return useMemo(
-    () => currentPath(root, { answer, reply, statement }),
-    [root, answer, reply, statement]
-  );
+  return useMemo(() => currentPath(root, { reply, statement }), [root, reply, statement]);
 }

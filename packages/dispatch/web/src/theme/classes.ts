@@ -996,20 +996,12 @@ const pageSendBox = `ml-1 rounded-[7px] px-3 py-px text-xs leading-[22px] font-s
 export const pageSend = `${pageSendBox} bg-page-ink`;
 export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
 
-/** A control of the issue page's box - a kind's chip, an option of the question it answers, the
- *  control that ends its target, Decline, a refusal's Retry and Discard draft - with its words
- *  centred in its target. The target's 24 by 24 px at every width (WCAG 2.2's 2.5.8, which
- *  `pageComposer`'s 22 px chips and 20 px clear control fall short of) is one rule of
- *  `styles.css`, which holds every button of the box to it, Send and Stop trying too, and below
- *  1280 px puts it in place of the 44 px floor. */
+/** A control of the issue page's box - a kind's chip, the control that ends its target, a
+ *  refusal's Retry and Discard draft - with its words centred in its target. The target's 24 by
+ *  24 px at every width (WCAG 2.2's 2.5.8, which `pageComposer`'s 22 px chips and 20 px clear
+ *  control fall short of) is one rule of `styles.css`, which holds every button of the box to it,
+ *  Send and Stop trying too, and below 1280 px puts it in place of the 44 px floor. */
 export const pageComposerControl = "inline-flex items-center justify-center";
-
-/** The answer line's options, Decline to answer and Send answer, as one row of the box beside or
- *  under the field (`IssueComposer.tsx`): `pageComposer.controls` with no `flex-none`, so a row
- *  that a question's options make wider than the line shrinks to the line's width and wraps
- *  there, and every control stands inside the box and the screen. The write line's kinds and
- *  Send, which fit any width, keep `pageComposer.controls`. */
-export const pageComposerAnswerControls = "flex min-w-0 flex-wrap items-center gap-[5px] pb-px";
 
 /** The quiet line of what the focused row's reader can do with it, under its words (the
  *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,

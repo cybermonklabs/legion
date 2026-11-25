@@ -6,7 +6,6 @@ import {
   pageMutedText,
   pagePaperBg,
   pageSend,
-  pageSendAnswer,
   primaryButton,
   secondaryButtonCompact,
 } from "../theme/classes";
@@ -16,7 +15,6 @@ import { useTooltips } from "./tooltips";
  *  `aria-disabled` alike, so a look states its cannot-press state once. */
 const LOOKS = {
   "page-send": pageSend,
-  "page-send-answer": pageSendAnswer,
   primary: primaryButton,
   "secondary-compact": secondaryButtonCompact,
 } as const;
@@ -25,10 +23,9 @@ const LOOKS = {
  *  `LOOKS`: the primary is filled with the page's ink, and refused is the page's own refused
  *  send, muted words on the hairline grey; the compact secondary is the page's header control,
  *  its rule and muted words on the paper, with quiet words while refused. The issue page's own
- *  sends are drawn in its colours already, so they read the same inside it. */
+ *  send is drawn in its colours already, so it reads the same inside it. */
 const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
   "page-send": pageSend,
-  "page-send-answer": pageSendAnswer,
   primary: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
 };

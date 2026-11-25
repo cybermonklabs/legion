@@ -102,7 +102,7 @@ export const coverage: readonly CoverageEntry[] = [
   // The box, above the write line.
   ...answers(
     "IssueComposer | WriteLine | conditional | <div hidden={!writing}>",
-    cells(`${HOST} · an answer opened, then ended`)
+    cells(`${HOST} · an edit opened, then ended`)
   ),
   ...answers(
     "IssueComposer | WriteLine | conditional | <section hidden={!shown}>",
@@ -128,7 +128,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "IssueComposer | WriteLine | address prop | writer={writer}",
     cells(`${HOST} · Reply on another row, then back`),
-    cells(`${HOST} · an answer opened, then ended`)
+    cells(`${HOST} · an edit opened, then ended`)
   ),
   ...answers("IssueComposer | WriteLine | address prop | tree={tree}", GONE_ROWS, {
     reason: REASONS[10],

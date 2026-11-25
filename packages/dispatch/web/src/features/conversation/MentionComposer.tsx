@@ -238,9 +238,9 @@ export interface OutlineLook {
   /** A statement of the issue's spec the line comments on, by the document, the statement's
    *  whole words and its row in the outline (`StatementAnchor`). The send carries the document
    *  and the words as the comment's anchor (`SentRequest.statement`), and the row stays the
-   *  page's, for landing the new comment under it. It is part of the line's address, as a reply
-   *  is, so what the line keeps it keeps for the statement (`AwayDraft.statement`). The line's
-   *  `end` ends it, as it ends a reply. */
+   *  page's, for taking the reader back to it once the comment lands. It is part of the line's
+   *  address, as a reply is, so what the line keeps it keeps for the statement
+   *  (`AwayDraft.statement`). The line's `end` ends it, as it ends a reply. */
   readonly anchor?: StatementAnchor;
   /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;
@@ -303,19 +303,18 @@ export interface OutlineLook {
  *  lay the line out again under the pointer and its click would land on nothing. The keyboard
  *  still reaches each control, and a press inside a dialog a control opens - drawn elsewhere in
  *  the document, whose events React hands to the control's own parents - is the dialog's. */
-export function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
+function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
   if (event.target instanceof Node && event.currentTarget.contains(event.target)) {
     event.preventDefault();
   }
 }
 
-/** Enter on a line of the issue page's box sends, as the prototype's does, and Shift+Enter
- *  breaks the line: the composer's line in that look (`OutlineLook`) and the host's own answer
- *  line alike. Enter while an input method composes is the method's (`isCompositionKey`). With
- *  the reference picker open, an Enter that reaches here is one the picker left - it takes the
- *  keys it acts on on the field's own listener (`MentionField`) - so it is the field's own
- *  newline, as in every box. */
-export function sendOnEnter(
+/** Enter on the line of the issue page's box sends, as the prototype's does, and Shift+Enter
+ *  breaks the line (`OutlineLook`). Enter while an input method composes is the method's
+ *  (`isCompositionKey`). With the reference picker open, an Enter that reaches here is one the
+ *  picker left - it takes the keys it acts on on the field's own listener (`MentionField`) - so
+ *  it is the field's own newline, as in every box. */
+function sendOnEnter(
   event: KeyboardEvent<HTMLTextAreaElement>,
   pickerOpen: boolean,
   send: () => void
@@ -327,27 +326,20 @@ export function sendOnEnter(
   send();
 }
 
-/** The line above a line of the issue page's box that names its target - the entry a reply
- *  answers, the statement a comment is on, the comment an edit changes, the question an answer
- *  answers - cut to the line's width, and the control that ends the target, which `clearLabel`
- *  names: the composer's in that look (`OutlineLook.target`) and the host's own answer line's,
- *  which draws it in its `tone`. */
-export function OutlineTargetLine({
+/** The line above the box's line on the issue page that names its target - the entry a reply
+ *  answers, the statement a comment is on, the comment an edit changes (`OutlineLook.target`) -
+ *  cut to the line's width, and the control that ends the target, which `clearLabel` names. */
+function OutlineTargetLine({
   children,
   clearLabel,
   onClear,
-  tone,
 }: {
   readonly children: ReactNode;
   readonly clearLabel: string;
   readonly onClear: () => void;
-  readonly tone?: string;
 }): ReactNode {
   return (
-    <div
-      className={tone === undefined ? pageComposer.target : `${pageComposer.target} ${tone}`}
-      data-composer-target=""
-    >
+    <div className={pageComposer.target} data-composer-target="">
       <span className="min-w-0 truncate">{children}</span>
       <button
         aria-label={clearLabel}
@@ -362,12 +354,12 @@ export function OutlineTargetLine({
   );
 }
 
-/** A refusal on a line of the issue page's box - of a send, of a file uploading into the draft, of
- *  an answer - in the page's colour, as `QueryError` draws one on every other surface, and its
- *  Retry, which `retryLabel` names, a 24 px target (R2), while a retry can get past the refusal
- *  (`onRetry`): the composer's in that look (`OutlineLook.retry`) and the host's own answer
- *  line's. A press anywhere on it leaves the focus where it is (`keepFocusOnPress`). */
-export function OutlineRefusal({
+/** A refusal on the line of the issue page's box, of a send or of a file uploading into the
+ *  draft, in the page's colour, as `QueryError` draws one on every other surface, and its Retry,
+ *  which `retryLabel` names (`OutlineLook.retry`), a 24 px target (R2), while a retry can get past
+ *  the refusal (`onRetry`). A press anywhere on it leaves the focus where it is
+ *  (`keepFocusOnPress`). */
+function OutlineRefusal({
   message,
   onRetry,
   retryLabel,

@@ -192,8 +192,19 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     kind: "statement",
     text: "The box takes the focus.",
   });
+  // A statement whose row carries an author hands it on with the item, for the box's target line
+  // to name; one whose row carries none hands none.
+  const bob = { id: "bob", kind: "user" } as const;
+  expect(replyItemOf({ ...unread, author: bob })).toEqual({
+    artifact: "spec",
+    author: bob,
+    id: "spec#b-r2",
+    kind: "statement",
+    text: "The box takes the focus.",
+  });
+  expect(replyItemOf(statement)).not.toHaveProperty("author");
   // The statement's words with no mark of markdown, its two paragraphs one space apart, and its
-  // row, which a comment on it lands under.
+  // row, which a comment on it lands on.
   const aimed: StatementTarget = {
     artifact: "spec",
     item,
