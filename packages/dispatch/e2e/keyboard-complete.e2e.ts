@@ -10101,3 +10101,43 @@ test("k-default-keys: on today's issue page an Enter held down on Close issue op
     step("the held Enter writes no status")
   ).toBe(0);
 });
+
+// The tester's red row of round 17 (a79f53b0's "a pick gives the focus back with no scroll", which
+// the architect ruled on 2026-11-25T04:12Z extends to the list's Use row): on a phone-width page,
+// Use "owner/repo" in the issue header's repository list gives the focus back to its trigger with
+// no scroll of the page. At 1e21af01 the create's hand-back (`MultiSelect.tsx`, `create`'s
+// `handBack()`) takes the engine's own scroll, 22 px for a trigger half out of view.
+// SLOW(>=2s): an issue page on a phone-width window, and its repository list worked by the keyboard.
+test('k-choice-writes-on-enter: on a phone-width page, Use "owner/repo" in the header\'s repository list gives the focus back to its trigger with no scroll of the page', async ({
+  page,
+}) => {
+  const step = (text: string) => `k-choice-writes-on-enter: the repository's Use row: ${text}`;
+  const { issueKey, title } = await seedChoices();
+  await page.setViewportSize({ height: 664, width: 390 });
+  await openIssue(page, issueKey, title);
+  const trigger = page.getByTestId("issue-header").getByRole("button", { name: /^Repository/ });
+  await expect(trigger, step("the header draws its repository control")).toBeVisible();
+  await trigger.click();
+  const list = listOf(trigger);
+  await expect(list, step("a click opens the repository list")).toBeVisible();
+  await list.getByRole("combobox").fill("acme/newone");
+  await expect(
+    list.getByRole("option", { name: 'Use "acme/newone"' }),
+    step("the list offers Use")
+  ).toBeVisible();
+  // The page is scrolled so the trigger stands half out of view at the top.
+  await trigger.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    window.scrollBy(0, box.top + box.height / 2);
+  });
+  const before = await settledScrollTop(page, 5);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(list, step("Enter on Use closes the list")).toBeHidden();
+  await expect(trigger, step("the focus goes back to the trigger")).toBeFocused();
+  const after = await settledScrollTop(page, 5);
+  expect(
+    Math.abs(after - before),
+    step(`the Use pick scrolls the page nowhere (scrollY ${before} before, ${after} after)`)
+  ).toBeLessThanOrEqual(4);
+});
