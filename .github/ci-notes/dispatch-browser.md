@@ -223,7 +223,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-7d701b6d): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-cdf02b4c): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
