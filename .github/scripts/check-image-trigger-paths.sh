@@ -49,8 +49,8 @@
 #     term this check has not read decides reaches the job narrower than its filter, and
 #     crediting the job with the filter's whole coverage would assert a build the gate does not
 #     start. Two shapes are read (output_filter): the PLAIN one, where the reference is a `||`
-#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and the shape of ci.yaml's outputs, `${{ github.event_name
-#     == 'workflow_dispatch' && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
+#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and the shape of ci.yaml's outputs, `${{
+#     steps.scope.outputs.every_job && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
 #     only hand the job the string 'true' — and the NARROWED one, where the reference is the last
 #     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
 #     `.github/workflows/ci.yaml#full-ci` outputs. A narrowed output runs the job on fewer changes than its
@@ -1252,17 +1252,20 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     `needs.<needed>.outputs.<output>` hands the job, or None when the whole expression is in
     neither shape this check reads.
 
-    The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` inside a term
-    this check has not read can reach the job narrower than its filter. GitHub's `&&` binds
-    tighter than `||`, so an expression is a `||` of disjuncts, each a `&&` of conjuncts, and
-    exactly one disjunct may hold the reference. Two shapes are read:
+    The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` of one of the
+    job's paths-filter steps inside a term this check has not read can reach the job narrower than
+    its filter. GitHub's `&&` binds tighter than `||`, so an expression is a `||` of disjuncts,
+    each a `&&` of conjuncts, and exactly one disjunct may hold a paths-filter reference. Two
+    shapes are read:
 
       * PLAIN, the reference being the whole disjunct: `${{ steps.filter.outputs.x }}`, and
         `${{ <term> && 'true' || steps.filter.outputs.x }}`, the shape ci.yaml's
-        workflow_dispatch term writes. An earlier disjunct may only widen, which `widening`
+        every-job term writes. An earlier disjunct may only widen, which `widening`
         holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
         the literal `'true'` either falls through to the reference or hands the job 'true',
-        and the filter's match reaches the job's `if:` unnarrowed either way. The term is "".
+        and the filter's match reaches the job's `if:` unnarrowed either way, whatever the
+        <term> reads (ci.yaml's reads another step's output, `steps.scope.outputs.every_job`).
+        The term is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
         `${{ <term> && steps.filter.outputs.x || 'false' }}`, the shape of the
         `.github/workflows/ci.yaml#full-ci` term, whose
@@ -1279,8 +1282,13 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     expression = str((upstream.get("outputs") or {}).get(output, "")).strip()
     if not (expression.startswith("${{") and expression.endswith("}}")):
         return None
+    filter_ids = {str(s.get("id")) for s in paths_filter_steps(upstream)}
+
+    def filter_reference(part: str) -> bool:
+        return any(m.group(1) in filter_ids for m in STEP_OUTPUT.finditer(part))
+
     disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
-    holders = [index for index, part in enumerate(disjuncts) if STEP_OUTPUT.search(part)]
+    holders = [index for index, part in enumerate(disjuncts) if filter_reference(part)]
     if len(holders) != 1:
         return None
     index = holders[0]
@@ -1290,7 +1298,7 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         return None
     conjuncts = split_top(disjuncts[index], "&&")
     reference = STEP_OUTPUT.fullmatch(unwrap(conjuncts[-1]))
-    if not reference or any(STEP_OUTPUT.search(part) for part in conjuncts[:-1]):
+    if not reference or reference.group(1) not in filter_ids or any(filter_reference(part) for part in conjuncts[:-1]):
         return None
     return reference.group(1), reference.group(2), " && ".join(conjuncts[:-1])
 
@@ -1298,7 +1306,7 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
 def widening(disjunct: str) -> bool:
     """True when a `||` disjunct before the reference can only widen the output: its value,
     when truthy, is the string 'true', which the job's `if:` tests for. `<term> && 'true'`
-    (ci.yaml's workflow_dispatch term) and a bare `'true'` are the two."""
+    (ci.yaml's every-job term) and a bare `'true'` are the two."""
     return unwrap(split_top(disjunct, "&&")[-1]) == "'true'"
 
 

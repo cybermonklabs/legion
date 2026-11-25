@@ -26,6 +26,7 @@ import (
 // child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
 // kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
+	t.Parallel()
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"
 	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	liveRoot := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root",

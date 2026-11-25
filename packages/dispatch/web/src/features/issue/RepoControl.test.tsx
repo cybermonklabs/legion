@@ -87,6 +87,7 @@ const projects: Project[] = [
     key: "CORE",
     name: "Core",
     open_asks: 0,
+    proven_sessions: false,
   },
   {
     created_at: "2026-10-01T00:00:00Z",
@@ -95,6 +96,7 @@ const projects: Project[] = [
     key: "OTHER",
     name: "Other",
     open_asks: 0,
+    proven_sessions: false,
   },
 ];
 
