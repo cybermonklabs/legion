@@ -31,7 +31,7 @@ import { blockId } from "./editor";
 import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
 import type { ReviewSeed, SeededReadMarks } from "./review-routes";
-import { seedWorkspace, workspaceSessions } from "./workspace";
+import { seedWorkspace, sendWorkspaceBroadcast, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
@@ -97,6 +97,30 @@ function createReviewPriority() {
   });
 }
 
+/** Marks read every reply a recipient of the broadcast `broadcastId` wrote to its copy, the write
+ *  the broadcast page makes as it draws them (`useMarkShownRepliesRead`). Answers the replies it
+ *  marked, by session. */
+async function markBroadcastRepliesRead(
+  broadcastId: string
+): Promise<Record<string, readonly string[]>> {
+  const broadcast = await getBroadcast(broadcastId);
+  const agents: Record<string, readonly string[]> = {};
+  for (const recipient of broadcast.recipients ?? []) {
+    // The page's own filter: a reply its session wrote, by kind and id, which is what the server
+    // takes in `read_replies` and refuses the whole write over one that fails it.
+    const shown = (recipient.replies ?? [])
+      .filter(
+        (reply) => reply.author.kind === "session" && reply.author.id === recipient.session_id
+      )
+      .map((reply) => reply.id);
+    if (shown.length > 0) {
+      await putAgentState(recipient.session_id, { read_replies: shown });
+      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
+    }
+  }
+  return agents;
+}
+
 /** Writes, before any row draws a page, the read marks the pages of the shot set write as they
  *  are drawn, so each page shows the same reads whichever pages a run drew before it. A read mark
  *  cannot be taken back: an agent's `read_through` only moves forward and its `read_replies` only
@@ -120,24 +144,8 @@ async function markWhatTheShotPagesRead(
   issue: string,
   specId: string
 ): Promise<SeededReadMarks> {
-  const broadcast = await getBroadcast(broadcastId);
-  const agents: Record<string, readonly string[]> = {};
-  let replies = 0;
-  for (const recipient of broadcast.recipients ?? []) {
-    // The page's own filter: a reply its session wrote, by kind and id, which is what the server
-    // takes in `read_replies` and refuses the whole write over one that fails it.
-    const shown = (recipient.replies ?? [])
-      .filter(
-        (reply) => reply.author.kind === "session" && reply.author.id === recipient.session_id
-      )
-      .map((reply) => reply.id);
-    if (shown.length > 0) {
-      await putAgentState(recipient.session_id, { read_replies: shown });
-      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
-      replies += shown.length;
-    }
-  }
-  if (replies === 0) {
+  const agents = await markBroadcastRepliesRead(broadcastId);
+  if (Object.keys(agents).length === 0) {
     throw new Error(
       "seedReviewRoutes: the broadcast holds no reply its recipients wrote, so its page marks " +
         "nothing read and the rows' Agents badge reads a state no baseline holds"
@@ -318,4 +326,18 @@ Each page is read once it is drawn.
     project: PROJECTS.core,
     projectDocumentSlug: runbook.slug,
   };
+}
+
+/** A broadcast of a row's own, for a row that opens the `broadcast` page of
+ *  `e2e/review-routes.ts` against the worker's corpus (`reviewCorpus`, e2e/test.ts), which holds
+ *  none after the row that seeded it: that row's `ownBroadcasts` deletes the corpus's. It is sent
+ *  as the corpus's is (`sendWorkspaceBroadcast`), to the sessions of `workspaceSessions`, which the
+ *  corpus puts back in the fake Envoy before every row, and its replies are marked read as the
+ *  corpus's are, so the page draws what it draws for the corpus's: the same body, the same
+ *  recipients in the same order and the planner's reply, read. The row's own `ownBroadcasts`
+ *  deletes it when the row ends. Answers its id. */
+export async function seedReviewBroadcast(): Promise<string> {
+  const broadcast = await sendWorkspaceBroadcast();
+  await markBroadcastRepliesRead(broadcast.id);
+  return broadcast.id;
 }

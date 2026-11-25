@@ -21,9 +21,10 @@
  *  frames apart.
  *
  *  Four kinds of row read it. The rows by route group open every reviewed route of
- *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`) at three desktop
- *  sizes with both floats shown, then close both and read the end room they leave: only room
- *  the reader stands in, and none once every scroller is back at its start. The rows of the
+ *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`), which the worker
+ *  seeds once into its database and hands each of them (`reviewCorpus`, e2e/test.ts), at three
+ *  desktop sizes with both floats shown, then close both and read the end room they leave: only
+ *  room the reader stands in, and none once every scroller is back at its start. The rows of the
  *  fixed surface open eight pages, one row each, three for the issues table (the selection bar
  *  hidden; shown with the update banner; shown with the banner dismissed) and two for the live
  *  view (its four smaller sizes; its three desktop sizes), seeded so each page's scrollers reach
@@ -53,7 +54,6 @@ import {
   listIssues,
   seedAgentStreamConversations,
 } from "./api";
-import { expectTimeout } from "./expect-timeout";
 import {
   discardPending,
   dismissBanner,
@@ -83,7 +83,7 @@ import { withIssuePage } from "./issue-page-option";
 import { pendingWrites } from "./keyed-writes";
 import { expectConversationInFront } from "./live-view-cost";
 import { type ReviewedRoute, reviewRoutes, waitForRouteSettled } from "./review-routes";
-import { seedReviewRoutes } from "./review-seed";
+import { seedReviewBroadcast } from "./review-seed";
 import { type Browser, expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -212,9 +212,10 @@ async function readEverySize(
 // ---------------------------------------------------------------------------------------------
 
 /** The most routes one row reads, so each row stays well inside the per-row budget
- *  (`testTimeout`, e2e/playwright.config.ts) after the corpus it seeds: a route costs a refused
- *  change on the issues table, two loads and three settled readings, measured at 8 s to 21 s on
- *  an issue pod, against 3.5 s for the corpus. */
+ *  (`testTimeout`, e2e/playwright.config.ts) after the review corpus, which the first row of a
+ *  worker to read it seeds (`reviewCorpus`, e2e/test.ts): a route costs a refused change on the
+ *  issues table, two loads and three settled readings, measured at 8 s to 21 s on an issue pod,
+ *  against 3.5 s for the corpus. */
 const ROUTES_PER_ROW = 2;
 
 /** The open issue of the review corpus whose change the rows by route group refuse
@@ -256,14 +257,22 @@ function routeRows(): ReviewedRoute[][] {
 
 for (const routes of routeRows()) {
   const names = routes.map((route) => route.name).join(", ");
-  // SLOW(>=2s): the review corpus, then for each route a refused change made on the issues table,
-  // a load with both floats and three settled readings of the foot, each at the end of every
-  // scroller.
+  // SLOW(>=2s): the review corpus where the worker has not seeded it yet, a broadcast of the
+  // row's own where it opens the broadcast page, then for each route a refused change made on
+  // the issues table, a load with both floats and three settled readings of the foot, each at
+  // the end of every scroller.
   test(`both floats leave the foot clear on ${names} at three desktop sizes, and no end room once closed @foot`, async ({
     browser,
+    reviewSeed,
   }) => {
-    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
-    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+    // The worker's review corpus (`reviewCorpus`, e2e/test.ts), seeded once into the worker's
+    // database, as the accessibility rows read it: its keys are fixed, so a row that seeded it
+    // again would be refused. Its broadcast goes at the end of the row that seeded it
+    // (`ownBroadcasts`), so a row that opens the broadcast page opens one it sends itself, as the
+    // corpus's is sent (`seedReviewBroadcast`).
+    const seed = routes.some((route) => route.name === "broadcast")
+      ? { ...reviewSeed, broadcast: await seedReviewBroadcast() }
+      : reviewSeed;
     const refused = (await listIssues("CORE")).find((issue) => issue.title === REFUSED_TITLE);
     if (refused === undefined) throw new Error(`The review corpus holds no "${REFUSED_TITLE}"`);
     const context = await asUser(browser, "alice");

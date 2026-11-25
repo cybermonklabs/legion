@@ -109,6 +109,61 @@ export interface SeededWorkspace {
   readonly inboxLine: string;
 }
 
+/** The five sessions under the ids `sessionId` names, in `workspaceSessions`' order, and the actor
+ *  a write of one of them is made as: its id, with its title in `origin`. */
+function liveWorkspace(sessionId: (name: WorkspaceSessionName) => string) {
+  const live = workspaceSessions.map((session, at) => ({
+    ...session,
+    session_id: sessionId(workspaceSessionNames[at]),
+  }));
+  const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
+    const session = live.find((candidate) => candidate.session_id === id);
+    if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
+    return { id, kind: "session", origin: { ...origin, session_title: session.title } };
+  };
+  return { actor, live };
+}
+
+/** Sends the workspace's broadcast as `person` (alice unless the caller names another) to three
+ *  of the sessions `sessionId` names, and writes the planner's reply to its copy: the broadcast
+ *  `seedWorkspace` sends, and the one a row that needs a broadcast of its own sends again
+ *  (`seedReviewBroadcast`, e2e/review-seed.ts). Answers its id and its recipients, in the order
+ *  sent. */
+export async function sendWorkspaceBroadcast({
+  person,
+  sessionId = (name) => sessionIds[name],
+}: {
+  readonly person?: SignInLogin;
+  readonly sessionId?: (name: WorkspaceSessionName) => string;
+} = {}): Promise<SeededWorkspace["broadcast"]> {
+  const { actor } = liveWorkspace(sessionId);
+  // Not alphabetical on purpose: the broadcast page must list its recipients in the order sent.
+  const broadcast = await createBroadcast(
+    {
+      body: "Stand down and report status.",
+      delivery: "steer",
+      session_ids: [sessionId("tester"), sessionId("observer"), sessionId("planner")],
+    },
+    { login: person ?? "alice" }
+  );
+  if ((broadcast.excluded ?? []).length > 0) {
+    throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
+  }
+  const plannerCopy = (broadcast.recipients ?? []).find(
+    (recipient) => recipient.session_id === sessionId("planner")
+  );
+  if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
+  await replyToMessageDelivery(
+    plannerCopy.message.id,
+    { attempt: 1, body: "Standing down; build is green." },
+    actor(sessionId("planner"))
+  );
+  return {
+    id: broadcast.id,
+    sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
+  };
+}
+
 /** Seeds the workspace into an empty database and the fake Envoy. Every write goes through the
  *  public API, as `person` (alice unless the caller names another) for a human and through the
  *  agent bearer for a session. A session's write carries its title in `origin`, as an agent's
@@ -143,15 +198,7 @@ export async function seedWorkspace({
   readonly sessionId?: (name: WorkspaceSessionName) => string;
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
-  const live = workspaceSessions.map((session, at) => ({
-    ...session,
-    session_id: sessionId(workspaceSessionNames[at]),
-  }));
-  const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
-    const session = live.find((candidate) => candidate.session_id === id);
-    if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
-    return { id, kind: "session", origin: { ...origin, session_title: session.title } };
-  };
+  const { actor, live } = liveWorkspace(sessionId);
   const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
   const human = { login: person ?? "alice" };
   const { core, ops } = projects;
@@ -305,27 +352,7 @@ export async function seedWorkspace({
     actor(sessionId("planner"))
   );
 
-  // Not alphabetical on purpose: the broadcast page must list its recipients in the order sent.
-  const broadcast = await createBroadcast(
-    {
-      body: "Stand down and report status.",
-      delivery: "steer",
-      session_ids: [sessionId("tester"), sessionId("observer"), sessionId("planner")],
-    },
-    human
-  );
-  if ((broadcast.excluded ?? []).length > 0) {
-    throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
-  }
-  const plannerCopy = (broadcast.recipients ?? []).find(
-    (recipient) => recipient.session_id === sessionId("planner")
-  );
-  if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
-  await replyToMessageDelivery(
-    plannerCopy.message.id,
-    { attempt: 1, body: "Standing down; build is green." },
-    actor(sessionId("planner"))
-  );
+  const broadcast = await sendWorkspaceBroadcast({ person, sessionId });
 
   // The rows the Inbox read returns once the seed has settled: the open asks on open issues and
   // documents, the snoozed one among them. Every issue here is the person's, and the document's
@@ -365,10 +392,7 @@ export async function seedWorkspace({
       rotate: rotation.id,
       snoozed: snoozed.id,
     },
-    broadcast: {
-      id: broadcast.id,
-      sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
-    },
+    broadcast,
     directMessage: directMessage.id,
     inboxLine: matched.line,
     issues: {
