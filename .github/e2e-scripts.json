@@ -338,12 +338,12 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "go, git, jj 0.38 or later, awk, tar, python3, bun with this repository's node_modules, a loopback PostgreSQL (LEGION_TEST_PG_DSN) and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has; it is not in `hosted` because it fails some runs on its own timing: the proof times each send by its own poll rather than by the daemon's record, and on 2026-11-24, on the build cluster, it passed 2 runs of 2 at 00da575ed27 and failed at main's 69fcd649a6f; #5411 fixes that timing"
+      "needs": "bash, go, git, jj 0.38 or later, awk, tar, python3, bun with this repository's node_modules, a loopback PostgreSQL (LEGION_TEST_PG_DSN) and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has; #5411 fixed its timing, and it joins `hosted` once it passes at the head that merges that fix with this list"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "go, which it builds its own natsd with, bun with this repository's node_modules and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has, and about sixteen minutes of wall clock, which e2e.yaml's 25-minute job holds; it is not in `hosted` because it fails: on 2026-11-24, on the build cluster, at 17f24c20d23 and again at main's 69fcd649a6f, each run ended with `rate-limited-comes-back-on-the-suppression: it went back 348s after the fallback, which is the cooldown's own clock rather than the host's suppression`",
-      "timeout_minutes": 25
+      "needs": "bash, go to build its NATS server, bun with this repository's node_modules and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has, and twenty-one minutes plus setup for its four sessions; #5441 fixed its suppression measurements, and it joins `hosted` once it passes at the head that merges that fix with this list",
+      "timeout_minutes": 30
     },
     {
       "script": "share-volumes-kind.sh",
