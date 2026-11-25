@@ -449,8 +449,8 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		var answer refsAnswer
-		if err := json.Unmarshal(res.body, &answer); err != nil {
-			return fmt.Errorf("references of %s: %w", is.Key, redact.DecodeError(err, res.body, &answer))
+		if err := redact.Unmarshal(res.answer, &answer); err != nil {
+			return fmt.Errorf("references of %s: %w", is.Key, err)
 		}
 		seen := map[string]bool{}
 		r, ab := 0, 0
