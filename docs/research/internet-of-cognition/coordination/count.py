@@ -9,7 +9,7 @@ Run, from the repository root, as the committed evidence/count.json was written:
   python3 docs/research/internet-of-cognition/coordination/count.py \
       >docs/research/internet-of-cognition/evidence/count.json
 
-It takes about twelve minutes, 721 s on 2026-11-18, most of them reading document versions.
+It took 721 s on 2026-11-18; on 2026-11-24, reading every handoff too, it took 396 s.
 
 What it measures
 ----------------
@@ -45,7 +45,7 @@ document's first version; and a bare issue reference or a `/spec` reference from
 creator.
 
 Beside the classes, every count the output carries (the top-level one, each type of
-`written_acts_r4`, `all_bodied_records` and the two lines of documents) holds
+`written_acts_r4`, `all_bodied_records`, the two lines of documents and `handoffs`) holds
 `by_cited_author`: who cited whose record, whatever the tree, read from the acting row's
 `actor`, its kind and its id, and the cited record's author, its kind and its id, the id
 read from the same row as the kind (of a document's authors, the first).  It is no class
@@ -101,10 +101,10 @@ is new.  The feed's own `artifact.version` payload cannot stand in for these rea
 carries a `diff` only for a named version, and cuts it at about 4 KB.
 
 Handoff bodies are not in the feed (a `handoff.recorded` row carries only `handoff_id`,
-`phase` and `version`), so they are read over a sample of their own: the ten issues of the
-window's project with the most `handoff.recorded` rows inside the window, ordered by that
-count and then by key.  Every handoff of those issues recorded inside the window is read
-whole and matched against the same three patterns; its denominator is the handoffs read.
+`phase` and `version`), so `handoffs` reads the handoff of every such row of the window
+whole, through GET /api/v1/handoffs/<id>, matches it against the same three patterns and
+classes it as above, its actor the row's `actor`, the session that recorded it.  Its
+denominator is every `handoff.recorded` row: a read that fails ends the run, naming it.
 
 The record types left out, and why
 ----------------------------------
@@ -143,9 +143,9 @@ not by its id, because the feed's ids are not in `created_at` order.
     record whose uuid shares a cited prefix, or a later document under a cited slug, cannot
     move a cited author.
 
-What still reads live, each read by id: the handoff sample (each sample issue's handoffs
-listed through GET /api/v1/issues/<KEY>/handoffs, filtered to the window by `created_at`,
-then each read whole through GET /api/v1/handoffs/<id>), and the document versions (each
+What still reads live, each read by id: the handoffs (each `handoff.recorded` row's
+`handoff_id`, read whole through GET /api/v1/handoffs/<id>; a handoff the deployment no
+longer holds is a read that fails, which ends the run), and the document versions (each
 through GET /api/v1/artifacts/<id>/versions/<n>; a version the deployment no longer holds is
 counted in `reads.version_unreadable` and not read).
 
@@ -338,7 +338,7 @@ def main():
     held = set()        # issue keys with an issue.created row written before `to`
     parent_at = {}      # issue key -> its parent at `to`
     rows = []           # the window's comments and messages of the project
-    handoffs = Counter()
+    handoffs = []       # the window's handoff.recorded rows: event id, handoff id, issue, actor
     types = Counter()   # every event type the project wrote inside the window
     reviews = Counter() # each review of a document, by document name and the actor's kind
     verdicts = Counter()# each recorded check result, by the role named and the actor's kind
@@ -396,8 +396,8 @@ def main():
                 reviews["%s %s %s" % (kind, payload.get("name"), actor_kind)] += 1
             if kind == "result.recorded":
                 verdicts["%s %s" % (payload.get("role"), actor_kind)] += 1
-            if kind == "handoff.recorded" and row.get("issue_key"):
-                handoffs[row["issue_key"]] += 1
+            if kind == "handoff.recorded":
+                handoffs.append((row["id"], payload.get("handoff_id"), row.get("issue_key"), actor_kind, actor_id))
             elif kind in ("comment.created", "message.created"):
                 rows.append(
                     {
@@ -593,14 +593,7 @@ def main():
     comments_and_messages = section(len(rows), instances, by_pattern)
     issues_resolved = len(visited)
 
-    # ---- the handoff sample, with its own denominator
-    sample = [k for k, _ in sorted(handoffs.items(), key=lambda kv: (-kv[1], kv[0]))[:10]]
-    sample_ids = []
-    for key in sample:
-        for h in fetch("/api/v1/issues/%s/handoffs" % key, token, base):
-            if t_from <= h["created_at"] < t_to:
-                sample_ids.append(h["id"])
-
+    # ---- the handoffs: every handoff.recorded row of the window, read whole
     def strings_in(value, out):
         if isinstance(value, str):
             out.append(value)
@@ -611,11 +604,16 @@ def main():
             for item in value:
                 strings_in(item, out)
 
-    def handoff_body(hid):
+    def handoff_body(handoff):
         # A handoff body is one JSON object as a string.  Its text is every string value it
         # holds, joined as paragraphs, so the patterns read the written words and not the
-        # escaping of the JSON that carries them.
-        body = fetch("/api/v1/handoffs/" + hid, token, base).get("body")
+        # escaping of the JSON that carries them.  A read that fails ends the run, naming
+        # the handoff and its row, so no handoff of the window leaves the denominator.
+        event_id, hid = handoff[:2]
+        try:
+            body = fetch("/api/v1/handoffs/" + hid, token, base).get("body")
+        except Exception as err:
+            raise RuntimeError("the read of handoff %s, of event %s, failed: %s" % (hid, event_id, err)) from err
         try:
             body = json.loads(body)
         except (TypeError, ValueError):
@@ -624,13 +622,15 @@ def main():
         strings_in(body, out)
         return "\n\n".join(out)
 
-    with ThreadPoolExecutor(THREADS) as pool:
-        bodies = list(pool.map(handoff_body, sample_ids))
+    # each handoff in feed order, its text read beside its row's issue and actor
     hand = Counter()
-    for body in bodies:
-        _refs, matched = patterns_in(body, hand)
-        if matched:
-            hand["instances"] += 1
+    hand_insts = []
+    with ThreadPoolExecutor(THREADS) as pool:
+        for (_, _, issue_key, actor_kind, actor_id), body in zip(handoffs, pool.map(handoff_body, handoffs)):
+            refs, matched = patterns_in(body, hand)
+            if matched:
+                hand_insts.append(instance({"issue_key": issue_key, "actor_kind": actor_kind, "actor_id": actor_id}, refs))
+    handoffs_out = section(len(handoffs), hand_insts, hand)
 
     # ---- the other written acts, each type with its own denominator
     extra_out = {}
@@ -747,17 +747,7 @@ def main():
                 "unclassed": comments_and_messages["unclassed"],
                 "by_cited_author": comments_and_messages["by_cited_author"],
                 "issues_resolved": issues_resolved,
-                "handoff_sample": {
-                    "issues": sample,
-                    "chosen": "the ten issues of the project with the most handoff.recorded rows inside the window, by that count then by key",
-                    "denominator_handoffs_read": len(sample_ids),
-                    "instances": hand["instances"],
-                    "by_pattern": {
-                        "dispatch_reference": hand["dispatch_reference"],
-                        "commit_sha": hand["commit_sha"],
-                        "attributed_quote": hand["attributed_quote"],
-                    },
-                },
+                "handoffs": handoffs_out,
                 "written_acts_r4": {
                     "types": extra_out,
                     "all_bodied_records": all_out,

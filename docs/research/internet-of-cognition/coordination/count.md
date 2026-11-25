@@ -190,19 +190,24 @@ Each row carries its count and its denominator, the records of its type read in 
 | between an agent and a person | 54 | 5467 | first versions of documents |
 | inside one tree | 3013 | 5467 | first versions of documents |
 | across sessions | 385 | 5467 | first versions of documents |
-| a quoted span attributed to a named author, in the handoff sample | 0 | 3143 | handoffs read |
+| between an agent and a person | 11 | 16568 | handoffs |
+| inside one tree | 6054 | 16568 | handoffs |
+| across sessions | 2058 | 16568 | handoffs |
+| a quoted span attributed to a named author, in the handoffs | 14 | 16568 | handoffs |
 
-Two groups of rows read zero over a denominator above zero: the three classes of the answers to asks, and the last row, which is the sample of the section below, with its own denominator.
+One group of rows reads zero over a denominator above zero: the three classes of the answers to asks.
+The last row is no class: it is the quoted spans of the handoffs, the premise the section on handoffs below measures, with the handoffs' own denominator.
 
 ## The smallest class
 
 Coordination between an agent and a person is the smallest of the three classes in every type the count classes that has an instance, and the answers to asks have none [c-smallest-1].
-The smaller of the two other classes is 25.2 times its size in comments and messages, 19.6 times over all written acts, 10.6 times in asks opened, 8.4 times over document versions and 7.1 times over first versions [c-smallest-1].
+The smaller of the two other classes is 187.1 times its size in handoffs, 25.2 times in comments and messages, 19.6 times over all written acts, 10.6 times in asks opened, 8.4 times over document versions and 7.1 times over first versions [c-smallest-1].
 It is less than three times its size only in the replies to a message (2.0 times), the asks resolved (1.8) and the asks edited (1.1), whose 358 instances are under 3% of the 12617 instances of written acts [c-smallest-1].
 
 The front page should read the party count as it is.
 138 of 30186 records read, and 138 of 11702 instances, name a record whose author is of the other party [c-class-person-1].
 Over all written acts it is 201 of 35922 records read and of 12617 instances [c-acts-all-1], and over document versions 330 of 29709 versions read and of 6920 instances [c-docs-versions-1].
+Over every handoff of the window it is 11 of 16568 handoffs read and of 14569 instances [c-handoff-classes-1].
 Coordination between an agent and a person is the smallest of the three classes of comments and messages by more than an order of magnitude [c-class-person-1].
 
 ## What a person writes when they answer an ask
@@ -212,21 +217,34 @@ A scan of the same 664 texts, every one written by a person, finds 3 that name a
 This is a class that reads zero over a denominator above zero, and the judgement's front page must state that premise as failed [c-acts-ask-answered-0].
 By my reading, a person answers an ask in words alone, so a structured reference on a message would come from the agent's side.
 
-## Handoffs, counted over a sample of their own
+## Handoffs, every one recorded in the window
 
 A handoff body is not in the feed.
 A `handoff.recorded` row carries only `handoff_id`, `phase` and `version`, and never the body [c-handoff-feed-1].
 
-So handoff bodies were read over a named sample.
-The sample is the ten INFRA issues with the most `handoff.recorded` rows inside the window, ordered by that count and then by key: INFRA-1192, INFRA-1077, INFRA-714, INFRA-771, INFRA-941, INFRA-2464, INFRA-1441, INFRA-558, INFRA-956, INFRA-1519 [c-handoff-sample-1].
+So the count reads each handoff whole through `GET /api/v1/handoffs/<id>`, one read for each `handoff.recorded` row of INFRA inside the window.
+The window holds 16568 such rows, and the count read 16568 handoffs, which are the handoffs' own denominator [c-handoff-all-1].
+A read that fails ends the run, naming the handoff, so no handoff is left out of a count the script prints.
 
-Every handoff of those ten issues recorded inside the window was read whole through `GET /api/v1/handoffs/<id>`: 3143 handoffs, which is the sample's own denominator [c-handoff-sample-1].
+14569 of those 16568 are instances [c-handoff-all-1].
+8797 carry a `dispatch://` reference, 11672 a forty-character commit and 14 a quoted span attributed to a named author [c-handoff-all-1].
 
-3006 of those 3143 are instances [c-handoff-sample-1].
-2402 carry a `dispatch://` reference and 2288 carry a forty-character commit [c-handoff-sample-1].
+A handoff's text is every string value its body holds, and it is classed by the same rule and in the same order as the written acts [c-handoff-classes-1].
+Its actor is the actor of its `handoff.recorded` row, the session that recorded it, and its issue is that row's issue [c-handoff-classes-1].
+Each class carries the same denominator of 16568 handoffs read:
 
-Nought of the 3143 handoffs carries a quoted span attributed to a named author [c-handoff-quote-0].
-This is a class that reads zero over a denominator above zero, and the judgement's front page must state that premise as failed: in the sample, 2288 handoffs name a commit and 2402 a `dispatch://` reference [c-handoff-sample-1], and none carries another agent's words with the name of who wrote them [c-handoff-quote-0].
+- between an agent and a person: 11 [c-handoff-classes-1]
+
+- inside one tree: 6054 [c-handoff-classes-1]
+
+- across sessions: 2058 [c-handoff-classes-1]
+
+6446 instances are in no class: 5774 cite no record, 142 cite an issue this deployment does not hold, and 530 cite a record whose author the feed does not name [c-handoff-classes-1].
+Read whatever the tree, 8123 of the 14569 instances cite a held record whose author the feed names: 7328 a session citing a record another session wrote, 784 a session citing its own, 11 a session citing a person's, and a person wrote none of them [c-handoff-cited-1].
+
+14 of the 16568 handoffs carry a quoted span attributed to a named author [c-handoff-quote-1].
+So this pattern does not read zero over its denominator, and the judgement's front page may not state, on this count, that no handoff carries another agent's words with the name of who wrote them [c-handoff-quote-1].
+By my reading of the spans those 14 handoffs hold, which no row prints, the word the pattern takes for an author is in each a word after a dash or after `said` that names no one who wrote the quoted words: a status or a verdict such as `TRUE`, `NO`, `COMPLETED` or `CONFLICTING`, an identifier such as a test's name, the name of a project or a product, or the first word of what follows the dash.
 
 ## What this record cannot hold: one session's own coordination
 
