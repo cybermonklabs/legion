@@ -85,8 +85,9 @@ const indexed = answer(fixture.owed.indexed.body);
 const firstPage = answer(fixture.paged.pages[0]?.body);
 // The child's read of its spec view, the statements of the issue above (a member a later regeneration
 // of the fixture gives).
-const trees: Readonly<Record<string, { person: { body: unknown } } | undefined>> = fixture.tree;
-const childSpec = trees.child_spec === undefined ? undefined : answer(trees.child_spec.person.body);
+const trees: Readonly<Record<string, unknown>> = fixture.tree;
+const childSpecRead = trees.child_spec as { body: unknown } | undefined;
+const childSpec = childSpecRead === undefined ? undefined : answer(childSpecRead.body);
 
 function nodeOf(held: TreeAnswer, id: string): TreeAnswerNode {
   const found = held.nodes?.find((each) => each.id === id);
@@ -190,7 +191,9 @@ test("every node kind takes or greys each editing entry as R2 says", () => {
   expect(Object.keys(place("<statement-3>"))).toEqual([...ENTRIES]);
   expect(Object.keys(R2).sort()).toEqual(kindsOfTheServer());
   const own = (converted.nodes ?? []).filter(
-    (node) => node.id !== converted.issue && (node.issue ?? converted.issue) === converted.issue
+    (node) =>
+      node.id !== converted.issue &&
+      ((node.issue ?? converted.issue) === converted.issue || node.id === child.issue)
   );
   for (const [kind, rule] of Object.entries(R2)) {
     const nodes = own.filter((node) => kindOf(node) === kind);
@@ -314,6 +317,15 @@ test("a closed issue greys every editing entry", () => {
     expect(open.new_under.kind).toBe("new");
     expect(open.delete).toEqual({ kind: "ask" });
   }
+  // The issue's status comes before the node's kind: the issue itself, which R2 admits no entry
+  // on, says it is closed too, and says its kind where the issue is not closed.
+  const root = placementOf({ held: done, node: done.issue, status: "done" });
+  for (const entry of EDITING) {
+    expect(root[entry], `${entry} on the closed issue itself`).toEqual(grey("grey_closed"));
+  }
+  expect(root.lens).toEqual({ kind: "open" });
+  const rootOpen = placementOf({ held: done, node: done.issue, status: STATUS });
+  expect(rootOpen.delete).toEqual(grey("grey_kind"));
 });
 
 test("an agent's node takes every entry its kind takes", () => {
@@ -491,18 +503,25 @@ test("a node with no rank has every move grey", () => {
 
 test("new node below on a spec block stands after the spec's blocks and says so", () => {
   // The first statement is not the last block of the spec under the criterion: the new row
-  // stands after the third, whose own-fragment band follows, and the row says it.
+  // stands after the third, and the row says it. The body names `after: null`, the first place
+  // of the new block's own band, which follows the spec's band: with no `after` the server puts
+  // the block after every ranked sibling of its band (`placeAmongSiblings`, `node_move.go`),
+  // past the paragraph of the issue's own fragment that already stands under the criterion.
   expect(nodeOf(converted, "<statement-1>").document?.slug).toBe("spec");
+  const own = nodeOf(converted, "<prose-under-criterion>");
+  expect(own.document, "the paragraph is of the issue's own fragment").toBeUndefined();
+  expect(own.parent?.id).toBe("<criterion>");
+  expect(own.rank).not.toBeNull();
   expect(place("<statement-1>").new_below).toStrictEqual({
     kind: "new",
     line: "spec_band",
-    place: { after: "<statement-3>", body: { parent: "<criterion>" } },
+    place: { after: "<statement-3>", body: { after: null, parent: "<criterion>" } },
   });
   expect(Object.hasOwn(ANSWER_LINES, "spec_band")).toBe(true);
   // The last statement is right above that place: nothing to say.
   expect(place("<statement-3>").new_below).toStrictEqual({
     kind: "new",
-    place: { after: "<statement-3>", body: { parent: "<criterion>" } },
+    place: { after: "<statement-3>", body: { after: null, parent: "<criterion>" } },
   });
 });
 

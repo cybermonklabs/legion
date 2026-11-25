@@ -78,6 +78,7 @@ export default {
       grey_last: "It is already the last.",
       grey_not_paragraph: "Only a paragraph takes a new kind.",
       grey_criterion_parent: "A criterion goes under a question, a comment or a message.",
+      grey_view_criterion: "This issue's agent writes its spec, so it takes no criterion.",
       grey_statement_parent:
         "A statement goes under a criterion, a question, a comment or a message.",
       grey_check_parent: "A check goes under a statement.",
