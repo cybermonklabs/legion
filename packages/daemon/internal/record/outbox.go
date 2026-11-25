@@ -2792,10 +2792,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
-// passed its last step while issues beneath it are still in the workflow (workflow's
-// beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
-// retro starts when the last one leaves (workflow's releaseHeldParents).
+// `retro-held` is a task held before its retro, each such notice written by workflow's
+// retroHeldFor; it carries one of two meanings. A parent whose task's last step is not the
+// owner's acceptance, held because it passed its last step while issues beneath it are still in
+// the workflow (workflow's retroHold, retroHeldNotice; HoldForChildren): its reason names each of
+// them, and that the retro starts when the last one leaves (workflow's releaseHeldParents). Or a
+// task whose last step passed, held while a fix of it runs (HoldForFix) or until each check a CI
+// job runs passes at its head (HoldForCI), the end hold every task has (workflow's
+// endHoldNotice): its reason names the fix's check and head, or each check not yet passed, and
+// what the owner can do before then.
 //
 // `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
 // issue's architect once, whatever number of versions it passed over, after it deleted their
@@ -2819,10 +2824,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // of migration 20261120042902 deletes its unsent rows.
 //
 // `ci-failed` is a check that a CI job runs failing at the head of a task where no fix takes the
-// failure, which the task's owner is told of once for that check at that head
-// (Store.TellOwnerOnce): its reason names the check and the head and, where a fix ran for it, that
-// its one fix ended. No earlier release decodes it, so the way back of migration
-// 20261123134547_fix_beside_steps deletes its unsent rows.
+// failure, which the task's owner is told of once for that check at that head (workflow's
+// endFailure, ciFailedNotice; Store.TellOwnerOnce): its reason names the check and the head and,
+// where a fix ran for it, that its one fix ended. No earlier release decodes it, so the way back
+// of migration 20261123134547_fix_beside_steps deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
