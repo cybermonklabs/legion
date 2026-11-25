@@ -14,6 +14,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter, MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-effects";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import {
@@ -27,15 +28,15 @@ import { prioritiesQuery } from "../../api/queries";
 import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
-import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 // A closed row's excerpt is the projection the markdown engine makes of its description
-// (`useMarkdownHeadline`), so the engine is loaded once before any row draws, as the shell loads
-// it as a page opens (`DeploymentResilience`).
+// (`PlainText`), so the engine is loaded once before any row draws, as the shell loads it as a
+// page opens (`DeploymentResilience`).
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
@@ -851,9 +852,18 @@ test("the start of a description shows on a closed row, its lines run together i
 
 // A description of several paragraphs whose first line is short and names an issue by its
 // Dispatch reference, as production's do: the closed row reads its paragraphs run together, its
-// markdown read rather than shown and the reference by its short form, so a first line that
-// fits leaves the rest after it for the clamp to end in '…' (INFRA-2947, R7).
-test("a closed row runs a description's paragraphs together, a reference read by its short form", async () => {
+// markdown read rather than shown and the reference as every one-line projection of a stored text
+// reads it, by its target's name (`PlainText`), so a first line that fits leaves the rest after it
+// for the clamp to end in '…' (INFRA-2947, R7). The issue's summary is answered here, and the row
+// waits for the name it gives, so no read is left out when the row ends.
+test("a closed row runs a description's paragraphs together, a reference read as its target's name", async () => {
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the parser",
+  });
   page(
     body({
       priorities: [
@@ -865,11 +875,39 @@ test("a closed row runs a description's paragraphs together, a reference read by
       ],
     })
   );
+  // Pushed after the page's own, so the page is gone before the read is answered by nothing.
+  restores.push(() => summary.mockRestore());
   const row = await screen.findByRole("row", { name: "#1 Local testing is one command" });
   const excerpt = await within(row).findByText(
-    "Start with CORE-1. Every reader of this deployment reaches the same corpus."
+    "Start with CORE-1 Ship the parser. Every reader of this deployment reaches the same corpus."
   );
   expect(excerpt.className.split(" ")).toContain("line-clamp-2");
+});
+
+// A description is a stored text, and the priorities read sends the reading the server made of
+// it (`description_tree`): a closed row's excerpt reads the words of that tree, and parses nothing
+// on the page's thread. The tree reads differently from the markdown beside it, so a row drawn
+// from a parse of the markdown would read `The opening line.`.
+test("a closed row draws its description's excerpt from the tree the priorities read sends", async () => {
+  const tree = displayTree("The **opening** line, from the tree.\n\nThe rest of it.");
+  const parses = countEngineParses();
+  restores.push(parses.restore);
+  page(
+    body({
+      priorities: [
+        priority("legion-first", {
+          description: "The **opening** line.\n\nThe rest of it.",
+          description_tree: tree,
+          title: "Legion works reliably first",
+        }),
+      ],
+    })
+  );
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  expect(
+    await within(row).findByText("The opening line, from the tree. The rest of it.")
+  ).toBeDefined();
+  expect(parses.count()).toBe(0);
 });
 
 /** Emphasis nested one deeper than Go's display read takes (pmdoc's `maxInlineNesting`, 100),
@@ -888,18 +926,8 @@ const NESTED_TREE: DisplayTree = {
 // (`description_tree`), and nothing on the page parses the description: the excerpt reads the
 // tree's words, which the markdown parsed would not, cut at the row's 400 characters.
 test("a closed row's excerpt is drawn from the server's tree of its description, and nothing on the page parses it", async () => {
-  const engine = loadedEngine();
-  if (engine === undefined) throw new Error("the row needs the shared engine loaded");
-  const counted = engine as { parse: typeof engine.parse };
-  const parse = counted.parse;
-  const parsed: number[] = [];
-  counted.parse = (markdown, softBreaks) => {
-    parsed.push(markdown.length);
-    return parse.call(engine, markdown, softBreaks);
-  };
-  restores.push(() => {
-    counted.parse = parse;
-  });
+  const parses = countEngineParses();
+  restores.push(parses.restore);
   page(
     body({
       priorities: [
@@ -914,7 +942,7 @@ test("a closed row's excerpt is drawn from the server's tree of its description,
   const row = await screen.findByRole("row", { name: "#1 Nested past the bound" });
   const excerpt = await within(row).findByText(`${NESTED.slice(0, 400)}…`);
   expect(excerpt.className.split(" ")).toContain("line-clamp-2");
-  expect(parsed).toEqual([]);
+  expect(parses.count()).toBe(0);
 });
 
 test("opening a row shows its description and no work: the work is on the priority's own page", async () => {
