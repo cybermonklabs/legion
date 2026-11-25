@@ -497,9 +497,6 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
-// The daemon's deploymentRolesContract (api/shaping.go) added step and returnTo to phase/backward.
-const STEP_BACKWARD_CONTRACT = 297;
-
 /** The three words `read_build` answers under `daemonContractNote`, where `daemonContract` is
  * null: the daemon answered the health route and stated no contract, which a daemon older than
  * the header does; the daemon answered the route and refused it; or no answer reached this
@@ -668,16 +665,10 @@ export async function executePhaseOp(
           throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
         }
       }
-      if (args.to === "step" || args.return_to !== undefined) {
-        const contract = await daemon.daemonContract();
-        if (contract === undefined || contract < STEP_BACKWARD_CONTRACT) {
-          const stated =
-            contract === undefined ? DAEMON_STATED_NO_CONTRACT : `daemon contract ${contract}`;
-          throw new Error(
-            `request_backward_move with to: step or return_to requires daemon contract ${STEP_BACKWARD_CONTRACT} or later; ${stated}. Nothing moved.`
-          );
-        }
-      }
+      // The target `step` and `return_to` arrived with the daemon's roles of a deployment
+      // (deploymentRolesContract's entry). An older daemon refuses either with a 400 and moves
+      // nothing: `step` as `INVALID_PHASE`, and `returnTo` as a body with an unknown field. So the
+      // move is sent as asked, and that refusal is the answer the caller reads.
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,
