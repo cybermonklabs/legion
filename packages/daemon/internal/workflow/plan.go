@@ -42,7 +42,7 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps))}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(record.NamedSteps(w.Steps))}}
 	return node
 }
 
@@ -202,7 +202,7 @@ func planSteps(issue string, generation uint64, task string, steps []plan.Step) 
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: builtinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
+			Type: record.BuiltinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
 	}
 	return rows
 }

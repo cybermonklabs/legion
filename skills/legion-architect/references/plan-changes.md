@@ -16,17 +16,8 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 
 ## A decision for an agent
 
-Put each decision for an agent into the text of its task's block, in a later version of `plan.md`.
-Then give that version with `register_plan`.
-Every later start of the task holds that text, a new session's start included.
-The agent at work now reads no new start.
-So when the answer names the step the decision is for as running, also send that step's agent the decision by message.
-Your role prompt says which block holds the text of the task `default`, and when a comment and a message take its place.
-An issue that started its work before Legion took plans has no task text.
-On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
-These rules hold also where a general skill offers another place for a decision.
-Write no decision for an agent there, and keep no record of the work there.
-The issue and its plan are the record of the work to be done.
+Your role prompt holds the rules for a decision for an agent: where the decision goes, when you also send it by message, which block holds the text of the task `default`, and when a comment and a message take the place of the text.
+Follow them there. This reference does not repeat them.
 
 ## The notices
 

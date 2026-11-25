@@ -451,13 +451,22 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 			}
 		})
 	}
-	// A task a release before stored opens its owner's part with the words that release wrote
-	// (ownersOpeningBefore): it takes the later text as well, and the rewrite writes today's opening.
+	// A task a release before stored opens its owner's part with other words: ownersPart reads the
+	// part by its label and its fence, so the task takes the later text as well, and the rewrite
+	// writes today's opening. The fault is a read by the words of today's opening, which parses no
+	// such task, so a later version's text never reaches it.
 	reviewing := composed(phase.Reviewing, was, start)
 	at := strings.LastIndex(reviewing, ownersOpening)
-	stored := reviewing[:at] + ownersOpeningBefore + reviewing[at+len(ownersOpening):]
+	const earlier = " " + taskTextLabel + ": the text of the task's block, in words a release before wrote, between the two fence lines below.\n"
+	stored := reviewing[:at] + earlier + reviewing[at+len(ownersOpening):]
 	if got, want := WithTaskText(stored, now), composed(phase.Reviewing, now, start); !HoldsTaskText(stored) || got != want {
-		t.Fatalf("WithTaskText of a task stored with the earlier opening = %q, holding an owner's part %v,\nwant %q, true", got, HoldsTaskText(stored), want)
+		t.Fatalf("WithTaskText of a task stored with an earlier opening = %q, holding an owner's part %v,\nwant %q, true", got, HoldsTaskText(stored), want)
+	}
+	// An operator's task that ends with a fenced text of its own, with no label on the line before
+	// it, holds no owner's part: the label, not the fence alone, says where the part starts.
+	unlabelled := reviewing[:at] + " Here is the log.\n" + reviewing[at+len(ownersOpening):]
+	if got := WithTaskText(unlabelled, now); got != unlabelled || HoldsTaskText(unlabelled) {
+		t.Fatalf("WithTaskText of a task whose fenced text has no label = %q, holding an owner's part %v, want it whole, false", got, HoldsTaskText(unlabelled))
 	}
 	unplanned := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Implementing}
 	today := task(unplanned, WorkingCopy(unplanned, dir), handoff, nil, reason)
@@ -466,40 +475,13 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 	}
 }
 
-// ownersPart finds the owner's part of a stored start task (record.PhaseRow.EntryTask) and of a
-// task a claim holds by the exact words of its opening. A release that rewords the opening parses
-// no task stored before it unless it reads the earlier words too, and a later version's text then
-// never reaches that task. So both openings are pinned here: the one ownersText writes, which says
-// Legion wrote the text of the task default only where its owner gave none, and the one a release
-// before it wrote, which tasks stored then still hold.
-func TestTheOwnersOpeningsKeepTheWordsEveryStoredTaskHolds(t *testing.T) {
-	const opening = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default " +
-		"where its owner gave none), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
-	const before = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default), " +
-		"between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
-	if want := []string{opening, before}; !reflect.DeepEqual(ownersOpenings, want) || ownersOpening != opening {
-		t.Fatalf("ownersOpenings = %q and ownersOpening = %q, want %q, the first written: every start task stored before a change "+
-			"(a phases row's entry task, a claim's held delivery) holds one of these, and ownersPart finds its owner's part by them, "+
-			"so a change of them leaves each such task unparsed, and a later version's text never reaches it", ownersOpenings, ownersOpening, want)
-	}
-}
-
-// retext rewrites the stored start task of the act a running task stands at. A running task at no
-// act stands at none, and issuePhaseOf answers admitted, the architect's phase, for no act: retext
-// answers an error rather than write the architect's row.
-func TestRetextRefusesARunningTaskAtNoAct(t *testing.T) {
-	err := (&Engine{}).retext(context.Background(), nil, record.Issue{Key: "LEGION-208"}, Walk{Stored: true, Task: "a", State: record.TaskRunning})
-	if err == nil || !strings.Contains(err.Error(), "task a runs at no act") {
-		t.Fatalf("retext of a task running at no act = %v, want an error that says task a runs at no act", err)
-	}
-}
-
 // A later version that changes only the text of a running task is taken (plan.RunningChange): the
 // task goes on at its step on its steps with its counts, the issue does not move, the one row
-// queued is the run's plan node, which sends the running agent nothing, the stored start task of
-// the implementer's entry holds the new text and not the old (retext), the fact's result names
-// step 1, the implementer, as the act that runs (record.StoredPlan.Running), and the log of the
-// version names a as a task whose text alone it changed.
+// queued is the run's plan node, which sends the running agent nothing, and nothing else is
+// written for the running task: the stored start task of the implementer's entry is as it was, and
+// its send rewrites it with the new text (WithTaskText). The plan in force names step 1, the
+// implementer, as the act that runs (record.StoredPlan.Running), and the log of the version names
+// a as a task whose text alone it changed.
 func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
@@ -515,16 +497,15 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 		t.Fatalf("the implementer's stored start task %q holds no text of version 1", started.EntryTask)
 	}
 	manual := givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer")
-	retexted := apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, manual))
-	mustTake(t, "version 2 with a's text alone changed", retexted)
+	mustTake(t, "version 2 with a's text alone changed", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, manual)))
 	if line := loggedLine(logged.String(), "workflow: an owner's plan is taken", "version=2"); !strings.Contains(line, "changed=[] text_only=[a]") {
 		t.Fatalf("the log of version 2 = %q, want it to name no changed task and a as a task whose text alone changed", line)
 	}
-	implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
-	if !reflect.DeepEqual(retexted.Running, implementing) {
-		t.Fatalf("version 2 answered the running steps %+v, want %+v: step 1, the implementer", retexted.Running, implementing)
-	}
 	kept := planStandingOf(t, pool, engine, key, gen)
+	implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
+	if running, err := kept.plan.Running(); err != nil || !reflect.DeepEqual(running, implementing) {
+		t.Fatalf("the plan after version 2 names the running acts %+v, %v; want %+v: step 1, the implementer", running, err, implementing)
+	}
 	if !reflect.DeepEqual(kept.versions, []string{"1 owner", "2 owner"}) {
 		t.Fatalf("the versions after version 2 = %v, want 1 and 2", kept.versions)
 	}
@@ -535,11 +516,13 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 	if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
 		t.Fatalf("version 2 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
 	}
-	retold := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-	if retold.Entry != started.Entry || retold.EntryTask != WithTaskText(started.EntryTask, manual.Text) ||
-		!strings.Contains(retold.EntryTask, "\nBuild the widget, and its manual.\n") || strings.Contains(retold.EntryTask, "\nBuild the widget.\n") {
-		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d holding version 2's text and not version 1's",
-			retold.Entry, retold.EntryTask, started.Entry)
+	// Nothing is written for the running task: its stored start task is the one version 1's start
+	// wrote, and the rewrite every send of it makes holds version 2's text and not version 1's.
+	if kept := roleRowOf(t, pool, engine, key, claim.RoleImplementer); kept.Entry != started.Entry || kept.EntryTask != started.EntryTask {
+		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d as version 1's start wrote it", kept.Entry, kept.EntryTask, started.Entry)
+	}
+	if sent := WithTaskText(started.EntryTask, manual.Text); !strings.Contains(sent, "\nBuild the widget, and its manual.\n") || strings.Contains(sent, "\nBuild the widget.\n") {
+		t.Fatalf("the send's rewrite of the implementer's stored start task = %q, want version 2's text and not version 1's", sent)
 	}
 }
 

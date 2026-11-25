@@ -15,13 +15,49 @@ func partPlace(task string) Place    { return Place{Kind: PlacePart, Task: task}
 func elementPlace(task string) Place { return Place{Kind: PlaceElement, Task: task} }
 
 // under is a task block id that stands directly under the block parent, "" for none, with the
-// sub-owner owner, "" for none.
+// sub-owner owner, "" for none. Its `parent` names parent in the plan's document, and it carries no
+// Parent: FromBlocks reads that from `parent`, and a test of Places alone resolves it (resolved).
 func under(id, parent, owner string) Block {
 	attributes := map[string]string{"steps": "implementer"}
 	if owner != "" {
 		attributes = map[string]string{"owner": owner}
 	}
-	return Block{ID: id, Type: TaskBlockType, Parent: parent, Attributes: attributes, Text: "What block " + id + " says."}
+	return withParent(Block{ID: id, Type: TaskBlockType, Attributes: attributes, Text: "What block " + id + " says."}, parent)
+}
+
+// withParent is block whose `parent` names the block parent of the plan's document, as a writer of
+// the document writes it, its other attributes kept. Its Parent is left as it was, for FromBlocks
+// to read. parent "" leaves block as it is.
+func withParent(block Block, parent string) Block {
+	if parent == "" {
+		return block
+	}
+	attributes := map[string]string{"parent": planDocument + "#b-" + parent}
+	for name, value := range block.Attributes {
+		if name != "parent" {
+			attributes[name] = value
+		}
+	}
+	block.Attributes = attributes
+	return block
+}
+
+// resolved is blocks with each task block's Parent read from its `parent` against the plan's
+// document (ParentOf), as FromBlocks reads it before it calls Places.
+func resolved(t *testing.T, blocks []Block) []Block {
+	t.Helper()
+	out := slices.Clone(blocks)
+	for i, block := range out {
+		if block.Type != TaskBlockType {
+			continue
+		}
+		parent, err := ParentOf(block.Attributes["parent"], planDocument)
+		if err != nil {
+			t.Fatalf("ParentOf(%q): %v", block.Attributes["parent"], err)
+		}
+		out[i].Parent = parent
+	}
+	return out
 }
 
 // Each task block stands at one of three places, by the block it stands directly under. Under no
@@ -69,7 +105,7 @@ func TestPlacesGivesEachTaskBlockItsPlace(t *testing.T) {
 			err: "task blocks a, b stand under each other, so none of them has a place in the plan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Places(tc.blocks)
+			got, err := Places(resolved(t, tc.blocks))
 			if tc.err != "" {
 				if err == nil || err.Error() != tc.err {
 					t.Fatalf("Places = %+v, %v, want the error %q", got, err, tc.err)
@@ -156,8 +192,8 @@ func TestParentOfReadsAParentBeforeTheTree(t *testing.T) {
 func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 	owned := under("f", "", "architect")
 	merging := func(block Block) Block {
-		block.Attributes = map[string]string{"owner": "architect", "merges": "false"}
-		return block
+		attributes := map[string]string{"owner": "architect", "merges": "false", "parent": block.Attributes["parent"]}
+		return Block{ID: block.ID, Type: block.Type, Attributes: attributes, Text: block.Text}
 	}
 	// outside is a task block id whose `parent` writes reference, with its Parent read as
 	// register_plan reads it (ParentOf), against the plan's document.
@@ -183,11 +219,11 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 	}
 	// element is t1, an element of a with `serves` and `needs` alone, and withElement the plan of
 	// the two.
-	element := Block{ID: "t1", Type: TaskBlockType, Parent: "a", Text: "Wire the parser to the tokens.",
-		Attributes: map[string]string{"serves": "dispatch://ACME-1/spec#b-r1", "needs": needWord("a")}}
+	element := withParent(Block{ID: "t1", Type: TaskBlockType, Text: "Wire the parser to the tokens.",
+		Attributes: map[string]string{"serves": "dispatch://ACME-1/spec#b-r1", "needs": needWord("a")}}, "a")
 	withElement := []Block{under("a", "", ""), element}
-	atTheTop := element
-	atTheTop.Parent = ""
+	atTheTop := Block{ID: element.ID, Type: element.Type, Text: element.Text,
+		Attributes: map[string]string{"serves": "dispatch://ACME-1/spec#b-r1", "needs": needWord("a")}}
 	gone := Block{ID: "gone", Type: "requirement", Text: "A requirement the plan dropped."}
 	needsAnElement := Block{ID: "b", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer", "needs": needWord("t1")}, Text: "What block b says."}
 	for _, tc := range []struct {
@@ -240,14 +276,14 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 		{name: "an element with a sub-owner", blocks: []Block{under("a", "", ""), under("a1", "a", "architect")},
 			placed: map[string]string{"a": ""}, elements: []Element{{ID: "a1", Of: "a", Under: "a", Names: []string{"owner"}}},
 			refused: []Refusal{{Task: "a1", Reason: elementReason("a1", "owner")}}},
-		{name: "an element that names merges", blocks: []Block{under("a", "", ""), {ID: "a1", Type: TaskBlockType, Parent: "a", Attributes: map[string]string{"merges": "false"}}},
+		{name: "an element that names merges", blocks: []Block{under("a", "", ""), withParent(Block{ID: "a1", Type: TaskBlockType, Attributes: map[string]string{"merges": "false"}}, "a")},
 			placed: map[string]string{"a": ""}, elements: []Element{{ID: "a1", Of: "a", Under: "a", Names: []string{"merges"}}},
 			refused: []Refusal{{Task: "a1", Reason: elementReason("a1", "merges")}}},
-		{name: "an element under an element", blocks: []Block{under("a", "", ""), {ID: "a1", Type: TaskBlockType, Parent: "a"}, merging(under("a1x", "a1", ""))},
+		{name: "an element under an element", blocks: []Block{under("a", "", ""), withParent(Block{ID: "a1", Type: TaskBlockType}, "a"), merging(under("a1x", "a1", ""))},
 			placed: map[string]string{"a": ""}, elements: []Element{{ID: "a1", Of: "a", Under: "a"}, {ID: "a1x", Of: "a", Under: "a1", Names: []string{"owner", "merges"}}},
 			refused: []Refusal{{Task: "a1x", Reason: "task block a1x is an element of task a: it stands under a1, an element of a. " +
 				"Legion does not carry out an element, so an element names no steps, owner or merges, and a1x names owner and merges."}}},
-		{name: "a task that needs an element", blocks: []Block{under("a", "", ""), {ID: "t1", Type: TaskBlockType, Parent: "a"}, needsAnElement},
+		{name: "a task that needs an element", blocks: []Block{under("a", "", ""), withParent(Block{ID: "t1", Type: TaskBlockType}, "a"), needsAnElement},
 			placed: map[string]string{"a": "", "b": ""}, elements: []Element{{ID: "t1", Of: "a", Under: "a"}},
 			refused: []Refusal{{Task: "b", Reason: "task b needs " + needWord("t1") + ", which is an element of task a. " +
 				"Legion does not carry out an element, so a task cannot need one."}}},
@@ -255,7 +291,7 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 		// document of the plan's issue: neither names a block of the plan's document, so neither
 		// names the element, and both stay needs.
 		{name: "a need of another issue's block and of another document's with an element's id",
-			blocks: []Block{under("a", "", ""), {ID: "t1", Type: TaskBlockType, Parent: "a"}, {ID: "b", Type: TaskBlockType,
+			blocks: []Block{under("a", "", ""), withParent(Block{ID: "t1", Type: TaskBlockType}, "a"), {ID: "b", Type: TaskBlockType,
 				Attributes: map[string]string{"steps": "implementer", "needs": "dispatch://ACME-2/artifact/plan-md#b-t1 dispatch://ACME-1/spec#b-t1"}}},
 			placed: map[string]string{"a": "", "b": ""}, elements: []Element{{ID: "t1", Of: "a", Under: "a"}},
 			check: func(t *testing.T, p Plan) {
@@ -337,7 +373,7 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 // among the tasks: the tasks of the plan and ChangedTasks each fail.
 func TestAnElementIsNoTaskOfThePlan(t *testing.T) {
 	element := func(text string) Block {
-		return Block{ID: "a1", Type: TaskBlockType, Parent: "a", Attributes: map[string]string{"needs": needWord("f")}, Text: text}
+		return withParent(Block{ID: "a1", Type: TaskBlockType, Attributes: map[string]string{"needs": needWord("f")}, Text: text}, "a")
 	}
 	owned := under("f", "", "architect")
 	held := planOf(t, 1, owned, under("f1", "f", ""), under("a", "", ""), element("How a starts."))

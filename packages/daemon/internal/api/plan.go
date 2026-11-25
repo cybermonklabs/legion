@@ -43,21 +43,22 @@ type RegisteredPlan struct {
 // each as the plan writes them (`role` or `role:key`). A task whose block names none has no step
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
 // work starts, so the answer names none rather than guessing what the project will run then.
-// Running is each step of the task that runs or waits once the version is taken (RunningStep), in
-// the order the record gives them, and is left out for a task that does not run: one that waits,
-// is stopped or is done. It arrived at runningStepContract.
+// Running is the act the task stands at once the version is taken (RunningStep), a list of one
+// entry, and is left out for a task that does not run: one that waits, is stopped or is done. It
+// arrived at runningStepContract.
 type RegisteredTask struct {
 	ID      string        `json:"id"`
 	Steps   []string      `json:"steps"`
 	Running []RunningStep `json:"running,omitempty"`
 }
 
-// RunningStep is one act a running task stands at once register_plan took the version, read in
-// the transaction that took it (record.StoredPlan.Running): its kind, `step`, `retro` or `merge`,
-// its place, from 1 for a step of the task and 0 for the retro and the merge, and the role whose
-// agent works it. A later version takes a running task whose text alone it changes, and the agent
-// at work reads no new start of that task, so this is the agent the owner sends a message to for
-// a decision about the act that runs now. Every later start of the task reads the new text.
+// RunningStep is the act a running task stands at once register_plan took the version, as the
+// record holds it when the route reads it then (runningAt, record.StoredPlan.Running): its kind,
+// `step`, `retro` or `merge`, its place, from 1 for a step of the task and 0 for the retro and the
+// merge, and the role whose agent works it. A later version takes a running task whose text alone
+// it changes, and the agent at work reads no new start of that task, so this is the agent the
+// owner sends a message to for a decision about the act that runs now. Every later start of the
+// task reads the new text.
 type RunningStep struct {
 	Kind  string `json:"kind"`
 	Place int    `json:"place"`
@@ -134,14 +135,16 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // reads the plan's blocks at the version given (planAt), and refuses with one reason for each
 // cause of a plan this release does not carry out (plan.Supported) or no release can
 // (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version are the workflow's, and answered with each
-// running task's act (RunningStep), which the workflow read in the transaction that took the
-// version.
+// intake.PlanGiven, whose rules of a later version are the workflow's, and answered with the act
+// each running task stands at (RunningStep), which the route reads once the fact is taken
+// (runningAt).
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered as the same plan, and the same version
-// given at a later generation of the issue is a new one. A retry applies nothing, so it is
-// answered with each running task's act as the record holds it at the retry (runningAt).
+// given at a later generation of the issue is a new one. A retry applies nothing, and its answer
+// is read the same way, so the first answer and the answer to a retry read where the tasks stand
+// by one path. A read that fails is answered 500 RECORD_UNAVAILABLE, with the version taken, and
+// the same registration given again reads it again.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -178,7 +181,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 			"Dispatch shows %s at version %d, not %d; give register_plan a version that Dispatch has", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
-	given, ok := s.planAt(w, r, artifactID, documentReference(req.Issue, approval), req.Version, req.Issue)
+	given, ok := s.planAt(w, r, artifactID, dispatch.DocumentRef(req.Issue, approval.Primary, approval.Slug), req.Version, req.Issue)
 	if !ok {
 		return
 	}
@@ -189,18 +192,15 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
-	result, ok := s.applyFactResult(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
-		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim})
-	if !ok {
+	if !s.factTaken(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
+		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim}) {
 		return
 	}
-	running := result.Running
-	if result.Duplicate {
-		var err error
-		if running, err = s.runningAt(r.Context(), req.Issue, generation); err != nil {
-			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read where the tasks of the plan stand")
-			return
-		}
+	running, err := s.runningAt(r.Context(), req.Issue, generation)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf(
+			"Legion took version %d of the plan, but could not read where its tasks stand; give register_plan the same version again to read them", req.Version))
+		return
 	}
 	s.writeAnswer(w, r, AnswerPlanRegister, http.StatusOK, PlanRegisterResponse{Plan: registeredPlan(given, running)})
 }
@@ -305,13 +305,12 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// each task block's Parent read from its `parent` (plan.ParentOf) against reference, the document
-// as a reference to one of its blocks names it (documentReference), then read as a plan
-// (plan.FromBlocks) against the same reference. So a `parent` puts a block under a block of this
-// document alone, and a `needs` word names an element of this document alone. A block the
-// plan's grammar cannot read, a `parent` that is not one reference among them, is a refused plan
-// whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
-// all. Every refusal records nothing.
+// read as a plan (plan.FromBlocks) against reference, the document as a reference to one of its
+// blocks names it (dispatch.DocumentRef). So a `parent` puts a block under a block of this
+// document alone, and a `needs` word names an element of this document alone. A block the plan's
+// grammar cannot read, a `parent` that is not one reference among them, is a refused plan whose
+// one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all.
+// Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, reference string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -330,15 +329,6 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 	blocks := make([]plan.Block, len(document.Blocks))
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
-		if block.Type != plan.TaskBlockType {
-			continue
-		}
-		parent, err := plan.ParentOf(block.Attributes["parent"], reference)
-		if err != nil {
-			s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: fmt.Sprintf("task block %s: %v.", block.ID, err)}}))
-			return plan.Plan{}, false
-		}
-		blocks[i].Parent = parent
 	}
 	given, err := plan.FromBlocks(artifactID, reference, version, blocks)
 	if err != nil {
@@ -348,19 +338,8 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 	return given, true
 }
 
-// documentReference is the document approval reads, a document of issue, as a reference to one of
-// its blocks names it before its `#b-`, as Dispatch writes one (FormatBlockRef in
-// packages/envoy/internal/dispatch/text): `dispatch://<issue>/spec` for the issue's primary
-// document, and `dispatch://<issue>/artifact/<slug>` for any other.
-func documentReference(issue string, approval dispatch.Approval) string {
-	if approval.Primary {
-		return "dispatch://" + issue + "/spec"
-	}
-	return "dispatch://" + issue + "/artifact/" + approval.Slug
-}
-
-// registeredPlan is given as register_plan answers it, each task that runs with each step of it
-// that runs or waits, in the order of running (record.StoredPlan.Running).
+// registeredPlan is given as register_plan answers it, each task that runs with the act it stands
+// at (record.StoredPlan.Running).
 func registeredPlan(given plan.Plan, running []record.RunningStep) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {

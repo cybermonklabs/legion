@@ -537,7 +537,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	steps := make([]record.PlanStep, len(defaults))
 	for i, step := range defaults {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: plan.DefaultTask, Position: i + 1, Role: step.Role,
-			AgentKey: step.Key, Type: builtinDeployment.Roles[step.Role].Type}
+			AgentKey: step.Key, Type: record.BuiltinDeployment.Roles[step.Role].Type}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)

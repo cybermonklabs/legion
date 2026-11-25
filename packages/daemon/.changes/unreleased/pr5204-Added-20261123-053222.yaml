@@ -4,13 +4,14 @@ body: |-
   it, and the task goes on at its step. Every later start of the task holds the new text. That
   covers a resume, a start sent again to a fresh session, a later step, a return and the retro.
   The running agent is sent nothing for the version. A version that removes a running task or
-  changes any other part of it is still refused. The answer of `register_plan` names each task's
-  running steps, each with the role whose agent works it (`running`, contract 262). The owner's
-  prompt puts a decision for an agent into the text of its task's block, in a later version of
-  `plan.md`. A phase worker takes a newer `plan.md` that changes only its own block's text, or
-  only blocks under another task, for the owner's decision. It sends the planner nothing for it,
-  and tells the planner of any other change. A task block names its parent, and Legion carries
-  out no task block under a task with no sub-owner.
+  changes any other part of it is still refused. The answer of `register_plan` names the act each
+  running task stands at, with the role whose agent works it (`running`, contract 262). The
+  owner's prompt puts a decision for an agent into the text of its task's block, in a later
+  version of `plan.md`. A phase worker takes a newer `plan.md` that changes only blocks under
+  another task for no change of its plan. It takes one that changes only its own block's text for
+  the owner's decision when a task Legion sent it, or its architect's message, holds that text. It
+  sends the planner nothing for either, and tells the planner of any other change. A task block
+  names its parent, and Legion carries out no task block under a task with no sub-owner.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: pr5204

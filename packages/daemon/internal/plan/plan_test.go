@@ -139,7 +139,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 			"parent": "dispatch://ACME-1/spec#b-r1",
 		}, Text: "What task D does."},
 		{ID: "f", Type: "plan_task", Attributes: map[string]string{"owner": "architect"}, Text: "What this part must reach."},
-		{ID: "f1", Type: "plan_task", Parent: "f", Attributes: map[string]string{
+		{ID: "f1", Type: "plan_task", Attributes: map[string]string{
 			"parent": "dispatch://ACME-1/artifact/plan-md#b-f", "steps": "implementer reviewer", "merges": "true",
 		}, Text: "What task F1 does."},
 		{ID: "prober", Type: RoleBlockType, Attributes: map[string]string{"type": "testing"}, Text: "You probe."},

@@ -106,7 +106,8 @@ type Plan struct {
 	// and the parts, in its order.
 	Tasks []Task
 	// Elements are the document's `plan_task` blocks that are elements of a task, in its order.
-	// They are no tasks: Validate reads them, and nothing else does.
+	// They are no tasks: FromBlocks reads them to move a task's `needs` word that names one
+	// (elementNeeds), and Validate refuses what one names; nothing else reads them.
 	Elements []Element
 	// RoleBlocks are the names of the roles the plan defines, one for each `plan_role` block, in
 	// the document's order.
