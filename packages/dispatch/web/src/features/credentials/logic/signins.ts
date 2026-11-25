@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 
-import { api } from "../../api/client";
+import { api } from "../../../api/client";
 
 /** The viewer's own sign-ins on their machines (`agent-secrets login`), as `SignInsSection` lists
  *  them; its key is the one revoking a sign-in invalidates. */
