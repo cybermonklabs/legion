@@ -31,13 +31,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -472,10 +468,6 @@ func gcloudEnv() []string {
 	return append(env, "CLOUDSDK_CORE_DISABLE_PROMPTS=1", "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1", "CLOUDSDK_CORE_LOG_HTTP=false")
 }
 
-// gcloudWaitDelay is how long runGcloud waits for a killed gcloud's output to close before it gives
-// the call up: a second, its standard error discarded and nothing else.
-const gcloudWaitDelay = time.Second
-
 // runGcloud runs gcloud with args in gcloudEnv and answers what it wrote on its standard output.
 // gcloud reads the configuration and account to use from that environment
 // (CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as the caller set them), and the account
@@ -485,141 +477,19 @@ const gcloudWaitDelay = time.Second
 // its way in. What it writes on its standard error is discarded, never printed: a refresh the
 // token endpoint refuses writes that endpoint's error_description there, which the server writes
 // what it likes in, so a failure is its exit status and the advice to run the same gcloud command
-// to read gcloud's own message. Once ctx ends, gcloud is killed with its whole process group where
-// the platform has them (killGroupOnCancel), not the gcloud process alone, since the gcloud on PATH
-// can be a script whose child, gcloud's Python, holds the output open and outlives a kill of the
-// script; the output is then waited for no more than gcloudWaitDelay, for a process that left the
-// group.
-// The whole group is killed too where a signal ends this command while gcloud runs: gcloud, in a
-// group of its own, gets no signal sent to this command's group, such as a terminal's interrupt,
-// so runGcloud records each gcloud it runs (runRecorded) and an end by a signal kills each
-// recorded one first (exitBySignal, killRunningGcloud).
+// to read gcloud's own message. It runs through runChild, the one tracker of the children the
+// secret forms start: once ctx ends gcloud is killed with its whole process group, not the gcloud
+// process alone, since the gcloud on PATH can be a script whose child, gcloud's Python, holds the
+// output open; and an end by a signal kills it first (exitBySignal, killRunningChildren).
 func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, gcloud.path, args...)
 	cmd.Env = gcloudEnv()
-	killGroupOnCancel(cmd)
-	cmd.WaitDelay = gcloudWaitDelay
 	var stdout bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, io.Discard
-	if err := runRecorded(cmd); err != nil {
+	if err := runChild(cmd); err != nil {
 		return nil, fmt.Errorf("%w: run the same gcloud command yourself to see its message", err)
 	}
 	return stdout.Bytes(), nil
-}
-
-// runningGcloud holds the pid of each gcloud runRecorded has started and not yet waited for.
-var runningGcloud = struct {
-	sync.Mutex
-	pids map[int]bool
-}{pids: map[int]bool{}}
-
-// formWatchesSignals counts the form watches of createSignals running now (watchCreateSignals),
-// each of which ends the form by a signal through exitBySignal itself.
-var formWatchesSignals atomic.Int32
-
-// gcloudStarted and gcloudWaited name the two moments of runRecorded at which onGcloudStep runs.
-const (
-	gcloudStarted = "started" // gcloud has started; its pid is not recorded yet
-	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
-)
-
-// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
-// to send a signal at one of those moments, which no timing of the test's own can hit on every
-// run.
-var onGcloudStep = func(step string) {}
-
-// runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
-// has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
-// form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns) from before cmd
-// starts until what cmd left is killed, so that no signal in that span takes its default action
-// and ends this process with cmd's group still running; one caught while cmd starts is handled
-// once cmd's pid is recorded, since killRunningGcloud waits on runningGcloud's lock. Once cmd has
-// been waited for, on every outcome, it kills what is left of cmd's group (killGroupLeft): a
-// gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
-// the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
-// a process is left in it its id names no other group.
-// It runs on one OS thread from before cmd starts until cmd has been waited for: where gcloud's
-// parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that started
-// gcloud ends, not this process, and the Go runtime ends a thread only when a goroutine locked to
-// it returns locked.
-func runRecorded(cmd *exec.Cmd) error {
-	stop := watchSignalsWhileGcloudRuns()
-	defer stop()
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	runningGcloud.Lock()
-	if err := cmd.Start(); err != nil {
-		runningGcloud.Unlock()
-		return err
-	}
-	pid := cmd.Process.Pid
-	onGcloudStep(gcloudStarted)
-	runningGcloud.pids[pid] = true
-	runningGcloud.Unlock()
-	err := cmd.Wait()
-	onGcloudStep(gcloudWaited)
-	killGroupLeft(pid)
-	runningGcloud.Lock()
-	delete(runningGcloud.pids, pid)
-	runningGcloud.Unlock()
-	return err
-}
-
-// killRunningGcloud kills each gcloud runRecorded is running, with its group (killGcloudGroup),
-// for a command that is ending by a signal. It keeps runningGcloud locked, so no gcloud starts
-// after it.
-func killRunningGcloud() {
-	runningGcloud.Lock()
-	for pid := range runningGcloud.pids {
-		killGcloudGroup(pid)
-	}
-}
-
-// watchSignalsWhileGcloudRuns catches each of createSignals this process did not inherit as
-// ignored, until stop is called, where no form watches them (formWatchesSignals), and ends the
-// process by the first that comes (exitBySignal, which kills the running gcloud first), as the
-// signal's default action would have, once the value prompt, where it reads, has finished
-// (promptBusy). stop never returns once the watch has taken a signal, since the process is ending
-// by it, as watchCreateSignals' stop does; a signal that came with the stop still ends the
-// process.
-func watchSignalsWhileGcloudRuns() (stop func()) {
-	if formWatchesSignals.Load() > 0 {
-		return func() {}
-	}
-	var watched []os.Signal
-	for _, sig := range createSignals {
-		if !signal.Ignored(sig) {
-			watched = append(watched, sig)
-		}
-	}
-	if len(watched) == 0 {
-		return func() {}
-	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, watched...)
-	end := func(sig os.Signal) {
-		promptBusy.Lock()
-		exitBySignal(sig)
-	}
-	done, exited := make(chan struct{}), make(chan struct{})
-	go func() {
-		select {
-		case sig := <-signals:
-			end(sig)
-		case <-done:
-			close(exited)
-		}
-	}()
-	return func() {
-		close(done)
-		<-exited
-		signal.Stop(signals)
-		select {
-		case sig := <-signals:
-			end(sig)
-		default:
-		}
-	}
 }
 
 // newGCPBackend signs every form, a read and a write alike, in with the credential of the first

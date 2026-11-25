@@ -147,12 +147,12 @@ func endAtOnce(sig os.Signal) {
 	exitBySignal(sig)
 }
 
-// exitBySignal ends the process by sig: it first kills each gcloud runGcloud is running, with its
-// group (killRunningGcloud), since gcloud, in a group of its own, does not get sig; then, back at
-// sig's default action, the platform raises it where it can (raiseSignal), and the exit status a
-// shell gives for sig is the fallback.
+// exitBySignal ends the process by sig: it first kills each child runChild is running, with its
+// group (killRunningChildren), since a child, in a group of its own, does not get sig; then, back
+// at sig's default action, the platform raises it where it can (raiseSignal), and the exit status
+// a shell gives for sig is the fallback.
 func exitBySignal(sig os.Signal) {
-	killRunningGcloud()
+	killRunningChildren()
 	signal.Reset(sig)
 	if raiseSignal(sig) {
 		time.Sleep(time.Second)
