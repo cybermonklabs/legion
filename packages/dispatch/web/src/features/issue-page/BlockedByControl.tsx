@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } fro
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   pageFailedText,
   pageField,

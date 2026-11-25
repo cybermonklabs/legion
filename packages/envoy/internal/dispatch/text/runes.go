@@ -3,13 +3,18 @@ package text
 import "strings"
 
 // HeadRunes returns value cut to its first limit runes; a value at or under the
-// limit is returned unchanged.
+// limit is returned unchanged. It walks only as far as the limit, rather than
+// converting the whole value, and a cut value reads as a []rune conversion of it
+// would: each byte that is no UTF-8 is one rune, written back as U+FFFD.
 func HeadRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
+	count := 0
+	for index := range value {
+		if count == limit {
+			return string([]rune(value[:index]))
+		}
+		count++
 	}
-	return string(runes[:limit])
+	return value
 }
 
 // HeadWords returns value cut to its first limit runes at a word boundary, and whether it cut:

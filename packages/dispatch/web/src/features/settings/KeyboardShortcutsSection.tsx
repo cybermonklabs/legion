@@ -12,7 +12,7 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { SearchBox } from "../../components/SearchBox";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   borderDefault,
   calloutInfoBg,

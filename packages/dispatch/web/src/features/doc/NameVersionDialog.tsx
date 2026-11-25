@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
 import { heldField, heldPress } from "../../components/held-press";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop40,
   card,

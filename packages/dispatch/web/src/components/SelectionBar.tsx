@@ -430,10 +430,11 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
  *  size is the smaller box of a page whose controls are compact, in the padding the compact
- *  controls take (`controlPadding`). */
+ *  controls take (`controlPadding`); the toolbar size's controls take that padding too. */
 const BAR_BOX: Record<ControlSize, string> = {
   comfortable: "px-4 py-2",
   compact: "px-2 py-1",
+  toolbar: "px-2 py-1",
 };
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms

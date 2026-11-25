@@ -1,15 +1,14 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterFrameAndTasks } from "../../__tests__/frames";
-import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
+import { textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -23,9 +22,10 @@ import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
- * The issue header's `Advances` item (INFRA-2947, R16 and R3): what it draws for a priority of
- * the issue's own and for one it inherits, what it draws for an issue that advances none, the
- * two writes the control makes, and what it says of one the reader stopped.
+ * The chips of an issue's priorities in the issue header's state row (INFRA-2947, R16 and R3):
+ * what it draws for a priority of the issue's own and for one it inherits, what it draws for an
+ * issue that advances none, the writes its picker, the shared `MultiSelect`, makes when it
+ * closes, and what it says of one the reader stopped.
  */
 
 function priority(id: string, title: string): PriorityRow {
@@ -48,7 +48,7 @@ function priority(id: string, title: string): PriorityRow {
   };
 }
 
-/** The read's answer, in rank order: the line's order ("P2") is a row's place in this list. */
+/** The read's answer, in rank order: the line's order ("#2") is a row's place in this list. */
 const body: Priorities = {
   priorities: [
     priority("evals-now", "Evals collecting data now"),
@@ -59,59 +59,57 @@ const body: Priorities = {
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
-/** The revision of the issue's own set the line's read answered, which each press carries. */
+/** The revision of the issue's own set the line's read answered, which each write carries. */
 const REVISION = 41;
 
-// Queries are scoped to this render's container: bun runs every test file in one document, and
-// a sibling file's un-unmounted render would otherwise leak its links into a `screen`-wide query.
-// `inMain` mounts the line in the shell's main content, beside a control of the page after it;
-// `page` draws it inside the new issue page's `NoTooltips`, through `queryClient` where given;
-// `redraw` draws it again for the issue's `advances` a later read answers.
+// The line's own queries are scoped to this render's container: bun runs every test file in one
+// document, and a sibling file's un-unmounted render would otherwise leak its links into a
+// `screen`-wide query. The picker's list is portalled to the body, so it is found there by its
+// own name, which no other surface carries, and read within itself. `page` draws the line inside
+// the new issue page's `NoTooltips`, through `queryClient` where given.
 function renderLine(
   advances: Issue["advances"],
+  closed = false,
+  read: Priorities = body,
   {
-    closed = false,
-    inMain = false,
     page = false,
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-  }: { closed?: boolean; inMain?: boolean; page?: boolean; queryClient?: QueryClient } = {}
+  }: { page?: boolean; queryClient?: QueryClient } = {}
 ) {
-  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(read);
   const patchIssue = answerIssuePatches();
   patchIssue.mockResolvedValue({} as never);
   const invalidations = spyOn(queryClient, "invalidateQueries");
-  const tree = (shown: Issue["advances"]) => {
+  const line = (entries: Issue["advances"], revision: number) => {
     const drawn = (
       <IssuePriorityLine
         disabled={closed}
-        issue={{ advances: shown, advances_revision: REVISION, key: "CORE-9" }}
+        issue={{ advances: entries, advances_revision: revision, key: "CORE-9" }}
       />
     );
-    const line = page ? <NoTooltips>{drawn}</NoTooltips> : drawn;
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          {inMain ? (
-            <main>
-              {line}
-              <button type="button">Elsewhere</button>
-            </main>
-          ) : (
-            line
-          )}
+          {page ? <NoTooltips>{drawn}</NoTooltips> : drawn}
         </QueryClientProvider>
       </MemoryRouter>
     );
   };
-  const view = render(tree(advances));
+  const view = render(line(advances, REVISION));
+  const q = within(view.container);
   return {
     ...view,
     invalidations,
     listPriorities,
     patchIssue,
-    q: within(view.container),
+    q,
     queryClient,
-    redraw: (shown: Issue["advances"]) => view.rerender(tree(shown)),
+    /** The picker's list, once its trigger has opened it. */
+    picker: () => screen.findByRole("listbox", { name: "Priorities options" }),
+    /** The issue read again, with another set and revision, under the same line. */
+    reread: (entries: Issue["advances"], revision: number) =>
+      view.rerender(line(entries, revision)),
+    trigger: () => q.getByRole("button", { name: "Edit priorities" }),
     unmountAll: () => {
       view.unmount();
       listPriorities.mockRestore();
@@ -120,35 +118,59 @@ function renderLine(
   };
 }
 
+/** Each row the picker offers, in its order: the priority it names, and whether it is ticked. */
+function offered(listbox: HTMLElement): [string, string | null][] {
+  return within(listbox)
+    .getAllByRole("option")
+    .map((option) => [
+      (option.textContent ?? "").replace("✓", ""),
+      option.getAttribute("aria-selected"),
+    ]);
+}
+
 test("the line names the priority an issue advances, by its order and title, and links to its page", async () => {
+  const user = userEvent.setup();
   const view = renderLine([{ id: "rocq-lean", inherited: false }]);
   try {
     const link = await view.q.findByRole("link", {
-      name: "P2 Rocq and Lean speed work restarted",
+      name: "#2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
-    expect(view.q.getByTestId("issue-advances")).toHaveTextContent("Advances");
-    // The issue's own relation is the issue's to retract, so the entry carries the remove.
-    view.q.getByRole("button", {
-      name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",
-    });
-    expect(view.q.queryByText("inherited")).toBeNull();
+    expect(link).toHaveTextContent("#2");
+    expect(view.q.getByRole("group", { name: "Advances" })).toContainElement(link);
+    expect(view.q.queryByRole("link", { name: /inherited/ })).toBeNull();
+    // The issue's own relation is the issue's to retract, so the picker holds it ticked.
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    expect(
+      within(listbox).getByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
+    ).toHaveAttribute("aria-selected", "true");
   } finally {
     view.unmountAll();
   }
 });
 
-test("a priority an issue inherits says so on the same line, and is not the child's to remove", async () => {
+test("a priority an issue inherits says so in its chip's name and tooltip, and is not the child's to remove", async () => {
+  const user = userEvent.setup();
   const view = renderLine([{ id: "oss-verify", inherited: true }]);
   try {
-    const link = await view.q.findByRole("link", { name: "P3 OSS Verify: curl, TLS and Rustls" });
+    const link = await view.q.findByRole("link", {
+      name: "#3 OSS Verify: curl, TLS and Rustls, inherited",
+    });
     expect(link).toHaveAttribute("href", "/priorities/oss-verify");
-    view.q.getByText("inherited");
-    expect(
-      view.q.queryByRole("button", {
-        name: "Remove P3 OSS Verify: curl, TLS and Rustls from CORE-9",
-      })
-    ).toBeNull();
+    expect(link).toHaveAttribute(
+      "title",
+      "OSS Verify: curl, TLS and Rustls, inherited from an issue above"
+    );
+    // The picker offers no row for it: that relation is the ancestor's, and a row is a toggle.
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    expect(offered(listbox)).toEqual([
+      ["#1 Evals collecting data now", "false"],
+      ["#2 Rocq and Lean speed work restarted", "false"],
+    ]);
+    await user.keyboard("{Escape}");
+    expect(view.patchIssue).not.toHaveBeenCalled();
   } finally {
     view.unmountAll();
   }
@@ -160,7 +182,7 @@ test("an issue that advances none carries no line and no empty label, and reads 
     expect(view.q.getByTestId("issue-advances")).not.toHaveTextContent("Advances");
     expect(view.q.queryByRole("link")).toBeNull();
     // Only the way to place the issue under one, which a person reaches from a fault row.
-    view.q.getByRole("button", { name: "Add a priority to CORE-9" });
+    expect(view.trigger()).toHaveAttribute("aria-haspopup", "listbox");
     // The list of priorities waits for that control: an issue advancing none reads nothing.
     await waitFor(() => expect(view.listPriorities).not.toHaveBeenCalled());
   } finally {
@@ -168,26 +190,56 @@ test("an issue that advances none carries no line and no empty label, and reads 
   }
 });
 
-test("the control adds a priority, writing the issue's own set as advances", async () => {
+// The issue header's state row holds the line after the status and the P0-P3 tag, beside the
+// assignee, which is no room for a priority's title: each priority is a chip of its place alone,
+// its title in its name and in the shared tooltip, and no word stands before them.
+test("each priority is a chip whose visible text is its #N alone, and the line draws no Advances", async () => {
+  const view = renderLine([
+    { id: "rocq-lean", inherited: false },
+    { id: "evals-now", inherited: true },
+  ]);
+  try {
+    const own = await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
+    const inherited = view.q.getByRole("link", {
+      name: "#1 Evals collecting data now, inherited",
+    });
+    expect(own.textContent).toBe("#2");
+    expect(inherited.textContent).toBe("#1");
+    expect(own).toHaveAttribute("title", "Rocq and Lean speed work restarted");
+    expect(inherited).toHaveAttribute(
+      "title",
+      "Evals collecting data now, inherited from an issue above"
+    );
+    // Nothing of the line is a word: the two chips and the picker's "+".
+    expect(view.container.textContent).toBe("#2#1+");
+    expect(view.q.queryByText("Advances")).toBeNull();
+  } finally {
+    view.unmountAll();
+  }
+});
+
+test("the picker adds a priority, writing the issue's own set as advances when it closes", async () => {
   const user = userEvent.setup();
   const view = renderLine([{ id: "evals-now", inherited: false }]);
   try {
-    await user.click(await view.q.findByRole("button", { name: "Add a priority to CORE-9" }));
-    const picker = await view.q.findByRole("button", { name: pickNamed("Priority to advance") });
+    await user.click(view.trigger());
     await waitFor(() => expect(view.listPriorities).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(picker).toHaveTextContent("Choose a priority"));
-    await user.click(picker);
-    const list = within(panelOf(picker)).getByRole("listbox");
-    // A priority the issue already advances is no choice; the rest are offered in rank order.
-    expect(
-      within(list)
-        .getAllByRole("option")
-        .map((option) => option.textContent)
-    ).toEqual(["P2 Rocq and Lean speed work restarted", "P3 OSS Verify: curl, TLS and Rustls"]);
-    await user.click(
-      within(list).getByRole("option", { name: "P2 Rocq and Lean speed work restarted" })
+    expect(await screen.findByRole("combobox", { name: "Priority to advance" })).toHaveFocus();
+    const listbox = await view.picker();
+    // Every live priority in rank order, the one the issue advances already ticked.
+    await waitFor(() =>
+      expect(offered(listbox)).toEqual([
+        ["#1 Evals collecting data now", "true"],
+        ["#2 Rocq and Lean speed work restarted", "false"],
+        ["#3 OSS Verify: curl, TLS and Rustls", "false"],
+      ])
     );
-    await user.click(view.q.getByRole("button", { name: "Add" }));
+    await user.click(
+      within(listbox).getByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
+    );
+    // A tick is a draft: the write is the close's, once.
+    expect(view.patchIssue).not.toHaveBeenCalled();
+    await user.click(view.trigger());
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     // The whole own set, with the revision of the read it was drawn from.
     expect(view.patchIssue).toHaveBeenCalledWith(
@@ -208,9 +260,15 @@ test("a remove writes the issue's own set without that priority, and leaves an i
     { id: "oss-verify", inherited: true },
   ]);
   try {
-    await user.click(
-      await view.q.findByRole("button", { name: "Remove P1 Evals collecting data now from CORE-9" })
-    );
+    await view.q.findByRole("link", { name: "#1 Evals collecting data now" });
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    expect(offered(listbox)).toEqual([
+      ["#1 Evals collecting data now", "true"],
+      ["#2 Rocq and Lean speed work restarted", "true"],
+    ]);
+    await user.click(within(listbox).getByRole("option", { name: "#1 Evals collecting data now" }));
+    await user.keyboard("{Escape}");
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
       "CORE-9",
@@ -222,11 +280,30 @@ test("a remove writes the issue's own set without that priority, and leaves an i
   }
 });
 
+test("a close that leaves the set as it was writes nothing", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  try {
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    const first = await within(listbox).findByRole("option", {
+      name: "#1 Evals collecting data now",
+    });
+    await user.click(first);
+    await user.click(first);
+    await user.click(view.trigger());
+    expect(screen.queryByRole("listbox", { name: "Priorities options" })).toBeNull();
+    expect(view.patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmountAll();
+  }
+});
+
 // The race the revision closes: this tab read {evals-now}; another writer replaced evals-now with
 // oss-verify in one whole-set write; the tab removes evals-now and sends []. Sent bare, the server
 // would read that as one act and retract oss-verify, which this reader never saw. Sent with the
 // revision this tab read, it is refused: the reader is told why, and the issue is read again so
-// the next press carries the revision it holds now.
+// the next write carries the revision it holds now.
 test("a remove carries the revision it was read at, and a stale one's refusal is shown", async () => {
   const user = userEvent.setup();
   const view = renderLine([{ id: "evals-now", inherited: false }]);
@@ -236,9 +313,12 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
     new ApiError(409, { code: "ADVANCES_REVISION", error: refusal })
   );
   try {
+    await user.click(view.trigger());
+    const listbox = await view.picker();
     await user.click(
-      await view.q.findByRole("button", { name: "Remove P1 Evals collecting data now from CORE-9" })
+      await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
     );
+    await user.click(view.trigger());
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
       "CORE-9",
@@ -246,7 +326,66 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
       keyedAttempt
     );
     expect((await view.q.findByRole("alert")).textContent).toBe(refusal);
+    // The line shows it (`inline`): nothing of it stands on the shell's line for a Retry, which
+    // would send the stale revision again.
+    expect(writesOf(view.queryClient).rows()).toEqual([]);
     expect(view.invalidations).toHaveBeenCalledWith({ queryKey: ["issue"] });
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// The same race inside one open picker: the draft is drawn from the read the picker opened on,
+// so its write carries that read's revision even when the issue is read again before the close.
+// Sent with the newer revision, a set drawn from the older read would land over a change this
+// reader never saw.
+test("a close writes the revision the draft was drawn from, though the issue was read again while it was open", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  try {
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    await user.click(
+      await within(listbox).findByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
+    );
+    view.reread([{ id: "oss-verify", inherited: false }], 57);
+    await user.click(view.trigger());
+    await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
+    expect(view.patchIssue).toHaveBeenCalledWith(
+      "CORE-9",
+      { advances: ["evals-now", "rocq-lean"], advances_revision: REVISION },
+      keyedAttempt
+    );
+  } finally {
+    view.unmountAll();
+  }
+});
+
+test("a tick past the most priorities an issue advances is refused in the picker and written nowhere", async () => {
+  const user = userEvent.setup();
+  const many: Priorities = {
+    ...body,
+    priorities: Array.from({ length: MAX_ISSUE_ADVANCES + 1 }, (_, index) =>
+      priority(`p-${index + 1}`, `Priority ${index + 1}`)
+    ),
+  };
+  const own = Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => ({
+    id: `p-${index + 1}`,
+    inherited: false,
+  }));
+  const view = renderLine(own, false, many);
+  try {
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    const last = `#${MAX_ISSUE_ADVANCES + 1} Priority ${MAX_ISSUE_ADVANCES + 1}`;
+    await user.click(await within(listbox).findByRole("option", { name: last }));
+    expect(within(listbox).getByRole("option", { name: last })).toHaveAttribute(
+      "aria-selected",
+      "false"
+    );
+    await screen.findByText(`An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`);
+    await user.click(view.trigger());
+    expect(view.patchIssue).not.toHaveBeenCalled();
   } finally {
     view.unmountAll();
   }
@@ -255,16 +394,20 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
 // A write the reader stopped may have been saved: the line says so, and that each press after it
 // is a new write, since the line offers no Retry of it, rather than a failure it cannot know of.
 test("a write the reader stopped says it may have been saved, not that it failed", async () => {
+  const user = userEvent.setup();
   const view = renderLine([{ id: "evals-now", inherited: false }]);
   view.patchIssue.mockRejectedValue(
     new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
   );
   try {
-    const remove = await view.q.findByRole("button", {
-      name: "Remove P1 Evals collecting data now from CORE-9",
-    });
+    // A remove is an untick in the picker, written as it closes.
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    await user.click(
+      await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
+    );
     jest.useFakeTimers();
-    await userOnFakeClock().click(remove);
+    await userOnFakeClock().keyboard("{Escape}");
     await stopTheLateWrite(view.queryClient);
     expect(view.q.getByRole("alert").textContent).toBe(
       stoppedWriteNote("what this issue advances", "saved", {
@@ -278,40 +421,69 @@ test("a write the reader stopped says it may have been saved, not that it failed
   }
 });
 
+/** Opens the picker, unticks the issue's one own priority and closes the picker with Escape under
+ *  a held clock: the close writes the set, and the write is left out for the case to answer. The
+ *  trigger then holds the focus and is held (`aria-disabled`, never `disabled`), and a press of it,
+ *  by the keyboard and by the pointer, opens no picker and sends nothing more. */
+async function closeAndHold(
+  view: {
+    picker: () => Promise<HTMLElement>;
+    trigger: () => HTMLElement;
+    patchIssue: { mock: { calls: readonly unknown[] } };
+  },
+  name: string,
+  beforeClose?: () => void
+): Promise<void> {
+  const trigger = view.trigger() as HTMLButtonElement;
+  const user = userEvent.setup();
+  await user.click(trigger);
+  const listbox = await view.picker();
+  await user.click(
+    await within(listbox).findByRole("option", { name: "#1 Evals collecting data now" })
+  );
+  jest.useFakeTimers();
+  beforeClose?.();
+  const held = userOnFakeClock();
+  await held.keyboard("{Escape}");
+  await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
+  expect(trigger).toHaveFocus();
+  expect(heldNotDisabled(trigger, name)).toBe(true);
+  await held.keyboard("{Enter}");
+  await held.click(trigger);
+  expect(screen.queryByRole("listbox", { name: "Priorities options" })).toBeNull();
+  expect(view.patchIssue).toHaveBeenCalledTimes(1);
+  expect(trigger).toHaveFocus();
+}
+
 // Offline, a write of the line is tried under its key until Dispatch answers it: each try fails at
 // the network, and the next waits out its backoff. At its deadline (`SEND_DEADLINE_MS`) the write
 // goes late, still tried and now stoppable at the shell's indicator, and the line's hold ends
 // there, so a write that never answers holds none of its controls for good, as the Legion daemons
-// form's hold ends (`LegionDaemonsSection`). The Remove the reader pressed keeps the focus while
-// it is held and once it is let go, under `emulateChromiumFocusFixup` throughout.
-test("offline, a priority's Remove is held until its write's deadline, let go there, and keeps the focus throughout", async () => {
+// form's hold ends (`LegionDaemonsSection`). The picker's trigger keeps the focus while it is
+// held and once it is let go, under `emulateChromiumFocusFixup` throughout.
+test("offline, the priorities picker's trigger is held until its write's deadline, let go there, and keeps the focus throughout", async () => {
   const view = renderLine([{ id: "evals-now", inherited: false }]);
   view.patchIssue.mockRejectedValue(
     new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
   );
-  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const name = "Edit priorities";
   const online = onlineManager.isOnline();
   const stopFocusFixup = emulateChromiumFocusFixup();
   try {
-    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
-    jest.useFakeTimers();
-    onlineManager.setOnline(false);
-    await pressHeld(userOnFakeClock(), remove, {
-      name,
-      sent: () => view.patchIssue.mock.calls.length,
-    });
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name, () => onlineManager.setOnline(false));
 
-    // A second short of the deadline the write is still within it, and Remove still held.
+    // A second short of the deadline the write is still within it, and the trigger still held.
     await tick(SEND_DEADLINE_MS - 1_000);
     expect(writesOf(view.queryClient).rows()[0]?.status).toBe("sending");
-    expect(heldNotDisabled(remove, name)).toBe(true);
-    expect(remove).toHaveFocus();
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(trigger).toHaveFocus();
 
-    // Past it the write is late and still tried, and Remove is let go with the focus on it.
+    // Past it the write is late and still tried, and the trigger is let go with the focus on it.
     await tick(1_000);
     expect(writesOf(view.queryClient).rows()[0]?.status).toBe("late");
-    expect(heldNotDisabled(remove, name)).toBe(false);
-    expect(remove).toHaveFocus();
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
   } finally {
     // The line and its reads go before the network returns, so no read goes on after it.
     cleanup();
@@ -323,40 +495,36 @@ test("offline, a priority's Remove is held until its write's deadline, let go th
   }
 });
 
-// Inside `NoTooltips` the line holds its controls through the reads its write makes again. A
-// write that lands just as the browser goes offline has those reads paused by the network, with
-// no deadline of their own running: the app's client holds a read of an idle query until its
-// paused fetch answers (`DispatchQueryClient`). So the line holds them only up to the request
-// deadline (`REQUEST_DEADLINE_MS`), and lets them go there, with the focus on the Remove pressed.
-test("offline, inside NoTooltips, a priority's Remove is held through the reads its landed write made only until the request deadline", async () => {
-  const view = renderLine([{ id: "evals-now", inherited: false }], {
+// Inside `NoTooltips` the line holds its trigger through the reads its write makes again. A write
+// that lands just as the browser goes offline has those reads paused by the network, with no
+// deadline of their own running: the app's client holds a read of an idle query until its paused
+// fetch answers (`DispatchQueryClient`). So the line holds the trigger only up to the request
+// deadline (`REQUEST_DEADLINE_MS`), and lets it go there, with the focus on it.
+test("offline, inside NoTooltips, the priorities picker's trigger is held through the reads its landed write made only until the request deadline", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
     page: true,
     queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
   });
   const answer = Promise.withResolvers<never>();
   view.patchIssue.mockImplementation(() => answer.promise);
-  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const name = "Edit priorities";
   const online = onlineManager.isOnline();
   const stopFocusFixup = emulateChromiumFocusFixup();
   try {
-    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
-    jest.useFakeTimers();
-    await pressHeld(userOnFakeClock(), remove, {
-      name,
-      sent: () => view.patchIssue.mock.calls.length,
-    });
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
     onlineManager.setOnline(false);
     await act(async () => answer.resolve({} as never));
 
-    // A second short of the request deadline the reads are still paused, and Remove held.
+    // A second short of the request deadline the reads are still paused, and the trigger held.
     await tick(REQUEST_DEADLINE_MS - 1_000);
-    expect(heldNotDisabled(remove, name)).toBe(true);
-    expect(remove).toHaveFocus();
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+    expect(trigger).toHaveFocus();
 
-    // At it the line lets Remove go, with the focus on it.
+    // At it the line lets the trigger go, with the focus on it.
     await tick(1_000);
-    expect(heldNotDisabled(remove, name)).toBe(false);
-    expect(remove).toHaveFocus();
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
   } finally {
     cleanup();
     view.unmountAll();
@@ -368,39 +536,35 @@ test("offline, inside NoTooltips, a priority's Remove is held through the reads 
 });
 
 // Inside `NoTooltips` a write that lands while the reads it made stale go unanswered: the line
-// holds its controls through them up to the request deadline, lets them go there, with the focus
-// on the Remove pressed, and says why, in the words it says for a read of the priorities that
-// failed and then the error such a read ends with. The line goes once those reads settle.
-test("inside NoTooltips, a landed write whose reads have not answered by the request deadline lets Remove go there, and the line says why until they settle", async () => {
-  const view = renderLine([{ id: "evals-now", inherited: false }], { page: true });
+// holds its trigger through them up to the request deadline, lets it go there, with the focus on
+// it, and says why, in the words it says for a read of the priorities that failed and then the
+// error such a read ends with. The line goes once those reads settle.
+test("inside NoTooltips, a landed write whose reads have not answered by the request deadline lets the picker's trigger go there, and the line says why until they settle", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, { page: true });
   const answer = Promise.withResolvers<never>();
   view.patchIssue.mockImplementation(() => answer.promise);
   const reread = Promise.withResolvers<Priorities>();
-  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const name = "Edit priorities";
   const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
   const stopFocusFixup = emulateChromiumFocusFixup();
   try {
-    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
     view.listPriorities.mockImplementation(() => reread.promise);
-    jest.useFakeTimers();
-    await pressHeld(userOnFakeClock(), remove, {
-      name,
-      sent: () => view.patchIssue.mock.calls.length,
-    });
     await act(async () => answer.resolve({} as never));
     await tick(0);
     expect(view.listPriorities).toHaveBeenCalledTimes(2);
 
-    // A second short of the request deadline the priorities' read is still out, Remove held, and
-    // nothing said.
+    // A second short of the request deadline the priorities' read is still out, the trigger
+    // held, and nothing said.
     await tick(REQUEST_DEADLINE_MS - 1_000);
-    expect(heldNotDisabled(remove, name)).toBe(true);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
     expect(view.q.queryByText(why)).toBeNull();
 
-    // At it the line lets Remove go, with the focus on it, and says why.
+    // At it the line lets the trigger go, with the focus on it, and says why.
     await tick(1_000);
-    expect(heldNotDisabled(remove, name)).toBe(false);
-    expect(remove).toHaveFocus();
+    expect(heldNotDisabled(trigger, name)).toBe(false);
+    expect(trigger).toHaveFocus();
     expect(view.q.getByRole("alert").textContent).toBe(why);
 
     // The read answers, and the line goes.
@@ -419,112 +583,43 @@ test("inside NoTooltips, a landed write whose reads have not answered by the req
 });
 
 test("a closed issue reads its priorities and writes none of them", async () => {
-  const view = renderLine([{ id: "rocq-lean", inherited: false }], { closed: true });
+  const view = renderLine([{ id: "rocq-lean", inherited: false }], true);
   try {
-    await view.q.findByRole("link", { name: "P2 Rocq and Lean speed work restarted" });
-    expect(
-      view.q.getByRole("button", {
-        name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",
-      })
-    ).toBeDisabled();
-    expect(view.q.getByRole("button", { name: "Add a priority to CORE-9" })).toBeDisabled();
+    await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
+    expect(view.trigger()).toBeDisabled();
   } finally {
     view.unmountAll();
   }
 });
 
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The issue header's Priority to advance is such a list: its options are every
-// priority the issue does not advance yet, which grow with the priorities page. Opened, it holds
-// a text box of its own, a word typed into it leaves only the priorities that match, and a pick
-// stages that priority, with the focus back on the control and nothing written until Add.
-test("the Priority to advance list holds a text box that narrows the priorities, and a pick stages the one Add writes", async () => {
+// options." The issue header's priorities picker is such a list: its options are every live
+// priority, which grow with the priorities page. Opened, it holds a text box of its own, and a
+// word typed into it leaves only the priorities that match.
+test("the priorities picker holds a text box that narrows the priorities", async () => {
   const user = userEvent.setup();
-  const view = renderLine([]);
-  const page = within(document.body);
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
   try {
-    await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
     const before = new Set(textBoxes());
-    await user.click(await view.q.findByRole("button", { name: pickNamed("Priority to advance") }));
+    await user.click(view.trigger());
+    const listbox = await view.picker();
     await waitFor(() =>
-      expect(page.queryAllByRole("option", { name: /^P3 OSS Verify\b/ }).length).toBeGreaterThan(0)
+      expect(within(listbox).queryAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1)
     );
     const own = textBoxes().filter((box) => !before.has(box));
-    expect(own, "the Priority to advance list holds no text box of its own").toHaveLength(1);
-    const list = listOf(own[0] as HTMLElement);
+    expect(own, "the priorities picker holds no text box of its own").toHaveLength(1);
     await user.type(own[0] as HTMLElement, "oss");
     await waitFor(() =>
       expect(
-        within(list).queryAllByRole("option", { name: /^P1 Evals\b/ }),
-        `"oss" leaves P1 in the Priority to advance list`
+        within(listbox).queryAllByRole("option", { name: /Evals collecting data now$/ }),
+        `"oss" leaves #1 in the priorities picker`
       ).toHaveLength(0)
     );
     expect(
-      within(list).queryAllByRole("option", { name: /^P2 Rocq\b/ }),
-      `"oss" leaves P2 in the Priority to advance list`
+      within(listbox).queryAllByRole("option", { name: /Rocq and Lean speed work restarted$/ }),
+      `"oss" leaves #2 in the priorities picker`
     ).toHaveLength(0);
-    await user.click(within(list).getByRole("option", { name: /^P3 OSS Verify\b/ }));
-    const picker = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    expect(picker).toHaveFocus();
-    expect(picker).toHaveAccessibleName("Priority to advance P3 OSS Verify: curl, TLS and Rustls");
-    expect(view.patchIssue).not.toHaveBeenCalled();
-
-    await user.click(view.q.getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
-    expect(view.patchIssue).toHaveBeenCalledWith(
-      "CORE-9",
-      { advances: ["oss-verify"], advances_revision: REVISION },
-      keyedAttempt
-    );
-  } finally {
-    view.unmountAll();
-  }
-});
-
-// The `+` is replaced in its place by the form it opens, and its press takes the focus away with
-// it. The form lands that focus on its own first control, the Priority to advance list's trigger,
-// with no scroll, since the form stands where the `+` stood.
-test("a press on Add a priority lands the focus on the Priority to advance list, scrolling nothing", async () => {
-  const user = userEvent.setup();
-  const scrolls = spyOn(Element.prototype, "scrollIntoView");
-  const view = renderLine([{ id: "evals-now", inherited: false }], { inMain: true });
-  try {
-    await user.click(await view.q.findByRole("button", { name: "Add a priority to CORE-9" }));
-    const picker = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    await afterFrameAndTasks();
-    expect(picker).toHaveFocus();
-    expect(scrolls).not.toHaveBeenCalled();
-  } finally {
-    view.unmountAll();
-    scrolls.mockRestore();
-  }
-});
-
-// A form drawn again with no press of the `+` takes no focus the reader holds elsewhere. A live
-// update that fills the issue's own set up to `MAX_ISSUE_ADVANCES` takes the open form away, one
-// that takes a priority off again draws it anew with a trigger of its own, and the focus stays on
-// the page's control the reader moved it to.
-test("the form drawn again by a live update leaves the focus on the control the reader holds", async () => {
-  const user = userEvent.setup();
-  const own = (count: number) =>
-    Array.from({ length: count }, (_, index) => ({ id: `priority-${index}`, inherited: false }));
-  const view = renderLine(own(MAX_ISSUE_ADVANCES - 1), { inMain: true });
-  try {
-    await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
-    const first = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    await afterFrameAndTasks();
-    expect(first).toHaveFocus();
-    const elsewhere = view.q.getByRole("button", { name: "Elsewhere" });
-    await user.click(elsewhere);
-    expect(elsewhere).toHaveFocus();
-
-    view.redraw(own(MAX_ISSUE_ADVANCES));
-    expect(view.q.queryByRole("button", { name: pickNamed("Priority to advance") })).toBeNull();
-    view.redraw(own(MAX_ISSUE_ADVANCES - 1));
-    const again = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
-    expect(again).not.toBe(first);
-    await afterFrameAndTasks();
-    expect(elsewhere).toHaveFocus();
+    expect(within(listbox).getAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1);
   } finally {
     view.unmountAll();
   }

@@ -1,6 +1,6 @@
 import { type RefObject, useEffect } from "react";
 
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 
 export interface PanelDismissOptions {
   /** Closing the panel, which is the host's state: the hook never holds `open` of its own. */

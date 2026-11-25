@@ -50,7 +50,7 @@ import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
@@ -339,13 +339,12 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// Four of `main`'s controls are named by a function each exports, which the new issue page's
-// rows find them by, so each name is `main`'s, and each of `main`'s controls answers to it.
-test("the four control names are main's", async () => {
+// Three of today's controls take their accessible names from exported functions. The priorities
+// picker answers to the page's Edit priorities label. The Add menu reaches them by property mark.
+test("the four control names are those of today's pages", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
   expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
-  expect(addPriorityControlName("CORE-1")).toBe("Add a priority to CORE-1");
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
     architectureSource,
@@ -387,7 +386,7 @@ test("the four control names are main's", async () => {
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();
-    expect(scope.getByRole("button", { name: "Add a priority to CORE-1" })).toBeInTheDocument();
+    expect(scope.getByRole("button", { name: CONTROL_LABELS.edit_priorities })).toBeInTheDocument();
   } finally {
     view.unmount();
     sources.mockRestore();

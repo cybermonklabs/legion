@@ -724,6 +724,29 @@ for (const boxWidth of [1400, 390]) {
   });
 }
 
+// A phone stands a header's filter under its words only in the column its caller names, as the
+// issues table names its title: another table's `title` stands on one line there.
+test("a phone stacks the header its caller names, and no other table's title", async () => {
+  draw(
+    <>
+      <Deploys
+        columns={NAMESAKE_COLUMNS}
+        layoutColumns={NAMESAKE_LAYOUT}
+        layoutKey="stacked"
+        stackColumn="title"
+      />
+      <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="unstacked" />
+    </>,
+    390
+  );
+  await screen.findByRole("table", { name: "Deploys stacked" });
+  const stacked = (name: string) =>
+    within(screen.getByRole("table", { name }))
+      .getByRole("columnheader", { name: /^Service/ })
+      .firstElementChild?.classList.contains("flex-col");
+  expect([stacked("Deploys stacked"), stacked("Deploys unstacked")]).toEqual([true, false]);
+});
+
 // The reader moving the view - a sort, a filter, a page - starts the box at its top; the rows
 // changing under a view the reader kept leaves the box where the reader scrolled it.
 test("a view change scrolls the box to its top and a data change keeps it where it was", async () => {

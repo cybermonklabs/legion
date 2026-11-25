@@ -51,16 +51,19 @@ const PANE_SHARE = 0.6;
 
 /** The height each size draws a control at from `md` up and at 1280 px and over, where
  *  `web/src/styles.css` stops raising every button to 44 px (`@media (max-width: 1279px)`): the
- *  two recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11` is
- *  44 px and whose compact `md:min-h-8` is 32 px, at Tailwind's 4 px a step. A column filter's
- *  funnel takes the same two (`FILTER_TARGET`, `web/src/components/ColumnFilter.tsx`). */
-const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32 };
+ *  three recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11`
+ *  is 44 px, whose compact `md:min-h-8` is 32 px and whose toolbar `xl:h-8.5` is 34 px, at
+ *  Tailwind's 4 px a step. A column filter's funnel takes the compact two (`FILTER_TARGET`,
+ *  `web/src/components/ColumnFilter.tsx`). */
+const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32, toolbar: 34 };
 
 /** The padding of the selection bar's own box at each size - top, right, bottom and left - as
- *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2` and `px-2 py-1`. */
+ *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2`, and `px-2 py-1` at
+ *  the compact and toolbar sizes. */
 const BAR_PADDING: Record<ControlSize, string> = {
   comfortable: "8px 16px 8px 16px",
   compact: "4px 8px 4px 8px",
+  toolbar: "4px 8px 4px 8px",
 };
 
 // SLOW(>=2s): six pages opened at each of this project's widths, which is twelve page loads.

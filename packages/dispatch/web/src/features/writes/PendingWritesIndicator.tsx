@@ -1,8 +1,16 @@
-import type { ReactNode } from "react";
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+} from "react";
 
 import { apiErrorMessage, NETWORK_ERROR_MESSAGE } from "../../api/client";
 import { ARM_ON_PRESS, causedByReader, inSightNow, outOfSight } from "../../components/focus-place";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -12,9 +20,10 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { focusOnDocument } from "../shell/roving";
+import { conflictWords } from "./conflicts";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
-import { useWriteSelection, useWrites, type Write } from "./write-store";
+import { useWriteSelection, useWrites, type Write, writeDraft } from "./write-store";
 
 /** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
  *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
@@ -30,9 +39,43 @@ function refusalReason(keyed: boolean, refusal: Error): string {
     : `Dispatch has not confirmed it. ${retry}`;
 }
 
-/** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
+/** The reader's own text a write a conflict refused carried, drawn as they wrote it, with a way
+ *  to copy it: no Retry sends it again, and the reader may want it to write again by hand. */
+function DraftToCopy({ text }: { text: string }): ReactNode {
+  const { copy, status } = useCopyFeedback();
+  const id = useId();
+  return (
+    <span className="block basis-full space-y-1">
+      <span className="block" id={id}>
+        Your text:
+      </span>
+      <span
+        aria-labelledby={id}
+        className={`block max-h-32 overflow-y-auto whitespace-pre-wrap border-l-2 pl-2 ${borderDefault} ${textSecondaryOnSurface}`}
+        role="note"
+      >
+        {text}
+      </span>
+      <button className={secondaryButtonCompact} onClick={() => copy(text)} type="button">
+        {status === "copied"
+          ? "Copied"
+          : status === "idle"
+            ? "Copy your text"
+            : "Copy failed - select the text"}
+      </button>
+    </span>
+  );
+}
+
+/** The writes the indicator shows: every one shown there that Dispatch has not yet made, but for
+ *  a refusal a surface mounted now settles with the reader (`claimed`), which is that surface's. */
 function shown(rows: readonly Write[]): readonly Write[] {
-  return rows.filter((row) => row.presentation === "indicator" && row.status !== "made");
+  return rows.filter(
+    (row) =>
+      row.presentation === "indicator" &&
+      row.status !== "made" &&
+      !(row.status === "refused" && row.claimed)
+  );
 }
 
 /** Whether `row` waits its turn behind an earlier write to its target and was never sent. */
@@ -217,8 +260,12 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
  * person's sign-out in another tab, `Waiting for a sign-out in another tab`; one waiting its turn
  * behind another that was never sent, `Waiting to send` with Discard; an upload whose body is
  * still going up, `Uploading… N%`, which is never "still trying" until an attempt of it has
- * failed; a late one with Stop trying; a refused one with why, Retry and Discard. A write still
- * within its deadline is only counted, since there is nothing to do about it yet.
+ * failed; a late one with Stop trying; a refused one with why, Retry and Discard. A refusal only
+ * the reader can settle (`isConflict`) says why in its own words and offers no Retry, since
+ * Dispatch refuses its body the same way every time: the reader's own text the write carried is
+ * drawn as written, to copy, beside Discard. One a page mounted now settles with the reader
+ * (`Writes.claim`) is that page's, and stands here again once the page goes. A write still within
+ * its deadline is only counted, since there is nothing to do about it yet.
  */
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
@@ -267,6 +314,8 @@ export function PendingWritesIndicator(): ReactNode {
           <ul className="space-y-1">
             {named.map((row) => {
               const uploaded = uploadedPercent(row);
+              const conflict = row.status === "refused" ? conflictWords(row.refusal) : undefined;
+              const draft = conflict === undefined ? undefined : writeDraft(row);
               return (
                 <li
                   className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
@@ -276,15 +325,21 @@ export function PendingWritesIndicator(): ReactNode {
                   {row.status === "refused" ? (
                     <>
                       <span className={`min-w-0 flex-1 ${dangerText}`}>
-                        Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
+                        {conflict ?? "Not saved"}: {row.label}
+                        {conflict === undefined
+                          ? ` — ${refusalReason(row.keyed, row.refusal)}`
+                          : null}
                       </span>
-                      <button
-                        className={secondaryButtonCompact}
-                        onClick={() => writes.retry(row.id)}
-                        type="button"
-                      >
-                        Retry
-                      </button>
+                      {draft === undefined ? null : <DraftToCopy text={draft} />}
+                      {conflict === undefined ? (
+                        <button
+                          className={secondaryButtonCompact}
+                          onClick={() => writes.retry(row.id)}
+                          type="button"
+                        >
+                          Retry
+                        </button>
+                      ) : null}
                       <button
                         className={secondaryButtonCompact}
                         onClick={() => writes.discard(row.id)}

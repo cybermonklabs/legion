@@ -14,7 +14,7 @@ import { createPortal } from "react-dom";
 
 import { hearPresses } from "../features/issue-page/focus-keeper";
 import { focusBack } from "../features/shell/roving";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
 import { PANEL_ATTRIBUTE } from "./key-targets";
 

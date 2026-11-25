@@ -14,17 +14,23 @@ import { SearchBox } from "../../components/SearchBox";
  * not one of its columns, so the row draws no filter trigger: every column's filter is set on
  * its own header (`ColumnFilter`). Its chip is drawn here as well, whether the column is shown
  * or hidden, so a column the reader hid with the columns menu keeps its narrowing in sight, and
- * the chip's press takes it off. Shift+V opens the display menu from the page, in the project
- * scope the page pushes; with no filter trigger, Shift+F does nothing here.
+ * the chip's press takes it off. Every control stands at the one height of a toolbar's controls
+ * from 1280 px up (the `toolbar` size). A phone's box (`compact`) draws no column control: its
+ * one cell names every field whatever the reader shows (`PRIORITY_PHONE_HIDDEN`), so a choice of
+ * columns there would change nothing the reader sees. Shift+V opens the display menu from the
+ * page in the project scope; with no filter trigger, Shift+F does nothing here.
  */
 export function TableToolbar<Row>({
   children,
+  compact,
   searchLabel,
   searchPlaceholder,
   table,
 }: {
   /** The page's own controls, such as the priorities table's **New priority**. */
   children?: ReactNode;
+  /** A phone's box (`useTableLayout`'s `compact`), which draws no column control. */
+  compact: boolean;
   searchLabel: string;
   searchPlaceholder: string;
   table: Table<Row>;
@@ -33,7 +39,7 @@ export function TableToolbar<Row>({
   const { globalFilter: search, grouping } = table.getState();
   return (
     <ControlRow
-      chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "compact")}
+      chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "toolbar")}
       display={
         <DisplayMenu
           label="View"
@@ -57,7 +63,7 @@ export function TableToolbar<Row>({
               value: grouping[0] ?? "",
             },
           ]}
-          size="compact"
+          size="toolbar"
         />
       }
       keyScope="project"
@@ -67,14 +73,14 @@ export function TableToolbar<Row>({
           label={searchLabel}
           onChange={(value) => table.setGlobalFilter(value)}
           placeholder={searchPlaceholder}
-          size="compact"
+          size="toolbar"
           value={search}
         />
       }
-      size="compact"
+      size="toolbar"
     >
       {children}
-      <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
+      {compact ? null : <ColumnsMenu columns={table.getAllLeafColumns()} size="toolbar" />}
     </ControlRow>
   );
 }

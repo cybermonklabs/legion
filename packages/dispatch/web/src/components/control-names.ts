@@ -28,15 +28,20 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
 }
 
 /** How much room a control takes in its row. `compact` is for a toolbar that holds more controls
- *  than a phone's width fits at the comfortable size: the project List's, the priorities
- *  table's and the Delivery page's. */
-export type ControlSize = "comfortable" | "compact";
+ *  than a phone's width fits at the comfortable size: the Delivery page's, and a table's own
+ *  header filters, pager and selection bar. `toolbar` is the compact size of a table toolbar whose
+ *  controls stand at one height from 1280 px up: the project List's control row and the
+ *  priorities pages' toolbars (dispatch://INFRA-2947, R15). */
+export type ControlSize = "comfortable" | "compact" | "toolbar";
 
 /** 44 px: the touch target of the comfortable size. The compact size keeps that target wherever
- *  a finger is the pointer and gives it up only from `md`, where a mouse is. The font is each
- *  control's own: a chip reads at `text-xs` and a search box at `text-sm`, and a size that
- *  carried one would change every chip in the application. */
+ *  a finger is the pointer and gives it up only from `md`, where a mouse is. The toolbar size
+ *  keeps the 44 px floor `styles.css` gives every control below 1280 px, and from 1280 px up
+ *  stands at one height, 34 px, whatever its control holds; `xl:min-h-0` lifts its own 44 px
+ *  minimum there. The font is each control's own: a chip reads at `text-xs` and a search box at
+ *  `text-sm`, and a size that carried one would change every chip in the application. */
 export const controlPadding: Record<ControlSize, string> = {
   comfortable: "min-h-11 px-3 py-2",
   compact: "min-h-11 px-2 py-1 md:min-h-8",
+  toolbar: "min-h-11 px-2 py-1 xl:h-8.5 xl:min-h-0",
 };

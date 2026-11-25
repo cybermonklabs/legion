@@ -10,7 +10,7 @@ import {
 
 import { focusBack, focusBackOverPress, stepIndex } from "../features/shell/roving";
 import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import {
   borderDefault,
   borderStrong,

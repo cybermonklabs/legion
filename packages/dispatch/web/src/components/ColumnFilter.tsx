@@ -27,6 +27,8 @@ function FunnelIcon(): ReactNode {
 const FILTER_TARGET: Record<ControlSize, string> = {
   comfortable: "min-h-11 min-w-11",
   compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
+  // A header's funnel is no toolbar's control: at the toolbar size it takes the compact target.
+  toolbar: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
 };
 
 const filterTrigger = (active: boolean, size: ControlSize) =>

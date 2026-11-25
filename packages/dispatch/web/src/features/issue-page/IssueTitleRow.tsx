@@ -1,7 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
   borderStrongHover,

@@ -43,7 +43,10 @@ export function IssueRow({
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
   moved: ReadonlySet<string>;
-  onStartNext: (key: string) => void;
+  /** Starts the row's issue next: absent on a table that draws no row's actions - its listing
+   *  holds no issue in Legion's queue (`listsQueued`), or its layout leaves them out
+   *  (`rowActions`, `IssuesTable`) - which draws no cell for it. */
+  onStartNext: ((key: string) => void) | undefined;
   row: Row<Item>;
 }): ReactNode {
   const { issue, queue } = row.original;
@@ -63,11 +66,12 @@ export function IssueRow({
         cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}
         highlight={changed ? selectedCardBg : undefined}
         row={row}
+        // A table that offers no Start next (`onStartNext`) draws no cell after its columns.
         trailing={
           // Start next shows while the pointer is over its row and while the row or a control
           // in it holds the focus (`group-focus-within`), so the row keys and Tab reach a
           // control the reader can see (dispatch://INFRA-2160, R12).
-          queue !== undefined && queue > 1 ? (
+          onStartNext === undefined ? undefined : queue !== undefined && queue > 1 ? (
             <button
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${borderDefault} ${surfaceBg}`}
               {...heldPress(busy, () => onStartNext(issue.key))}

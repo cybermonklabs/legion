@@ -7,7 +7,7 @@ import {
   takesText,
   typedOnMenuTrigger,
 } from "../../components/key-targets";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 
 import { IS_MAC, stepsOf } from "./key-text";
 import {

@@ -1,7 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   focusBorder,
   focusVisibleRing,
