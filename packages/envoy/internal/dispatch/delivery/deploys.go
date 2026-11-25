@@ -264,9 +264,6 @@ func RecordProductionDeploys(ctx context.Context, pool *store.Pool, settings Del
 		}
 		completed := deploy.DeployedAt
 		same := current.ID != 0 && current.Commit == deploy.Commit
-		if same {
-			deploy.DeployedAt = current.DeployedAt
-		}
 		deploy, err = scanDeploy(tx.QueryRow(ctx, `insert into deploys
 			(repo, program, commit_sha, deployed_at, source, run_id, run_attempt, url, recorded_by, run_completed_at)
 			values ($1, 'delivery', $2, $3, 'delivery_run', $4, $5, $6, $7, $8)
