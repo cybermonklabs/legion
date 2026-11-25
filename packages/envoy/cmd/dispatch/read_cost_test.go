@@ -4,17 +4,12 @@
 
 package main
 
-// This change's check c-read-cost: no read this child changes gets slower, and no event
-// outruns its node.
-//
-// The test is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode at the end of this
-// file; everything above it is the four corpora it writes, what each shape is held to, the state
-// before the backfill it puts this child's arm in, and the eight reads it measures over each
-// shape in each state. The second half of the check, that no event outruns its node, is
-// TestNoEventOutrunsItsNode (internal/dispatch/api/no_event_outruns_test.go), which holds the
-// server's own comment write at its seam; the check's run names both tests. graph_cost_test.go
-// holds the two arms, the clock and the order statistic the two cost measurements share, and
-// write_cost_test.go the document generator and the corpus writers both use.
+// The read corpora and readers a read cost tool of this tag uses: the four corpora, what each
+// shape is held to, the state before the backfill the head's arm is put in, and the eight reads
+// measured over each shape in each state (readCostMeasure). #3178's check c-read-cost, which drove
+// them, is gone from main; the INFRA-1098 tree's branches use readCostEdges, readCostOther and
+// readCostPointerAt. graph_cost_test.go holds the two arms, the clock and the order statistic,
+// and write_cost_test.go the document generator and the corpus writers.
 
 import (
 	"context"
@@ -713,81 +708,6 @@ func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map
 			}
 		}
 	}
-}
-
-// ───── the run ────────────────────────────────────────────────────────────
-
-// No read this child changes gets slower.
-//
-// Eight reads are measured over each of four corpora, at this child's head and at the commit
-// this branch forked from, in one run, interleaved, over one corpus written to each arm by one
-// seeding pass. Each corpus is held to the shape the check states, and the two arms to the same
-// counts, before anything is read. This child's arm is read in two states. Before its backfill
-// no projection row names its node, so the view answers every row from its old arms and each
-// reading carries their per-row test; that is the state between the migration and the backfill,
-// and during a roll. After it every row names its node, so the store's own arm answers it and
-// each reading carries that arm's join to its projection row. Every reading is printed and the
-// statistic is a real order statistic by nearest rank. It takes 200 readings of each read on
-// each arm in each state, as the root's R22 requires, because p99 by nearest rank is the
-// ceil(0.99 x n)th: at twenty readings, and at fifty, that is the slowest of them, so one
-// scheduling hiccup of this pod decides a cell on its own. At two hundred it is the 198th. A read
-// whose p99 rises by more than 100 ms in either state fails, and the failure prints the read, the
-// shape, the state and both readings.
-//
-// The name is the check's. Its second half, that no event outruns its node, is
-// TestNoEventOutrunsItsNode in internal/dispatch/api, which holds the server's own comment write
-// at its seam before the commit, and the check's run names both tests.
-func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) {
-	t.Log(costGVisorNote)
-	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
-		"a database of its own which that build migrated at boot, and each is driven over its own " +
-		"HTTP API by this test, which encodes every request before the clock starts and reads every " +
-		"answer to its end before it stops. This child's arm is read twice: before its backfill, with " +
-		"the store taken off the corpus so that every row is answered from the old arms of graph_edges, " +
-		"and after it, when the store's own arm answers every row. The commit before this child is " +
-		"read beside each.")
-
-	listener := costEnvoy(t)
-	listener.Accept(true)
-	head, base := startCostArms(t, listener.URL)
-	arms := []*costArm{head, base}
-	shapes := map[*costArm][]*readCostShape{}
-	for _, arm := range arms {
-		shapes[arm] = seedReadCost(t, arm)
-	}
-	// Each arm indexes what it was sent before the store is taken off it, so that no pass of
-	// this child's own writes a node after the clearing.
-	for _, arm := range arms {
-		costBlockIndexDrained(t, arm, readCostIndexWait)
-	}
-	// The seed analysed each corpus before its arm's own tick had indexed the documents a write
-	// defers, so the commit before this child is analysed again over what it now holds, as this
-	// child's arm is analysed in each of its two states.
-	base.analyze(t)
-
-	readCostBeforeTheBackfill(t, head)
-	for _, arm := range arms {
-		t.Logf("%s: the whole corpus holds %d document block(s), %d block reference(s) and %d comment(s)%s",
-			arm.name,
-			arm.count(t, `select count(*) from document_blocks`),
-			arm.count(t, `select count(*) from block_refs`),
-			arm.count(t, `select count(*) from comments`),
-			costStoreCounts(t, arm))
-		settleReadCost(t, arm, shapes[arm])
-	}
-	requireReadCostShapes(t, readCostBefore, head, base, shapes)
-	readCostMeasure(t, readCostBefore, head, base, shapes)
-
-	costRunBackfill(t, head)
-	requireReadCostNodes(t, head, readCostAfter, true)
-	// The statistics of the clearing are of an empty store, and the backfill filled it again.
-	head.analyze(t)
-	for _, shape := range shapes[head] {
-		shape.counts = readCostCounts(t, head, shape)
-	}
-	requireReadCostShapes(t, readCostAfter, head, base, shapes)
-	requireReadCostTuples(t, head, shapes[head])
-	readCostMeasure(t, readCostAfter, head, base, shapes)
 }
 
 // readCostShapePhrase is the word one shape's main document carries and no other document of the

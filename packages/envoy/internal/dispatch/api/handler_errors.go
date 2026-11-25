@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -157,6 +158,19 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		if apiErr.status == http.StatusInternalServerError {
 			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
 		}
+		return
+	}
+	// A write that R24 refuses names each issue that holds the rule (parent_status_rule.go).
+	var conflict *parentStatusConflict
+	if errors.As(err, &conflict) {
+		WriteJSON(w, http.StatusConflict, conflict.body())
+		return
+	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		WriteJSON(w, http.StatusConflict, open.body())
 		return
 	}
 	documentCode := documentErrorCode(err)
@@ -322,6 +336,20 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
 	slog.Error("dispatch: API handler failed", "error", err)
 }
+
+// errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
+// its status, its headers and its body, for a caller that answers it in a form of its own. A test
+// hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
+// it with the entries of the steps that committed (writeStatusChangeRefusal).
+type errorAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *errorAnswer) Header() http.Header         { return a.header }
+func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
+func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.

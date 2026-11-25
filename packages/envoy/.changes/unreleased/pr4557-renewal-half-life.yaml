@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The Go broker client's renewal loop (`Client.Run`, and `RenewalAt` that `natscred` reads) now
+  trades again `RenewBefore` ahead of a token's expiry and never before half of what the token had
+  left when it landed. A token of at least twice `RenewBefore` (ten minutes by default) renews as
+  before, and in that loop so does one shorter than `RenewBefore`. A token between one and two
+  windows renews at its half life: before, a token of 302 s with the default five minutes was
+  traded again 2 s after it landed. `Client.Token` now holds its token until the same renewal
+  moment, where before it traded again at every call for a token that landed with `RenewBefore`
+  or less left. `testdata/renewal.json` holds this rule, and the TypeScript client replays it too.
+time: 2026-11-22T01:29:14Z
+custom:
+  Issue: pr4557

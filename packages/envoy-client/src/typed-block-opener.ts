@@ -1,27 +1,16 @@
 // A typed block's opening line, read as the Dispatch server reads it: pmdoc's
-// ParseTypedDirectiveOpen, parseDirectiveAttributes, quotedTypedBlockID and
-// unsupportedDirectiveReason (packages/envoy/internal/dispatch/pmdoc/directive.go). The server
-// keeps one reader of this grammar, and this module is this package's one copy of it: the reader
-// of the frame of that line (the fence, the name, the `{` and the `}` that ends the line), and the
-// reader of the attributes between the two braces. The ask gate (askgate-new-asks.ts) reads a line
-// here to open an ask block only where the server opens one, and to name it by the id the server
-// reads. The stored-spelling check (dispatch-commands/stored-spelling.ts) reads a line here to
-// find each attribute as written. So the two read a line alike, and alike with the server: each
-// rule here is the server's, and a line the server refuses opens nothing.
+// ParseTypedDirectiveOpen, parseDirectiveAttributes and quotedTypedBlockID
+// (packages/envoy/internal/dispatch/pmdoc/directive.go). The server keeps one reader of this
+// grammar, and this module is this package's one copy of it: the reader of the frame of that line
+// (the fence, the name, the `{` and the `}` that ends the line), and the reader of the attributes
+// between the two braces. The ask gate (askgate-new-asks.ts) gives typedOpenerAt to the block
+// reader in @legion/contracts (readAskBlocks), so an ask block opens only where the server opens
+// one, and it reads a line here to name the block by the id the server reads. The stored-spelling
+// check (dispatch-commands/stored-spelling.ts) reads a line here to find each attribute as
+// written. So the two read a line alike, and alike with the server: each rule here is the
+// server's, and a line the server refuses opens nothing.
 
-import { TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
-
-/** How many times `char` stands in a row in `text` from `index`. */
-export function runOf(text: string, index: number, char: string): number {
-  let end = index;
-  while (text.charAt(end) === char) end++;
-  return end - index;
-}
-
-/** directive.go's `directiveNameByte`: a letter, a digit, `_` or `-`. */
-function directiveNameChar(char: string): boolean {
-  return /^[A-Za-z0-9_-]$/.test(char);
-}
+import { directiveNameChar, runOf, TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
 
 /** One attribute as it is written (`#id`, `.class`, `name` or `name="value"`), under the name
  *  Dispatch reads it by: `id` for `#…` and `id="…"`, `class` for `.…`, and its key otherwise. */
@@ -76,13 +65,6 @@ export function typedOpenerAt(text: string, at: number): TypedOpener | undefined
   if (attributes === undefined) return undefined;
   const colons = runOf(text, at, ":");
   return { ...attributes, name: text.slice(at + colons, brace), colons };
-}
-
-/** directive.go's `unsupportedDirectiveReason`: a line of directive syntax the server refuses. */
-export function refusedDirective(text: string): boolean {
-  if (text.startsWith(":::")) return text !== ":::" && typedOpenerAt(text, 0) === undefined;
-  if (text.startsWith("::")) return text.length > 2 && directiveNameChar(text.charAt(2));
-  return text.length > 1 && directiveNameChar(text.charAt(1)) && text.includes("{");
 }
 
 /**

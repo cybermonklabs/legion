@@ -1,4 +1,5 @@
 import type { DecisionEntry, DisplayTree } from "../../api/types";
+import { readTextReferences } from "../refs/text-references";
 
 /** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
  *  against, since a quote names the document's text and never its markdown. The server writes
@@ -59,6 +60,43 @@ export function ownTree(tree: DisplayTree | undefined): DisplayTree | undefined 
 /** The block of a decision's own content that names it: the first that holds any words. */
 export function nameBlock(content: readonly DisplayTree[]): DisplayTree | undefined {
   return content.find((node) => wordsOf(node).trim() !== "");
+}
+
+/** Whether a card's plain title shows all of `node`. Only a plain paragraph qualifies: unmarked
+ *  text runs alone, no `Unsure:` doubt, and no reference a body links (`readTextReferences`).
+ *  Any other block - a list, code block, quote, or paragraph with a link, code, mark, image,
+ *  or hard break - stays in the body. */
+export function isPlainTitleBlock(node: DisplayTree): boolean {
+  if (node.type !== "paragraph") return false;
+  if (Array.isArray(node.marks) && node.marks.length > 0) return false;
+  if (!Array.isArray(node.content) || node.content.length === 0) return false;
+  if (isUnsureBlock(node)) return false;
+  for (const child of node.content as DisplayTree[]) {
+    if (child.type !== "text" || typeof child.text !== "string") return false;
+    if (Array.isArray(child.marks) && child.marks.length > 0) return false;
+  }
+  // Every child is a text run, so the node's words are its runs joined.
+  return holdsNoReference(wordsOf(node));
+}
+
+/** Characters or block openers that draw more than plain text in markdown: a list, quote,
+ *  thematic break, link, image, code span, emphasis, strikethrough, HTML, or escape. */
+const PLAIN_TITLE_MARKDOWN = /^(?![-*+>]\s|\d+[.)]\s|-{3,}$)[^\n`*_~[\]<>\\]+$/;
+/** A bare address that GFM turns into a link when the browser parses markdown. */
+const AUTOLINK_ADDRESS = /https?:\/\/|mailto:|www\./i;
+
+/** Whether a markdown block holds only plain text that a card's title shows in full. Used only
+ *  in the rolling-deploy fallback with no server reading, so a formatted or reference-bearing
+ *  first line stays in the body there too. */
+export function isPlainTitleMarkdown(markdown: string): boolean {
+  if (markdown === "" || markdown.startsWith(UNSURE_PREFIX)) return false;
+  if (!PLAIN_TITLE_MARKDOWN.test(markdown) || AUTOLINK_ADDRESS.test(markdown)) return false;
+  return holdsNoReference(markdown);
+}
+
+/** Whether `text` holds no reference that a body links (`readTextReferences`). */
+function holdsNoReference(text: string): boolean {
+  return readTextReferences(text).references.length === 0;
 }
 
 /** A decision's name as the server's read of a decision names it (`decisionread`'s Heading): the

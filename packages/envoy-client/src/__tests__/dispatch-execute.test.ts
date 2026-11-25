@@ -4860,6 +4860,83 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("agent-secrets login");
   });
 
+  // A read-only credential is refused every write with READ_ONLY_TOKEN, before any other check,
+  // so whoami names it as one that reads only, and its cut, rather than describing the issues it
+  // would create or the sign-in it would need.
+  test("dispatch_whoami names a read-only credential and its cut", async () => {
+    const whoami = async (answer: Record<string, unknown>): Promise<string> => {
+      const result = await executeDispatchTool({
+        tool: "dispatch_whoami",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: (async () => response(answer)) as unknown as typeof fetch,
+      });
+      return result.text;
+    };
+    const cut = "2026-11-19T08:30:00.123456Z";
+
+    const person = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person", "read"],
+      cut,
+    });
+    expect(person).toBe(
+      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at.`
+    );
+
+    // A service's read-only token with no cut: no sign-in to name, and no cut either.
+    const service = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "example-fleet",
+      session: "session-1",
+      project: "INFRA",
+      scopes: ["read"],
+      cut: null,
+    });
+    expect(service).toBe(
+      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // An exchange entry's account token narrowed to reading: Dispatch answers it
+    // sign_in_required false, and it is told it reads only, never sent to a sign-in.
+    const account = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "system:serviceaccount:example-ns:example-public",
+      session: "session-1",
+      project: null,
+      scopes: ["read"],
+      cut: null,
+      sign_in_required: false,
+    });
+    expect(account).toBe(
+      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // A credential that writes is told what a writing credential is told, and nothing of reading.
+    const writer = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person"],
+      cut: null,
+    });
+    expect(writer).toContain("issues you create without an assignee are assigned to alice");
+    expect(writer).not.toContain("read-only");
+  });
+
   // A current Dispatch answers the decision itself (sign_in_required), and the command reads it.
   test("dispatch_whoami tells a machine Dispatch says needs a sign-in that its writes are refused", async () => {
     const fetchImpl = async (): Promise<Response> =>
@@ -8352,6 +8429,23 @@ describe("executeDispatchTool", () => {
       expect(result.text).toBe([markdown, "Document token: sha256:spec"].join("\n\n"));
     });
 
+    // An opener's `#id` runs to the first character the shortcut cannot hold, as askOpeners reads
+    // it, so an id that holds a no-break space is named whole.
+    test("and an answer on an opener whose id holds a no-break space names the whole id", async () => {
+      const result = await readDocument({
+        markdown:
+          ':::ask{#q\u00a0drive urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[]" answer="Plain HTTP."}\nWhich transport?\n:::',
+        token: "sha256:spec",
+        version: 4,
+      });
+      expect(result.text.split("\n\n").at(-1)).toBe(
+        [
+          "Document token: sha256:spec",
+          'Answered q\u00a0drive by bob at 2026-11-18T12:05:00Z: "Plain HTTP."',
+        ].join("\n")
+      );
+    });
+
     test("and a version read names none", async () => {
       const result = await readDocument(
         { markdown: served, token: "sha256:spec", version: 4 },
@@ -9924,6 +10018,28 @@ describe("executeDispatchTool", () => {
       );
       expect(refusal.split("\n")[1].match(/dispatch:\/\//g)).toHaveLength(1);
       expect(refusal).not.toContain("has not opened yet");
+      expect(posts).toEqual([]);
+    });
+
+    // The block's id is read off its opening line as askOpeners reads it: a no-break space in a
+    // `#id` is part of the id, so the copy's source is found.
+    test("a copied block whose id holds a no-break space names its source", async () => {
+      const block = "b\u00a01";
+      const { outcome, posts } = await requestOver(
+        [block],
+        [
+          `:::ask{#${block} urgency="med" multiple="false" state="open" copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"}\nQuestion of ${block}?\n:::`,
+        ],
+        []
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n")[1]).toBe(
+        `- block ${block}, a copy of ask dispatch://DSP-42/ask/ask-source, which is open on DSP-42 plan: answer it there`
+      );
       expect(posts).toEqual([]);
     });
 

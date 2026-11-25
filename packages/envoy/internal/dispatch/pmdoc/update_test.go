@@ -25,6 +25,7 @@ import (
 // the default, left, and writes it back when the cell is edited, and a code block with no
 // language and an image with no title hold "", that editor's own default.
 func TestUpdateFromEmptyEqualsAuthoredByBrowser(t *testing.T) {
+	t.Parallel()
 	for _, fx := range loadFixtures(t) {
 		t.Run(fx.Name, func(t *testing.T) {
 			want, err := FromJSON(fx.PMJSON)
@@ -90,6 +91,7 @@ func asTheLiveDocumentHoldsIt(doc *Node) *Node {
 }
 
 func TestUpdateIsNoOpForEqualTree(t *testing.T) {
+	t.Parallel()
 	for _, fx := range loadFixtures(t) {
 		t.Run(fx.Name, func(t *testing.T) {
 			doc := crdt.New()
@@ -118,6 +120,7 @@ func TestUpdateIsNoOpForEqualTree(t *testing.T) {
 }
 
 func TestUpdateEditsOnlyTheChangedRun(t *testing.T) {
+	t.Parallel()
 	fx := fixtureNamed(t, "marks")
 	doc := crdt.New()
 	if err := crdt.ApplyUpdateV1(doc, fx.YjsUpdateV1, nil); err != nil {
@@ -254,6 +257,7 @@ func genScript(script string, args ...string) *exec.Cmd {
 // holds "none", and a code block with no language and an image with no title come back holding ""
 // unless the read gives "" back as null (liveNulls).
 func TestNullAttributesSurviveABrowserEdit(t *testing.T) {
+	t.Parallel()
 	written, err := Parse("| a | b | c |\n| --- | :---: | ---: |\n| d | e | f |\n\n```\ncode\n```\n\n![alt](src.png) tail\n")
 	if err != nil {
 		t.Fatal(err)
@@ -369,6 +373,7 @@ func firstNodeOfType(node *Node, nodeType string) *Node {
 }
 
 func TestUpdateAppliesMarksToInsertedTextAtRunBoundary(t *testing.T) {
+	t.Parallel()
 	seed, err := Parse("A **B**\n")
 	if err != nil {
 		t.Fatal(err)
@@ -408,6 +413,7 @@ func TestUpdateAppliesMarksToInsertedTextAtRunBoundary(t *testing.T) {
 }
 
 func TestUpdatePreservesMarksAcrossAstralEdit(t *testing.T) {
+	t.Parallel()
 	seed, err := Parse("😀 before **marked**\n")
 	if err != nil {
 		t.Fatal(err)
@@ -440,6 +446,7 @@ func TestUpdatePreservesMarksAcrossAstralEdit(t *testing.T) {
 // then the new one into a ygo document and reads back what it stores, through Read and through a
 // y-prosemirror decode of the whole state, as the document's readers see it.
 func TestUpdateRewritesEmojiThatShareHalfOfAPair(t *testing.T) {
+	t.Parallel()
 	for name, test := range map[string]struct{ was, now string }{
 		"a shared high surrogate": {was: "before \U0001F4CA after", now: "before \U0001F4CB after"},
 		"a shared low surrogate":  {was: "before \U0001F60A after", now: "before \U0001FA0A after"},
@@ -485,6 +492,7 @@ func TestUpdateRewritesEmojiThatShareHalfOfAPair(t *testing.T) {
 // (units16). It assumes that text is valid UTF-8, which ygo keeps true at both doors: an insert of
 // invalid UTF-8 panics, and an update carrying it is refused.
 func TestAYgoDocumentNeverHoldsInvalidUTF8Text(t *testing.T) {
+	t.Parallel()
 	writer := crdt.New()
 	text := writer.GetText("t")
 	func() {
@@ -511,6 +519,7 @@ func TestAYgoDocumentNeverHoldsInvalidUTF8Text(t *testing.T) {
 // A run carrying two comments is written as two Y attribute keys, read back as both, decoded by
 // y-prosemirror as both, and rewritten as nothing.
 func TestUpdateWritesEachOfTwoMarksOfOneTypeOnOneRun(t *testing.T) {
+	t.Parallel()
 	bob := Mark{Type: "proofComment", Attrs: Attrs{"id": "c1", "by": "user:bob"}}
 	alice := Mark{Type: "proofComment", Attrs: Attrs{"id": "c2", "by": "user:alice"}}
 	want := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{

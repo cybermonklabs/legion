@@ -4109,9 +4109,11 @@ const (
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
 // milliseconds, so this window holds several of its periods, each served once;
 // server-processes' prune is one delete on server_processes, the table every process's heartbeat
-// writes every five seconds, so a lock that held the prune would hold the registry itself; and
+// writes every five seconds, so a lock that held the prune would hold the registry itself;
 // text-tree-fill's first pass is at each process's start, and on a database whose stored texts
-// already carry their trees it takes one candidate scan and ends done.
+// already carry their trees it takes one candidate scan and ends done; and parent-status-fix is
+// taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set
+// (api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds what its lease is for).
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	waitOutABucketBoundary(t, time.Hour)
@@ -4203,6 +4205,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 		{"settlement-resumption", "its period is SettlementResumeInterval (1 min), so the window holds several periods, each served once"},
 		{"server-processes", "its pass is one delete on server_processes, which every process's heartbeat writes, so holding it would hold the heartbeats too"},
 		{"text-tree-fill", "its first pass is at each process's start, and on a database whose stored texts already carry their trees it takes one candidate scan and ends done"},
+		{"parent-status-fix", "it is taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set; api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds its lease"},
 	} {
 		if ran := countLease(pair.a, leaseRan, unobserved.lease) + countLease(pair.b, leaseRan, unobserved.lease); ran > 0 {
 			t.Logf("%s ran %d times in the window, which this row does not hold to a count: %s",
@@ -4227,10 +4230,14 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
 	pair.start(t, nil)
 
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 60*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two processes' suggestion-outcome passes reached the cursor lock, want both; the loop takes no lease, so neither waits outside the row:\nA:\n%s\nB:\n%s",
-			waiting, pair.a.Output.String(), pair.b.Output.String())
-	}
+	// The wait fails the row by name at the binary's deadline, and the cleanup prints both
+	// processes' output then, as this branch's failure did before the wait had a bound.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor the passes are waiting on: %v", err)
 	}
@@ -6617,9 +6624,12 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		gate := lockIssue(t, pair.database, issueKey)
 		throughA := pair.a.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
 		throughB := pair.b.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
-		if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-			t.Fatalf("%d of the two rebuilds reached the issue's row within 30 s:\nA:\n%s\nB:\n%s", waiting, pair.a.Output.String(), pair.b.Output.String())
-		}
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+			}
+		})
+		storetest.WaitForLockWaiters(t, gate, 2)
 		if err := gate.Rollback(context.Background()); err != nil {
 			t.Fatalf("release the issue's row: %v", err)
 		}
@@ -8986,7 +8996,10 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 			return cursor
 		}
 		testwait.Until(t, "a batch of the keyword fill to wait on its cursor", func() (int, bool) {
-			waiting := storetest.WaitForLockWaiters(t, s.held, 1, 0)
+			waiting, err := storetest.LockWaiters(ctx, s.held)
+			if err != nil {
+				t.Fatal(err)
+			}
 			return waiting, waiting >= 1
 		})
 		next, err := s.database.Pool.Begin(ctx)

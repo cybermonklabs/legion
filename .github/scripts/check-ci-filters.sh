@@ -59,9 +59,16 @@
 #      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's three callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
-#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
+#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
+#      A step may read its filter out of the changes job's one list of the filters that matched
+#      instead, `contains(needs.changes.outputs.matched_filters, '"<filter>"')` once resolved, as
+#      the test job's steps do (rule 23 holds that shape): the filter each `contains` names is a
+#      gate of the step, and the list itself is none. The list hands on every filter that
+#      matched, so a filter a step reads out of it needs no output of the changes job of its own,
+#      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
-#      or in a workflow it calls, where the filter is the one the resolved condition names,
+#      or in a workflow it calls, where the filter is the one the resolved condition names, or
+#      the one it reads out of the list,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
@@ -169,13 +176,21 @@
 #      of its job (a save under that output takes that restore's key text); an
 #      actions/cache/restore of ci-caches.yaml of a family it saves under `-${{ github.sha }}`
 #      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
-#      `-`; and any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
-#      or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml restores, and a key
-#      or a path that drifts apart makes every restore miss silently: nothing fails, every job
-#      just rebuilds from nothing what the fill already built. A save is matched to a restore by
+#      `-`; any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
+#      or that carries restore-keys; and an actions/cache/restore of any workflow of the
+#      directory whose family no actions/cache/save of a workflow or of a composite action of
+#      .github/actions writes (a save that names its restore's cache-primary-key writes that
+#      restore's family; one whose family cannot be read is named in the refusal, which then says
+#      that no save it can read writes the family). ci-caches.yaml fills
+#      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
+#      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
+#      built. A save is matched to a restore by
 #      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
-#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure: go-docs is
-#      saved by docs-pages.yaml, from the build job that workflow shares with ci.yaml's docs job.
+#      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure when another
+#      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
+#      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
+#      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
+#      holds, and its restore would miss on every run.
 #      A save's own hashFiles() is evaluated after the build, which can change the files it
 #      hashes (a go command may add the checksums it fetched to go.sum or go.work.sum), so it can save under
 #      a key no restore asks for: go-envoy-infra's did, and every push missed its lookup. A
@@ -269,7 +284,20 @@
 #      computed filter (no file of .github/ci-gates declares it), naming the output and the
 #      reference. Such an output is empty on every run, which reads as a filter that never
 #      matched: the job it gates would be skipped on every change it selects, and nothing else
-#      here would say so,
+#      here would say so. The one name no filter holds that an output may read is the paths
+#      filter's own `changes`, the list of the filters that matched, in the output
+#      matched_filters alone, which must be exactly `${{ (github.event_name ==
+#      'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' ||
+#      steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched run, whose
+#      filter step is skipped, or on one whose filters fell open, whose fallback file holds no
+#      filter a step reads out of the list, skips there every step it gates - in a job whose one
+#      step of id `generate` runs the generation (ci-filters-generate.sh writes
+#      every_filter=true to that step's outputs when it writes the fallback file), while every
+#      filter's name is letters, digits, `_` and `-` (which JSON writes as they are) and no two
+#      names differ only in case (GitHub's `contains` ignores case). And with or without the
+#      list, a gate declaring a filter whose name the action writes another output under:
+#      `changes`, under which it would write that filter's verdict in place of the list, and which
+#      the fallback file leaves out, or `<another filter>_count` or `_files`,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the
@@ -296,8 +324,35 @@
 #      (directly or through a `for <var> in ...` list), one its Python imports, each module those
 #      import at their top level, and every gate file where one of them loads the gate files
 #      (ci_job_reads.py), naming the gate, the harness, the file and how it is reached. A harness
-#      tests what it reaches, so a change to one of those files alone must start its step,
-#  23. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
+#      tests what it reaches, so a change to one of those files alone must start its step.
+#  23. a condition of ci.yaml or of a workflow it calls that names the changes job's list output
+#      matched_filters, resolved through the caller's `with:`, and is not on a step or is not, as a
+#      whole, `needs.changes.result != 'success' || needs.changes.outputs.matched_filters == 'all'
+#      || contains(needs.changes.outputs.matched_filters, '"<filter>"')`, with more `||
+#      contains(...)` terms for a step that runs when any of several filters matched (spaces, and
+#      the case of `contains`, free), naming the file, the job and the step. `!= ''` is true on
+#      every run; a `!` before the `contains` runs the step when its filter did not match, and a
+#      term after it can stop it running at all; a `contains` without the quotes matches every
+#      name holding the filter's (`ci_tools_test` inside `mirror_ci_tools_test`); a condition
+#      without the `all` term is skipped on every dispatched run, and one without the result term
+#      on every run whose changes failed; and a job-level read selects a job by an output that is
+#      never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a `with:` value
+#      of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it calls (but
+#      ci.yaml's ci-ok job), that names the changes job other than as needs.changes.result,
+#      needs.changes.outputs.<name> or needs.changes, or an input other than as inputs.<name>
+#      (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`, `inputs. x`,
+#      `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule here reads
+#      them, so a read so spelt would be held to nothing. An input's name is read in any case, as
+#      GitHub reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which
+#      holds the list and filter_verdicts), filter_verdicts, `toJSON(needs)` or every job's
+#      outputs (`needs.*` but `needs.*.result`) other than as the payload's `!= ''`, which asks
+#      only whether ci.yaml is the caller; and a `run:`, `env:`, `with:` or other text of a job
+#      that reads any of them, but ci.yaml's own `with:` to a workflow it calls, the ci-ok report
+#      action's `changes:` and ci.yaml's ci-ok job: each of these names every filter on every run,
+#      so a step reading one for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is
+#      gated on a filter no rule reads. Rules 2 and 3 read the filter out of each `contains`
+#      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+#  24. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
 #      of the `lane_files="..."` that .github/scripts/dispatch-browser-shard-suite.sh, the script
 #      its shard job's browser step runs, sets in its `references)` arm, read as a path from the
 #      working directory of the step that runs the script - that the dispatch_references filter,
@@ -386,13 +441,36 @@
 # who deliberately hides a command or a flag where this check does not read is the review's to
 # catch.
 #
-# The go commands run with GOPROXY=off over an empty module cache: nothing is downloaded, no
-# go.work.sum is rewritten, and a cold runner gives the answer a warm machine does. Third-party
+# The engine's go commands, the go list runs every closure above comes from, run with GOPROXY=off
+# over an empty module cache: they download nothing, rewrite no go.sum or go.work.sum, and a cold
+# runner gets from them the answer a warm machine does. Third-party
 # packages then fail to load, which loses no first-party package, since none of them imports
 # one: no module outside this repository requires one of its modules (`go mod graph`), and all
 # but twelve of its 185 packages are main packages or internal/ ones, which nothing outside the
 # repository may import. The first-party sets matched a run over a full module cache file for
 # file when this check was written.
+#
+# Two kinds of go command run under this machine's own GOPROXY and module cache instead. One is
+# `go env GOROOT`, which resolves the toolchain (below) and writes nothing. The other is
+# .github/scripts/go_build_tags.py's: ci_job_reads.py runs its tag_sets as it is imported, to give
+# each darwin vet step one Run per tag set, and rule 20 runs its platforms. Its `go list -find`
+# still resolves every import, so in a workspace it writes into go.work.sum the checksum of each
+# go.mod it needs that the committed files lack. (Outside a workspace, go's default -mod=readonly
+# keeps it from writing a go.sum: it reports the missing checksum instead.) The darwin vet steps of
+# CI run the same script and write the same lines. So a run rewrites a committed go.work.sum that
+# lacks such a line (packages/envoy/infra/go.work.sum lacked two, and every run passed over the
+# rewrite), and in any mode a run that changes a file of the tree, but those its mode writes (the
+# PUSH_WORKFLOWS workflows, and generate's output and the .inputs file beside it, below), fails
+# naming each: for a go.work.sum, commit what the run wrote. The tree is read before the first go
+# command and after the last: each file git lists, tracked or untracked and not ignored (the files
+# the engine reads), by its bytes and execute bit, read off the file rather than taken as unchanged
+# because git says so (an assume-unchanged mark, a normalized line ending), so a file edited before
+# the run is compared with itself. The first reading hashes every file; the second hashes again
+# only a file whose lstat is not the one the first saw, since every write sets a file's change
+# time. The first reading is made before the audit hook below starts recording, so the files it
+# opens are not among the computation's inputs the generate mode writes. A tree git cannot list,
+# or in which it lists no file, fails the run saying so, since a reading of nothing would pass any
+# run.
 #
 # One thing that empty cache cannot hold is the Go toolchain itself. Where the installed go is
 # older than the `go` directive of the module being listed, GOTOOLCHAIN=auto satisfies the
@@ -426,8 +504,10 @@
 # filter and writes them to <path>, running only what they are computed from - the table, the go
 # commands, the //ci: lines and the listed blocks, which need Bun and the workspace's node_modules
 # - and fails, writing nothing, on any problem of that work, since the filters would then be
-# unknown; ci-filters-generate.sh turns that failure into a file that selects every job. Any other
-# word fails naming the three.
+# unknown; ci-filters-generate.sh turns that failure into a file that selects every job. A run of
+# any mode that changes a file of the tree but those that mode writes - the PUSH_WORKFLOWS
+# workflows for `write`, <path> and <path>.inputs for `generate` - fails as the header says above,
+# and a `generate` run that fails so removes what it wrote. Any other word fails naming the three.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.sh
 #                    .github/scripts/check-ci-filters.sh write
@@ -486,8 +566,76 @@ export CI_FILTERS_MODE="${1:-check}"
 # the generate mode writes the ones the filters are computed with (ci_filter_coverage.engine_inputs)
 # beside its output, so the changes job can tell a change to the computation from a change to what
 # it reads.
+#
+# Around the engine is the guard the header describes: the tree is read before the imports, since
+# ci_job_reads.py runs go_build_tags.py's go commands as it is imported, and again after main().
+# The first reading comes before the audit hook too, since it opens every file of the tree and none
+# of those opens is the computation's. A run whose imports fail is a failure before the second
+# read has anything to add.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import hashlib
+import os
+import stat
+import subprocess
 import sys
+
+
+def held(path, info):
+    """What a file holds, given its lstat (None for no file): its bytes and execute bit, read in
+    blocks, the target of a symbolic link, or that it is gone."""
+    if info is None:
+        return "absent"
+    if stat.S_ISLNK(info.st_mode):
+        return "a link to " + os.readlink(path)
+    if not stat.S_ISREG(info.st_mode):
+        return "no regular file"
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while block := handle.read(1 << 20):
+            digest.update(block)
+    return digest.hexdigest() + (" executable" if info.st_mode & 0o111 else "")
+
+
+def tree(first=None):
+    """Each file git lists under this directory, tracked or untracked and not ignored (the files
+    the engine reads), mapped to its lstat and what it holds; or, as a string, why there is no
+    such map. What a file holds is read off the file, never taken as unchanged because git says
+    so: git reports no change to a file marked assume-unchanged or skip-worktree, to a line ending
+    it normalizes, or to an execute bit core.filemode tells it to ignore. A file edited before the
+    run is compared with itself. The first reading hashes every file; a later one, given the
+    first, hashes again only a file whose lstat (device, inode, mode, size, modification and
+    change times) is not the one the first saw. No write leaves all of those as they were, since
+    the kernel sets the change time at each write, chmod or rename, and the first write of a run
+    comes after the whole first reading. A file written again with the bytes it held is no
+    change."""
+    try:
+        result = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                capture_output=True)
+    except OSError as failure:
+        return f"git cannot list them: {failure}"
+    if result.returncode != 0:
+        return f"git cannot list them: git ls-files failed: {os.fsdecode(result.stderr).strip()}"
+    files = {}
+    try:
+        for path in map(os.fsdecode, result.stdout.split(b"\0")):
+            if not path:
+                continue
+            try:
+                info = os.lstat(path)
+            except (FileNotFoundError, NotADirectoryError):
+                info = None
+            seen = info and (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns,
+                             info.st_ctime_ns)
+            if first is not None and path in first and first[path][0] == seen:
+                files[path] = first[path]
+            else:
+                files[path] = (seen, held(path, info))
+    except OSError as failure:
+        return f"a file git lists cannot be read: {failure}"
+    return files or "git lists none"
+
+
+before = tree()
 
 opened = []
 sys.addaudithook(lambda event, args: opened.append(args[0]) if event == "open" and isinstance(args[0], str) else None)
@@ -515,5 +663,47 @@ print(f"::{token}::", flush=True)
 print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
 for import_warning in caught:
     ci_filter_coverage.print_import_warning(import_warning)
-sys.exit(ci_filter_coverage.main())
+status = ci_filter_coverage.main()
+after = tree(before if isinstance(before, dict) else None)
+
+mode = os.environ["CI_FILTERS_MODE"]
+written = []
+if mode == "write":
+    written = list(getattr(ci_job_reads, "PUSH_WORKFLOWS", {}).values())
+elif mode == "generate":
+    out = os.environ["CI_FILTERS_OUT"]
+    written = [out, out + ".inputs"]
+writable = {os.path.relpath(path) for path in written}
+problems = []
+unread = next((side for side in (before, after) if isinstance(side, str)), None)
+if unread is not None:
+    problems.append(ci_filter_coverage.error(None, f"this check could not read the files of the tree it checks "
+                                                   f"({unread}), so whether this run changed one is unknown, and a "
+                                                   f"run that cannot see the tree is no pass"))
+else:
+    may = "may change only " + " and ".join(sorted(writable)) if writable else "may change no file of the tree"
+    for path in sorted(before.keys() | after.keys()):
+        if path in writable or (before.get(path) or (None, None))[1] == (after.get(path) or (None, None))[1]:
+            continue
+        if os.path.basename(path) == "go.work.sum":
+            why = ("a go command this check runs recorded module checksums the committed file lacks (the go list "
+                   "commands of .github/scripts/go_build_tags.py, which ci_job_reads.py runs for each darwin vet "
+                   "step, run under the GOPROXY and module cache of this machine and record the checksum of each "
+                   "go.mod they fetch). Commit the file as this run leaves it")
+        else:
+            why = ("something this check runs wrote it, so this run judged a tree it was changing. Restore the "
+                   "file and find what wrote it")
+        problems.append(ci_filter_coverage.error(path, f"{path} changed while this check ran, and a {mode} run "
+                                                       f"{may}: {why}"))
+for problem in problems:
+    ci_filter_coverage.print_annotation(problem)
+if problems and mode == "generate":
+    # The filters of a run that changed the tree it computed them from are unknown, and generate
+    # writes nothing then.
+    for path in written:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+sys.exit(1 if problems else status)
 '

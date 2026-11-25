@@ -560,10 +560,10 @@ const (
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	cause := m.claim.LastDeathCause
-	m.claim.LastDeathCause = m.goneCause
+	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
+	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause = cause
+		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))

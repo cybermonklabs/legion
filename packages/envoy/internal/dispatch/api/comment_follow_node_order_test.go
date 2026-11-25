@@ -14,12 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// followOrderWait bounds how long this test waits for the comment to queue behind the write
-// holding the author's person node, and how long each side is given once the hold is gone. Both
-// are far above what the work takes.
-const followOrderWait = 20 * time.Second
 
 // TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder is this change's R17
 // over the comment path's two node writes. A comment by a session in an ask's thread makes two
@@ -102,7 +98,7 @@ func TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder(t *testing.T)
 			map[string]any{"body": "The session answers in the ask's thread.", "ask_id": ask}))
 		commented <- response
 	}()
-	if answer, early := storetest.WaitForQueuedBehind(t, other, backend, commented, followOrderWait); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, other, backend, commented); early {
 		t.Fatalf("the comment finished without waiting at the author's person node: status=%d body=%s",
 			answer.Code, answer.Body.String())
 	}
@@ -117,13 +113,8 @@ func TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder(t *testing.T)
 	if err := other.Commit(ctx); err != nil {
 		t.Fatalf("commit the write of the author's two nodes: %v", err)
 	}
-	select {
-	case response := <-commented:
-		if response.Code != http.StatusCreated {
-			t.Fatalf("the comment in the ask's thread: status=%d body=%s", response.Code, response.Body.String())
-		}
-	case <-time.After(followOrderWait):
-		t.Fatalf("the comment did not finish within %s of the other write committing", followOrderWait)
+	if response := testwait.Receive(t, "the comment to finish once the other write committed", commented); response.Code != http.StatusCreated {
+		t.Fatalf("the comment in the ask's thread: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	// What it left: the session follows the ask, and both nodes are there once.

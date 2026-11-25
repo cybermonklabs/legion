@@ -57,6 +57,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { SESSION_ID_PATH_SEGMENT } from "@legion/envoy-client/dispatch-session-directory";
+import { killGroup } from "@legion/envoy-client/process-group";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 /** The bound on `jj config path --user`, which reads no repository and answers in milliseconds:
@@ -202,16 +203,9 @@ export async function userConfigChain(
       stdout: "pipe",
       stderr: "pipe",
     });
-    const killGroup = () => {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // The group exited before cleanup reached it.
-      }
-    };
     // Every descendant belongs to this call's group. Kill it as soon as the leader exits, before
     // either its output can answer successfully or a non-zero exit can answer unsuccessfully.
-    const exited = child.exited.finally(killGroup);
+    const exited = child.exited.finally(() => killGroup(child.pid));
     // Include both streams in the deadline: a wrapper can fork a helper that inherits them after
     // its leader exits, and attribution must never wait for that helper.
     const completed = Promise.all([
@@ -222,7 +216,7 @@ export async function userConfigChain(
     const stdout = await new Promise<string | undefined>((resolve) => {
       const stop = () => {
         clearTimeout(timer);
-        killGroup();
+        killGroup(child.pid);
         resolve(undefined);
       };
       const timer = setTimeout(stop, timeoutMs);

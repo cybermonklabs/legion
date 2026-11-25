@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -342,6 +343,9 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
+		// The holder is rolled back however the step ends: a wait below that fails the test leaves
+		// the tick queued behind it otherwise. A rollback after the step's own is a no-op.
+		testcleanup.Add(t, func() { _ = holder.Rollback(context.Background()) })
 		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
@@ -353,10 +357,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			}
 			close(ticked)
 		}()
-		if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-			holder.Rollback(ctx)
-			t.Fatalf("the tick never queued behind %s", step.name)
-		}
+		storetest.WaitForLockWaiters(t, holder, 1)
 		if running := waitingStatement(t, holder); !strings.Contains(running, step.wantStatement) {
 			t.Errorf("the tick waiting on %s is running %q, want the statement that takes it", step.name, running)
 		}
@@ -593,6 +594,11 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
 	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
+	// The comment's row and its node, and what it states under its comment.created, which the
+	// comment route and the comment an issue write leaves both queue: each reads the comment its
+	// caller writes, and its own artifacts' addresses (commentStored).
+	"api/comment_create.go#queueCommentRow":     "the comment its caller writes: the create request's own body, or the issue write's own words",
+	"api/comment_create.go#queueCommentCreated": "the facts the comment's row write stated and the comment.created event it appended",
 	// The orphaning of a comment's anchor, which the accept and the reject arms of commentAction
 	// and deleteComment queue when their document write finds the anchor's mark gone
 	// (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row

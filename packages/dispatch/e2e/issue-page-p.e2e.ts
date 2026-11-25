@@ -26,6 +26,7 @@ import {
   approvalEntry,
   asAgent,
   badgeValue,
+  closeOpenChildren,
   DESKTOP,
   details,
   expectHeaderDrawn,
@@ -1578,6 +1579,9 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("todo");
     await expect(header.getByRole("status"), "the status's write did not settle").toHaveCount(0);
     await page.unroute(held);
+    // The close keeps Dispatch's parent-status rule only once the issue's children are done, so
+    // the page asks nothing before it: this row reads the palette, not the rule's question.
+    await closeOpenChildren(seeded);
 
     // The palette's Close issue closes the issue, which then offers Reopen issue and neither
     // Close issue nor a priority, as the header offers Reopen and refuses a priority; Reopen
@@ -2456,7 +2460,9 @@ test("the header's menu gives the focus back to its control on Escape and after 
       }
     }
 
-    // Close issue, last, since it closes the issue.
+    // Close issue, last, since it closes the issue. Its children are closed first, so the close
+    // keeps Dispatch's parent-status rule and the page asks nothing before it.
+    await closeOpenChildren(seeded);
     const action = await onAction(2);
     expect(action, "the menu's second action is not Close issue").toBe("close");
     await page.keyboard.press("Enter");
@@ -3083,6 +3089,9 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const key = seeded.key;
+    // Each close keeps Dispatch's parent-status rule only once the issue's children are done, so
+    // the page asks nothing before it: this row reads the focus, not the rule's question.
+    await closeOpenChildren(seeded);
     const header = issueHeader(page);
     for (const [name, control] of [
       ["the status", header.getByRole("combobox", { name: "Status" })],

@@ -17,6 +17,7 @@ import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useS
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -523,6 +524,18 @@ export function AgentThread({
   // The keys the reference doors serve that assistant-ui does not (`ReferenceTriggers`), handed
   // to them before the composer reads the key.
   const referenceKeys = useRef<ReferenceKeys | null>(null);
+
+  // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
+  // under it, and `Jump to latest` floats just above it while the reader is back in the
+  // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's
+  // layers and the elements in each), so the floats of the layers above keep clear of their
+  // bands. The rows under the composer are an element of that layer of their own
+  // (`AgentConversationPage`). Only the view in front: one the shell keeps behind it is laid
+  // over the page, invisible.
+  const composerRef = useRef<HTMLFormElement>(null);
+  useFootInset(composerRef, front, "page");
+  const jumpRef = useRef<HTMLButtonElement>(null);
+  useFootInset(jumpRef, front && !follow.atEnd, "page");
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -590,6 +603,7 @@ export function AgentThread({
               className={`absolute bottom-3 left-1/2 z-10 min-h-11 -translate-x-1/2 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg ${primaryButtonBg} ${primaryButtonHoverBg}`}
               data-testid="jump-to-latest"
               onClick={follow.jumpToEnd}
+              ref={jumpRef}
               type="button"
             >
               Jump to latest{follow.newCount === 0 ? "" : ` · ${follow.newCount} new`}
@@ -605,6 +619,7 @@ export function AgentThread({
         <ComposerPrimitive.Root
           className={`relative mt-3 flex flex-col gap-1 border-t pt-3 ${borderDefault}`}
           data-testid="agent-composer"
+          ref={composerRef}
         >
           {commands === undefined || commands.length === 0 ? null : (
             <SlashCommands commands={commands} />
@@ -612,8 +627,12 @@ export function AgentThread({
           {/* The three reference doors, beside the `/` above: one input, four triggers. */}
           <ReferenceTriggers keys={referenceKeys} />
           <div className="flex items-end gap-2">
+            {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
+                the textarea's autosize can leave it far taller than its text (a load at a
+                phone's width, then a desktop's, left it 636px tall), and the composer then lay
+                over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
-              className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""

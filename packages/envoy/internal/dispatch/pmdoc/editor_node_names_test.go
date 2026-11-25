@@ -37,6 +37,7 @@ var editorMarkDifferences = map[string]string{}
 // deliberate difference is listed above with its reason, so dropping a name from either side
 // fails here, and so does listing a name that is no longer a difference.
 func TestEditorNodeAndMarkNamesMatchTheGoLists(t *testing.T) {
+	t.Parallel()
 	var editor struct {
 		Nodes []string `json:"nodes"`
 		Marks []string `json:"marks"`
