@@ -97,9 +97,9 @@ const renamedRepositoriesSeed = `
 		('SMOKE', 'sjawhar/legion-smoke', 7, '2026-01-02', 'SMOKE/a', 1, '\x00', '2026-01-01T00:00:00Z', 'test');
 	insert into eval_day_figures (project_key, repo, day, eval_id, fold_key, figures, rows_stamp, built_by) values
 		('SMOKE', 'sjawhar/legion', '2026-01-01', 'SMOKE/a', 1, '\x00', 1, 'test');
-	insert into eval_figure_cuts_stale (project_key, repo, generation, next_day, evals) values
-		('INFRA', 'cybermonklabs/legion', 2, '2026-01-01', '{INFRA/a}'),
-		('SMOKE', 'sjawhar/legion-smoke', 1, '2026-01-01', '{SMOKE/b}');
+	insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values
+		('INFRA', 'cybermonklabs/legion', 2, '2026-01-03', '2026-01-01', '{INFRA/a}'),
+		('SMOKE', 'sjawhar/legion-smoke', 1, '2026-01-03', '2026-01-01', '{SMOKE/b}');
 	insert into events (project_key, seq, type, actor, payload, notify) values
 		('INFRA', 1, 'settings.repo_project.updated', '{"kind":"user","id":"alice"}',
 			'{"repo":"SJawhar/Legion","project":"INFRA","renamed_to":"CybermonkLabs/Legion"}', false);
@@ -135,11 +135,12 @@ var renamedRepositoriesAfter = map[string]string{
 	// The cut of the old name, in each spelling a row holds it in, and of the new name, of each
 	// project that published the old name, and publishes the new one once the pass has written the
 	// defaults, or holds stored figures of the old name: at generation 1, or at the next where a
-	// mark stands, for every eval, its refold to begin. The pass writes no stored figure, which the
-	// refresher folds again.
-	`select string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(next_day::text, '-') || ' ' || coalesce(evals::text, 'every'), ' | '
-		order by project_key, repo collate "C") from eval_figure_cuts_stale`: "INFRA cybermonklabs/legion 3 - every | INFRA sjawhar/legion 1 - every | " +
-		"SMOKE SJawhar/Legion 1 - every | SMOKE cybermonklabs/legion 1 - every | SMOKE sjawhar/legion 1 - every | SMOKE sjawhar/legion-smoke 1 2026-01-01 {SMOKE/b}",
+	// mark stands, for every eval, its first paint and its refold to begin. The pass writes no
+	// stored figure, which the refresher folds again.
+	`select string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(ready_through::text, '-') || ' ' || coalesce(next_day::text, '-') || ' ' ||
+		coalesce(evals::text, 'every'), ' | ' order by project_key, repo collate "C") from eval_figure_cuts_stale`: "INFRA cybermonklabs/legion 3 - - every | " +
+		"INFRA sjawhar/legion 1 - - every | SMOKE SJawhar/Legion 1 - - every | SMOKE cybermonklabs/legion 1 - - every | SMOKE sjawhar/legion 1 - - every | " +
+		"SMOKE sjawhar/legion-smoke 1 2026-01-03 2026-01-01 {SMOKE/b}",
 	`select string_agg(repo, ' ' order by repo collate "C") from (select repo from eval_range_figures union all select repo from eval_day_figures) f`: "SJawhar/Legion sjawhar/legion sjawhar/legion-smoke",
 }
 

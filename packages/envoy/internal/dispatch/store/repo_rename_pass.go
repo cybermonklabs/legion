@@ -465,9 +465,10 @@ func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep 
 // stored figures hold it in, and, of a published default, under the old name.
 // It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every eval
 // (evals null): a cut no mark holds at generation 1, and one a mark holds at its next generation,
-// its refold to begin again from the cut's first end day (next_day null), for every eval whatever
-// the standing mark named. It takes the cuts in the byte order of their keys, the order every
-// writer of the marks takes them in.
+// its first paint owed and its refold to begin again from the cut's last end day (ready_through and
+// next_day null), for every eval whatever the standing mark named. It takes the cuts in the byte
+// order of their keys, the order every writer of the marks takes them in. The boot folds the first
+// paint of each mark after this pass and before it serves (evals.FoldFirstPaintsAtBoot).
 //
 // It runs after the line writes eval_days_defaults, as evals.publishDefaults writes the defaults
 // and then the marks in one transaction, so a refresher of another process that publishes a move
@@ -488,11 +489,11 @@ func markRenamedCuts(r repoRename) repoRenameStep {
 				union select project_key, repo from eval_range_figures where ` + named + `
 				union select project_key, repo from eval_day_figures where ` + named + `
 			)
-			insert into eval_figure_cuts_stale (project_key, repo, generation, next_day, evals)
-			select project_key, repo, 1, null, null
+			insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals)
+			select project_key, repo, 1, null, null, null
 			from (select project_key, repo from old union select project_key, ` + r.to() + ` from old) cut
 			order by project_key collate "C", repo collate "C"
-			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, next_day = null, evals = null`,
+			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, ready_through = null, next_day = null, evals = null`,
 	}
 }
 

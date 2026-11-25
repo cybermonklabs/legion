@@ -863,7 +863,9 @@ func main() {
 	legionSamplerLeases := reserve("Legion sampler")
 	// The per-issue Legion facts (legionfacts.Run) and the eval day rows
 	// (evals.Store.RunRefresher): leased loops like the rest, reserved here so that this
-	// process's count is the same whatever work they find.
+	// process's count is the same whatever work they find. The boot's fold of the stale cuts'
+	// first paints (foldFirstPaints, below) takes the refresher's lease on the eval days' connection
+	// and gives it back before the refresher's loop starts, so the two never hold it together.
 	legionFactsLeases := reserve("Legion facts")
 	evalDaysLeases := reserve("eval days")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
@@ -1386,6 +1388,13 @@ func main() {
 	// records the build it runs as against every row and walk, as the facts consumer does, and
 	// attributes each pull request its day rows count by the boot's one Attributor.
 	evalStore := evals.New(database, documentService, broker, attributor)
+	// The first paint of every cut of the stored eval figures a move of a default repository or the
+	// rename pass above marked stale, folded before the server serves, so the first read of one
+	// after a restart or a deploy reads its stored figures inside R14's 150 ms rather than the fold
+	// of its day rows (evals.FoldFirstPaintsAtBoot): under the refresher's lease, which this process
+	// takes where no process holds it, and otherwise waiting for the process whose refresher pass
+	// holds it to fold them, bounded by firstPaintBootTimeout.
+	foldFirstPaints(ctx, database.Pool, evalDaysLeases, processBuild(), firstPaintBootTimeout)
 	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
 		Horizon:    background.EventHorizon(),
 		Build:      processBuild(),
@@ -2122,6 +2131,31 @@ func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.Rep
 		}
 		return pass.LogArgs(), pass.Err()
 	})
+}
+
+// firstPaintBootTimeout bounds the boot's fold of the stale cuts' first paints (foldFirstPaints),
+// as the boot's other passes are bounded, so the boot still answers within the 90 s a deployer's
+// health check waits for it (deploy/README.md): the first paint of a cut is a batch of 19 end days
+// of its refold, of the evals its mark names, every eval of the cut for a mark of the rename pass,
+// and the bench's k16 fallback times one at INFRA's size (its first-paint line, transaction_ms). A
+// fold the bound cuts short leaves the cuts it had not folded to the refresher's next pass, which
+// folds them first, and a read of one folds its day rows until then.
+const firstPaintBootTimeout = 30 * time.Second
+
+// foldFirstPaints is the boot's fold of the first paint of every stale cut of the stored eval
+// figures that owes one (evals.FoldFirstPaintsAtBoot), bounded by timeout, as build, under the
+// refresher's lease taken on leases, the lease pool's connection the refresher's loop takes its
+// lease on once this has returned. It logs how long it took, how many marks and evals it folded
+// and whether it waited for another process: at INFO, or at ERROR where it failed or ran out of
+// time. Either way the start goes on.
+func foldFirstPaints(ctx context.Context, pool *store.Pool, leases duty.Leases, build string, timeout time.Duration) {
+	began := time.Now()
+	bootTask(ctx, timeout, "dispatch: fold the first paints of the stale cuts of the stored eval figures",
+		"dispatch: folded the first paints of the stale cuts of the stored eval figures",
+		func(ctx context.Context) ([]any, error) {
+			folded, err := evals.FoldFirstPaintsAtBoot(ctx, pool, leases, build)
+			return append(folded.LogArgs(), "took_ms", time.Since(began).Milliseconds()), err
+		})
 }
 
 // issueAskRepairBootTimeout bounds the boot's repair of the asks of closed and reopened issues.

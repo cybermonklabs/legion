@@ -82,13 +82,19 @@ import (
 // each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves), naming the
 // evals whose rows it moved there, read from the stored rows (staleMarksOf): at INFRA, 6 of its 40
 // evals hold rows under legionfacts.DefaultRepo. The refresher's pass folds those evals of each
-// stale cut again, every range and day of them, batch after batch, each batch a short transaction
-// (refoldCut, one function a transaction calls), and clears its mark in the transaction that
-// finishes it unless a later move marked it again (refoldStaleCuts). The pass that publishes the
-// move begins the refold, and a pass stops it between two batches only for an owed wake, whose
-// pass goes on with it. Until then a read of the stale cut folds the day rows of the evals its mark
-// names, which answer the same bytes (figuresThrough), and reads every other eval's stored
-// figures, which fold rows no move moved; every other cut stays served.
+// stale cut again: first, in a batch of its own, the ranges and days a first paint of the cut
+// reads (firstPaintOf), and then every range and day of them, newest end day first, batch after
+// batch, each batch a short transaction (refoldCut, one function a transaction calls), and clears
+// its mark in the transaction that reaches the cut's first end day unless a later move marked it
+// again (refoldStaleCuts). The pass that publishes the move begins the refold, a pass stops it
+// between two batches only for an owed wake, whose pass goes on with it, and a boot folds the
+// first paint of every mark that owes one before it serves (FoldFirstPaintsAtBoot). Until the
+// first-paint batch commits, a read of the stale cut folds the day rows of the evals its mark
+// names, which answer the same bytes; from then on it reads their stored figures where every
+// stored row it reads is one the mark's generation has folded again, of its first paint or of the
+// end days its refold has done, and folds their day rows otherwise (figuresThrough). It reads
+// every other eval's stored figures throughout, which fold rows no move moved, and every other cut
+// stays served.
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
@@ -438,20 +444,88 @@ func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 
 // foldEnds folds the group's stored figures of each end day from first through last, of evalID in
 // cut, as the figures walk folds them: the range of each of FigureLengths that ends on it, each
-// into ranged, and the day before it, into daily, each where it holds a row of the group.
+// into ranged, and the day before it, into daily, each where it holds a row of the group
+// (foldFigures of endsThrough).
 func (g *figureGroup) foldEnds(evalID string, cut figureCut, first, last time.Time, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
-	for end := first; !end.After(last); end = end.AddDate(0, 0, 1) {
+	g.foldFigures(evalID, cut, endsThrough(first, last), ranged, daily)
+}
+
+// foldFigures folds what ends names of the group's stored figures, of evalID in cut: the range of
+// each of FigureLengths that ends on each of its end days, each into ranged, and each of its days,
+// into daily, each where it holds a row of the group.
+func (g *figureGroup) foldFigures(evalID string, cut figureCut, ends figureEnds, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
+	for end := range ends.endDays() {
 		for _, n := range FigureLengths {
 			if figures, oldest, held := g.rangeFigure(n, end); held {
 				key := rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo}
 				ranged(rangeFigureRow{rangeFigureKey: key, key: g.key, figures: figures, oldest: oldest})
 			}
 		}
-		day := dayFigureKey{repo: cut.repo, day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: cut.deployRepo}
-		if figures, stamp, held := g.dayFigure(day.day); held {
-			daily(dayFigureRow{dayFigureKey: day, key: g.key, figures: figures, stamp: stamp})
+	}
+	for day := ends.days.From; day.Before(ends.days.To); day = day.AddDate(0, 0, 1) {
+		if figures, stamp, held := g.dayFigure(day); held {
+			key := dayFigureKey{repo: cut.repo, day: day, eval: evalID, deployRepo: cut.deployRepo}
+			daily(dayFigureRow{dayFigureKey: key, key: g.key, figures: figures, stamp: stamp})
 		}
 	}
+}
+
+// figureEnds is what one fold of a project's stored figures folds of each eval's rows of each cut
+// it reads (buildFigureEnds, figureGroup.foldFigures): the ranges of every length of FigureLengths
+// that end on each of its end days, from first through last, every one of them where picked is nil
+// and only those picked names, in day order, where it is not; and the day row of each day of days.
+// A batch of the figures walk or of a stale cut's refold folds each end day of a run of them and
+// the day before each (endsThrough), and a stale cut's first-paint batch the end days and days a
+// first paint reads (firstPaintOf).
+type figureEnds struct {
+	first, last time.Time
+	picked      []time.Time
+	days        Range
+}
+
+// endsThrough is every end day from first through last, and the day before each.
+func endsThrough(first, last time.Time) figureEnds {
+	return figureEnds{first: first, last: last, days: Range{From: first.AddDate(0, 0, -1), To: last}}
+}
+
+// endDays is f's end days, in day order.
+func (f figureEnds) endDays() iter.Seq[time.Time] {
+	return func(yield func(time.Time) bool) {
+		if f.picked != nil {
+			for _, end := range f.picked {
+				if !yield(end) {
+					return
+				}
+			}
+			return
+		}
+		for end := f.first; !end.After(f.last); end = end.AddDate(0, 0, 1) {
+			if !yield(end) {
+				return
+			}
+		}
+	}
+}
+
+// holds reports whether f folds the ranges that end on end.
+func (f figureEnds) holds(end time.Time) bool {
+	if f.picked != nil {
+		_, found := slices.BinarySearchFunc(f.picked, end, time.Time.Compare)
+		return found
+	}
+	return !end.Before(f.first) && !end.After(f.last)
+}
+
+// rows is the days whose rows f's folds read: every day one of its ranges spans, and its days.
+func (f figureEnds) rows() Range {
+	read := Range{From: f.first.AddDate(0, 0, -figureSpan), To: f.last}
+	if f.days.From.Before(read.From) {
+		read.From = f.days.From
+	}
+	if f.days.To.After(read.To) {
+		read.To = f.days.To
+	}
+	return read
 }
 
 // figureScope is what one write of a project's stored figures writes under: the build that folds
@@ -1451,25 +1525,28 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 		strings.Compare(a.deployRepo, b.deployRepo))
 }
 
-// buildFigureEnds folds, in tx, every stored figure of project whose range ends on a day from
-// first through last, and the day row of every day before one of those end days, of each eval of
-// entries in each cut the project's rows of the days those ranges span hold (readFigureCuts), or in
-// the one cut of repo where repo is not nil (a stale cut's refold, refoldCut), and writes them
-// where they moved (writeFigures): one read of the rows of each cut over those days. Every stored
-// row of those end days and days, of the cuts it folds, that no row holds any more is deleted: one
-// an earlier build folded, of an eval, a cut or a deploy repository that holds none now, or one a
-// move of a default repository left in a cut that no longer holds its rows. Where every is set,
-// entries being every eval of the project, every stored range row of those end days is read for
-// it, whatever eval it is of; where it is not (the refold of the evals a stale mark names), only
-// those of entries' evals are, so no stored row of another eval is written or deleted. It is a
-// batch of the figures walk, the whole of a new end day's ranges once the walk stands at today,
-// and a batch of a stale cut's refold.
+// buildFigureEnds folds, in tx, what ends names of project's stored figures (figureEnds): every
+// range that ends on one of its end days and the day row of each of its days, of each eval of
+// entries in each cut the project's rows of the days those ranges and days span hold
+// (readFigureCuts), or in the one cut of repo where repo is not nil (a stale cut's refold,
+// refoldCut, and its first-paint batch, foldFirstPaint), and writes them where they moved
+// (writeFigures): one read of the rows of each cut over those days. Every stored row of those end
+// days and days, of the cuts it folds, that no row holds any more is deleted: one an earlier build
+// folded, of an eval, a cut or a deploy repository that holds none now, or one a move of a default
+// repository left in a cut that no longer holds its rows. Where every is set, entries being every
+// eval of the project, every stored range row of those end days is read for it, whatever eval it
+// is of; where it is not (the refold of the evals a stale mark names), only those of entries' evals
+// are, so no stored row of another eval is written or deleted. It is a batch of the figures walk,
+// the whole of a new end day's ranges once the walk stands at today, a batch of a stale cut's
+// refold and a stale cut's first-paint batch.
 //
 // The stored day rows are read through eval_day_figures_eval_day, one range of the days for each
 // eval, the project's evals in statements of at most statementBytes: no route bounds how many
-// evals a project holds. So are entries' stored range rows where every is not set.
-func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, first, last time.Time) error {
-	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
+// evals a project holds. So are entries' stored range rows where every is not set. The read of the
+// stored range rows reads every end day from the first of ends through its last, and passes over
+// those of an end day it does not fold.
+func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, ends figureEnds) error {
+	read := ends.rows()
 	cuts, err := readFigureCuts(ctx, tx, scope.project, read, repo)
 	if err != nil {
 		return err
@@ -1484,7 +1561,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			return err
 		}
 		for _, evalID := range slices.Sorted(maps.Keys(groups)) {
-			groups[evalID].foldEnds(evalID, cut, first, last, func(row rangeFigureRow) {
+			groups[evalID].foldFigures(evalID, cut, ends, func(row rangeFigureRow) {
 				writes.ranges = append(writes.ranges, row)
 				built[row.rangeFigureKey] = true
 			}, func(row dayFigureRow) {
@@ -1493,7 +1570,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			})
 		}
 	}
-	ofCut, rangeArgs, base := "", []any{scope.project, first, last}, paramBytes(1, scope.project)+2*(4+8)
+	ofCut, rangeArgs, base := "", []any{scope.project, ends.first, ends.last}, paramBytes(1, scope.project)+2*(4+8)
 	if repo != nil {
 		ofCut, rangeArgs, base = ` and repo = $4`, append(rangeArgs, *repo), base+4+len(*repo)
 	}
@@ -1502,18 +1579,18 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut+ofEvals,
 			args...)
 		if err != nil {
-			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
+			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, ends.first.Format(time.DateOnly), ends.last.Format(time.DateOnly), err)
 		}
 		var stored rangeFigureKey
 		var n int32
 		if _, err := pgx.ForEachRow(rows, []any{&stored.repo, &n, &stored.end, &stored.eval, &stored.deployRepo}, func() error {
 			stored.days, stored.end = int(n), stored.end.UTC()
-			if !built[stored] {
+			if !built[stored] && ends.holds(stored.end) {
 				writes.goneRanges = append(writes.goneRanges, stored)
 			}
 			return nil
 		}); err != nil {
-			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
+			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, ends.first.Format(time.DateOnly), ends.last.Format(time.DateOnly), err)
 		}
 		return nil
 	}
@@ -1530,7 +1607,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 		}
 	}
 	for chunk := range statementChunks(evalIDs, base, textBytes) {
-		dayArgs := []any{scope.project, first.AddDate(0, 0, -1), last, chunk}
+		dayArgs := []any{scope.project, ends.days.From, ends.days.To, chunk}
 		ofDayCut := ""
 		if repo != nil {
 			ofDayCut, dayArgs = ` and repo = $5`, append(dayArgs, *repo)

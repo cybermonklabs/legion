@@ -23,7 +23,8 @@ import (
 // there (figures.go). So a read in one snapshot answers the old defaults whole, their figures among
 // them, or the new ones whole: a read that names no repository from figures folded under them, and
 // a read that names a repository whose cut the move marked from the day rows of the evals the mark
-// names until they are folded again (refoldStaleCuts), and from the stored figures of every other
+// names until the stored rows it reads of them are folded again, a first paint's in a batch of its
+// own before the rest of the refold (refoldStaleCuts), and from the stored figures of every other
 // eval of the cut, whose rows the move did not move. A default moves more than its own project's
 // reads: a pull request whose issue is held through a project's default repository (a condition of
 // its attribution list, delivery_days.go) counts for that project while its default is the pull
@@ -134,7 +135,8 @@ func judgingProject(defaults map[string]string, deployRepo string) string {
 // them stand, read as they are meanwhile. Every write of the commit lands together, so a read
 // answers the old defaults and figures or the new ones. The refresher's pass whose page commits
 // the move folds the marked evals of the stale cuts again once its pages are done, batch after
-// batch, each in a short transaction of its own (refoldStaleCuts).
+// batch, each in a short transaction of its own, the first paint of every cut first
+// (refoldStaleCuts).
 func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *defaultsMove) error {
 	projects := slices.AppendSeq(make([]string, 0, len(move.live)), maps.Keys(move.live))
 	slices.Sort(projects)
