@@ -174,7 +174,11 @@ var writerCases = []writerCase{
 			t.Errorf("the store holds %d secrets named %s, want the 1 scheduled for deletion", n, id)
 		}
 	}},
-	{"a create whose answer is lost makes one secret", func(t *testing.T, r WriterRig) {
+	// A create whose answer is lost never leaves two secrets of its name. It may leave one - then
+	// either it answered nil and its value reads back, or it answered an error naming what is left
+	// (Unsettled) - or none, where a store that makes the secret before its value read its own
+	// empty secret back and removed it, which it answers as an error: there is no create to finish.
+	{"a create whose answer is lost makes no second secret", func(t *testing.T, r WriterRig) {
 		ctx := context.Background()
 		id := r.Prefix + "deel-api-key"
 		r.LoseNextAnswer("create")
@@ -183,17 +187,18 @@ var writerCases = []writerCase{
 		if err == nil {
 			err = c.Store(ctx, "first-value")
 		}
-		if n := held(t, r.Writer, r.Prefix, id); n != 1 {
-			t.Fatalf("after a create whose answer was lost the store holds %d secrets named %s, want 1", n, id)
-		}
-		if err == nil {
+		n := held(t, r.Writer, r.Prefix, id)
+		switch {
+		case n > 1:
+			t.Fatalf("after a create whose answer was lost the store holds %d secrets named %s, want at most 1", n, id)
+		case n == 0 && err == nil:
+			t.Fatalf("the create answered nil and the store holds no secret named %s", id)
+		case n == 1 && err == nil:
 			if got := readValue(t, r.Writer, id); got != "first-value" {
 				t.Errorf("the create answered nil and its value reads %d bytes", len(got))
 			}
-			return
-		}
-		if c.Unsettled() == "" {
-			t.Errorf("the create answered %v and names nothing unsettled", err)
+		case n == 1 && c.Unsettled() == "":
+			t.Errorf("the create answered %v, left %s, and names nothing unsettled", err, id)
 		}
 	}},
 	{"a discard after begin leaves nothing", func(t *testing.T, r WriterRig) {

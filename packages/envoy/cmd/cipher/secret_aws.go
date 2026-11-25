@@ -26,20 +26,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
 	"github.com/aws/smithy-go/middleware"
 
 	"github.com/sjawhar/envoy/awsbody"
-	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
-// read, GetSecretValue for the value retag decodes (readValue), and writes for values, tags and
+// read, GetSecretValue for the value retag decodes (Read), and writes for values, tags and
 // deletion. *secretsmanager.Client and awstest.Local satisfy it.
 type secretsAPI interface {
 	secretsmanager.ListSecretsAPIClient
@@ -147,7 +146,7 @@ func loadedProfile(cfg aws.Config) bool {
 
 // ssoRole matches an IAM Identity Center sign-in and captures its session name. The deployment
 // repository's Identity Center permission sets map the session name to the person's userName,
-// which is their email: --owner me reads it there (awsBackend.personEmail).
+// which is their email: --owner me reads it there (awsBackend.PersonEmail).
 var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AWSReservedSSO_[^/]+/(.+)$`)
 
 // requireAccount refuses, before any read or write, a sign-in in an account other than the
@@ -194,28 +193,42 @@ func isAccessDenied(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDeniedException"
 }
 
-// awsBackend is the secretBackend for store "" or aws.Name: AWS Secrets Manager under the
-// AWS sign-in this command's environment gives it, pinned to the key ARN's account and region.
+// awsBackend is the secretstore.Writer for store "" or aws.Name: AWS Secrets Manager under the
+// AWS sign-in this command's environment gives it, pinned to the key ARN's account and region. Its
+// list, describe and value reads are the broker's own store's (awsstore.Store) over the same
+// client, whose failures that client words (awsStore, ClientErrors).
 type awsBackend struct {
+	awsstore.Store
 	settings Settings
 	sm       secretsAPI
 	st       stsAPI
 	// source is where the SDK took the sign-in from (awsSourceOf).
 	source awsSource
-	// arn is the sign-in requireAccount read, which every form reads first.
+	// arn is the sign-in RequireAccount read, which every form reads first.
 	arn string
 }
 
-// agentSecrets is an agent-secrets command line for printing. Its sign-in prefix (signInPrefix)
+// newAWSBackend is the AWS writer over sm and st, which awsClients loaded from sources, its reads
+// the broker's own store's over the same Secrets Manager client wrapped so its failures read as
+// this CLI words them (awsStore). It reads no KMS alias: the forms never ask a listing's OnKey.
+func newAWSBackend(settings Settings, sm secretsAPI, st stsAPI, sources []aws.CredentialSource) *awsBackend {
+	worded := awsStore{sm}
+	return &awsBackend{
+		Store:    awsstore.Store{Client: worded, KeyARN: settings.KMSKeyARN, ClientErrors: true},
+		settings: settings, sm: worded, st: st, source: awsSourceOf(sources),
+	}
+}
+
+// agentSecrets is an agent-secrets command line for printing. Its sign-in prefix (RerunPrefix)
 // carries the variables that chose the sign-in, so it reads the store as the identity that wrote
 // to it.
 func (b *awsBackend) agentSecrets(words ...string) string {
-	return pipeCommand(b.signInPrefix(), words...)
+	return secretstore.Command(b.RerunPrefix(), words...)
 }
 
 // awsSource is a source the AWS SDK takes the sign-in from (awsSourceOf): phrase names it in the
-// using line and in a refusal, another says how to choose another (chooseAnother), and prefix is
-// the shell assignments a printed command carries to sign in as this one did (signInPrefix).
+// using line and in a refusal, another says how to choose another (ChooseAnother), and prefix is
+// the shell assignments a printed command carries to sign in as this one did (RerunPrefix).
 type awsSource struct {
 	phrase, another, prefix string
 }
@@ -251,7 +264,7 @@ func firstSet(names ...string) (name, value string) {
 // names no key and no token, and no file's path: the web identity token file holds a token, so it
 // is named by its variable, as every file that holds a credential is, and AWS_WEB_IDENTITY_TOKEN_FILE
 // is where a person who pasted the token itself puts it. Only the prefix, the command a person
-// pastes to run again (signInPrefix), carries the path, once STS took the token the file holds
+// pastes to run again (RerunPrefix), carries the path, once STS took the token the file holds
 // (the pasted commands follow requireAccount): the file was read and signed in with, so its path
 // is no token pasted in its place. A file that cannot be read is refused naming the variable alone
 // (webIdentityToken).
@@ -276,7 +289,7 @@ func awsSourceOf(sources []aws.CredentialSource) awsSource {
 		prefix := ""
 		for _, name := range []string{"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"} {
 			if value := os.Getenv(name); value != "" {
-				prefix += name + "=" + shellWord(value) + " "
+				prefix += name + "=" + secretstore.ShellWord(value) + " "
 			}
 		}
 		return awsSource{
@@ -288,7 +301,7 @@ func awsSourceOf(sources []aws.CredentialSource) awsSource {
 		source := awsSource{
 			phrase:  "the AWS profile " + profile + " (" + profileVar + ")",
 			another: "choose another with AWS_PROFILE",
-			prefix:  profileVar + "=" + shellWord(profile) + " ",
+			prefix:  profileVar + "=" + secretstore.ShellWord(profile) + " ",
 		}
 		if profileVar == "AWS_DEFAULT_PROFILE" {
 			source.another += ", which outranks AWS_DEFAULT_PROFILE"
@@ -323,21 +336,24 @@ func profileFellThrough(sources []aws.CredentialSource) string {
 	return ""
 }
 
-func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
+// slug is the secret's name under the prefix, of its full name id.
+func (b *awsBackend) slug(id string) string { return strings.TrimPrefix(id, b.settings.SecretsPrefix) }
 
 func (b *awsBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
 
-func (b *awsBackend) requireAccount(ctx context.Context) error {
+// RequireAccount refuses a sign-in whose account does not hold the agent secrets (requireAccount),
+// and keeps the ARN it read for PersonEmail and Identity.
+func (b *awsBackend) RequireAccount(ctx context.Context) error {
 	arn, err := requireAccount(ctx, b.st, b.settings, b.source.another)
 	b.arn = arn
 	return err
 }
 
-// personEmail answers, for --owner me, the session name of an Identity Center sign-in, lowercased,
+// PersonEmail answers, for --owner me, the session name of an Identity Center sign-in, lowercased,
 // which is the person's email. Any other sign-in - a machine's role, an assumed service role, an
-// IAM user - names no person. It reads the ARN requireAccount read, which every form reads before
+// IAM user - names no person. It reads the ARN RequireAccount read, which every form reads before
 // it calls anything else.
-func (b *awsBackend) personEmail(context.Context) (string, error) {
+func (b *awsBackend) PersonEmail(context.Context) (string, error) {
 	m := ssoRole.FindStringSubmatch(b.arn)
 	if m == nil {
 		return "", fmt.Errorf("%s is no IAM Identity Center sign-in, so it names no person", b.arn)
@@ -345,88 +361,49 @@ func (b *awsBackend) personEmail(context.Context) (string, error) {
 	return strings.ToLower(m[1]), nil
 }
 
-// identity is where the sign-in came from and its ARN, as requireAccount read it.
-func (b *awsBackend) identity() string { return b.source.phrase + ": " + b.arn }
+// Identity is where the sign-in came from and its ARN, as RequireAccount read it.
+func (b *awsBackend) Identity() string { return b.source.phrase + ": " + b.arn }
 
-// chooseAnother is how a refusal of the store's says to sign in with another AWS credential, by
+// ChooseAnother is how a refusal of the store's says to sign in with another AWS credential, by
 // the source that signed in (awsSource.another): the variable that outranks it.
-func (b *awsBackend) chooseAnother() string { return b.source.another }
+func (b *awsBackend) ChooseAnother() string { return b.source.another }
 
-// signInPrefix is the shell assignments a printed command carries so it signs in as this one did
+// RerunPrefix is the shell assignments a printed command carries so it signs in as this one did
 // (awsSource.prefix): the profile variable that chose the profile, or the web identity token file
 // and role; "" for access keys, which a printed command never carries, and for the rest of the
 // SDK's chain.
-func (b *awsBackend) signInPrefix() string { return b.source.prefix }
+func (b *awsBackend) RerunPrefix() string { return b.source.prefix }
 
-func (b *awsBackend) list(ctx context.Context) ([]secretView, error) {
-	views := []secretView{}
-	pages := secretsmanager.NewListSecretsPaginator(b.sm, &secretsmanager.ListSecretsInput{
-		Filters:                []smtypes.Filter{{Key: smtypes.FilterNameStringTypeName, Values: []string{b.settings.SecretsPrefix}}},
-		IncludePlannedDeletion: aws.Bool(true),
-	})
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list the agent secrets: %w", err)
-		}
-		for _, e := range page.SecretList {
-			id := aws.ToString(e.Name)
-			if !strings.HasPrefix(id, b.settings.SecretsPrefix) {
-				continue // the name filter matched more than the namespace
-			}
-			views = append(views, secretView{
-				Name: b.displayName(id), SecretName: id,
-				HasValue: awsstore.HasCurrentVersion(e.SecretVersionsToStages),
-				Created:  e.CreatedDate, LastChanged: e.LastChangedDate,
-				Deleted: e.DeletedDate, EarliestPurge: earliestPurge(e.DeletedDate),
-			}.withTags(awsstore.TagMap(e.Tags)))
-		}
-	}
-	return views, nil
+// PrepareCreate makes nothing: AWS creates the secret with its value in Store.
+func (b *awsBackend) PrepareCreate(id string, tags map[string]string) secretstore.Create {
+	return &awsNewSecret{b: b, id: id, tags: tags}
 }
 
-func (b *awsBackend) show(ctx context.Context, slug string) (secretView, error) {
-	out, err := b.sm.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(b.id(slug))})
-	if err != nil {
-		return secretView{}, err
-	}
-	return secretView{
-		Name: b.displayName(aws.ToString(out.Name)), SecretName: aws.ToString(out.Name),
-		HasValue: awsstore.HasCurrentVersion(out.VersionIdsToStages),
-		Created:  out.CreatedDate, LastChanged: out.LastChangedDate,
-		Deleted: out.DeletedDate, EarliestPurge: earliestPurge(out.DeletedDate),
-		Versions: out.VersionIdsToStages,
-	}.withTags(awsstore.TagMap(out.Tags)), nil
-}
-
-// prepareCreate makes nothing: AWS creates the secret with its value in store.
-func (b *awsBackend) prepareCreate(slug string, tags map[string]string) newSecret {
-	return &awsNewSecret{b: b, slug: slug, tags: tags}
-}
-
-// awsNewSecret is a secret AWS has not made yet: store makes it, with its tags and value. begun,
-// which unsettled reads while store may be in flight, is set once store begins the CreateSecret.
+// awsNewSecret is a secret AWS has not made yet: Store makes it, with its tags and value. begun,
+// which Unsettled reads while Store may be in flight, is set once Store begins the CreateSecret.
 type awsNewSecret struct {
 	b     *awsBackend
-	slug  string
+	id    string
 	tags  map[string]string
 	begun atomic.Bool
 }
 
-func (*awsNewSecret) begin(context.Context) (discardOutcome, error) { return madeNothing, nil }
+func (*awsNewSecret) Begin(context.Context) (secretstore.DiscardOutcome, error) {
+	return secretstore.MadeNothing, nil
+}
 
-// store makes the secret with its tags and value, under storeCallDeadline. Its error says whether
+// Store makes the secret with its tags and value, under secretstore.CallDeadline. Its error says whether
 // the store may hold the secret: a create whose every attempt the SDK made ended in an answer
 // Secrets Manager gives before it acts (attempts.definiteRefusal) says nothing was stored; any
 // other, a deadline among them, says the store may hold the secret with its value, or nothing,
 // naming the command that tells which.
-func (n *awsNewSecret) store(ctx context.Context, value string) error {
+func (n *awsNewSecret) Store(ctx context.Context, value string) error {
 	n.begun.Store(true)
-	ctx, cancel := withStoreDeadline(ctx)
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	var attempts awsAttempts
 	_, err := n.b.sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
-		Name:         aws.String(n.b.id(n.slug)),
+		Name:         aws.String(n.id),
 		KmsKeyId:     aws.String(n.b.settings.KMSKeyARN),
 		SecretString: aws.String(value),
 		Tags:         awsstore.TagList(n.tags),
@@ -435,11 +412,11 @@ func (n *awsNewSecret) store(ctx context.Context, value string) error {
 	case err == nil:
 		return nil
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("%w; Secrets Manager did not answer within %s, so %s", err, storeCallDeadlineText(), n.unsettled())
+		return fmt.Errorf("%w; Secrets Manager did not answer within %s, so %s", err, secretstore.CallDeadlineText(), n.Unsettled())
 	case attempts.definiteRefusal(err):
 		return fmt.Errorf("%w; Secrets Manager refused the create before acting on it, so nothing was stored", err)
 	}
-	return fmt.Errorf("%w; Secrets Manager's answer leaves open whether it made the secret, so %s", err, n.unsettled())
+	return fmt.Errorf("%w; Secrets Manager's answer leaves open whether it made the secret, so %s", err, n.Unsettled())
 }
 
 // awsAttempts is the error each attempt of one call ended with, as the SDK made them: record, a
@@ -501,63 +478,52 @@ func awsDefiniteRefusal(err error) bool {
 	return errors.As(err, &apiErr) && slices.Contains(awsDefiniteRefusals, apiErr.ErrorCode())
 }
 
-// discard has nothing to remove: AWS makes the secret only in store.
-func (*awsNewSecret) discard(context.Context) (discardOutcome, error) {
-	return madeNothing, nil
+// Discard has nothing to remove: AWS makes the secret only in Store.
+func (*awsNewSecret) Discard(context.Context) (secretstore.DiscardOutcome, error) {
+	return secretstore.MadeNothing, nil
 }
 
-// madeBeforeValue is false: AWS makes the secret only with its value, so nothing waits for it.
-func (*awsNewSecret) madeBeforeValue() bool { return false }
+// MadeBeforeValue is false: AWS makes the secret only with its value, so nothing waits for it.
+func (*awsNewSecret) MadeBeforeValue() bool { return false }
 
-// unsettled says what the store may hold should the form end now: nothing before the CreateSecret,
+// Unsettled says what the store may hold should the form end now: nothing before the CreateSecret,
 // and from then the secret with its value or nothing, which `secret show` tells apart; never an
 // empty secret, which Secrets Manager does not make.
-func (n *awsNewSecret) unsettled() string {
+func (n *awsNewSecret) Unsettled() string {
 	if !n.begun.Load() {
 		return "nothing stays in the store, since Secrets Manager makes a secret only with its value"
 	}
-	name := n.b.displayName(n.b.id(n.slug))
+	name := n.b.displayName(n.id)
 	return fmt.Sprintf("the store may hold %s, made with its value, or no %s at all: `%s` says which, and no empty secret stays to clear, since Secrets Manager makes a secret only with its value", name, name, n.b.agentSecrets("secret", "show", name))
 }
 
-func (b *awsBackend) set(ctx context.Context, slug, value string) error {
+func (b *awsBackend) Set(ctx context.Context, id, value string) error {
 	_, err := b.sm.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
-		SecretId: aws.String(b.id(slug)), SecretString: aws.String(value),
+		SecretId: aws.String(id), SecretString: aws.String(value),
 	})
 	return err
 }
 
-func (b *awsBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
-	held, err := b.sm.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(b.id(slug))})
+// CurrentTags reads the secret's tags with DescribeSecret, and its ARN, the source Read takes.
+// Secrets Manager's tag writes take no condition, so the read has no etag.
+func (b *awsBackend) CurrentTags(ctx context.Context, id string) (secretstore.HeldTags, error) {
+	held, err := b.sm.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(id)})
 	if err != nil {
-		return heldTags{}, err
+		return secretstore.HeldTags{}, err
 	}
-	return heldTags{tags: awsstore.TagMap(held.Tags)}, nil
+	return secretstore.HeldTags{Tags: awsstore.TagMap(held.Tags), Source: aws.ToString(held.ARN)}, nil
 }
 
-// readValue reads the secret's AWSCURRENT value with GetSecretValue, and refuses one that is not a
-// non-empty string, as the broker's own read does (aws.Store.Read).
-func (b *awsBackend) readValue(ctx context.Context, slug string) (string, error) {
-	out, err := b.sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.id(slug))})
-	if err != nil {
-		return "", err
-	}
-	if out.SecretString == nil || *out.SecretString == "" {
-		return "", errors.New("its value is not a non-empty string")
-	}
-	return *out.SecretString, nil
-}
-
-// valueReadPermission is what GetSecretValue needs of a person's sign-in: the call itself, and
+// ValueReadPermission is what GetSecretValue needs of a person's sign-in: the call itself, and
 // the key the value is encrypted under, since Secrets Manager decrypts it as the caller.
-func (b *awsBackend) valueReadPermission() string {
+func (b *awsBackend) ValueReadPermission() string {
 	return "secretsmanager:GetSecretValue on the secret and kms:Decrypt on its key"
 }
 
-// tagReadPermission is what DescribeSecret needs of a person's sign-in: whoever stores a value
+// TagReadPermission is what DescribeSecret needs of a person's sign-in: whoever stores a value
 // reads that secret's tags first, so a write grant that does not carry this read fails `secret
 // set` before anything is written.
-func (b *awsBackend) tagReadPermission() string {
+func (b *awsBackend) TagReadPermission() string {
 	return "secretsmanager:DescribeSecret on the secret"
 }
 
@@ -578,7 +544,7 @@ const (
 // separator (a tab or a newline is none) and none of awsTagValuePunctuation. The refusal names the
 // tag, the store's limit and, for a character, the first that fails and where, as a flag's
 // refusal does, and prints no other part of the value. tags is every tag the write sends.
-func (*awsBackend) checkTagValues(tags map[string]string) error {
+func (*awsBackend) CheckTagValues(tags map[string]string) error {
 	for _, key := range slices.Sorted(maps.Keys(tags)) {
 		value := tags[key]
 		if n := utf8.RuneCountInString(value); n > awsTagValueMax {
@@ -594,100 +560,115 @@ func (*awsBackend) checkTagValues(tags map[string]string) error {
 	return nil
 }
 
-// setTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes
-// no condition on held, so the write checks its own race afterwards (raceCheck).
-func (b *awsBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
-	if err := b.tag(ctx, slug, tags); err != nil {
+// SetTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes
+// no condition on held, so the write reads its tags back after it and holds them to check
+// (readBack).
+func (b *awsBackend) SetTags(ctx context.Context, id string, _ secretstore.HeldTags, tags map[string]string, check secretstore.TagCheck) error {
+	if err := b.tag(ctx, id, tags); err != nil {
 		return err
 	}
-	return b.raceCheck(ctx, slug, held)
+	return b.readBack(ctx, id, check)
 }
 
-// removeTags removes keys in one UntagResource, which takes no condition on held either, and checks
-// its own race afterwards (raceCheck).
-func (b *awsBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
-	if err := b.untag(ctx, slug, keys); err != nil {
+// RemoveTags removes keys in one UntagResource, which takes no condition on held either, and reads
+// its tags back after it (readBack).
+func (b *awsBackend) RemoveTags(ctx context.Context, id string, _ secretstore.HeldTags, keys []string, check secretstore.TagCheck) error {
+	if err := b.untag(ctx, id, keys); err != nil {
 		return err
 	}
-	return b.raceCheck(ctx, slug, held)
+	return b.readBack(ctx, id, check)
 }
 
 // tag and untag answer an error that is no definite refusal (awsAttempts.definiteRefusal: every
-// attempt ending in a code awsDefiniteRefusals lists) as tagsUnknown: a service fault, an attempt
-// that ended any other way before a retry, or a lost connection may follow a call the store
-// carried out.
-func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]string) error {
+// attempt ending in a code awsDefiniteRefusals lists) as secretstore.TagsUnknown: a service fault,
+// an attempt that ended any other way before a retry, or a lost connection may follow a call the
+// store carried out.
+func (b *awsBackend) tag(ctx context.Context, id string, tags map[string]string) error {
 	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
-		SecretId: aws.String(b.id(slug)),
+		SecretId: aws.String(id),
 		Tags:     awsstore.TagList(tags),
 	}, attempts.record)
 	return tagOutcome(err, &attempts)
 }
 
-func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) error {
+func (b *awsBackend) untag(ctx context.Context, id string, keys []string) error {
 	var attempts awsAttempts
 	_, err := b.sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
-		SecretId: aws.String(b.id(slug)),
+		SecretId: aws.String(id),
 		TagKeys:  keys,
 	}, attempts.record)
 	return tagOutcome(err, &attempts)
 }
 
 // tagOutcome is a tag call's error as tag and untag answer it: nil, a definite refusal as it
-// is, and any other error as tagsUnknown.
+// is, and any other error as secretstore.TagsUnknown.
 func tagOutcome(err error, attempts *awsAttempts) error {
 	if err == nil || attempts.definiteRefusal(err) {
 		return err
 	}
-	return tagsUnknown{err}
+	return secretstore.TagsUnknown{Err: err}
 }
 
-// raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
-// github-owners rule when another writer retags the same secret between the write's read (held)
-// and the write itself: it reads the tags back, and when the type and github-owners there are a
-// pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged, saying this
-// retag's write landed beside the other writer's, naming the tags it read, the tags it found and
-// the retag that sets the secret right. It writes nothing: the tags it read are no more current
-// than the other writer's, so putting them back would take that writer's retag away, and more
-// than one writer is the normal case. It answers nil when the pair is one the broker serves. Both
-// of its errors come after the write landed, and are marked so (tagsLanded): the race, and a
-// read-back that failed.
-func (b *awsBackend) raceCheck(ctx context.Context, slug string, held heldTags) error {
-	now, err := b.currentTags(ctx, slug)
-	if err != nil {
-		return tagsLanded{fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)}
-	}
-	secretType, owners := policy.TypeFromTags(now.tags), now.tags[policy.TagGitHubOwners]
-	if _, err := policy.GitHubOwnersFor(secretType, owners); err == nil {
+// readBack is how a tag write on AWS, whose tag calls take no condition, answers for a race with
+// another writer that retags the same secret between the write's read and the write itself: it
+// reads the tags back and holds them to check, the retag form's own rule (its github-owners
+// check), whose error it answers. It writes nothing: the tags it read are no more current than
+// the other writer's, so putting them back would take that writer's retag away, and more than one
+// writer is the normal case. Both of its errors come after the write landed, and are marked so
+// (secretstore.TagsLanded): check's, and a read-back that failed. With no check it reads nothing.
+func (b *awsBackend) readBack(ctx context.Context, id string, check secretstore.TagCheck) error {
+	if check == nil {
 		return nil
 	}
-	name := b.displayName(b.id(slug))
-	return tagsLanded{fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; this retag's write landed beside another writer's, and nothing was restored. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
-		errTagsChanged, secretType, owners, tagPairs(held.tags), tagPairs(now.tags),
-		b.agentSecrets("secret", "retag", name, "--type", secretType, "--github-owners", "LOGINS"),
-		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))}
+	now, err := b.CurrentTags(ctx, id)
+	if err != nil {
+		return secretstore.TagsLanded{Err: fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)}
+	}
+	if err := check(now.Tags); err != nil {
+		return secretstore.TagsLanded{Err: err}
+	}
+	return nil
 }
 
-func (b *awsBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
+// Delete schedules the secret's deletion with Secrets Manager's recovery window and answers the
+// moment that window ends, DeleteSecret's own DeletionDate.
+func (b *awsBackend) Delete(ctx context.Context, id string) (time.Time, error) {
 	out, err := b.sm.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId: aws.String(b.id(slug)), RecoveryWindowInDays: aws.Int64(recoveryWindowDays),
+		SecretId: aws.String(id), RecoveryWindowInDays: aws.Int64(recoveryWindowDays),
 	})
 	if err != nil {
-		return nil, err
+		return time.Time{}, err
 	}
-	return out.DeletionDate, nil
+	return aws.ToTime(out.DeletionDate), nil
 }
 
-func (b *awsBackend) restore(ctx context.Context, slug string) error {
-	_, err := b.sm.RestoreSecret(ctx, &secretsmanager.RestoreSecretInput{SecretId: aws.String(b.id(slug))})
+func (b *awsBackend) Restore(ctx context.Context, id string) error {
+	_, err := b.sm.RestoreSecret(ctx, &secretsmanager.RestoreSecretInput{SecretId: aws.String(id)})
 	return err
 }
 
-func (b *awsBackend) isAccessDenied(err error) bool { return isAccessDenied(err) }
+// AccessDenied is AWS's AccessDeniedException (isAccessDenied).
+func (b *awsBackend) AccessDenied(err error) bool { return isAccessDenied(err) }
 
-// close is a no-op: the AWS SDK's HTTP-based clients hold no persistent connection worth
+// DefiniteRefusal is an answer Secrets Manager gives before it acts (awsDefiniteRefusal).
+func (b *awsBackend) DefiniteRefusal(err error) bool { return awsDefiniteRefusal(err) }
+
+// MissingPermission is the IAM action AWS's message says err's refusal lacks
+// (awsMissingPermission), "" for an error that is no AWS API error or names none.
+func (b *awsBackend) MissingPermission(err error) string {
+	var api smithy.APIError
+	if !errors.As(err, &api) {
+		return ""
+	}
+	return awsMissingPermission(api.ErrorMessage())
+}
+
+// Close is a no-op: the AWS SDK's HTTP-based clients hold no persistent connection worth
 // releasing explicitly.
-func (b *awsBackend) close() error { return nil }
+func (b *awsBackend) Close() error { return nil }
 
-var _ secretBackend = (*awsBackend)(nil)
+var (
+	_ secretstore.Writer       = (*awsBackend)(nil)
+	_ secretstore.AccountGuard = (*awsBackend)(nil)
+)

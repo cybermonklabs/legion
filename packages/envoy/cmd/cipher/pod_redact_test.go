@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // TestAPodTokenFileIsNamedByItsFlagNeverItsPath: a token pasted where --pod-token-file wants the
@@ -96,7 +97,7 @@ func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 		if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit %d, want 0 (stderr %q)", code, stderr.String())
 		}
-		if want := "agent-secrets renew --pod-token-file " + shellWord(tokenFile); !strings.Contains(stderr.String(), want) {
+		if want := "agent-secrets renew --pod-token-file " + secretstore.ShellWord(tokenFile); !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name the renewal command %q", stderr.String(), want)
 		}
 	})

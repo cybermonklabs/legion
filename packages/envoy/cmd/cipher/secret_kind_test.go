@@ -709,7 +709,7 @@ func typeTaggedSecret(t *testing.T, name string) awstest.LocalSecret {
 // UntagResource and nothing else, so IAM refusing it leaves every tag as it was, and a retag that
 // both removes and sets tags is refused before any read or write, since it would take two calls.
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
-// write that lands reads them once more, to find a concurrent writer's (awsBackend.raceCheck).
+// write that lands reads them once more, to find a concurrent writer's (awsBackend.readBack).
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))

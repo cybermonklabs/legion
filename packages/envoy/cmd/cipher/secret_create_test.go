@@ -1,7 +1,7 @@
 // packages/envoy/cmd/cipher/secret_create_test.go
 //
 // The deadline on each store call `secret create` makes from CreateSecret until the value is stored
-// or the discard is done (storeCallDeadline), on both stores: a call the store never answers ends
+// or the discard is done (secretstore.CallDeadline), on both stores: a call the store never answers ends
 // at the deadline, and the create then fails as it fails on any store error, never waiting on it.
 package main
 
@@ -26,15 +26,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // useStoreCallDeadline makes d the deadline on each store call of a create, for the rest of t.
 func useStoreCallDeadline(t *testing.T, d time.Duration) {
 	t.Helper()
-	restore := storeCallDeadline
-	storeCallDeadline = d
-	t.Cleanup(func() { storeCallDeadline = restore })
+	restore := secretstore.CallDeadline
+	secretstore.CallDeadline = d
+	t.Cleanup(func() { secretstore.CallDeadline = restore })
 }
 
 // hungCreate is a Secrets Manager whose CreateSecret answers nothing until release is closed, and
@@ -285,7 +286,7 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 	}
 	defer s.Close()
 	var stderr strings.Builder
-	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.prepareCreate("new-test", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent})}
+	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.PrepareCreate(s.id("new-test"), map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent})}
 	if err := p.begin(); err != nil {
 		t.Fatal(err)
 	}

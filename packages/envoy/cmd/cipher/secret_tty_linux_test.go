@@ -25,6 +25,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // openPTY opens a pseudo-terminal: the controller, the side a terminal emulator writes what a
@@ -807,7 +809,7 @@ func TestPromptSignalHelper(t *testing.T) {
 func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 	t.Parallel()
 	reset := []string{"env", "--default-signal=INT,TERM"}
-	helper := shellWord(os.Args[0]) + " -test.run=^TestPromptSignalHelper$"
+	helper := secretstore.ShellWord(os.Args[0]) + " -test.run=^TestPromptSignalHelper$"
 	for _, tc := range []struct {
 		name    string
 		command *exec.Cmd

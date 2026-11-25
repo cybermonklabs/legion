@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // newTestID is the store's whole name of NEW_TEST, the secret these tests create.
@@ -508,7 +509,7 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer s.Close()
-	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: io.Discard, created: s.backend.prepareCreate("new-test", nil)}
+	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: io.Discard, created: s.backend.PrepareCreate(s.id("new-test"), nil)}
 	p.interrupted()
 	if fake.written() != 1 || len(fake.called()) != 0 {
 		t.Fatalf("secrets %d, calls %v; want the existing secret unchanged and no store call", fake.written(), fake.called())
@@ -736,7 +737,7 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 		{"a key file", func(t *testing.T) {
 			useGCPIdentity(t, "service_account", "robot@acme.iam.gserviceaccount.com")
 		}, func() (string, string) {
-			path := shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+			path := secretstore.ShellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 			return "GOOGLE_APPLICATION_CREDENTIALS=" + path + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + path + " "
 		}},
 		{"a named gcloud login", func(t *testing.T) {
@@ -814,7 +815,7 @@ func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 	}
 	defer s.Close()
 	var stderr strings.Builder
-	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.prepareCreate("new-test", nil)}
+	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.PrepareCreate(s.id("new-test"), nil)}
 	if err := p.begin(); err == nil || fake.written() != 0 {
 		t.Fatalf("begin = %v with %d secrets held; want the lost answer's failure and the empty secret deleted", err, fake.written())
 	}

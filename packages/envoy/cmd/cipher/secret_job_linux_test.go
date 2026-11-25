@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
@@ -85,7 +87,7 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 	// Without job control a background command's standard input is /dev/null, so
 	// the subshell names the terminal for it.
 	command := "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " AGENT_SECRETS_JOB_HELPER=1 " +
-		shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$' </dev/tty"
+		secretstore.ShellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$' </dev/tty"
 	s.reset()
 	s.send("(" + command + " &)\r")
 	s.wait("HELPER_PID=")

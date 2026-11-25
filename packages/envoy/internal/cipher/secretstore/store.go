@@ -17,6 +17,17 @@ import (
 // and Read's for a source the store no longer holds or that has no current value.
 var ErrNotFound = errors.New("secret not found in the store")
 
+// NotFound is err, a client's failure that says the store holds no such secret, as a store
+// answers it where its client words its own failures (the agent-secrets CLI's do): it matches
+// ErrNotFound, prints as the client worded it, and unwraps to it.
+func NotFound(err error) error { return notFound{err} }
+
+type notFound struct{ err error }
+
+func (n notFound) Error() string        { return n.err.Error() }
+func (n notFound) Unwrap() error        { return n.err }
+func (n notFound) Is(target error) bool { return target == ErrNotFound }
+
 // ErrValueNotText is what Read's error wraps for a current value that is not text the broker can
 // hand a command - an empty value, a Secrets Manager SecretBinary with no SecretString, a Secret
 // Manager payload that is not UTF-8 - so no release and no mint could use it. It is the value's

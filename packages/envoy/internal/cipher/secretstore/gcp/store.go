@@ -83,6 +83,35 @@ type Store struct {
 	// scheduled for deletion), so releasing the same secret again within gcpHeldFor costs no
 	// metadata read whatever the verdict was.
 	held *heldCache
+	// clientErrors answers each failure of Client as Client returned it (WithClientErrors).
+	clientErrors bool
+}
+
+// WithClientErrors is g answering each failure of its Client as the Client returned it, with no
+// prefix of the store's and never reduced to the status code (gcpErr), a not-found one still
+// matching ErrNotFound (secretstore.NotFound): for a client that words its own failures and never
+// prints the status message, the agent-secrets CLI's. The broker's store does without it.
+func (g Store) WithClientErrors() Store {
+	g.clientErrors = true
+	return g
+}
+
+// failed is err, Client's failure, as the store answers it: the code alone under prefix, or as
+// the client returned it (WithClientErrors).
+func (g Store) failed(prefix string, err error) error {
+	if g.clientErrors {
+		return err
+	}
+	return fmt.Errorf("%s: %w", prefix, gcpErr(err))
+}
+
+// missing is err, Client's NotFound, as ErrNotFound: itself, or printing as the client returned it
+// (WithClientErrors).
+func (g Store) missing(err error) error {
+	if g.clientErrors {
+		return secretstore.NotFound(err)
+	}
+	return secretstore.ErrNotFound
 }
 
 // gcpHeldFor is how long Read trusts its last metadata verdict on a secret. Value releases cost
@@ -226,7 +255,7 @@ func (g Store) List(ctx context.Context, prefix string, opts secretstore.ReadOpt
 	it := g.Client.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{Parent: parent, Filter: "name:" + idPrefix})
 	for secret, err := range it.All() {
 		if err != nil {
-			return nil, fmt.Errorf("list secrets under %s: %w", prefix, gcpErr(err))
+			return nil, g.failed("list secrets under "+prefix, err)
 		}
 		if !strings.HasPrefix(secret.GetName(), prefix) || secret.GetExpireTime() != nil && !opts.IncludeDeleted {
 			continue
@@ -249,10 +278,10 @@ func (g Store) List(ctx context.Context, prefix string, opts secretstore.ReadOpt
 func (g Store) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
 	if status.Code(err) == codes.NotFound {
-		return secretstore.Listing{}, secretstore.ErrNotFound
+		return secretstore.Listing{}, g.missing(err)
 	}
 	if err != nil {
-		return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, gcpErr(err))
+		return secretstore.Listing{}, g.failed("describe "+id, err)
 	}
 	if secret.GetExpireTime() != nil && !opts.IncludeDeleted {
 		return secretstore.Listing{}, secretstore.ErrNotFound
@@ -297,14 +326,14 @@ func (g Store) listing(ctx context.Context, secret *secretmanagerpb.Secret, opts
 		onKey = secret.GetReplication().GetAutomatic().GetCustomerManagedEncryption().GetKmsKeyName() == g.KeyName
 		_, ls.Unfilled = secret.GetLabels()[secretstore.CreateLabel]
 	default:
-		return secretstore.Listing{}, fmt.Errorf("describe %s: %w", latest, gcpErr(err))
+		return secretstore.Listing{}, g.failed("describe "+latest, err)
 	}
 	ls.OnKey = func(context.Context) (bool, error) { return onKey, nil }
 	if opts.Versions {
 		ls.Versions = map[string][]string{}
 		for v, err := range g.Client.ListSecretVersions(ctx, &secretmanagerpb.ListSecretVersionsRequest{Parent: name}).All() {
 			if err != nil {
-				return secretstore.Listing{}, fmt.Errorf("list the versions of %s: %w", name, gcpErr(err))
+				return secretstore.Listing{}, g.failed("list the versions of "+name, err)
 			}
 			ls.Versions[v.GetName()[strings.LastIndex(v.GetName(), "/")+1:]] = []string{v.GetState().String()}
 		}
@@ -346,9 +375,9 @@ func (g Store) Read(ctx context.Context, source string) (string, error) {
 			}
 			return nil
 		case codes.NotFound:
-			return secretstore.ErrNotFound
+			return g.missing(err)
 		default:
-			return fmt.Errorf("secret manager %s: %w", source, gcpErr(err))
+			return g.failed("secret manager "+source, err)
 		}
 	}); err != nil {
 		return "", err
@@ -358,7 +387,7 @@ func (g Store) Read(ctx context.Context, source string) (string, error) {
 	switch status.Code(err) {
 	case codes.OK:
 	case codes.NotFound:
-		return "", secretstore.ErrNotFound
+		return "", g.missing(err)
 	case codes.FailedPrecondition:
 		// A disabled or destroyed latest version answers FAILED_PRECONDITION, and that is the
 		// secret having no value. Google does not document it as the code's only meaning (an
@@ -373,13 +402,13 @@ func (g Store) Read(ctx context.Context, source string) (string, error) {
 			if err == nil && (version.GetState() == secretmanagerpb.SecretVersion_DISABLED || version.GetState() == secretmanagerpb.SecretVersion_DESTROYED) {
 				return secretstore.ErrNotFound
 			}
-			return fmt.Errorf("secret manager %s: %w", latest, gcpErr(accessErr))
+			return g.failed("secret manager "+latest, accessErr)
 		}); err != nil {
 			return "", err
 		}
-		return "", fmt.Errorf("secret manager %s: %w", latest, gcpErr(accessErr))
+		return "", g.failed("secret manager "+latest, accessErr)
 	default:
-		return "", fmt.Errorf("secret manager %s: %w", latest, gcpErr(err))
+		return "", g.failed("secret manager "+latest, err)
 	}
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {

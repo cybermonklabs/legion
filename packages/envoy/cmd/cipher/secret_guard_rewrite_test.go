@@ -152,7 +152,7 @@ func (r *raceOnTag) DescribeSecret(ctx context.Context, in *secretsmanager.Descr
 }
 
 // TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded: on AWS a tag write is made first and checked
-// after (awsBackend.raceCheck), so a removal retag's two writes can fail after they landed. The
+// after (awsBackend.readBack), so a removal retag's two writes can fail after they landed. The
 // secret keeps a dispatch-project tag whose requesters list lacks the rollback guard, and
 // `--max-grant none` removes the max-grant, then writes the list with the guard after it.
 //   - The rewrite raced, or its read-back failed: the rewrite landed. The requesters tag holds the

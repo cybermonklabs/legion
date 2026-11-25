@@ -34,6 +34,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // roundTripFunc is an http.RoundTripper made of one function.
@@ -506,7 +508,7 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 			"`gcloud auth print-access-token` failed for ada@example.com: exit status 1: run the same gcloud command yourself to see its message"},
 		{"the login list", strings.ReplaceAll(refused, "print-access-token", "list"), `printf '%s\n' 'unused'`, 1,
 			"`gcloud auth list` failed: exit status 1: run the same gcloud command yourself to see its message"},
-		{"control: a gcloud that answers", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, `printf '%s\n' ` + shellWord(stubTokenPrefix+"ada@example.com"), 0,
+		{"control: a gcloud that answers", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, `printf '%s\n' ` + secretstore.ShellWord(stubTokenPrefix+"ada@example.com"), 0,
 			"using the active gcloud account (gcloud configuration default): ada@example.com"},
 	} {
 		t.Run(row.name, func(t *testing.T) {

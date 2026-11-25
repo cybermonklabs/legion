@@ -28,16 +28,18 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/testexec"
 )
 
-// gcloudHeldDeadline is what these tests make the deadline on each store call (storeCallDeadline)
-// and gcloudSettingsDeadline: longer than any run, so no timer ends a call. The test ends each
-// call itself, once it has seen the stub gcloud's child running (callEnds), by firing the call's
-// context as a deadline (firedDeadline), the way a timer's expiry ends it. So the child is always
-// seen before the kill, whatever the machine's load. That the timer itself ends the call at the
-// deadline, naming it, is TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's and
+// gcloudHeldDeadline is what these tests make the deadline on each store call
+// (secretstore.CallDeadline) and gcloudSettingsDeadline: longer than any run, so no timer ends a
+// call. The test ends each call itself, once it has seen the stub gcloud's child running
+// (callEnds), by firing the call's context as a deadline (firedDeadline), the way a timer's expiry
+// ends it. So the child is always seen before the kill, whatever the machine's load. That the
+// timer itself ends the call at the deadline, naming it, is
+// TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's and
 // TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline's.
 const gcloudHeldDeadline = time.Hour
 
@@ -297,10 +299,10 @@ func (c gcloudChild) requireGone(t *testing.T) {
 
 // TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild: a refresh of an expired gcloud token
 // (gcloudToken.Token, `gcloud auth print-access-token`) that gcloud never answers ends at the
-// deadline on each store call (storeCallDeadline), naming the account and the deadline, and the
-// child that held gcloud's output is gone with it, not left running. The test fires the deadline
-// once it has seen the child running (callEnds); the timer's own expiry and its error alone, on
-// every platform, are TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's.
+// deadline on each store call (secretstore.CallDeadline), naming the account and the deadline, and
+// the child that held gcloud's output is gone with it, not left running. The test fires the
+// deadline once it has seen the child running (callEnds); the timer's own expiry and its error
+// alone, on every platform, are TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's.
 func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling ((gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	useStoreCallDeadline(t, gcloudHeldDeadline)
@@ -319,7 +321,7 @@ func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 }
 
 // TestGcloudLoginListAtItsDeadlineKillsGcloudsChild: `gcloud auth list` (gcloudLogins) runs under
-// storeCallDeadline as the token's refresh does, so a gcloud that never answers ends at that
+// secretstore.CallDeadline as the token's refresh does, so a gcloud that never answers ends at that
 // deadline, naming it, and the child that held gcloud's output is gone with it, not left running.
 // The test fires the deadline once it has seen the child running (callEnds).
 func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
@@ -388,7 +390,7 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 		last = "exit 0"
 	}
 	if os.Getenv(gcloudExecs) != "" {
-		last = "echo $$ >" + shellWord(filepath.Join(filepath.Dir(pidFile), gcloudPidName)) + "\nexec sleep 3600"
+		last = "echo $$ >" + secretstore.ShellWord(filepath.Join(filepath.Dir(pidFile), gcloudPidName)) + "\nexec sleep 3600"
 	}
 	gcloud, child := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	if at != "" {
@@ -609,7 +611,7 @@ func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
 	goAhead := filepath.Join(dir, "go")
 	// The stub waits for the go-ahead, and gives up when this test's process is gone, so a test
 	// that failed before its release leaves no stub behind.
-	wait := "while [ ! -e " + shellWord(goAhead) + " ]; do kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null || exit 1; sleep 0.01; done\nexit 0"
+	wait := "while [ ! -e " + secretstore.ShellWord(goAhead) + " ]; do kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null || exit 1; sleep 0.01; done\nexit 0"
 	gcloud, child := gcloudStubIn(t, dir, wait)
 	release := func() {
 		if err := os.WriteFile(goAhead, nil, 0o600); err != nil {

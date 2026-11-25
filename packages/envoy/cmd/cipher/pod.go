@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -298,10 +299,10 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 	// that enrolled into a directory named by --out alone would otherwise be handed a command
 	// that exits 1, finding no broker identity for this process (or, on a machine the broker
 	// accepts on its own identity, acting as that machine rather than as this pod). Both words
-	// are shell-quoted (shellWord), so the line pastes as it reads whatever the directory and
+	// are shell-quoted (secretstore.ShellWord), so the line pastes as it reads whatever the directory and
 	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
-		prefix, shellWord(out), shellWord(tokenFile))
+		prefix, secretstore.ShellWord(out), secretstore.ShellWord(tokenFile))
 	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
 	// (cipheraddr.Address.Words); the file above keeps it as it came.
 	fmt.Fprintln(stdout, idWords(base, enrollmentID))

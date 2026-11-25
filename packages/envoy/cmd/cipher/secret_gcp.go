@@ -35,7 +35,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"cloud.google.com/go/auth/credentials"
 	"cloud.google.com/go/auth/oauth2adapt"
@@ -52,6 +51,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
@@ -198,7 +198,7 @@ const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 // gcpUserinfo reads the email of the account behind creds from Google's userinfo endpoint, which
 // answers only a token that carries an email scope. Only --owner me asks for it
-// (gcpBackend.personEmail). A failure names the endpoint and its status and registered code
+// (gcpBackend.PersonEmail). A failure names the endpoint and its status and registered code
 // (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
 // words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
 // the error a refused refresh answers. Tests replace it so no form makes a network call for it.
@@ -262,15 +262,15 @@ func findGcloud() (gcloudCommand, error) {
 
 // gcloudLogins is every login `gcloud auth list` names, and the one it marks active (its
 // core/account property, under gcloud's configuration): the first of a gcloud source's three
-// calls, which decides whether the source is present. It runs under storeCallDeadline, as the
+// calls, which decides whether the source is present. It runs under secretstore.CallDeadline, as the
 // token's refresh does (gcloudToken.Token), so a gcloud that never answers stops the command at
 // that deadline rather than holding it. A list gcloud cannot make is an error.
 func gcloudLogins(ctx context.Context, gcloud gcloudCommand) (accounts []string, active string, err error) {
-	ctx, cancel := withStoreDeadline(ctx)
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	out, err := runGcloud(ctx, gcloud, "auth", "list", "--format=json")
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, "", fmt.Errorf("`gcloud auth list` did not answer within %s", storeCallDeadlineText())
+		return nil, "", fmt.Errorf("`gcloud auth list` did not answer within %s", secretstore.CallDeadlineText())
 	}
 	if err != nil {
 		return nil, "", fmt.Errorf("`gcloud auth list` failed: %w", err)
@@ -357,7 +357,7 @@ func unreadPrincipal(account string) string {
 // personAccount reports whether email, as Google's userinfo endpoint names an account, is a
 // person's: a plain email the broker accepts as a person owner (policy.ValidPersonOwner,
 // lowercased), and no service account's (one ending in .gserviceaccount.com, such as a machine's
-// own). --owner me takes only a person's (gcpBackend.personEmail).
+// own). --owner me takes only a person's (gcpBackend.PersonEmail).
 func personAccount(email string) bool {
 	lower := strings.ToLower(email)
 	return policy.ValidPersonOwner(lower) && !strings.HasSuffix(lower, ".gserviceaccount.com")
@@ -429,16 +429,16 @@ func gcloudTokenArgs(account string) []string {
 }
 
 // Token runs `gcloud auth print-access-token` for the account under a deadline of its own,
-// storeCallDeadline: a refresh runs inside a store call, under that call's context only where
+// secretstore.CallDeadline: a refresh runs inside a store call, under that call's context only where
 // oauth2 passes one, which it does not, so without its own bound a gcloud that never answered would
 // hold the call past its deadline.
 func (s gcloudToken) Token() (*oauth2.Token, error) {
 	started := time.Now()
-	ctx, cancel := withStoreDeadline(s.ctx)
+	ctx, cancel := secretstore.WithCallDeadline(s.ctx)
 	defer cancel()
 	out, err := runGcloud(ctx, s.gcloud, gcloudTokenArgs(s.account)...)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("`gcloud auth print-access-token` did not answer within %s for %s", storeCallDeadlineText(), s.account)
+		return nil, fmt.Errorf("`gcloud auth print-access-token` did not answer within %s for %s", secretstore.CallDeadlineText(), s.account)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("`gcloud auth print-access-token` failed for %s: %w", s.account, err)
@@ -509,11 +509,12 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 // later source is tried; with none present the error names each and why it had nothing. A
 // gcloud source runs gcloud with gcloud's own settings for its configuration and account
 // (gcloudEnv). It refuses no credential for the identity it is: Secret Manager's IAM decides what
-// each may read and write, and a refusal of the store's names the credential (identity). The
+// each may read and write, and a refusal of the store's names the credential (Identity). The
 // read of whom a credential acts as is best effort (R2): it makes no userinfo or tokeninfo call,
-// since only --owner me needs an email (personEmail), and a read of the metadata server's email or
+// since only --owner me needs an email (PersonEmail), and a read of the metadata server's email or
 // of gcloud's auth settings that fails or is slow names the principal less exactly and never
-// stops the command.
+// stops the command. Its list, describe and value reads are the broker's own store's (gcp.Store)
+// over the same client, whose failures storeInterceptor words (WithClientErrors).
 func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) {
 	b := &gcpBackend{settings: settings}
 	if err := b.signIn(ctx); err != nil {
@@ -524,6 +525,7 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
 	b.client = client
+	b.Store = gcp.New(client, settings.KMSKeyName).WithClientErrors()
 	return b, nil
 }
 
@@ -577,7 +579,7 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 
 	// The file holds a credential, so neither its refusal nor the phrase that names it in the
 	// "using" line and a store's refusal spells its path (credentialsFileRefusal). A command printed
-	// for running again does carry the path, as an absolute one (signInPrefix): it is the file this
+	// for running again does carry the path, as an absolute one (RerunPrefix): it is the file this
 	// sign-in read and signed in with, so it is no credential a person pasted.
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		const file = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names"
@@ -736,15 +738,27 @@ func credentialsFilePrincipal(creds *google.Credentials) string {
 	return cipherclient.ServiceAccountWords(account, "the credentials file")
 }
 
-// gcpBackend is the secretBackend for store "gcp-secret-manager": GCP Secret Manager under the
-// credential of the first Google credential source present (newGCPBackend), pinned to
-// settings.GCPProject.
+// gcpBackend is the secretstore.Writer for store "gcp-secret-manager": GCP Secret Manager under
+// the credential of the first Google credential source present (newGCPBackend), pinned to
+// settings.GCPProject. It implements no secretstore.AccountGuard: every call it makes names
+// projects/<gcp_project>/... in the resource, so a wrong-project sign-in gets a real
+// PermissionDenied or NotFound from the API itself rather than reading another project's
+// secrets, where AWS's ListSecrets takes no account at all. A sign-in's own project (its quota
+// project, set from a credentials file's project_id, which a person's sign-in does not carry) is
+// in any case not reliably comparable with the broker's gcp_project without a Resource Manager
+// call this CLI does not make. It implements no tagValueChecker either: Secret Manager holds tags
+// as annotations, whose values take any character and no per-value limit, only one of under
+// 16 KiB for every key and value of the secret together
+// (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
+// annotations); the longest tag this client writes is guidance, at most policy.MaxGuidanceRunes
+// characters (8000 bytes of UTF-8), which the tag rules hold it to, so the tags fit.
 type gcpBackend struct {
+	gcp.Store
 	settings Settings
 	client   *secretmanager.Client
 	creds    *google.Credentials
 	// source is the source creds came from, sourcePhrase names it, and principal is who creds act
-	// as, or principalUnknown (identity).
+	// as, or principalUnknown (Identity).
 	source       gcpSource
 	sourcePhrase string
 	principal    string
@@ -753,7 +767,7 @@ type gcpBackend struct {
 	gcloudAccount string
 	// credentialsFile is the absolute path of the file GOOGLE_APPLICATION_CREDENTIALS named, which
 	// a credentials file source read and signed in with: a command the form prints for running
-	// again carries it (signInPrefix, gcloudPin).
+	// again carries it (RerunPrefix, gcloudPin).
 	credentialsFile string
 	// tokens is the token source the Secret Manager client signs with (storeCredentials).
 	tokens *storeTokens
@@ -772,29 +786,29 @@ func (b *gcpBackend) secretID(slug string) string {
 
 func (b *gcpBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
 
-// requireAccount is a no-op for GCP, unlike AWS's: every call this backend makes already names
+// RequireAccount is a no-op for GCP, unlike AWS's: every call this backend makes already names
 // projects/<gcp_project>/... explicitly in the resource, so a wrong-project sign-in gets a real
 // PermissionDenied or NotFound from the API itself rather than silently reading another
 // project's secrets - AWS's ListSecrets takes no project parameter at all, which is the hazard
-// requireAccount guards there. A sign-in's own project (its quota project, set from a credentials
+// RequireAccount guards there. A sign-in's own project (its quota project, set from a credentials
 // file's project_id, which a person's sign-in does not carry) is in any case not reliably
 // comparable with the broker's gcp_project without a Resource Manager call this CLI does not
 // make.
-func (b *gcpBackend) requireAccount(context.Context) error { return nil }
+func (b *gcpBackend) RequireAccount(context.Context) error { return nil }
 
-// checkTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
+// CheckTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
 // character and no per-value limit, only one of under 16 KiB for every key and value of the secret
 // together (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
 // annotations), which the API holds an update to itself.
-func (b *gcpBackend) checkTagValues(map[string]string) error { return nil }
+func (b *gcpBackend) CheckTagValues(map[string]string) error { return nil }
 
-// personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
+// PersonEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
 // Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
 // without an email scope (an access token minted for cloud-platform alone, as a lent token or a
 // machine's commonly is), and an account that is no person's (personAccount): a service account's
 // email names no person.
-func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
+func (b *gcpBackend) PersonEmail(ctx context.Context) (string, error) {
 	email, err := gcpUserinfo(ctx, b.creds)
 	switch {
 	case err != nil:
@@ -809,11 +823,11 @@ func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 	return strings.ToLower(email), nil
 }
 
-// identity names the credential this backend signs in with, as `<source>: <principal>`: the
+// Identity names the credential this backend signs in with, as `<source>: <principal>`: the
 // source newGCPBackend took it from, and who it acts as, or that the principal is unknown.
-func (b *gcpBackend) identity() string { return b.sourcePhrase + ": " + b.principal }
+func (b *gcpBackend) Identity() string { return b.sourcePhrase + ": " + b.principal }
 
-// chooseAnother is how a refusal of the store's says to sign in with another credential, built
+// ChooseAnother is how a refusal of the store's says to sign in with another credential, built
 // from the source that signed in and from what outranks what: a lent token outranks every other
 // source, so only unsetting it or lending another chooses another; a credentials file outranks the
 // gcloud variables, so they choose only once it is unset; under every later source the gcloud
@@ -821,7 +835,7 @@ func (b *gcpBackend) identity() string { return b.sourcePhrase + ": " + b.princi
 // account of any configuration CLOUDSDK_ACTIVE_CONFIG_NAME names (chooseGcloudAccount), so a
 // configuration chooses only once that variable is unset too, and the advice says so. Where a
 // gcloud variable can choose, it lists the gcloud configurations here.
-func (b *gcpBackend) chooseAnother() string {
+func (b *gcpBackend) ChooseAnother() string {
 	configurations := " (gcloud configurations here: " + gcloudConfigurationList() + ")"
 	account := os.Getenv("CLOUDSDK_CORE_ACCOUNT") != ""
 	switch {
@@ -837,82 +851,26 @@ func (b *gcpBackend) chooseAnother() string {
 	return "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS" + configurations
 }
 
-// signInPrefix is the shell assignments a command line a form prints for running again
-// (pipeCommand) needs to sign in as this one did, each shell-quoted, where a variable chose the
+// RerunPrefix is the shell assignments a command line a form prints for running again
+// (secretstore.Command) needs to sign in as this one did, each shell-quoted, where a variable chose the
 // source and may have been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file
 // it named, as the absolute path of the file this sign-in read (credentialsFile), so the command
 // signs in with that same file in any shell and from any directory, and CLOUDSDK_ACTIVE_CONFIG_NAME
 // and CLOUDSDK_CORE_ACCOUNT, as set, for the gcloud login they chose; "" for every other source.
 // It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a printed command carries no token.
-func (b *gcpBackend) signInPrefix() string {
+func (b *gcpBackend) RerunPrefix() string {
 	prefix := ""
 	switch b.source {
 	case sourceCredentialsFile:
-		prefix = "GOOGLE_APPLICATION_CREDENTIALS=" + shellWord(b.credentialsFile) + " "
+		prefix = "GOOGLE_APPLICATION_CREDENTIALS=" + secretstore.ShellWord(b.credentialsFile) + " "
 	case sourceChosenGcloud:
 		for _, name := range []string{"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT"} {
 			if value := os.Getenv(name); value != "" {
-				prefix += name + "=" + shellWord(value) + " "
+				prefix += name + "=" + secretstore.ShellWord(value) + " "
 			}
 		}
 	}
 	return prefix
-}
-
-// hasCurrentVersion reports whether id is served while versions/latest is ENABLED.
-func (b *gcpBackend) hasCurrentVersion(ctx context.Context, id string) (bool, error) {
-	version, err := b.client.GetSecretVersion(ctx, &secretmanagerpb.GetSecretVersionRequest{Name: id + "/versions/latest"})
-	if status.Code(err) == codes.NotFound {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return version.GetState() == secretmanagerpb.SecretVersion_ENABLED, nil
-}
-
-// viewOf is secret as a secretView, less its versions, which only show reads.
-func (b *gcpBackend) viewOf(ctx context.Context, secret *secretmanagerpb.Secret) (secretView, error) {
-	hasValue, err := b.hasCurrentVersion(ctx, secret.GetName())
-	if err != nil {
-		return secretView{}, err
-	}
-	view := secretView{
-		Name: b.displayName(secret.GetName()), SecretName: secret.GetName(),
-		HasValue: hasValue,
-	}.withTags(secret.GetAnnotations())
-	if t := secret.GetCreateTime(); t != nil {
-		created := t.AsTime()
-		view.Created = &created
-	}
-	if t := secret.GetExpireTime(); t != nil {
-		deleted := t.AsTime()
-		view.Deleted = &deleted
-	}
-	return view, nil
-}
-
-func (b *gcpBackend) list(ctx context.Context) ([]secretView, error) {
-	views := []secretView{}
-	it := b.client.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{Parent: b.parent()})
-	for {
-		secret, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("list the agent secrets: %w", err)
-		}
-		if !strings.HasPrefix(secret.GetName(), b.settings.SecretsPrefix) {
-			continue // the parent held more than the namespace
-		}
-		view, err := b.viewOf(ctx, secret)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", secret.GetName(), err)
-		}
-		views = append(views, view)
-	}
-	return views, nil
 }
 
 // versionsOf maps each of id's version numbers to its one-element state, the GCP counterpart of
@@ -934,26 +892,9 @@ func (b *gcpBackend) versionsOf(ctx context.Context, id string) (map[string][]st
 	return versions, nil
 }
 
-func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) {
-	id := b.id(slug)
-	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
-	if err != nil {
-		return secretView{}, err
-	}
-	view, err := b.viewOf(ctx, secret)
-	if err != nil {
-		return secretView{}, err
-	}
-	versions, err := b.versionsOf(ctx, id)
-	if err != nil {
-		return secretView{}, err
-	}
-	view.Versions = versions
-	return view, nil
-}
-
-func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
-	return b.addVersion(ctx, b.id(slug), value)
+// Set adds value as the secret's new latest version.
+func (b *gcpBackend) Set(ctx context.Context, id, value string) error {
+	return b.addVersion(ctx, id, value)
 }
 
 func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
@@ -964,56 +905,43 @@ func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error
 	return err
 }
 
-func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
-	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
+// CurrentTags reads the secret's annotations with GetSecret, that read's etag, which a tag write
+// sends, and its resource name, the source Read takes.
+func (b *gcpBackend) CurrentTags(ctx context.Context, id string) (secretstore.HeldTags, error) {
+	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
 	if err != nil {
-		return heldTags{}, err
+		return secretstore.HeldTags{}, err
 	}
-	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
+	return secretstore.HeldTags{Tags: secret.GetAnnotations(), Etag: secret.GetEtag(), Source: secret.GetName()}, nil
 }
 
-// readValue reads the secret's value with AccessSecretVersion on versions/latest, the version the
-// broker serves, and refuses one that is empty or not valid UTF-8, as the broker's own read does
-// (gcp.Store.Read). Its error never holds the value's bytes.
-func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error) {
-	latest := b.id(slug) + "/versions/latest"
-	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})
-	if err != nil {
-		return "", err
-	}
-	data := out.GetPayload().GetData()
-	if len(data) == 0 || !utf8.Valid(data) {
-		return "", errors.New("its value is not a non-empty UTF-8 string")
-	}
-	return string(data), nil
-}
-
-// valueReadPermission is what AccessSecretVersion needs of a person's sign-in. The roles people
+// ValueReadPermission is what AccessSecretVersion needs of a person's sign-in. The roles people
 // hold on the broker's secrets commonly lack it: they add versions and change annotations, and
 // read none.
-func (b *gcpBackend) valueReadPermission() string {
+func (b *gcpBackend) ValueReadPermission() string {
 	return "secretmanager.versions.access on the secret"
 }
 
-// tagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
+// TagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
 // that secret's annotations first, so a write grant that does not carry this read fails `secret
 // set` before anything is written.
-func (b *gcpBackend) tagReadPermission() string {
+func (b *gcpBackend) TagReadPermission() string {
 	return "secretmanager.secrets.get on the secret"
 }
 
-// setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
+// SetTags writes tags into the annotations held holds, and RemoveTags deletes keys from them, each
 // in one UpdateSecret that keeps every annotation it does not name. An UpdateSecret whose mask names
 // "annotations" replaces the whole map, so each sends held's annotations, changed, with held's
 // etag: the write lands only on the annotations the retag checked, and a write another writer made
-// since held was read refuses it with FAILED_PRECONDITION (errTagsChanged), naming the change,
-// rather than being merged into annotations no one checked.
-func (b *gcpBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
-	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
+// since held was read refuses it with FAILED_PRECONDITION (secretstore.ErrTagsChanged), naming the
+// change, rather than being merged into annotations no one checked. The etag is the condition, so
+// check is not read.
+func (b *gcpBackend) SetTags(ctx context.Context, id string, held secretstore.HeldTags, tags map[string]string, _ secretstore.TagCheck) error {
+	return b.updateAnnotations(ctx, id, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
 }
 
-func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
-	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) {
+func (b *gcpBackend) RemoveTags(ctx context.Context, id string, held secretstore.HeldTags, keys []string, _ secretstore.TagCheck) error {
+	return b.updateAnnotations(ctx, id, held, func(annotations map[string]string) {
 		for _, key := range keys {
 			delete(annotations, key)
 		}
@@ -1022,62 +950,78 @@ func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags,
 
 // updateAnnotations sends held's annotations, as change leaves a copy of them, with held's etag.
 // The client makes one attempt (UpdateSecret's default call options retry nothing), so
-// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other code that is no
-// gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may follow an
-// update the store applied: it is answered as tagsUnknown.
-func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held heldTags, change func(map[string]string)) error {
-	annotations := maps.Clone(held.tags)
+// FAILED_PRECONDITION is the etag refusing it (secretstore.ErrTagsChanged), and any other code
+// that is no gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may
+// follow an update the store applied: it is answered as secretstore.TagsUnknown.
+func (b *gcpBackend) updateAnnotations(ctx context.Context, id string, held secretstore.HeldTags, change func(map[string]string)) error {
+	annotations := maps.Clone(held.Tags)
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
 	change(annotations)
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret: &secretmanagerpb.Secret{
-			Name:        b.id(slug),
+			Name:        id,
 			Annotations: annotations,
-			Etag:        held.etag,
+			Etag:        held.Etag,
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
 	switch {
 	case status.Code(err) == codes.FailedPrecondition:
-		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
+		return fmt.Errorf("%w, so the store refused this write: %w", secretstore.ErrTagsChanged, err)
 	case err != nil && !gcpDefiniteRefusal(err):
-		return tagsUnknown{err}
+		return secretstore.TagsUnknown{Err: err}
 	}
 	return err
 }
 
-func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
+// Delete sets the secret's expire_time recoveryWindowDays from now, the moment Secret Manager
+// deletes it for good, and answers that moment.
+func (b *gcpBackend) Delete(ctx context.Context, id string) (time.Time, error) {
 	expire := time.Now().UTC().Add(time.Duration(recoveryWindowDays) * 24 * time.Hour)
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret: &secretmanagerpb.Secret{
-			Name:       b.id(slug),
+			Name:       id,
 			Expiration: &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(expire)},
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	if err != nil {
-		return nil, err
+		return time.Time{}, err
 	}
-	return &expire, nil
+	return expire, nil
 }
 
-// restore clears expire_time: the field mask names it with no value in the body, which Secret
+// Restore clears expire_time: the field mask names it with no value in the body, which Secret
 // Manager reads as unsetting it.
-func (b *gcpBackend) restore(ctx context.Context, slug string) error {
+func (b *gcpBackend) Restore(ctx context.Context, id string) error {
 	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
-		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
+		Secret:     &secretmanagerpb.Secret{Name: id},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	return err
 }
 
-func (b *gcpBackend) isAccessDenied(err error) bool {
+// AccessDenied is Secret Manager's PERMISSION_DENIED.
+func (b *gcpBackend) AccessDenied(err error) bool {
 	return status.Code(err) == codes.PermissionDenied
 }
 
-// close releases the Secret Manager client's underlying gRPC connection.
-func (b *gcpBackend) close() error { return b.client.Close() }
+// DefiniteRefusal is a code Secret Manager answers before it acts (gcpDefiniteRefusal).
+func (b *gcpBackend) DefiniteRefusal(err error) bool { return gcpDefiniteRefusal(err) }
 
-var _ secretBackend = (*gcpBackend)(nil)
+// MissingPermission is the IAM permission Google's own message says err's refusal lacks
+// (gcpMissingPermission), read from the refusal storeFailure worded, "" for one that names none.
+func (b *gcpBackend) MissingPermission(err error) string {
+	var refusal *storeRefusal
+	if errors.As(err, &refusal) {
+		err = refusal.err
+	}
+	return gcpMissingPermission(status.Convert(err).Message())
+}
+
+// Close releases the Secret Manager client's underlying gRPC connection.
+func (b *gcpBackend) Close() error { return b.client.Close() }
+
+var _ secretstore.Writer = (*gcpBackend)(nil)
