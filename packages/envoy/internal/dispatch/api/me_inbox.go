@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -288,7 +290,7 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	response := meInboxResponse{
 		Person: model.CanonicalLogin(caller.ID), AsOf: read.asOf, Horizon: horizon,
-		Total: read.total, Offset: request.offset, Entries: []meInboxEntry{},
+		Total: read.total, Offset: request.offset, Entries: make([]meInboxEntry, 0, len(read.entries)),
 	}
 	if request.limit != nil {
 		response.Limit = *request.limit
@@ -411,10 +413,11 @@ func (s *server) readMeInbox(ctx context.Context, statement string, args []any) 
 	return read, nil
 }
 
-// writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries one at a
-// time: the envelope is encoded with no entry and each entry into its array in turn, so no buffer
-// holds the whole of a page at once - several megabytes for the person whose history is a hundred
-// times the median, which the encoder otherwise grows by doubling and the collector then scans.
+// writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries a few at
+// a time: the envelope is encoded with no entry and the entries into its array in turn
+// (writeMeInboxEntries), so no buffer holds the whole of a page at once - several megabytes for
+// the person whose history is a hundred times the median, which the encoder otherwise grows by
+// doubling and the collector then scans.
 func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 	entries := response.Entries
 	response.Entries = []meInboxEntry{}
@@ -430,14 +433,9 @@ func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 	out := bufio.NewWriterSize(w, 64<<10)
 	// The envelope ends with its empty entries, `[]}`, so the entries go between its last two bytes.
 	_, err = out.Write(envelope[:len(envelope)-2])
-	for index := 0; err == nil && index < len(entries); index++ {
-		if index > 0 {
-			err = out.WriteByte(',')
-		}
-		var entry []byte
-		if entry, err = json.Marshal(entries[index]); err == nil {
-			_, err = out.Write(entry)
-		}
+	if err == nil {
+		workers := min(runtime.GOMAXPROCS(0), meInboxEncodeWorkers)
+		err = writeMeInboxEntries(out, entries, workers)
 	}
 	if err == nil {
 		_, err = out.WriteString("]}\n")
@@ -448,6 +446,127 @@ func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 	if err != nil {
 		slog.Warn("dispatch: write json failed", "error", err)
 	}
+}
+
+const (
+	// meInboxEncodeChunk is how many entries one worker encodes at a time, about a hundred
+	// kilobytes of the heavy history's answer.
+	meInboxEncodeChunk = 64
+	// meInboxEncodeWorkers is the most goroutines that encode entries at once.
+	meInboxEncodeWorkers = 4
+)
+
+// meInboxChunks holds the buffers a chunk of entries is encoded into.
+var meInboxChunks = sync.Pool{New: func() any { return new([]byte) }}
+
+// meInboxEncoded is one chunk of entries as it encodes: the entries' JSON, comma-separated, or the
+// error the first one that failed gave.
+type meInboxEncoded struct {
+	buffer *[]byte
+	err    error
+}
+
+// encodeMeInboxChunk is entries encoded one after another, comma-separated, into a buffer of the
+// pool; the writer returns it once it has written it.
+func encodeMeInboxChunk(entries []meInboxEntry) meInboxEncoded {
+	buffer := meInboxChunks.Get().(*[]byte)
+	encoded := (*buffer)[:0]
+	for index := range entries {
+		if index > 0 {
+			encoded = append(encoded, ',')
+		}
+		entry, err := json.Marshal(entries[index])
+		if err != nil {
+			*buffer = encoded
+			meInboxChunks.Put(buffer)
+			return meInboxEncoded{err: err}
+		}
+		encoded = append(encoded, entry...)
+	}
+	*buffer = encoded
+	return meInboxEncoded{buffer: buffer}
+}
+
+// writeMeInboxEntries writes entries to out, each as json.Marshal encodes it and a comma between
+// each two. An answer of several chunks has them encoded by up to workers goroutines, no more than
+// twice that many ahead of the one that writes them in their order, so the bytes are the ones a
+// single pass writes and no more of the page is held at once than those chunks.
+func writeMeInboxEntries(out *bufio.Writer, entries []meInboxEntry, workers int) error {
+	chunks := (len(entries) + meInboxEncodeChunk - 1) / meInboxEncodeChunk
+	chunkOf := func(index int) []meInboxEntry {
+		return entries[index*meInboxEncodeChunk : min((index+1)*meInboxEncodeChunk, len(entries))]
+	}
+	if chunks < 2 || workers < 2 {
+		for index := range chunks {
+			encoded := encodeMeInboxChunk(chunkOf(index))
+			if encoded.err != nil {
+				return encoded.err
+			}
+			err := error(nil)
+			if index > 0 {
+				err = out.WriteByte(',')
+			}
+			if err == nil {
+				_, err = out.Write(*encoded.buffer)
+			}
+			meInboxChunks.Put(encoded.buffer)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	results := make([]chan meInboxEncoded, chunks)
+	for index := range results {
+		results[index] = make(chan meInboxEncoded, 1)
+	}
+	window := make(chan struct{}, 2*workers)
+	next := make(chan int)
+	stop := make(chan struct{})
+	var group sync.WaitGroup
+	defer group.Wait()
+	defer close(stop)
+	go func() {
+		defer close(next)
+		for index := range chunks {
+			select {
+			case window <- struct{}{}:
+			case <-stop:
+				return
+			}
+			select {
+			case next <- index:
+			case <-stop:
+				return
+			}
+		}
+	}()
+	for range workers {
+		group.Go(func() {
+			for index := range next {
+				results[index] <- encodeMeInboxChunk(chunkOf(index))
+			}
+		})
+	}
+	for index := range chunks {
+		encoded := <-results[index]
+		<-window
+		if encoded.err != nil {
+			return encoded.err
+		}
+		err := error(nil)
+		if index > 0 {
+			err = out.WriteByte(',')
+		}
+		if err == nil {
+			_, err = out.Write(*encoded.buffer)
+		}
+		meInboxChunks.Put(encoded.buffer)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // meInboxAsks finishes the ask rows of the page: the details every list of asks carries beside its
@@ -570,16 +689,67 @@ type meInboxRow struct {
 // meInboxRecord is one record a column of the statement holds, read as a row of the statement it
 // was spliced from (pgx.Row), so that statement's own scanner reads it: the field count is held to
 // the scanner's, and each field is decoded by its own type, as a column of that statement would be.
+// plans is the field plans the records of its column share (meInboxPlans), nil for a record read
+// alone.
 type meInboxRecord struct {
 	types *pgtype.Map
 	raw   []byte
+	plans *meInboxPlans
 }
 
 func (record meInboxRecord) Scan(dest ...any) error {
-	if fields := pgtype.NewCompositeBinaryScanner(record.types, record.raw).FieldCount(); fields != len(dest) {
+	scanner := pgtype.NewCompositeBinaryScanner(record.types, record.raw)
+	if fields := scanner.FieldCount(); fields != len(dest) {
 		return fmt.Errorf("read a record of %d fields into %d", fields, len(dest))
 	}
-	return record.types.Scan(pgtype.RecordOID, pgtype.BinaryFormatCode, record.raw, pgtype.CompositeFields(dest))
+	if record.raw == nil || record.plans == nil {
+		return record.types.Scan(pgtype.RecordOID, pgtype.BinaryFormatCode, record.raw, pgtype.CompositeFields(dest))
+	}
+	// What pgx's record plan does for each field (pgtype's
+	// scanPlanBinaryRecordToCompositeIndexScanner), with the field's plan taken from plans.
+	for index := 0; scanner.Next(); index++ {
+		if index >= len(dest) {
+			return fmt.Errorf("cannot scan composite field %d into CompositeFields of length %d", index, len(dest))
+		}
+		target := dest[index]
+		if target == nil {
+			continue
+		}
+		if err := record.plans.plan(record.types, index, scanner.OID(), target).Scan(scanner.Bytes(), target); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+// meInboxPlans is the scan plan of each field of the records one column holds, made for its first
+// record and kept for every later one. pgx plans each field of a record afresh on every record
+// (pgtype.Map.PlanScan memoizes nothing), which for the person whose history is a hundred times
+// the median was every field of some 10,000 records a read. The records of one column are of one
+// row type and their scanner reads each into targets of one type, so the plan of a field reads that
+// field of each of them, as pgx's own rows reuse a column's plan from one row to the next; a field
+// whose type or target type differs from the one its plan was made for is planned again, as those
+// rows replan a column whose target changed.
+type meInboxPlans struct {
+	fields []meInboxFieldPlan
+}
+
+type meInboxFieldPlan struct {
+	oid    uint32
+	target reflect.Type
+	plan   pgtype.ScanPlan
+}
+
+// plan is the plan of field index, of type oid, scanned into target.
+func (plans *meInboxPlans) plan(types *pgtype.Map, index int, oid uint32, target any) pgtype.ScanPlan {
+	for len(plans.fields) <= index {
+		plans.fields = append(plans.fields, meInboxFieldPlan{})
+	}
+	field := &plans.fields[index]
+	if targetType := reflect.TypeOf(target); field.plan == nil || field.oid != oid || field.target != targetType {
+		*field = meInboxFieldPlan{oid: oid, target: targetType, plan: types.PlanScan(oid, pgtype.BinaryFormatCode, target)}
+	}
+	return field.plan
 }
 
 // meInboxColumns is what each row of the statement holds, in its select's order.
@@ -639,11 +809,14 @@ func readMeInboxRows(rows pgx.Rows, serverURL string) (*meInboxRead, error) {
 		askParts: refs.AskPartRows{}, trees: map[[32]byte]json.RawMessage{}, serverURL: serverURL,
 	}
 	types := rows.Conn().TypeMap()
+	var columns meInboxColumns
+	targets := columns.targets()
+	agentPlans := &meInboxPlans{}
 	answered := false
 	for rows.Next() {
 		answered = true
-		var columns meInboxColumns
-		if err := rows.Scan(columns.targets()...); err != nil {
+		columns = meInboxColumns{}
+		if err := rows.Scan(targets...); err != nil {
 			return nil, fmt.Errorf("read the inbox: %w", err)
 		}
 		read.asOf = columns.asOf
@@ -665,7 +838,7 @@ func readMeInboxRows(rows pgx.Rows, serverURL string) (*meInboxRead, error) {
 		if columns.nodeKind == nil {
 			continue
 		}
-		row, err := read.entry(types, &columns)
+		row, err := read.entry(types, &columns, agentPlans)
 		if err != nil {
 			return nil, err
 		}
@@ -687,16 +860,17 @@ func readMeInboxRows(rows pgx.Rows, serverURL string) (*meInboxRead, error) {
 
 // records is each of raw as a record of the statement.
 func records(types *pgtype.Map, raw []pgtype.UndecodedBytes) []meInboxRecord {
+	plans := &meInboxPlans{}
 	read := make([]meInboxRecord, len(raw))
 	for index := range raw {
-		read[index] = meInboxRecord{types: types, raw: raw[index]}
+		read[index] = meInboxRecord{types: types, raw: raw[index], plans: plans}
 	}
 	return read
 }
 
 // entry reads one row naming a node: its relations, its page column, and an Agent row's row itself
 // (scanMyAgentRow), which the page rows read once for their order and the entry keeps.
-func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meInboxRow, error) {
+func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns, agentPlans *meInboxPlans) (meInboxRow, error) {
 	row := meInboxRow{meInboxEntry: meInboxEntry{
 		Node:      meInboxNode{Kind: *columns.nodeKind, ID: *columns.nodeID},
 		Relations: make([]meInboxRelation, len(columns.kinds)),
@@ -709,7 +883,7 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meIn
 		row.page = *columns.page
 	}
 	if row.page == meInboxPageAgent {
-		listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent}, read.serverURL)
+		listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent, plans: agentPlans}, read.serverURL)
 		if err != nil {
 			return meInboxRow{}, fmt.Errorf("read the %s row of %s %s: %w", row.page, row.Node.Kind, row.Node.ID, err)
 		}
@@ -772,10 +946,12 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // the sessions' names; and every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
-		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
-		edits: map[string][]model.AskEdit{}, followers: map[string][]model.AskFollower{},
-		threads: map[string]model.MyReplyRow{}, roots: map[string]model.Message{},
-		chains: map[string][]model.Message{}, titles: map[string]string{},
+		asks: make(map[string]openAskRow, len(columns.asks)), reaches: make(map[string]askReach, len(columns.reach)),
+		replies: map[string][]model.Comment{}, edits: map[string][]model.AskEdit{}, followers: map[string][]model.AskFollower{},
+		threads: make(map[string]model.MyReplyRow, len(columns.threads)),
+		roots:   make(map[string]model.Message, len(columns.roots)),
+		chains:  make(map[string][]model.Message, len(columns.roots)),
+		titles:  make(map[string]string, len(columns.titles)),
 	}
 	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
@@ -1229,18 +1405,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	` + meInboxKindSkip("kinds_out", "from") + `,` + pageKeys + `
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
 		meInboxPageRows(shape) + `
-	),` + pageNodes + `
-	walked(near_kind, near_id, kind, direction, at) as (
-		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
-		from kinds_in k` + walkFrom + `
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`, inbound) + `) stated
-		where ` + readKind("k.kind") + ` and stated.asserted
-		union all
-		select stated.to_kind, stated.to_id, k.kind, '` + meInboxOutbound + `', stated.at
-		from kinds_out k` + walkFrom + `
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`, outbound) + `) stated
-		where ` + readKind("k.kind") + ` and stated.asserted
-	),
+	),` + pageNodes + meInboxWalked(shape, walkFrom, inbound, outbound, readKind) + `
 	-- Each relation kind and end that ties a node to the person, once, with its newest moment: the
 	-- walk read whole once.
 	tied(node_kind, node_id, kind, direction, at) as (
@@ -1345,7 +1510,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	const carries = `(entry.ord is null or entry.ord = 1)`
 	keyColumns, sortedBy := order.sorted("entry", "sorted")
 	statement.WriteString(`
-	select now(), ` + roster + `, coalesce(` + total + `, 0),
+	select now(), case when sorted.carries then ` + roster + ` end, coalesce(` + total + `, 0),
 	       coalesce((select r.remaining from remaining r limit 1), 0), sorted.carries,
 	       case when sorted.carries then row(` + strings.Join(reads.columns, `,
 	         `) + `) end,
@@ -1361,6 +1526,53 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	) sorted
 	order by ` + sortedBy)
 	return statement.String(), args.values[slots.first:], nil
+}
+
+// meInboxWalked is the walked CTE: the newest asserted tuple of each relation kind that ties a
+// node to the person's nodes, at each end. The walk with no state reads one probe a kind
+// (kinds_in, kinds_out). Under a state the kinds that touch a person's node at each end are
+// listed once a node (kind_lists_in, kind_lists_out) and each page node is probed once a node and
+// end with all of them, `kind = any(...)`: one index scan that finds its kinds side by side where
+// a probe a kind descended the index once for each, which at c-p99's heavy history was 8,002
+// probes an end, 3 to 4 µs each, and is the largest part of the statement (INFRA-4948).
+func meInboxWalked(shape meInboxShape, walkFrom, inbound, outbound string, readKind func(string) string) string {
+	if shape.state == "" {
+		return `
+	walked(near_kind, near_id, kind, direction, at) as (
+		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
+		from kinds_in k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`, inbound) + `) stated
+		where ` + readKind("k.kind") + ` and stated.asserted
+		union all
+		select stated.to_kind, stated.to_id, k.kind, '` + meInboxOutbound + `', stated.at
+		from kinds_out k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`, outbound) + `) stated
+		where ` + readKind("k.kind") + ` and stated.asserted
+	),`
+	}
+	kinds := func(name, from string) string {
+		return name + `(node_kind, node_id, kinds) as (
+		select k.node_kind, k.node_id, array_agg(k.kind) from ` + from + ` k where ` + readKind("k.kind") + `
+		group by k.node_kind, k.node_id
+	),`
+	}
+	anyKind := func(narrow string) string {
+		return strings.Replace(narrow, `t.kind = k.kind`, `t.kind = any(k.kinds)`, 1)
+	}
+	return `
+	` + kinds("kind_lists_in", "kinds_in") + `
+	` + kinds("kind_lists_out", "kinds_out") + `
+	walked(near_kind, near_id, kind, direction, at) as (
+		select stated.from_kind, stated.from_id, stated.kind, '` + meInboxInbound + `', stated.at
+		from kind_lists_in k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.at, t.asserted`, anyKind(inbound)) + `) stated
+		where stated.asserted
+		union all
+		select stated.to_kind, stated.to_id, stated.kind, '` + meInboxOutbound + `', stated.at
+		from kind_lists_out k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.at, t.asserted`, anyKind(outbound)) + `) stated
+		where stated.asserted
+	),`
 }
 
 // meInboxKindSkip lists the distinct relation kinds that touch each of the person's nodes at one end
