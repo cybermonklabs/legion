@@ -868,7 +868,7 @@ for kind in "${edge_kinds[@]}"; do
     fail census "the store and graph_edges agree on $kind triple by triple" "$line"
 done
 grep -E '^census: store rows_checked=' "$work/census.out" || true
-grep -qE '^census: store rows_checked=[0-9,]+ differences=0$' "$work/census.out" ||
+grep -qE '^census: store rows_checked=[0-9,]+ differences=0 read_seq=[0-9]+$' "$work/census.out" ||
   fail census "the census reads zero differences" "$(grep -E '^census: store (rows_checked|kind=.* difference)' "$work/census.out" || echo 'no line')"
 pass census "every kind of this child agrees with every projection it feeds, with zero differences"
 for kind in copied_from moved_to; do

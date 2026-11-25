@@ -1,6 +1,6 @@
 # AskGate rule check
 
-Each rule names a kind of ask that the person has said they do not want. You do not judge whether the ask is good in any other way.
+Each rule names a kind of ask that the agent should not send to the person. You do not judge whether the ask is good in any other way.
 
 **Rule 1, no change.** The ask's own recommendation is to change nothing: keep things as they are, leave the work as it is, take no action, or keep the current design. This usually happens when the agent noticed a possible problem, thought it through, and concluded that no change is needed, but asked anyway. It matches also when the question is about design. It does not match when the agent recommends a change, or when the ask makes no recommendation.
 

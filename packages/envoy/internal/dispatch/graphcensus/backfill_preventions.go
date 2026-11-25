@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -14,15 +12,21 @@ import (
 
 // endedChecks is an SQL array of the ended checks a risk asserted a prevented_by at: each far end of
 // such a tuple whose block the store holds gone, which a version dropped, or whose document is
-// retired (artifacts.retired_at), whose checks nobody runs. A block's node id names its document's
-// ref_key before its first '#', since a ref_key holds none. narrow is a predicate over p, the
-// prevented_by tuple, that bounds the checks read. It starts from the risks, through
-// graph_tuples_current, since risks are few and a read into blocks would walk every block's tuples.
+// retired (artifacts.retired_at), whose checks nobody runs. A block's node id names the artifact
+// that keys its row by that artifact's ref_key before its first '#', since a ref_key holds none:
+// the block's document, or for a block of an issue room the room's tree artifact, and the block's
+// document is then the one whose fragment holds it (refs.RoomBlockDocumentSQL). So a check of a
+// converted document is judged by that document, as its retirement and the store's rule judge it
+// (docs' retiredPreventions, graphstore's pointerRules), and never by the tree, which stands.
+// narrow is a predicate over p, the prevented_by tuple, that bounds the checks read. It starts from
+// the risks, through graph_tuples_current, since risks are few and a read into blocks would walk
+// every block's tuples.
 func endedChecks(narrow string) string {
 	return `array(
 		select distinct p.to_id from graph_tuples p
 		left join graph_nodes b on b.kind = p.to_kind and b.id = p.to_id
-		left join artifacts a on a.ref_key = split_part(p.to_id, '#', 1)
+		left join artifacts keyed on keyed.ref_key = split_part(p.to_id, '#', 1)
+		left join artifacts a on a.id = coalesce(` + refs.RoomBlockDocumentSQL("keyed.id", "substr(p.to_id, length(keyed.ref_key) + 2)") + `, keyed.id)
 		where p.from_kind = '` + graphstore.KindRisk + `' and p.kind = '` + graphstore.TuplePreventedBy + `'
 		  and p.to_kind = '` + refs.BlockNodeKind + `' and p.asserted
 		  and (b.state = '` + graphstore.StateGone + `' or a.retired_at is not null)
@@ -36,24 +40,18 @@ func endedChecks(narrow string) string {
 // Tuples count the tuples it retracted.
 func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "prevented_by_retracted"}
-	after := ""
-	for {
-		owed, err := readEndedPreventionDocuments(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		if len(owed) > 0 {
+	err := owedBatches(ctx, database, endedPreventionDocumentsRead, "the documents holding a check nobody runs that a risk is prevented by", "",
+		func(owed []string) error {
 			retracted, err := writeEndedPreventions(ctx, database, owed)
 			if err != nil {
-				return done, err
+				return err
 			}
 			done.Rows += retracted
 			done.Tuples += retracted
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+			return nil
+		})
+	if err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, refs.CurrentPreventionsSQL(`count(*)`, endedChecks(`true`))).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the prevented_by tuples at checks nobody runs: %w", err)
@@ -62,23 +60,12 @@ func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindB
 	return done, nil
 }
 
-// readEndedPreventionDocuments reads the ref_keys past after, in order, of the documents that hold
-// an ended check a risk is prevented by now, at most limit of them.
-func readEndedPreventionDocuments(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		`+refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`))+`
+// endedPreventionDocumentsRead reads the ref_keys past $1, in order, of the documents that hold
+// an ended check a risk is prevented by now, at most $2 of them (owedBatches).
+var endedPreventionDocumentsRead = `
+		` + refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`)) + `
 		order by 1
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeEndedPreventions retracts, in one transaction, every prevented_by the store asserts now at an
 // ended check of documents, a batch's ref_keys, and answers how many. It takes the owner lock
@@ -98,14 +85,18 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 		return 0, err
 	}
 	retracted, err := refs.PreventionRetractions(ctx, tx, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`),
-		[]any{documents}, time.Now().UTC(), backfillActor, graphstore.NoEvent)
+		[]any{documents}, time.Now().UTC(), backfillActor)
 	if err != nil {
 		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
 	}
 	if len(retracted) == 0 {
 		return 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, retracted); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, retracted)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retracted))
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("retract the prevented_by tuples at checks nobody runs: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

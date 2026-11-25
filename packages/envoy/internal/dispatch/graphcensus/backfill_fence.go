@@ -16,14 +16,13 @@ import (
 // `for no key update`.
 //
 // Over several documents it takes every owner lock first, each once, in the order of its owner
-// key (events.LockOwnerRows): the one order over owners, in which the erase takes the owners it
-// writes under (grapherase's lockInStoreOrder) and events.Broker.LockOwners the owners of several
-// events, "artifact:<id>" for a document no issue owns before "issue:<key>". Only then does it
-// take each document's document_block_versions row, in document id order. Taking one document's
-// owner lock and fence row before the next document's owner would put an issue at a different
-// place for each set of its documents: a batch over two documents of two issues whose ids sort
-// the other way round from their owner keys, and an erase writing under both, could each hold the
-// owner lock the other waits for.
+// key (events.LockOwnerRows): the one order over owners, in which events.Broker.LockOwners takes
+// the owners of several events, "artifact:<id>" for a document no issue owns before
+// "issue:<key>". Only then does it take each document's document_block_versions row, in document
+// id order. Taking one document's owner lock and fence row before the next document's owner would
+// put an issue at a different place for each set of its documents: a batch over two documents of
+// two issues whose ids sort the other way round from their owner keys, and a transaction that
+// appends events under both, could each hold the owner lock the other waits for.
 //
 // A document deleted since its batch was read has no owner left to read, and its block rows and
 // its document_block_versions row went with it (each cascades from artifacts), so there is
@@ -64,7 +63,7 @@ func lockDocumentOwners(ctx context.Context, tx pgx.Tx, where string, documents 
 	}
 	owners := events.OwnerRows{}
 	for _, document := range owned {
-		owners.Add(document[1], document[0], "document "+document[0])
+		owners.Add(document[1], document[0])
 	}
 	return events.LockOwnerRows(ctx, tx, owners)
 }

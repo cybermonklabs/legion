@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `judge-check.sh` reads each broker's log path from `dev-airlock.sh`'s banner to the end of its line, so it reads the brokers' logs when `TMPDIR` holds a space; it read the path up to the first space, and so read no log.
+time: 2026-11-23T13:01:22Z
+custom:
+    Issue: pr5227

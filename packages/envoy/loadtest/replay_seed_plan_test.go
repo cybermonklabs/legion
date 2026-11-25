@@ -290,12 +290,11 @@ func TestIssuePatchAndClaim(t *testing.T) {
 
 func TestMaskAnsweredAt(t *testing.T) {
 	md := `:::ask{#b1 state="answered" answered_at="2026-10-26T22:00:00Z" selected="[]"}` + "\nQ\n:::\n"
-	masked, changed := maskAnsweredAt(md)
-	if !changed || strings.Contains(masked, "2026") {
+	if masked := maskAnsweredAt(md); strings.Contains(masked, "2026") {
 		t.Fatalf("masked %q", masked)
 	}
-	if _, changed := maskAnsweredAt("plain"); changed {
-		t.Fatal("plain text has nothing to mask")
+	if masked := maskAnsweredAt("plain"); masked != "plain" {
+		t.Fatalf("plain text has nothing to mask, masked %q", masked)
 	}
 }
 

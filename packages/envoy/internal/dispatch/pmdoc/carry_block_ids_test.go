@@ -582,82 +582,39 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 // A changed block that is no untyped container takes a fresh id, a leaf included, as the spec
 // has it: "A changed leaf still takes a fresh id" (carryKept). A frontmatter block is its text, so
 // one whose text changed is other content, and an anchor or a reference keyed on live's block must
-// not follow it there; the blocks beside it keep their ids. The markdown writes no block of HTML
-// (Parse refuses one, ErrBlockHTML): html is an inline atom, which holds no block id, so a changed
-// html atom changes the paragraph holding it, and that paragraph takes a fresh id. No markdown
-// writes a changed hr: an hr holds no content and no attributes, and `---`, `***` and `___` all
-// read as the one hr node (parseBlock), so an upload rewriting one leaves it unchanged, and it
-// keeps its id as every unchanged block does.
+// not follow it there; the blocks beside it keep their ids.
+//
+// The frontmatter block is the one leaf an upload can change that a carry keeping every changed
+// block other than a textblock would give live's id. A changed paragraph, heading or code block
+// takes a fresh id under that carry too, so a case of one passes whatever the carry does with any
+// other block. The markdown writes no block of HTML (Parse refuses one, ErrBlockHTML): html is an
+// inline atom, which holds no block id, so a changed html atom changes the paragraph holding it,
+// a textblock. No markdown writes a changed hr: an hr holds no content and no attributes, and
+// `---`, `***` and `___` all read as the one hr node (parseBlock), so an upload rewriting one
+// leaves it unchanged, and it keeps its id as every unchanged block does.
 func TestAnUploadGivesAChangedLeafAFreshID(t *testing.T) {
-	htmlValue := func(block *Node) string {
-		for _, child := range block.Children {
-			if child.Type == "html" {
-				value, _ := child.Attrs["value"].(string)
-				return value
-			}
-		}
-		return ""
+	const document = "---\ntitle: Alpha\n---\n\nOpening paragraph.\n\n- Alpha item\n- Beta item\n\nClosing paragraph.\n"
+	const old, edited = "title: Alpha", "title: Beta"
+	doc, frag, live, markdown := liveMarkdown(t, document)
+	if count := strings.Count(markdown, old); count != 1 {
+		t.Fatalf("the rendered document holds %q %d times, want once:\n%s", old, count, markdown)
 	}
-	for _, test := range []struct {
-		name     string
-		document string
-		old      string
-		edited   string
-		// changed is the index of the top-level block the edit changes, of type wantType, and
-		// content reads from it what the edit wrote, which must be want.
-		changed  int
-		wantType string
-		content  func(block *Node) string
-		want     string
-	}{
-		{
-			name:     "a frontmatter block whose text changed",
-			document: "---\ntitle: Alpha\n---\n\nOpening paragraph.\n\n- Alpha item\n- Beta item\n\nClosing paragraph.\n",
-			old:      "title: Alpha",
-			edited:   "title: Beta",
-			changed:  0,
-			wantType: "frontmatter",
-			content:  TextContent,
-			want:     "---\ntitle: Beta\n---",
-		},
-		{
-			name:     "an html atom whose value changed",
-			document: "Opening paragraph.\n\nPress <kbd>Enter</kbd> to send.\n\n- Alpha item\n- Beta item\n\nClosing paragraph.\n",
-			old:      "<kbd>",
-			edited:   "<kbd class=\"key\">",
-			changed:  1,
-			wantType: "paragraph",
-			content:  htmlValue,
-			want:     "<kbd class=\"key\">",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			doc, frag, live, markdown := liveMarkdown(t, test.document)
-			if count := strings.Count(markdown, test.old); count != 1 {
-				t.Fatalf("the rendered document holds %q %d times, want once:\n%s", test.old, count, markdown)
-			}
-			after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, test.old, test.edited, 1))
-			t.Logf("diff update %d bytes", diff)
-			if len(after.Children) != len(live.Children) {
-				t.Fatalf("the upload left %d top-level blocks, want live's %d", len(after.Children), len(live.Children))
-			}
-			changed := after.Children[test.changed]
-			if changed.Type != test.wantType || test.content(changed) != test.want {
-				t.Fatalf("block %d after the upload is a %s holding %q, want the %s holding %q",
-					test.changed, changed.Type, test.content(changed), test.wantType, test.want)
-			}
-			if id := blockIDOfNode(t, changed); slices.Contains(blockIDsOf(live), id) {
-				t.Errorf("the changed %s has live id %q, want a fresh one", changed.Type, id)
-			}
-			for index, block := range after.Children {
-				if index == test.changed {
-					continue
-				}
-				if got, want := blockIDsOf(block), blockIDsOf(live.Children[index]); !slices.Equal(got, want) {
-					t.Errorf("the unchanged %s at block %d has ids %q, want live's %q", block.Type, index, got, want)
-				}
-			}
-		})
+	after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, old, edited, 1))
+	t.Logf("diff update %d bytes", diff)
+	if len(after.Children) != len(live.Children) {
+		t.Fatalf("the upload left %d top-level blocks, want live's %d", len(after.Children), len(live.Children))
+	}
+	changed := after.Children[0]
+	if want := "---\ntitle: Beta\n---"; changed.Type != "frontmatter" || TextContent(changed) != want {
+		t.Fatalf("block 0 after the upload is a %s holding %q, want the frontmatter holding %q", changed.Type, TextContent(changed), want)
+	}
+	if id := blockIDOfNode(t, changed); slices.Contains(blockIDsOf(live), id) {
+		t.Errorf("the changed %s has live id %q, want a fresh one", changed.Type, id)
+	}
+	for index, block := range after.Children[1:] {
+		if got, want := blockIDsOf(block), blockIDsOf(live.Children[index+1]); !slices.Equal(got, want) {
+			t.Errorf("the unchanged %s at block %d has ids %q, want live's %q", block.Type, index+1, got, want)
+		}
 	}
 }
 

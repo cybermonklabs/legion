@@ -28,11 +28,20 @@ readonly ahead_rev="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly identical_rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 readonly behind_rev="cccccccccccccccccccccccccccccccccccccccc"
 readonly other_rev="dddddddddddddddddddddddddddddddddddddddd"
+# The revision the Dispatch server's image names in every --listeners case that does not name its
+# own (listener_stacks), identical to the commit.
+readonly server_rev="1234567890abcdef1234567890abcdef12345678"
 # The project name each stack's Pulumi.yaml declares by default, which prefixes its config keys.
 readonly legion_project="deployment-legion"
 readonly envoy_project="deployment-envoy"
 readonly cluster_project="deployment-envoy-cluster"
 readonly dispatch_project="deployment-dispatch"
+# The listener pins the --listeners scenarios share: one per stack the gate reads, each of them a
+# pin of this repository's own envoy image.
+readonly envoy_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e001"
+readonly cluster_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e002"
+readonly server_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e003"
+readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 
 # The fake gh. It takes the endpoint (the argument that starts `repos/`) with any `?ref=` query
 # dropped, and answers:
@@ -42,7 +51,8 @@ readonly dispatch_project="deployment-dispatch"
 #     as GitHub serves a file over 1 MB; for a directory, GitHub's listing of it ({name, type,
 #     download_url} for each entry: file, dir or symlink, a file with a download URL, the entries of
 #     FAKE_ROOT/listing-extra.json (a JSON list) added, at most 1,000 of them, as GitHub lists) run
-#     through the --jq query, failing as a server error when FAKE_LIST_DOWN=1;
+#     through the --jq query, failing as a server error when FAKE_LIST_DOWN=1 (gh's line for it is
+#     FAKE_LIST_DOWN_TEXT, `gh: Server Error (HTTP 500)` unless a case names another);
 #   repos/<FAKE_DEPLOYMENT>/commits/HEAD: FAKE_HEAD;
 #   repos/<FAKE_DEPLOYMENT>/git/trees/<sha>: GitHub's recursive tree of FAKE_ROOT/files, each file and
 #     link a blob named by git's own hash of it, with the entries of FAKE_ROOT/tree-extra.json (a JSON
@@ -77,13 +87,13 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$endpoint" ] || { echo "fake gh: no endpoint" >&2; exit 2; }
 path=${endpoint%%\?*}
-refusal="${FAKE_ROOT:?}/refuse/$(printf '%s' "$path" | tr '/' '_')"
+refusal="${FAKE_ROOT:?}/refuse/${path//\//_}"
 [ ! -f "$refusal" ] || { cat "$refusal" >&2; exit 1; }
 case "$path" in
   repos/"${FAKE_DEPLOYMENT:?}"/contents/*)
     file="${FAKE_ROOT}/files/${path#repos/"${FAKE_DEPLOYMENT}"/contents/}"
     if [ -d "$file" ]; then
-      [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
+      [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "${FAKE_LIST_DOWN_TEXT:-gh: Server Error (HTTP 500)}" >&2; exit 1; }
       extra="${FAKE_ROOT}/listing-extra.json"
       [ -f "$extra" ] || extra=/dev/null
       {
@@ -139,7 +149,7 @@ print(json.dumps({"sha": sha, "tree": entries, "truncated": os.path.exists(trunc
 PY
     ;;
   repos/"${FAKE_DEPLOYMENT}"/tarball/*)
-    top="$(printf '%s' "$FAKE_DEPLOYMENT" | tr '/' '-')-${path##*/}"
+    top="${FAKE_DEPLOYMENT//\//-}-${path##*/}"
     if [ -e "${FAKE_ROOT}/corrupt-archive" ]; then
       echo "this is no archive"
     elif [ -f "${FAKE_ROOT}/archive.tgz" ]; then
@@ -206,7 +216,7 @@ if [ "$1" = run ]; then
   done
   ref=$1
   shift
-  dir="${FAKE_ROOT:?}/images/$(printf '%s' "$ref" | tr '/:@' '___')"
+  dir="${FAKE_ROOT:?}/images/${ref//[\/:@]/_}"
   if [ ! -d "$dir/fs" ]; then
     echo "docker: Error response from daemon: manifest for $ref not found: manifest unknown" >&2
     printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
@@ -230,9 +240,9 @@ if [ "$1" = run ]; then
   exit 0
 fi
 [ "$1 $2 $3" = "buildx imagetools inspect" ] && [ "$5" = --format ] || { echo "fake docker: unexpected command: $*" >&2; exit 2; }
-dir="${FAKE_ROOT:?}/images/$(printf '%s' "$4" | tr '/:@' '___')"
+dir="${FAKE_ROOT:?}/images/${4//[\/:@]/_}"
 [ -f "$dir/mediatype" ] || { echo "ERROR: $4: not found" >&2; exit 1; }
-mediatype=$(cat "$dir/mediatype")
+mediatype=$(<"$dir/mediatype")
 case "$6" in
   '{{json .Manifest.MediaType}}') printf '%s' "$mediatype" ;;
   '{{json .Image.Config.Labels}}')
@@ -241,11 +251,11 @@ case "$6" in
       *) cat "$dir/labels" ;;
     esac
     ;;
-  '{{range .Manifest.Manifests}}'*) printf '%s' "$(cat "$dir/platforms")" ;;
+  '{{range .Manifest.Manifests}}'*) printf '%s' "$(<"$dir/platforms")" ;;
   '{{json (index .Image "'*)
     platform=${6#'{{json (index .Image "'}
     platform=${platform%%'"'*}
-    file="$dir/platform-$(printf '%s' "$platform" | tr '/' '_')"
+    file="$dir/platform-${platform//\//_}"
     [ -f "$file" ] || { echo "ERROR: template: :1:17: executing \"\" at <index .Image \"$platform\">: nil pointer evaluating *v1.Image.Config" >&2; exit 1; }
     cat "$file"
     ;;
@@ -259,13 +269,23 @@ EOF
 # spec under the npm configuration the case sets; that file with `.raw` added is answered as it is,
 # as an npm that answers garbage would. With `--registry=<url>`, each is read from
 # FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. It fails as npm does (E404) when no
-# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm exec` (the gate's
-# parse of the marketplace's spec with the npm-package-arg npm ships), and `npm pack` when
-# FAKE_NPM_REAL_PACK=1, run the real npm the harness found when it started, so a case sees what
+# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm pack` with
+# FAKE_NPM_REAL_PACK=1 runs the real npm the harness found when it started, so a case sees what
 # the real npm does with a spec. It records each call, the directory it runs in as an `npm-cwd
 # <dir>` line, and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line,
 # so a case sees where the gate runs npm and the configuration it leaves npm; it refuses any other
 # command, and a pack without --dry-run, which would write the tarball.
+#
+# `npm exec --offline --yes=false -c <command>`, the gate's parse of the marketplace's spec, runs
+# <command> through a shell with npm_node_execpath and npm_execpath set to the node npm runs on
+# and npm's own npm-cli.js (@npmcli/config lib/set-envs.js), which is all that command reads of
+# npm: it runs that node on the npm-package-arg npm ships, resolved from npm_execpath's directory,
+# so the parse is npm's own either way. Starting npm's CLI again for two paths the harness already
+# found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
+# (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
+# the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
+# once when it starts: an npm that no longer takes them fails the suite there. A call of any other
+# shape is refused rather than emulated.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -273,7 +293,12 @@ printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
 env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
   mapfile -t real_npm <"$(dirname "$0")/../real-npm"
-  exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  if [ "$1" != exec ]; then
+    exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  fi
+  [ "$#" -eq 5 ] && [ "$2" = --offline ] && [ "$3" = --yes=false ] && [ "$4" = -c ] ||
+    { echo "fake npm: unexpected exec: $*" >&2; exit 2; }
+  exec env npm_node_execpath="${real_npm[0]}" npm_execpath="${real_npm[1]}" sh -c "$5"
 fi
 registry=""
 words=()
@@ -290,12 +315,13 @@ case "$1 $#:${*:3}" in
 esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
-[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
-file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')"
+[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/${registry//[\/:]/_}"
+file="${dir}/${2//[\/@<>=]/_}"
 [ ! -f "${file}.raw" ] || { cat "${file}.raw"; exit 0; }
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
 name=${2%@*}
-jq -n --arg name "$name" --arg version "$(tr -d '\n' <"$file")" '[{
+version=$(<"$file")
+jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   id: "\($name)@\($version)", name: $name, version: $version, size: 1, unpackedSize: 1, shasum: "",
   integrity: "", filename: "\($name | ltrimstr("@") | sub("/"; "-"))-\($version).tgz", files: [],
   entryCount: 0, bundled: []
@@ -345,7 +371,7 @@ compare() {
 }
 # refuse <endpoint> <answer>: GitHub answers <endpoint> (no query) with the error <answer>.
 refuse() {
-  printf '%s\n' "$2" >"${case_root}/refuse/$(printf '%s' "$1" | tr '/' '_')"
+  printf '%s\n' "$2" >"${case_root}/refuse/${1//\//_}"
 }
 # tag <tag> <commit>: the commit cybermonklabs/legion's release tag <tag> names.
 tag() {
@@ -353,7 +379,7 @@ tag() {
 }
 # image_dir <ref>: the directory of the fake docker's answers for <ref>.
 image_dir() {
-  printf '%s/images/%s' "$case_root" "$(printf '%s' "$1" | tr '/:@' '___')"
+  printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
 }
 # single <ref> <source> <revision>: a single image labelled with source and revision; an empty
 # source or revision leaves that label out.
@@ -522,7 +548,10 @@ GO
   fi
 }
 # listener_stacks <envoy> <envoy-cluster> <dispatch envoyImage> [<dispatch listenerImage>]: the three
-# stack files; an empty <envoy> leaves envoy's listenerImage out, keeping its other keys.
+# stack files; an empty <envoy> leaves envoy's listenerImage out, keeping its other keys. The
+# Dispatch server's image, <dispatch envoyImage>, which --listeners judges under its own key
+# dispatch-server, is written as an index built from this repository at server_rev, identical to
+# the commit; a case that indexes that pin itself afterwards replaces it.
 listener_stacks() {
   {
     printf 'config:\n'
@@ -534,6 +563,8 @@ listener_stacks() {
     printf 'config:\n  %s:envoyImage: %s\n' "$dispatch_project" "$3"
     [ -z "${4:-}" ] || printf '  %s:listenerImage: %s\n' "$dispatch_project" "$4"
   } >"${case_root}/files/dispatch/Pulumi.prod.yaml"
+  index "$3" "$legion" "$server_rev"
+  compare "$server_rev" identical 0
 }
 
 # run_bare [--unset <variable>]... [env assignments...] -- [gate arguments...]: runs the gate in

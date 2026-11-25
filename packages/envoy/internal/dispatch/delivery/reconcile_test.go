@@ -26,6 +26,7 @@ import (
 // delivery -- no envelope is published anywhere in this test) is found and stored by reconcile's
 // own merged-PR search, complete, through the same upsert intake uses.
 func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -57,7 +58,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 50))
@@ -88,6 +89,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 // found by the deploy workflow's run listing and upserted with its jobs, and with GitHub's
 // created_at beside run_started_at, which a re-run moves past it.
 func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	settings.ProductionApplyStepName = new("Run ./.github/actions/apply")
@@ -125,7 +127,7 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -153,6 +155,7 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 // delivery_settings.last_error, and last_reconcile_at is left exactly as it was -- never advanced
 // as if the pass had actually done something. Blocking per the acceptance gate.
 func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileAt(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := GetSettings(ctx, pool)
@@ -166,7 +169,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 	fake.permissions = map[string]string{"contents": "read", "pull_requests": "read"}
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -186,6 +189,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 // completed with real session/issue attribution survives a reconcile pass that re-finds the same
 // PR via its merged-PR search, which carries no session data at all.
 func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -215,7 +219,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 60))
@@ -235,6 +239,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 // RecordReconcileSuccess's own "last_error = null" is exercised here through the real reconcile
 // path, not just the bare SQL statement.
 func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	if err := RecordReconcileError(ctx, pool, "the installation lacks Actions: read on acme/widgets"); err != nil {
@@ -253,7 +258,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -272,6 +277,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 // whose completing fetch answers a permanent 404 is marked unfetchable (not retried every pass
 // forever), and a later successful fetch of the same pull request clears it again.
 func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -300,7 +306,7 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 70))
@@ -345,6 +351,7 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 // a healthy pass -- last_reconcile_at must not advance past a window this pass left incompletely
 // fetched.
 func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := GetSettings(ctx, pool)
@@ -382,7 +389,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -418,6 +425,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 // independent successful write of its jobs -- here, standing in for intake.go's own live-webhook
 // UpsertRunJobs call, which already runs through the same shared upsert.
 func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -450,7 +458,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	after, err := GetSettings(ctx, pool)
@@ -509,6 +517,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 // starting (never more than the ones already in flight when it happened), and the pass must be
 // reported failed, not successful.
 func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -543,7 +552,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	got := attempts.Load()
@@ -576,6 +585,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 // rate limit (reverting to "log and keep going") makes this red: the third run's jobs endpoint
 // would be called, defeating the "no further GitHub request" assertion below.
 func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -628,7 +638,7 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 		mustEncode(t, w, map[string]any{"jobs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	err := reconcile.reconcileWorkflow(ctx, "acme", "widgets", "acme/widgets", ".github/workflows/deploy.yml", DeliveryRunKindDeploy, Production{}, until)
@@ -704,19 +714,19 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 		t.Fatalf("store the stale head: %v", err)
 	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	head := readHead(t, ctx, pool, "acme/widgets", 55)
 	if head.HeadSHA != headNow {
 		t.Fatalf("the head after a pass with no delivery settings = %q, want %q: the head pass reads no setting",
 			head.HeadSHA, headNow)
 	}
-	atOld, err := HeadAttributedTo(ctx, pool, key, headWas)
+	atOld, err := unrenamed().HeadAttributedTo(ctx, pool, key, headWas)
 	if err != nil || atOld {
 		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: that commit is no basis",
 			key, atOld, err)
 	}
-	atNew, err := HeadAttributedTo(ctx, pool, key, headNow)
+	atNew, err := unrenamed().HeadAttributedTo(ctx, pool, key, headNow)
 	if err != nil || !atNew {
 		t.Fatalf("HeadAttributedTo(%s, the head it moved to) = %v, %v; want true", key, atNew, err)
 	}
@@ -784,14 +794,14 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	// older rule left is written and then stamped with that rule's number.
 	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 60)
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	head := readHead(t, ctx, pool, "acme/gadgets", 60)
 	if head.IssueKey == nil || *head.IssueKey != own {
 		t.Fatalf("the merged head after a pass = %v, want %s: %s resolves to acme/widgets, %s to this repository",
 			head.IssueKey, own, foreign, own)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)
@@ -814,9 +824,9 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 61)
-	// acme/gadgets is a repository of its own project, as in the test above: what makes the
-	// title's issue foreign is that it resolves to acme/widgets, not that Dispatch maps nothing
-	// for the pull request's own repository.
+	// acme/gadgets is the default of a project of its own, as in the test above: what makes the
+	// title's issue foreign is that it resolves to acme/widgets, not that no project has the pull
+	// request's own repository as its default.
 	seedProjectRepository(t, ctx, pool, "GDGT", "Gadgets", gadgetsRepo)
 	const sha = "6161616161616161616161616161616161616161"
 	title := foreign + ": the other repository's issue, and no issue of this one"
@@ -852,7 +862,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 61)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	head := readHead(t, ctx, pool, "acme/gadgets", 61)
 	if head.IssueKey != nil {
@@ -959,10 +969,11 @@ func leasedReconciles(t *testing.T, ctx context.Context, pool *store.Pool, recon
 // lookup -- records failed, with that answer as its cause; and the next pass, which GitHub
 // answered, records succeeded.
 func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	answerGitHub(t, fake, nil)
-	pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+	pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()))
 
 	pass()
 	if got := reads.take(); len(got) != 0 {
@@ -1238,7 +1249,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 				}
 				options = append(options, githubapp.WithLimits(limits))
 			}
-			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker()))
+			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed()))
 
 			pass()
 

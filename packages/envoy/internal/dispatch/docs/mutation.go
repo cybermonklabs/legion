@@ -40,14 +40,16 @@ type versionWrite struct {
 	// (typedSources); nil for a version no settlement writes.
 	settled *askBlockSources
 	// closedIssue is set by a settlement of a closed issue's document (settlement.issueClosed),
+	// and by the version a joined transaction writes as that settlement would (SettleVersion),
 	// whose version moves no approval request and carries no approval (writeVersionTx): a move
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
 	// the reviewer's name, each an event that reaches a person, and such a settlement wakes nobody.
 	closedIssue bool
-	// settlement is set by a settlement's version alone (settlement.commitVersion), the one
-	// version write whose move of the open approval request may keep it waiting on the person
-	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
-	// summary edit - moves the request to its agent, whatever text it stores.
+	// settlement is set by a settlement's version alone (settlement.commitVersion, and
+	// SettleVersion, which writes the version that settlement would), the one version write whose
+	// move of the open approval request may keep it waiting on the person (MoveApprovalAsk's
+	// bySettlement). A version a route writes - a named version, an edit, a summary edit - moves
+	// the request to its agent, whatever text it stores.
 	settlement bool
 	// keptEditor is set by a settlement's version whose credit is only the editor a settlement on
 	// the document's closed issue kept (settlementVersionCredit.kept), to that editor; the
@@ -61,12 +63,21 @@ type versionWrite struct {
 	// (settlement.commitRoomVersions): the room's one index pass, under its tree artifact, indexes
 	// every fragment at the version written for its document, so the version write indexes
 	// nothing of its own (T12a of dispatch://INFRA-1253's plan).
+	// Nor does it carry an approval: the settlement carries one to the version once that pass has
+	// stated it.
 	roomIndexed bool
 	// steps names the phases of the decisions step whose own write this version is (restoreCase,
-	// conversionCase): set by SnapshotVersion from the mark the step alone puts on its context
-	// (withDecisionStepWrite), which no route can send, and zero for every other version, which
-	// the restore's and the conversion's carry cases do not reach.
+	// conversionCase): set by SnapshotVersion and SettleVersion (snapshotVersion) from the mark the
+	// step alone puts on its context (withDecisionStepWrite), which no route can send, and zero for
+	// every other version, which the restore's and the conversion's carry cases do not reach.
 	steps decisionStepCases
+	// deferLarge is set from the mark a write's route puts on its context (WithDeferredBlockIndex)
+	// by SnapshotVersion, NamedVersion and RebuildDocument: a version of more blocks than a write
+	// indexes in its own request (deferBlockIndexBlocks), or of an issue room holding more, then
+	// leaves its blocks to the block-index reconciliation and writes its references and typed
+	// nodes alone (indexVersion), as an upload's does. A settlement's version and the decisions
+	// step's leave it unset: each needs its version's blocks indexed in its own transaction.
+	deferLarge bool
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -137,7 +148,7 @@ func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liv
 		return liveOperation{}, ErrServiceUnavailable
 	}
 	ledger := ledgerFrom(ctx)
-	write, err := s.joinLiveWrite(ctx, ledger, target.room)
+	write, err := s.joinLiveWrite(ctx, ledger, target)
 	if err != nil {
 		return liveOperation{}, err
 	}
@@ -344,6 +355,11 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	before, startErr := s.readForkTree(fork, op.target.fragment)
 	if startErr != nil && !errors.Is(startErr, ErrDocOutsideSchema) {
 		return startErr
+	}
+	// No operation of the transaction has changed the fork yet: it is the document as the read
+	// found it (liveWrite.readTree).
+	if write.readTree == nil && startErr == nil && len(write.updates) == 0 {
+		write.readTree = before.Node()
 	}
 	// beforeKnown says beforeMarkdown is known without rendering the fork, and knownPath is the
 	// count of the path it was had by, bumped when it is first needed.
@@ -796,6 +812,9 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// its layout, which a warm operation hands the room's update observer with it
 	// (replicaRendering), so taking it costs the observer no render either.
 	var written renderedTree
+	// roomRead is the tree the write read, the room's browser edits no settlement has versioned
+	// among it, nil for a repair, whose tree has no readable blocks.
+	var roomRead *pmdoc.Node
 	err = s.applyLiveWritten(ctx, artifactID, actor, &written, func(doc liveDoc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.documentFragment()
 		valid, err := startTree(start, doc)
@@ -870,6 +889,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 					return err
 				}
 			}
+			roomRead = current
 		}
 		var offsets []pmdoc.BlockOffset
 		var layout *pmdoc.Layout
@@ -985,6 +1005,21 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// markdown back as one the fragment took.
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		return "", wrapUnlessTooLarge(err, "replace live document")
+	}
+	// A person's deletion of an answered ask's block in the browser that no settlement has
+	// versioned is in the tree this write read already, so the drop above does not see it, and the
+	// upload's version lists the uploader alone and clears the room's pending authors, which name
+	// that person: it is held as that person's removal before the version is written, as the
+	// settlement this version stands in for holds it (holdRoomRemovals).
+	if roomRead != nil {
+		tx, _ := txFromContext(ctx)
+		authors, err := pendingRoomAuthors(ctx, tx, artifactID, joinedLiveWrite(ctx, artifactID))
+		if err == nil {
+			err = holdRoomRemovals(ctx, tx, artifactID, roomRead, authors)
+		}
+		if err != nil {
+			return "", err
+		}
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
@@ -1121,7 +1156,7 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // blocks instead (refuseBatchDroppedAskBlocks), which the gate of that route, droppedAskBlocks,
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
 // settlement retracts the open ask of a block that leaves the document there, and records the
-// person's removal of an answered one (holdSettledRemovals).
+// person's removal of an answered one (holdRoomRemovals).
 //
 // holder is whose asks it reads (documentAsksOf, roomAsksOf), and by who writes it (dropperOf). A
 // write that is not a person's own is refused for an answered ask too, whose block the block index
@@ -1132,12 +1167,7 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // document held before this write, so an ask whose block an earlier write took out is neither
 // refused to an agent nor a removal of a person's.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, target *pmdoc.Node, by dropper) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), holder, target, by)
-}
-
-// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's asks through q,
-// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, holder askHolder, target *pmdoc.Node, by dropper) error {
+	q := s.queryFrom(ctx)
 	open, err := openAskBlocksIn(ctx, q, holder)
 	if err != nil {
 		return err
@@ -1193,8 +1223,8 @@ func droppedBlock(dropped map[string]struct{}) func(blockID string) bool {
 // askHolder is whose asks a read of asks takes: each ask whose block the document id holds, in the
 // room that document is edited in (documentAsksOf, refs.AsksOfDocumentSQL), or every ask of the
 // room id, for a writer that reads and writes an issue room's whole tree at once, all of its
-// fragments' blocks (roomAsksOf): a rebuild and an erase. A document that is its own room has the
-// same asks either way.
+// fragments' blocks (roomAsksOf), as a rebuild does. A document that is its own room has the same
+// asks either way.
 type askHolder struct {
 	id   string
 	room bool
@@ -1595,6 +1625,23 @@ func (s *Service) Blocks(ctx context.Context, artifactID string) ([]model.Artifa
 	return blocks, err
 }
 
+// BlockCount is the number of blocks Blocks returns for the document, read as it reads them
+// (readDocument) and not copied: what the tree read with no view answers of a document whose
+// blocks it leaves out.
+func (s *Service) BlockCount(ctx context.Context, artifactID string) (int, error) {
+	read, tree, err := s.readDocument(ctx, artifactID)
+	switch {
+	case err != nil:
+		return 0, err
+	case read != nil:
+		return len(read.blocks), nil
+	case tree == nil:
+		return 0, nil
+	}
+	_, blocks, err := documentBlocks(tree)
+	return len(blocks), err
+}
+
 // TextWithBlocks renders the document the caller sees (readDocument) once and returns its
 // canonical markdown beside the blocks whose byte ranges index into it. The blocks are the
 // caller's own: it may write into them (References).
@@ -1646,6 +1693,30 @@ func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
 		return "", nil, err
 	}
 	return rendered.markdown, rendered.blocks, nil
+}
+
+// VersionBlocks is the typed blocks of a stored document version, read from that version's own
+// markdown rather than the live tree: the version parsed as a rendering (pmdoc.ParseRendering),
+// then rendered once into its markdown and its blocks (documentBlocks). The markdown it answers
+// is that rendering, which the blocks' byte ranges index; it is stored unless a renderer before
+// this build's wrote the version otherwise. Only typed blocks are listed, because only a typed
+// block's opening line writes its id into the stored text, so only a typed block has the same id
+// in every read of the version and in every later version that keeps it: the parse mints a new id
+// for each other block each time. A version holding an element this build does not know is a
+// NewerContentError, any other refusal an OutsideSchemaError (documentSchemaError).
+func VersionBlocks(stored string) (string, []model.ArtifactBlock, error) {
+	tree, err := pmdoc.ParseRendering(stored)
+	if err != nil {
+		return "", nil, documentSchemaError(err)
+	}
+	markdown, blocks, err := documentBlocks(tree)
+	if err != nil {
+		return "", nil, err
+	}
+	typed := slices.DeleteFunc(blocks, func(block model.ArtifactBlock) bool {
+		return !pmdoc.IsTypedBlock(block.Type)
+	})
+	return markdown, typed, nil
 }
 
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
@@ -1815,14 +1886,53 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target.room)
+	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target)
 	return err
 }
 
 // SnapshotVersion returns the current immutable version, adding an unnamed version only when the
 // live content has changed since the previous one. The version a comment's anchor is pinned to
-// under WithCommentMarks is taken on a closed issue's document too.
+// under WithCommentMarks is taken on a closed issue's document too. A retired document
+// (RetireDocument), read under the owner's lock the version write takes, is given no version: the
+// write is refused with a RetiredDocumentError (retiredWriteRefusal). A write whose route marked
+// its context (WithDeferredBlockIndex) leaves the version's blocks above deferBlockIndexBlocks to
+// the block-index reconciliation (versionWrite.deferLarge).
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, false)
+}
+
+// SettleVersion is SnapshotVersion written as the document's settlement writes its version
+// (settlement.commitVersion), inside the caller's joined transaction and under the owner lock it
+// holds: the version moves the open approval request as a settlement's does, keeping it with the
+// person where it stores byte for byte the text that person was asked about (MoveApprovalAsk's
+// bySettlement); on a closed issue it moves no request and carries no approval
+// (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
+// version does (settledEditNotice). Under a context its caller marked as a comment's writes
+// (WithCommentMarks) it runs owner-verified, so a closed issue's document takes it. It writes the
+// version in the caller's transaction, after that transaction's own writes to the document, so
+// every store built from the latest version - the block index and its block texts, the mentions'
+// excerpts, and document_search and the issue's search vector, which the version's insert
+// triggers - holds the document as those writes leave it when the transaction commits, where the
+// settlement those writes arm would write the same version a settle delay later.
+//
+// It is that same version. The settlement versions the document when an update since the latest
+// version changed its content and the rendering differs from it; a snapshot when the rendering
+// differs and an update changed the content or the latest version does not read as it
+// (snapshotVersion). For a transaction that changed the content itself, both rules come to the
+// rendering differing. It names no version, and keeps no editor of a closed issue's
+// (versionWrite.keptEditor): the version credits this transaction's writer, whose change it holds,
+// so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval move and
+// carry are the ones the settlement's version of the same text would make. The settlement
+// the transaction's writes armed still runs: it finds no content changed since this version
+// (contentChangedSinceVersion) and writes none, and it keeps what this leaves to it - the block-id
+// stamp, the ask blocks' repairs and the document's pending-settlement row, with the editor a
+// closed issue keeps past it (clearSettlementPending).
+func (s *Service) SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, true)
+}
+
+// snapshotVersion is SnapshotVersion, and SettleVersion where settles is set.
+func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor model.Actor, settles bool) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -1860,24 +1970,40 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
-	// comment itself (WithCommentMarks, commentMarkOperation above).
-	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
+	// comment itself (WithCommentMarks, commentMarkOperation above), and the version a comment's
+	// delete settles, which a closed issue takes like the delete. A retired document is refused
+	// whatever its issue.
+	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return VersionResult{}, err
 	}
 	if !open && !isOwnerVerified(ctx) {
 		return VersionResult{}, ErrIssueClosed
 	}
+	// A person's deletion of an answered ask's block in the browser that no settlement has
+	// versioned is in the room this version takes: it is held as the removal of the person among
+	// the room's authors, as the settlement this version stands in for holds it, against the room
+	// as the transaction read it before its own operations (holdRoomRemovals, roomReadTree).
+	if err := holdRoomRemovals(ctx, tx, artifactID, roomReadTree(ctx, artifactID, rendered.tree), capture.roomAuthors()); err != nil {
+		return VersionResult{}, err
+	}
+	closedIssue := settles && !open
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
 		steps:            decisionStepCasesOf(ctx),
+		deferLarge:       deferredBlockIndex(ctx),
+		closedIssue:      closedIssue,
+		settlement:       settles,
 	})
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
+	if err := s.settledEditNotice(ctx, tx, artifactID, closedIssue, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
 	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
@@ -2064,7 +2190,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	if err != nil {
 		return EditOutcome{}, err
 	}
-	if _, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), target.room); err != nil {
+	if _, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), target); err != nil {
 		return EditOutcome{}, err
 	}
 	if err := lockDocumentRoom(ctx, tx, target.room); err != nil {
@@ -2300,9 +2426,14 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // such a block. Once the fleet is one build it writes the ones a version keeps (keptAskState): the
 // state, and for an answer who answered and when, which the release before's readers of a stored
 // version read the ask's state from, and never the answer's words. An ask with no block, and a
-// block the document no longer holds as an ask, are written nothing.
+// block the document no longer holds as an ask, are written nothing, and so is a block whose
+// document is retired (RetireDocument), read under the document owner's lock
+// (retiredUnderOwnerLock): the answer, resolution or decline is taken, and the retired document,
+// which takes no new text, gets none. It serves the roll window's write and the form a version
+// keeps (root-deletes.txt lists it under stored-ask-state), so it goes with the last of those.
 //
 // kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
@@ -2313,6 +2444,10 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return errUnjoined
+	}
+	retired, err := retiredUnderOwnerLock(ctx, tx, *ask.BlockArtifactID)
+	if err != nil || retired {
+		return err
 	}
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil {
@@ -2383,22 +2518,35 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 
 // NamedVersion records the live document as a deliberately named immutable version. Like
 // SeedText and SnapshotVersion it runs inside the caller's joined transaction, which credits
-// its authors and publishes its events when it commits (Ledger.Commit).
+// its authors and publishes its events when it commits (Ledger.Commit). It takes the document
+// owner's lock first, the lock its capture's read takes (joinRead) and holds to the version's
+// write, and refuses there a closed issue's document (ErrIssueClosed) and a retired document
+// (RetireDocument), which takes no new text, with a RetiredDocumentError (retiredWriteRefusal):
+// neither is read, so no room of a retired document is loaded for it, and neither is versioned.
+// A write whose route marked its context (WithDeferredBlockIndex) leaves the version's blocks
+// above deferBlockIndexBlocks to the block-index reconciliation (versionWrite.deferLarge).
 func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return VersionResult{}, errUnjoined
 	}
-	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
+	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return VersionResult{}, err
 	}
-	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
-	if err != nil {
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return VersionResult{}, err
 	}
 	if !open {
 		return VersionResult{}, ErrIssueClosed
+	}
+	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
+	if err != nil {
+		return VersionResult{}, err
+	}
+	// The room's removals no settlement holds yet, as SnapshotVersion holds them (holdRoomRemovals).
+	if err := holdRoomRemovals(ctx, tx, artifactID, roomReadTree(ctx, artifactID, rendered.tree), capture.roomAuthors()); err != nil {
+		return VersionResult{}, err
 	}
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		named:            true,
@@ -2406,6 +2554,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
+		deferLarge:       deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -2621,7 +2770,7 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, artifactID stri
 	if fromStore {
 		capture = capture.withoutInflight(actor)
 	}
-	if tree, err = storableVersionTree(ctx, tx, tree); err != nil {
+	if tree, err = storableVersionTree(ctx, tx, target.document, tree); err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
@@ -2631,39 +2780,89 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, artifactID stri
 	return renderedTree{tree: tree, markdown: markdown, offsets: offsets, head: &stored}, capture, nil
 }
 
-// storableVersionTree is tree, the document a version write takes without settling it first
-// (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors and
-// captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
-// ask block holding the answer's words or selection, or an open state, which no version written
-// then holds (withoutUnkeptAskAttributes), has them taken off, as the document's next settlement
-// takes them off the live tree (askReadableWrite), and keeps the state of an ask that is not open,
-// the answerer and time and a copy's provenance as the live tree holds them, which every write of
-// an ask's state keeps in step with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates,
-// settlement). Each
-// container on the way to such a block and each such block is a fresh node, and tree itself is
-// left as it is. It is tree where no ask block holds one, and where another build serves, whose
-// pages read the attributes, which settlement keeps in step with each ask meanwhile. The fleet is
-// read only for a tree holding one.
+// storableVersionTree is tree, the document artifactID a version write takes without settling it
+// first (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors
+// and captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
+// ask block that has no ask row and is no copy of an ask has every attribute a version can store
+// taken off (withoutStoredAskAttributes), as settlement takes them off it
+// (unindexedAskResolution): it keeps none of the eight (R10), whatever state its live tree gives
+// it, the state="resolved" a closed issue's settlement or the close's sweep wrote while another
+// build served among them. Each ask block that has an ask (keptAskBlocks) has only what no version
+// written then holds taken off, the answer's words and selection and an open state
+// (withoutUnkeptAskAttributes), as the document's next settlement takes them off the live tree
+// (askReadableWrite), and keeps the state of an ask that is not open, the answerer and time and a
+// copy's provenance as the live tree holds them, which every write of an ask's state keeps in step
+// with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates, settlement). Each container on
+// the way to a block it changes and each such block is a fresh node, and tree itself is left as it
+// is. It is tree where no ask block holds an attribute a version can store, and where another
+// build serves, whose pages read the attributes, which settlement keeps in step with each ask
+// meanwhile. The fleet is read only for a tree holding one (holdsStoredAskAttribute).
 //
-// kept for one release: stored-ask-state
-func storableVersionTree(ctx context.Context, tx pgx.Tx, tree *pmdoc.Node) (*pmdoc.Node, error) {
-	stripped := withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
+// The strip is R10's and stays. The roll window's read of the fleet goes with it, and the lighter
+// strip of a block that has an ask goes with the form a version keeps.
+func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
+	// kept for one release: roll-window-attributes
+	if !holdsStoredAskAttribute(tree) {
+		return tree, nil
+	}
+	// kept for one release: roll-window-attributes
+	if twoBuilds, err := anotherBuildServes(ctx, tx); err != nil || twoBuilds {
+		return tree, err
+	}
+	// kept for one release: stored-ask-state
+	withAsk, err := keptAskBlocks(ctx, tx, artifactID, tree)
+	if err != nil {
+		return tree, err
+	}
+	return withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		taken := attributesOf(node)
-		if !withoutUnkeptAskAttributes(taken) {
+		strip := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); withAsk[id] {
+			strip = withoutUnkeptAskAttributes
+		}
+		if !strip(taken) {
 			return node, false
 		}
 		copied := *node
 		copied.Attrs = taken.Attrs
 		return &copied, true
+	}), nil
+}
+
+// holdsStoredAskAttribute reports whether an ask block of tree holds an attribute a version can
+// store (storedAskAttributes): the one tree storableVersionTree reads the fleet for, since it
+// stores every other as it is.
+//
+// kept for one release: roll-window-attributes
+func holdsStoredAskAttribute(tree *pmdoc.Node) bool {
+	held := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		held = node.Type == "ask" && slices.ContainsFunc(storedAskAttributes(), func(name string) bool {
+			_, present := node.Attrs[name]
+			return present
+		})
+		return !held
 	})
-	if stripped == tree {
-		return tree, nil
+	return held
+}
+
+// keptAskBlocks is askBlocksWithAnAsk for tree where one of its ask blocks holds what a version
+// keeps of an ask (holdsKeptAskAttribute), and nil where none does: such a tree's blocks hold
+// none but the attributes withoutUnkeptAskAttributes takes off whatever ask a block has, so the
+// rows and copies its blocks have are not read for it (storableVersionTree).
+//
+// kept for one release: stored-ask-state
+func keptAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (map[string]bool, error) {
+	kept := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		kept = node.Type == "ask" && holdsKeptAskAttribute(node)
+		return !kept
+	})
+	if !kept {
+		return nil, nil
 	}
-	twoBuilds, err := anotherBuildServes(ctx, tx)
-	if err != nil || twoBuilds {
-		return tree, err
-	}
-	return stripped, nil
+	return askBlocksWithAnAsk(ctx, tx, artifactID, tree)
 }
 
 // captureWrite is captureLiveTextAndAuthors for a transaction with a write of its own to the
@@ -2708,7 +2907,7 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, target liveTarget
 		capture = capture.withoutInflight(actor)
 	}
 	if rendering, reused := s.reuseRendering(write, fork, target.document, "capture"); reused {
-		tree, err := storableVersionTree(ctx, tx, rendering.tree)
+		tree, err := storableVersionTree(ctx, tx, target.document, rendering.tree)
 		if err != nil || tree == rendering.tree {
 			return rendering, capture, err
 		}
@@ -2722,7 +2921,7 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, target liveTarget
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
-	tree, err := storableVersionTree(ctx, tx, valid.Node())
+	tree, err := storableVersionTree(ctx, tx, target.document, valid.Node())
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
@@ -2900,7 +3099,13 @@ type renderedTree struct {
 // and the carry's reads and the anchor refresh's walk. Its writes go through write in this order -
 // the version's insert, the task counts, the index, the move, the carry, the anchors - so a
 // transaction whose writes are queued runs them in its write phase, and the ledger records the
-// version as it will stand (latestVersion).
+// version as it will stand (latestVersion). The carry's writes wait for the second part of the
+// write phase where the index's pass gives the version its version_renders row in this transaction
+// (carryAfterRender), so the review it inserts pins the digest that row records, but for a carry
+// to a version that restores the approved text, whose writes keep their place behind a row of the
+// approval's digest, under a savepoint the write phase takes before the version's insert
+// (carryRestored); a version an issue room's settlement writes takes its carry after the room's
+// pass (commitRoomVersions).
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite) (versionWriteResult, error) {
 	markdown, tree := rendered.markdown, rendered.tree
 	if spec == nil {
@@ -2939,11 +3144,13 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// version is written, and writes the version's node after it (commitRoomVersions); a version of
 	// a document of an issue room written outside that settlement - an upload's, an edit's, a named
 	// version - runs the room's pass itself (indexDocumentInRoom), since no pass indexes one
-	// fragment of a room alone.
+	// fragment of a room alone. A version whose route marked its write (versionWrite.deferLarge)
+	// leaves the blocks of a document or a room above deferBlockIndexBlocks to the block-index
+	// reconciliation, as an upload's does, and states no version_renders row of its own.
 	if spec.roomIndexed {
 		return s.finishVersionWrite(ctx, tx, artifactID, rendered, actor, spec, versionWriteResult{version: version, owner: owner})
 	}
-	changes, blocks, err := s.indexVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version.Number, version.CreatedAt), markdown, rendered, spec.settled)
+	changes, blocks, err := s.indexVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version.Number, version.CreatedAt), markdown, rendered, spec.settled, spec.deferLarge)
 	if err != nil {
 		return versionWriteResult{}, err
 	}
@@ -2961,7 +3168,8 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 // finishVersionWrite is what writeVersionTx does once the version's row (result.version) is
 // queued, indexed or left to its room's pass: it moves the open approval request and carries an
 // approval to the version, refreshes the anchors of the tree it was written from and records its
-// author capture, answering result.
+// author capture, answering result. A version left to its room's pass (versionWrite.roomIndexed)
+// takes its carry from the settlement, once that pass has stated it (commitRoomVersions).
 func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite, result versionWriteResult) (versionWriteResult, error) {
 	markdown, tree, version := rendered.markdown, rendered.tree, result.version
 	if !spec.closedIssue {
@@ -2980,9 +3188,15 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// rules: every ask block of the version agrees with its node, and the version holds the
 		// approved text again or every difference from it is one of the carry cases
 		// (carryVerdict). It runs after the move, so an open request already names this version
-		// when the carry answers it in the approver's name.
-		if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx)); err != nil {
-			return versionWriteResult{}, err
+		// when the carry answers it in the approver's name, and after the index, whose pass gives
+		// the version its version_renders row, before which none of its writes runs
+		// (carryAfterRender), or, for a restore, behind the row it writes itself (carryRestored).
+		if !spec.roomIndexed {
+			if err := carryAfterRender(ctx, tx, artifactID, version.Number, func() error {
+				return s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx))
+			}); err != nil {
+				return versionWriteResult{}, err
+			}
 		}
 	}
 	// The transaction's own live operation already refreshed this tree's anchors
@@ -3016,8 +3230,7 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 // issue's spec (api's createIssue).
 //
 // The node's address is drawn from the version's own number, which the insert took under the
-// document's owner lock. The address can be one the store already holds a gone node at: the next
-// version after an erase deleted a document's newest (grapherase's endErasedVersions), or the
+// document's owner lock. The address can be one the store already holds a gone node at: the
 // first version of a document made under the name of one a removal took out (api's
 // removedDocumentNodes), whose slug, and so whose ref_key, the new row takes. The write then
 // restates that node (graphstore.Node.Restates), which brings it back live with this row's number
@@ -3094,7 +3307,8 @@ func versionRoomHead(ctx context.Context, tx pgx.Tx, artifactID string) (int64, 
 // head the insert meets - and queues the insert in tx's write phase (write). The ledger that
 // queues tx's writes records the version as it will stand, so the reads that follow in this
 // transaction take it from there rather than from a table that holds the row only once the write
-// phase has run (latestVersion, PendingVersionMarkdown).
+// phase has run (latestVersion, PendingVersionMarkdown), and the place of its insert in the queue,
+// before which the write phase takes the savepoint of a restore carry to it (carryRestored).
 func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown string, authors []model.Actor, named bool, summary *string, docUpdateVersion *int64, stamp RenderStamp) (model.Version, error) {
 	number, createdAt, err := versionSlot(ctx, tx, artifactID)
 	if err != nil {
@@ -3114,7 +3328,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor, queued: len(ledger.queue) - 1})
 	}
 	return version, nil
 }

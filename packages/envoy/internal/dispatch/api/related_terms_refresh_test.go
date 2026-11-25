@@ -204,6 +204,7 @@ func queuedChangesOf(t *testing.T, database *store.Store, project string) int {
 // caller uses, apart from the three deletes and the block an ask is attached to, which no route
 // makes.
 func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	const project = "TERM"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
@@ -296,6 +297,7 @@ func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
 // items and refreshed_at and nothing else, so the row still carries this build's snapshot and a
 // rule keyed on a null snapshot would read it as this build's own.
 func TestRefreshRebuildsInFullAfterTheOldReleaseWroteTheRow(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "ROLL")
 	fixture.addTermComment(t, "The gnomon casts a shadow.")
 	if applied := refreshTermStatsPass(t, fixture.database, fixture.project); applied.Mode != searchTermModeStep {
@@ -318,6 +320,7 @@ func TestRefreshRebuildsInFullAfterTheOldReleaseWroteTheRow(t *testing.T) {
 // A2. A check that finds a project it needs counts refreshes it (ensureSearchTermStats), and that
 // refresh applies whatever waits in the queue, so its counts are a full rebuild's too.
 func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	const project = "ENSURE"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
@@ -350,6 +353,7 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 // pass and by no other: the full build cannot see its item, so it leaves that writer's queued
 // change where it is, and the step pass that follows applies it once.
 func TestRefreshCountsAWriterThatCommitsAfterAPass(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "RACE")
 	ctx := context.Background()
 	writer, err := fixture.database.Pool.Begin(ctx)
@@ -391,6 +395,7 @@ func TestRefreshCountsAWriterThatCommitsAfterAPass(t *testing.T) {
 // A2. A project created since the last pass has no totals row, so the next pass counts it in
 // full, and the queue holds nothing of it afterwards.
 func TestRefreshCountsAProjectCreatedSinceTheLastPass(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "FIRST")
 	ctx := context.Background()
 	for _, seed := range []struct {
@@ -429,6 +434,7 @@ func TestRefreshCountsAProjectCreatedSinceTheLastPass(t *testing.T) {
 // ever, and the project's next count from its items is what puts its counts right - which is the
 // recovery, and the reason no production code path deletes an issue or an artifact.
 func TestAPassDropsTheQueuedChangesThatNameNoProject(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "GONE")
 	ctx := context.Background()
 	// The issue's own items first: no foreign key of theirs cascades. Every one of the four rows
@@ -494,6 +500,7 @@ func relatedTermDF(t *testing.T, database *store.Store, project, text, excludeIs
 // A3. The df the picker reads, with the owner of an item written since the last full build left
 // out, is the same after a pass that applied the queue as after one that counted every item.
 func TestRelatedTermDFAfterAStepPassEqualsAFullRebuilds(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "DF")
 	ctx := context.Background()
 	if _, err := fixture.database.Pool.Exec(ctx, `
@@ -555,6 +562,7 @@ func itemRowsRead(t *testing.T, pool *store.Pool) int64 {
 // are of the connection that ran it, and no server runs over this database, so nothing else
 // reads an item table between them.
 func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "QUIET")
 	config, err := pgxpool.ParseConfig(fixture.database.Pool.Config().ConnString())
 	if err != nil {
@@ -590,6 +598,7 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 // neither column is in a trigger's column list, so an event append queues no change. The two
 // statements are the broker's own (events/broker.go).
 func TestAnEventAppendQueuesNoChange(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "EVENT")
 	ctx := context.Background()
 	if queued := queuedChanges(t, fixture.database); queued != 0 {
@@ -617,6 +626,7 @@ func TestAnEventAppendQueuesNoChange(t *testing.T) {
 // alone, so such a write would stay counted wrong with no limit. Without search in the four
 // lists, every one of these writes queues nothing and this test fails.
 func TestADirectWriteOfTheSearchVectorQueuesTheChange(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "VECTOR")
 	ctx := context.Background()
 	for _, item := range []struct {
@@ -650,6 +660,7 @@ func TestADirectWriteOfTheSearchVectorQueuesTheChange(t *testing.T) {
 // moment of that snapshot, and every queue row left behind is one the snapshot cannot see - which
 // is what makes the rows it dropped exactly the rows it applied.
 func TestAStepPassLeavesOnlyChangesItsSnapshotCannotSee(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "SNAP")
 	ctx := context.Background()
 	writer, err := fixture.database.Pool.Begin(ctx)
@@ -699,6 +710,7 @@ func TestAStepPassLeavesOnlyChangesItsSnapshotCannotSee(t *testing.T) {
 // bounded batch and still moved refreshed_at would leave the counts behind for every item queued
 // at or before that moment.
 func TestOnePassDrainsAQueueDeeperThanOneBatch(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "DEEP")
 	ctx := context.Background()
 	if _, err := fixture.database.Pool.Exec(ctx, `
@@ -735,6 +747,7 @@ func TestOnePassDrainsAQueueDeeperThanOneBatch(t *testing.T) {
 // the snapshot of the pass that last changed it, so nothing a reader compares with refreshed_at
 // moves while the project stands still.
 func TestARefreshWithNoChangeLeavesTheRowAsItWas(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "STILL")
 	fixture.addTermComment(t, "The gnomon casts a shadow.")
 	if applied := refreshTermStatsPass(t, fixture.database, fixture.project); applied.Changes != 1 {
@@ -767,6 +780,7 @@ from search_term_totals where project_key = $1`
 // text is the oracle held in the test (related_terms_oracle_test.go), not a statement built from
 // this package's own constants, so an edit to the document arm moves one side and not the other.
 func TestSearchTermItemsAnswerWhatMainsStatementDoes(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "ITEMS")
 	ctx := context.Background()
 	// A second version of the document, so that a statement reading every version rather than

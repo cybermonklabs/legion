@@ -154,7 +154,9 @@ while True:
         sys.exit(0)
     break
 # Its target, read from the link's own directory, is gone, or is there and does not resolve (a link
-# whose target is gone, or a loop).
+# whose target is gone). Resolving the link fails with nothing there, as path's lookup did: any
+# other error, as at a directory the gate may not search or a loop, failed that lookup above and is
+# named.
 if stat.S_ISLNK(mode) and not os.path.exists(parent):
     target = os.readlink(parent)
     why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
@@ -168,6 +170,30 @@ PY
 # arguments as text does not change.
 utf8() {
   printf '%s' "$1" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null
+}
+
+# unresolved <link>: how resolving <link>, a link something is at, fails, as the words after "a link
+# to <its target>, which". When nothing is at the end of its chain, it does not exist when nothing
+# is at its target either, read from the link's own directory, and does not resolve when its target
+# is there (a link whose target is gone). Any other error, such as a directory along the way the
+# gate may not search or a loop, is named: does not resolve: <error>. A test of what is at the
+# target reads each such error as nothing there. It fails when <link> resolves.
+unresolved() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+link = sys.argv[1]
+try:
+    os.stat(link)
+except FileNotFoundError:
+    target = os.path.join(os.path.dirname(link), os.readlink(link))
+    print("does not resolve" if os.path.lexists(target) else "does not exist")
+except OSError as error:
+    print(f"does not resolve: {error.strerror}")
+else:
+    sys.exit(1)
+PY
 }
 
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
@@ -219,7 +245,7 @@ dotfiles_clients() {
     unknown=$((unknown + 1))
     return
   fi
-  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path target why
+  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path why
   # python3 and jq get each path read here as an argument, and a launcher that reads its arguments
   # as text (a mise shim) hands on each byte that is no UTF-8 as U+FFFD: the changed path is one
   # where nothing is, which reads as absent. So a directory these paths start from whose name is no
@@ -244,12 +270,8 @@ dotfiles_clients() {
   home=$(readlink -f "$root" || true)
   own=$(readlink -f "$package" || true)
   state=$(entry_state "$package")
-  if [ "$state" = present ] && [ ! -e "$package" ]; then
-    # Its target, read from the link's own directory, is gone, or is there and does not resolve.
-    target=$(readlink "$package")
-    case "$target" in /*) path=$target ;; *) path=${package%/*}/$target ;; esac
-    if [ -L "$path" ] || [ -e "$path" ]; then why=resolve; else why=exist; fi
-    outside="$root/omp/plugins, a link to $target, which does not $why"
+  if [ "$state" = present ] && why=$(unresolved "$package"); then
+    outside="$root/omp/plugins, a link to $(readlink "$package"), which $why"
   elif [ "$state" = present ] && [[ $own != "$home"/* ]]; then
     outside="$root/omp/plugins, a link to ${own:-a path that does not resolve}"
   elif [ "$state" != present ] && [ "$state" != absent ]; then

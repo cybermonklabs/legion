@@ -21,9 +21,9 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // cuts to the relations that stand, so a relation whose newest tuple retracts it is absent rather
 // than answered as ended. It is SQL text rather than a read, because most of its readers splice
 // it into a statement of their own - the census's links of every node, a person's page, the
-// claims the publisher's record restates, the parents a block index compares, the backlink
-// counts' test of one tuple and the erase's blockers - and the rule written out in each of them
-// was several readings to keep in step, as prioritystore.AdvancesTupleRead's own store found.
+// claims the publisher's record restates, the parents a block index compares and the backlink
+// counts' test of one tuple - and the rule written out in each of them was several readings to
+// keep in step, as prioritystore.AdvancesTupleRead's own store found.
 //
 // It reads graph_tuples as t. relation is the columns of t that tell one relation from another
 // among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
@@ -250,32 +250,6 @@ func NodeColumnsOf(alias string) string {
 	return alias + `.` + strings.ReplaceAll(nodeColumns, `, `, `, `+alias+`.`)
 }
 
-// ProjectedTable is one table that projects the store: each of its rows names the node it is the
-// projection of by its node_kind and node_address, which migration 20261109022248 gave it with a
-// foreign key to graph_nodes. Issue is the column naming the issue that owns a row itself, empty
-// for a table whose rows are owned through their document alone, by the artifact_id each of them
-// carries: a comment is an issue's or a document's (comments_one_owner, migration 0009), and a
-// block and a block reference are their document's. Key is the table's primary key, the order a
-// reader takes a node's rows of it in and how it names each.
-type ProjectedTable struct{ Table, Issue, Key string }
-
-// ProjectedTables are the tables that project the store, the one list of them the tree's
-// production code reads: the erase walks all three by (node_kind, node_address) rather than by the
-// node's kind, to read, lock and delete a node's rows of them (grapherase), so a kind that gains a
-// projection carries no second list there to keep in step. censustest.ProjectedColumns holds the
-// columns of each that the store states, and graphcensus's
-// TestTheProjectedColumnsListEveryTableTheStoreProjects holds its tables to these. asks and
-// ask_followers, which migration 20261116094058 gave the same pair, project only an ask's node,
-// and the erase deletes, locks and lists neither: it refuses an ask's node while its asks row
-// stands (graphcensus.ObjectRowStands), and a follower row goes with its asks row. An asks row
-// still says what its ask's node states, which the erase's blockers read (grapherase's
-// readBlockers).
-var ProjectedTables = []ProjectedTable{
-	{Table: "comments", Issue: "issue_key", Key: "id"},
-	{Table: "document_blocks", Key: "artifact_id, block_id"},
-	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
-}
-
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
 // rows however many nodes the store holds. The block schema's supertag and attribute nodes are
@@ -309,7 +283,7 @@ const nodesOfKind = `
 		order by id
 	`
 
-// NodesBeneath answers the row of each node that stands beneath the node whose kind and id are
+// nodesBeneath answers the row of each node that stands beneath the node whose kind and id are
 // kind and id, as the store keys it, and is not gone, at every depth and of every kind, in (kind,
 // id) order, in one statement however deep the tree: each node whose current part_of tuple
 // (CurrentTupleRead) points at that node, each whose current part_of points at one of those, and
@@ -320,10 +294,10 @@ const nodesOfKind = `
 // that node's row out of the answer, since what still stands under a gone node stands beneath the
 // start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
 // planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
-// reached, and walks that index from each such end. The write that takes a node to gone reads
-// what stands beneath it so (api's writeNodeState).
-func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
-	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
+// reached, and walks that index from each such end. WriteState reads what stands beneath each node
+// it takes gone so, through withBeneath.
+func nodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesBeneathStatement, kind, id, StateGone)
 	if err != nil {
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
@@ -334,14 +308,42 @@ func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 	return beneath, nil
 }
 
-// nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone
-// state. walked is the start and each node the walk has reached, each once, as the store keys it:
-// its recursive step is the current part_of tuples into one node it holds, under the node's kind
-// and its address kind, read in a lateral subquery keyed by that node, and its `union` drops a
-// node it holds already, so a part_of cycle ends the walk rather than looping. The relation each
-// step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does not
-// key, so it sorts that node's part_of tuples by node. The start itself is no answer.
-var nodesBeneath = `
+// withBeneath answers roots, each followed by what nodesBeneath reads beneath it, root by root in
+// the order roots holds them, and each node once, as the store keys it, by kind and id: where a node
+// is met twice - a root an earlier root's subtree holds, or a node two roots' subtrees share - the
+// answer keeps it where it was first met, as that read answered it. It reads beneath every root, one
+// nodesBeneath each, whether or not it met the root already. It is WriteState's read of what a
+// write into gone takes with it.
+func withBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
+	var nodes []Node
+	taken := map[[2]string]bool{}
+	take := func(node Node) {
+		if key := [2]string{node.Kind, node.ID}; !taken[key] {
+			taken[key] = true
+			nodes = append(nodes, node)
+		}
+	}
+	for _, root := range roots {
+		take(root)
+		beneath, err := nodesBeneath(ctx, q, root.Kind, root.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range beneath {
+			take(node)
+		}
+	}
+	return nodes, nil
+}
+
+// nodesBeneathStatement is the statement of nodesBeneath: $1 and $2 the start's kind and id and $3
+// the gone state. walked is the start and each node the walk has reached, each once, as the store
+// keys it: its recursive step is the current part_of tuples into one node it holds, under the
+// node's kind and its address kind, read in a lateral subquery keyed by that node, and its `union`
+// drops a node it holds already, so a part_of cycle ends the walk rather than looping. The relation
+// each step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does
+// not key, so it sorts that node's part_of tuples by node. The start itself is no answer.
+var nodesBeneathStatement = `
 		with recursive walked (node_kind, node_id) as (
 			select $1::text, $2::text
 			union
@@ -377,7 +379,7 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// ScanNode reads one node row, as ReadNode, NodesOfKind and NodesBeneath take it: a row whose
+// ScanNode reads one node row, as ReadNode, NodesOfKind and nodesBeneath take it: a row whose
 // first columns are nodeColumns, in their order, as a statement of another package selects them
 // through NodeColumnsOf, and whose columns after those, where it selects any, it reads into more.
 // A null project_key is the empty Project, and a null parties nil Parties.

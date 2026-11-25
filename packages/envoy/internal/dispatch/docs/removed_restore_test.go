@@ -341,6 +341,82 @@ func TestAPersonsBrowserDeletionOfAnAnsweredAskStaysThroughTheRestore(t *testing
 	}
 }
 
+// A person's deletion of an answered ask's block in the browser stays that person's removal when a
+// write that versions the room without a settlement comes before its settlement (R6): an agent's
+// upload, whose version credits the agent alone and clears the room's pending authors, and a
+// snapshot of the room in an agent's name, whose version first holds the answer and so would
+// excuse its answerer (answerersVersion). Alice answers q-own, which writes the ask's state into
+// its block in her name, and her browser deletes the block; before its settlement runs, an agent's
+// session uploads the spec with a word of its prose changed, or a snapshot versions the room. That
+// version records her removal on the ask's node, the finder reads no work for the ask, and the
+// decisions step writes no block of it back.
+func TestAPersonsUnsettledBrowserDeletionOfAnAnsweredAskStaysThroughAnAgentsVersion(t *testing.T) {
+	ctx := context.Background()
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	agent := model.Actor{Kind: "session", ID: "session-unsettled-removal"}
+	for _, test := range []struct {
+		name    string
+		version func(t *testing.T, issue *restoreIssue)
+	}{
+		{"an agent's upload", func(t *testing.T, issue *restoreIssue) {
+			issue.write(issue.spec, strings.Replace(head, "holds the corpus", "holds the whole corpus", 1), agent,
+				func(ctx context.Context) context.Context { return ctx })
+		}},
+		{"a snapshot of the room in an agent's name", func(t *testing.T, issue *restoreIssue) {
+			if err := joinedWrite(issue.service, func(ctx context.Context) error {
+				written, err := issue.service.SnapshotVersion(ctx, issue.spec, agent)
+				if err != nil {
+					return err
+				}
+				tx, _ := txFromContext(ctx)
+				return causeInWritePhase(ctx, tx, written.Blocks, graphstore.NoEvent)
+			}); err != nil {
+				t.Fatalf("snapshot the spec: %v", err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+removedRestoreAsk("q-own", "Which store holds the corpus?"))
+			before := latestVersionNumber(t, issue.service, issue.spec)
+			ask := issue.answer(issue.spec, "q-own", "The database we run.")
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			browserReplaceText(t, issue.service, issue.spec, head, alice)
+			test.version(t, issue)
+			if written := latestVersionNumber(t, issue.service, issue.spec); written != before+1 {
+				t.Fatalf("the spec stands at version %d after %d, want the agent's write the one version after it", written, before)
+			}
+			if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {
+				t.Fatalf("the agent's version holds q-own, which alice's browser deleted:\n%s", spec)
+			}
+
+			if held := heldRemovalsOf(t, issue, ask); len(held) != 1 || !held[0].Asserted || held[0].ToID != "alice" {
+				t.Errorf("the ask %s holds the removals %+v, want one asserted to alice: her browser deleted its block", ask, held)
+			}
+			work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+			if err != nil {
+				t.Fatalf("read the restore's work: %v", err)
+			}
+			for _, item := range work {
+				if item.Ask == ask {
+					t.Errorf("the finder reads %+v as the restore's work, want none for the ask alice removed", item)
+				}
+			}
+			// A pass that read the ask as its work before the agent's version, as the existing
+			// browser test drives it, writes nothing back either.
+			result := issue.restoreWith([]graphcensus.RestoreWork{{
+				Shape: graphcensus.RestoreReturns, Issue: "DOC-1", Ask: ask, BlockID: "q-own",
+				Address: refs.BlockAddress(issue.refKey(issue.spec), "q-own"), Spec: issue.refKey(issue.spec),
+			}}, false)
+			if len(result.Restored) != 0 || result.SpecVersion != 0 {
+				t.Errorf("the restore over the ask's work did %+v, want nothing written: alice's browser deleted q-own before the agent's version", result)
+			}
+			if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-own ") {
+				t.Fatalf("the spec holds q-own again:\n%s", spec)
+			}
+		})
+	}
+}
+
 // actorJSON is actor as a stored actor's JSON.
 func actorJSON(t *testing.T, actor model.Actor) string {
 	t.Helper()

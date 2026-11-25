@@ -173,7 +173,10 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--type`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+- **`--type`** is optional. Use `github-app` for a GitHub App key, `github-installations` for the
+  installation tokens a minter outside the broker stores again every few minutes, which a
+  deployment writes and no person types ([Concepts](/legion/broker/concepts/#requests-and-grants)),
+  `google-login` for an
   authorized-user Google login, `azure-login` for the Entra ids of the one secret the deployment
   names in `BROKER_AZURE_LOGIN_SECRET`, whose stored value is
   `{"tenant_id": "<tenant>", "client_id": "<client>"}` and which is `--tier human` alone,
@@ -186,7 +189,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
   workspace ([Concepts](/legion/broker/concepts/#requests-and-grants)). An `anthropic-federation`
   secret is `--tier human` alone, a person approves every release of it (the model judge decides
-  none, whatever the airlock rules say), and its federation rule's `token_lifetime_seconds` must be
+  none, whatever the profiles file says), and its federation rule's `token_lifetime_seconds` must be
   3600 or less, or the broker refuses its tokens. A `google-service-account` and an
   `anthropic-federation` secret are an administrator's to write and to set a new value for, not a
   self-service step, even for the person who owns one: which account the broker
@@ -201,8 +204,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse; it stops no later broker
   from before the `type` tag. So once a secret carries a type, the first release that reads
   `type` is the broker's rollback floor: a rollback past it serves the secret's stored key.
-- **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
-  lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
+- **`--github-owners`** is required with `--type github-app` or `--type github-installations`, and
+  refused with any other type. It lists the GitHub accounts the broker hands installation tokens
+  over for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
 - **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
   lowercase sign-in email, Google groups as `group:` and the group's lowercase email, which admits
@@ -237,7 +241,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
-  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  secret, so no proxy block's `judge` seconds can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
@@ -262,7 +266,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
-  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `CHANNEL_NOT_ALLOWED`. Where no profile with a proxy block serves the secret, such a credential is denied it
   `project-channels-need-airlock`. A credential that names no private project gets the secret as
   before. Any other value, and on `create` the word `none`, is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true`, `--type google-service-account` and

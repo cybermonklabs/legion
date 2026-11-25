@@ -125,7 +125,7 @@ func readAskBatch(ctx context.Context, database *store.Store, read string, args 
 func lockAskOwners(ctx context.Context, tx pgx.Tx, batch []askBatchRow) error {
 	owners := events.OwnerRows{}
 	for _, row := range batch {
-		owners.Add(row.issue, row.document, "ask "+row.askID)
+		owners.Add(row.issue, row.document)
 	}
 	return events.LockOwnerRows(ctx, tx, owners)
 }
@@ -265,14 +265,16 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 	if len(ids) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask batch on their rows", `
+			update asks set node_kind = $2, node_address = id::text
+			where id = any($1::uuid[]) and node_kind is null
+		`, ids, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of asks: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update asks set node_kind = $2, node_address = id::text
-		where id = any($1::uuid[]) and node_kind is null
-	`, ids, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask batch: %w", err)
@@ -398,15 +400,17 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	if len(askIDs) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask follower batch on their rows", `
+			update ask_followers f set node_kind = $3, node_address = p.ask_id
+			from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
+			where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
+		`, askIDs, sessions, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of ask followers: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update ask_followers f set node_kind = $3, node_address = p.ask_id
-		from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
-		where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
-	`, askIDs, sessions, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask follower batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask follower batch: %w", err)

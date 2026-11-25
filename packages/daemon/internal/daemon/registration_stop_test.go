@@ -125,6 +125,7 @@ func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSe
 // reader that waited on its consumer would hold the answer until the write's own deadline, the
 // RPC timeout, ended the write unsent.
 func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testing.T) {
+	t.Parallel()
 	const (
 		pod        = "pod-uid-stopwait"
 		session    = "ses_stopwait"

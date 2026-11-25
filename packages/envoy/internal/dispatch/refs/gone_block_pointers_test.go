@@ -81,8 +81,8 @@ func TestTheIndexPassRetractsThePointersOfABlockItMarksGone(t *testing.T) {
 	if !won {
 		t.Fatal("version 2 did not become the version the document's blocks stand at")
 	}
-	requireRestatedBlock(t, document, "c-dropped", graphstore.StateGone, []string{graphstore.StateLive, graphstore.StateGone})
-	requireRestatedBlock(t, document, "r-dropped", graphstore.StateGone, []string{graphstore.StateLive, graphstore.StateGone})
+	requireBlockState(t, document, "c-dropped", graphstore.StateGone, graphstore.VisibilityProject, []string{graphstore.StateLive, graphstore.StateGone})
+	requireBlockState(t, document, "r-dropped", graphstore.StateGone, graphstore.VisibilityProject, []string{graphstore.StateLive, graphstore.StateGone})
 
 	// The pass retracted the two pointers at the blocks it dropped, dated by the version and
 	// signed by its writer, under the event that recorded it, and nothing else.

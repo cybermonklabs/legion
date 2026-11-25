@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,12 +52,11 @@ type issueDuplicateError struct {
 
 // createIssueInput is the body of POST /api/v1/issues.
 type createIssueInput struct {
-	// Project and Title are not required of a caller: a create that names an external
-	// owner/repo#n takes the project from that repository's mapping (s.repoProject, or
-	// DefaultProject when the repository is mapped nowhere) and, when the body names no title,
-	// takes the ref itself for one; only a create that names neither is refused
-	// (projectKeyPattern, "title is required").
-	Project string  `json:"project"`
+	// Project is required of every create, an import of an external owner/repo#n included:
+	// Dispatch finds no project from a repository. Title is not required of a caller: an import
+	// takes the external ref as its title when the body names none, and only a create that names
+	// neither a title nor an external ref is refused ("title is required").
+	Project string  `json:"project" required:"true"`
 	Title   string  `json:"title"`
 	Parent  *string `json:"parent"`
 	// Needs is the issues the new issue waits on, and BlockedBy the same list under the spelling
@@ -115,57 +115,44 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var externalRepo, externalNumber string
-	usingDefaultProject := false
 	if input.External != "" {
+		// An import names its project in the body, as every other create does: Dispatch finds
+		// no project from a repository. The refusal comes before the scope check and before the
+		// ref is resolved, so a create that names no project reads nothing and writes nothing.
+		if input.Project == "" {
+			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "project is required when external is set")
+			return
+		}
 		var err error
 		externalRepo, externalNumber, err = externalRef(input.External)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		project, err := s.repoProject(r.Context(), externalRepo)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if project == "" {
-			project = s.deps.DefaultProject
-			if project == "" {
-				writeError(w, "PROJECT_UNMAPPED", http.StatusBadRequest,
-					"repository is not mapped in repository settings and DISPATCH_DEFAULT_PROJECT is not configured")
-				return
-			}
-			usingDefaultProject = true
-		}
-		if input.Project != "" && input.Project != project {
-			writeError(
-				w,
-				"EXTERNAL_PROJECT_MISMATCH",
-				http.StatusBadRequest,
-				fmt.Sprintf(
-					"external issue project %s must match repository settings project %s",
-					input.Project,
-					project,
-				),
-			)
-			return
-		}
-		input.Project = project
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
-	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
-	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a scoped caller naming one imported
-	// into another project is refused rather than answered that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
-	// is written before this point.
+	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
+	// before the external ref is resolved to an issue already imported: a scoped caller naming
+	// one imported into another project is refused rather than answered that project's issue,
+	// which respondWithExistingExternalIssue would also record a related-check outcome on.
+	// Nothing is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeIssueNeeds below read it again, since a
-	// wait's target's project is no part of this address.
+	// exists today; the dependency lock step, the parent's read and writeIssueNeeds below read it
+	// again, since neither a wait's target's project nor the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
+	}
+	// A scoped caller is refused a parent or a wait's target outside its project here too, with
+	// no lock held, before the near-copy gate and every other write before the transaction, so a
+	// create it may not make records no near-copy check and gets no 409 in place of its 403. The
+	// lock step and the reads under the locks refuse it again, the authoritative refusal.
+	if scoped && (parentKey != "" || len(waits.targets) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, waits, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
@@ -183,7 +170,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 					"EXTERNAL_PROJECT_MISMATCH",
 					http.StatusBadRequest,
 					fmt.Sprintf(
-						"external issue project %s must match repository settings project %s",
+						"%s is already linked to %s of project %s, so it cannot be imported into project %s",
+						input.External,
+						existingKey,
 						existingProject,
 						input.Project,
 					),
@@ -214,9 +203,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	if usingDefaultProject {
-		input.Labels = append(input.Labels, repoLabelPrefix+externalRepo)
-	}
 	labels, err := normalizeIssueLabels(input.Labels)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -240,11 +226,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, _, err := parseIssueRepo(input.Repo)
+	repo, _, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo = s.renamedRepo(repo)
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
 	// and two reads would drift. The gate bounds and logs its own read (duplicateGate), and a read
@@ -260,9 +247,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// `external` at each site.
 	//
 	// The gate's candidate set leaves out the new issue's whole ancestor chain, which is read
-	// here, before the transaction. A parent that does not exist or sits in another project
-	// yields an empty chain and still gets its own refusal inside the transaction, so no error
-	// changes order.
+	// here, before the transaction. A parent that does not exist yields an empty chain and still
+	// gets its own refusal inside the transaction, so no error changes order.
 	var outcome nearCopyOutcome
 	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
 	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
@@ -309,6 +295,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Whether the credential is a person's, for the check of a create under a parent
+	// (refuseSpecWriter), read before the transaction opens (specWriterOf). A create under no
+	// parent is not checked and reads nothing for it.
+	var writer specWriter
+	if parentKey != "" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -318,10 +311,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// A create with waits can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
-	// takes none. Only the waits can name another project, since a parent is of the issue's own
-	// project.
+	// takes none. The waits and the parent may each be an issue of another project, whose
+	// dependency lock the write takes too.
 	if len(waits.targets) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -338,11 +331,30 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if parentProject != input.Project {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, "parent must be in the same project")
+		// A parent may be an issue of any project, but not for a credential that may write one
+		// project alone: the authoritative refusal, under the locks, of what the lock step
+		// refused before them.
+		if callerProject != "" && parentProject != callerProject {
+			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
 		}
+		// A parent of another project passes on no assignee, as it passes on no repository,
+		// components or legion label: the chain's parent step (defaultAssignee) reads only a
+		// parent of the new issue's own project, so such an issue falls to its own project's
+		// default.
+		if parentProject != input.Project {
+			parentAssignee = nil
+		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes the spec of an issue Legion runs, on the new row as the create
+		// leaves it: its labels, and its parent's chain, whose architects pass. It runs before the
+		// project's owner lock and the spec's document call, and before the create's first write.
+		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
+			act: specWriteCreate, under: parentKey, labels: labels, project: input.Project,
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -360,9 +372,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The project's owner lock comes before its row's update: every writer of a projects row
-	// takes it first (an event append, a mapping write, the default assignee's PUT, the gated
-	// steps' publish), so none of them holds the row while it waits on the lock this create
-	// holds.
+	// takes it first (an event append, the default assignee's and the default repository's PUTs,
+	// the gated steps' publish), so none of them holds the row while it waits on the lock this
+	// create holds.
 	//
 	// The create's read phase (INFRA-636): the spec's parse, render and encoding (SeedText), its
 	// task count, its reference index and the advice all run here, before the update of the
@@ -509,7 +521,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// is not written yet (writeAdviceBefore).
 	advice := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
-		adviceIssueRow{parent: parentRef, labels: labels}, adviceAsks{},
+		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
 
 	// The write phase: the statements from here on run back to back.
@@ -548,6 +560,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert. A close of the
+	// parent whose update ran first makes this read wait for its commit and read done. A close
+	// whose update comes after this read waits for this create to commit, and its second read
+	// sees the new child (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := tx.QueryRow(r.Context(), `
+			select title, status from issues where key = $1 for share
+		`, parentKey).Scan(&parentTitle, &parentStatus); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, conflict)
+			return
+		}
+	}
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
@@ -625,9 +656,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		relations.tuples = append(relations.tuples, affects...)
 	}
 	if input.External != "" {
+		// The link is stored under the repository's new name where a rename pair renames it
+		// away, as every write of a stored URL is (refs.Renames.CanonicalURL).
 		if _, err := tx.Exec(r.Context(), `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
+		`, key, s.deps.Renames.CanonicalURL(externalURL(externalRepo, externalNumber))); err != nil {
 			if !isUniqueViolation(err) {
 				s.writeHandlerError(w, err)
 				return
@@ -713,7 +746,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent)
 		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
-		return queueIssueRelations(b, relations, actor)
+		if err := queueIssueRelations(b, relations, actor); err != nil {
+			return err
+		}
+		// The issue's first nodes are this write's, and every writer of its tree from here on
+		// keeps its head rows, so they are whole from its birth and the issue is marked so.
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(graphstore.Joined(issueNodes, roomNodes)),
+			graphstore.HeldHeads(specBlocks), relations.heads()))
+		graphstore.QueueHeadMark(b, key)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

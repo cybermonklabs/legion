@@ -62,6 +62,12 @@ export const GOING_ERROR_NO_MODEL_CONFIGURED = "NO_MODEL_CONFIGURED";
  *  `contracts.GoingErrorAnswerFailed`. */
 export const GOING_ERROR_ANSWER_FAILED = "ANSWER_FAILED";
 
+/** The error code of a run that was given a comment or an issue message its author has since
+ *  deleted. The answer may quote that post, so after the delete every read of the run's stream
+ *  gives this frame alone, at the place of the run's ending, and no `text` or `item` frame of
+ *  the run. Generated into Go as `contracts.GoingErrorAnswerWithdrawn`. */
+export const GOING_ERROR_ANSWER_WITHDRAWN = "ANSWER_WITHDRAWN";
+
 /** The name of the one tool the model is given: another search of Dispatch.
  *  Generated into Go as `contracts.GoingSearchTool`. */
 export const GOING_SEARCH_TOOL = "search_dispatch";
@@ -105,9 +111,9 @@ export const GOING_RUN_MS = 30_000;
  *  is `422 KEY_REUSED`. Generated into Go as `contracts.GoingRunHeader`. */
 export const GOING_RUN_HEADER = "Dispatch-Going-Run";
 
-/** The age past which a process of the release before still deletes a run during a roll. This
- *  build reads it nowhere: a run is kept until `envoy-dispatch erase` erases it, since a node of
- *  the store is removed by erasure alone. Generated into Go as `contracts.GoingRequestTTL`. */
+/** How long a run is readable, from its POST: a reader that reconnects still finds its answer for
+ *  an hour. Then the sweep states the run's node gone and removes its rows, and the node, its
+ *  words and its frames stay in the store. Generated into Go as `contracts.GoingRequestTTL`. */
 export const GOING_REQUEST_TTL_MS = 3_600_000;
 
 /** The next piece of the answer's text, as plain text whose every ASCII punctuation byte is

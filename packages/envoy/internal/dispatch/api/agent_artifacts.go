@@ -77,15 +77,16 @@ func (target artifactTarget) ownsEvents() bool {
 	return target.Session == ""
 }
 
-// loadAgentArtifact reads the artifact the request's session_id and slug name. A conversation
-// holds no document, so its artifacts are read by slug alone, with no filename falling back to a
-// document as an issue's or a project's reference does (loadArtifactByDocumentReference).
-func (s *server) loadAgentArtifact(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
+// agentArtifactRow reads the row of the artifact the request's session_id and slug name. A
+// conversation holds no document, so its artifacts are read by slug alone, with no filename
+// falling back to a document as an issue's or a project's reference does
+// (resolveDocumentReference).
+func agentArtifactRow(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
 	session, err := requestSessionID(r)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	return s.loadArtifactByRefKey(ctx, q, agentOwnerKey(session)+"/"+r.PathValue("slug"))
+	return artifactRowByRefKey(ctx, q, agentOwnerKey(session)+"/"+r.PathValue("slug"))
 }
 
 // POST /api/v1/agents/{session_id}/artifacts

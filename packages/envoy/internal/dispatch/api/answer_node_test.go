@@ -23,6 +23,7 @@ import (
 // open approval request, and settlement's retraction of an ask whose block left its document and
 // its restoration when the block comes back.
 func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
+	t.Parallel()
 	t.Run("the ask routes and an issue's close and reopen", func(t *testing.T) {
 		handler, database := newTestHandlerWithStore(t)
 		issue := createInteractionIssue(t, handler, "NODE", "Answers on the node", "A spec")

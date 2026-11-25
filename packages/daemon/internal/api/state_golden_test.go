@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/* TestPauseRouteGoldens (path from goldenPath, declared)
+
 import (
 	"bytes"
 	"context"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -89,6 +92,7 @@ projects:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
     production_check: off
+    default_steps: [implementer, reviewer]
 gates:
   design: root-issues
 github_apps:
@@ -285,9 +289,9 @@ func populatedState(t *testing.T) State {
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
 	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
-	// turn it began and ended, the ready that dates the two causes beside them, the cause its
-	// process was last found gone under, and the failure its last start reported. One claim view
-	// of the fixture carries all five, so every record describes each key.
+	// turn it began and ended, the ready that dates the death's cause beside them, the cause its
+	// process was last found gone under, and the failure of a start since that ready. One claim
+	// view of the fixture carries all five, so every record describes each key.
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
@@ -363,9 +367,10 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
-					// The turns this agent began and ended, the ready that dates what follows,
-					// and the two causes a start of it reported before the one running now
-					// (contract 86).
+					// The turns this agent began and ended, the ready that dates the death, and
+					// the two causes (contract 86). This view carries every key so each record
+					// describes it: a live claim carries a start failure only while its agent
+					// has not been ready since, which a ready claim never is.
 					LastTurnStart:    &architectTurnStart,
 					LastTurnEnd:      &architectTurnEnd,
 					LastReady:        &architectReady,
@@ -946,11 +951,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which
@@ -1013,7 +1026,9 @@ func populatedState(t *testing.T) State {
 	// tree on its own, so a root and its child stand in different arms of one experiment; and,
 	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
 	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
-	// unit never drawn, which carries no row.
+	// unit never drawn, which carries no row; and, on the child LEGION-209, the row of an
+	// experiment that sets how its issues are done, `planning`, which carries the group its arm set
+	// at the draw (`plan`), here `default`.
 	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
 	root.Assignments = []AssignmentView{
@@ -1038,6 +1053,7 @@ func populatedState(t *testing.T) State {
 		Assignments: []AssignmentView{
 			memoryDrawn,
 			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+			{Experiment: "planning", Variant: "b", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt, Plan: string(config.PlanGroupDefault)},
 		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
@@ -1093,6 +1109,31 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
+	// The intake's open give-ups (contract 228): the Dispatch consumer has two, a decoded event
+	// given up at its bound and a newer message that did not decode, which carries no event id;
+	// the GitHub consumer has one, which the sweep gave up once its durable was made again past it.
+	// Each consumer's newest sequence is the `throughSeq` of a bulk replay or discard of all of
+	// its records.
+	state.IntakeGiveUps = IntakeGiveUpsView{
+		Consumers: []IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 2, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		},
+		Newest: []IntakeGiveUpView{
+			{ID: 43, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-214.issue.updated",
+				StreamSeq: 6044896, StoredAt: time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC), Deliveries: 1,
+				GaveUpAt: time.Date(2026, 9, 22, 8, 40, 13, 0, time.UTC), Reason: "undecodable",
+				LastError: "decode Envoy envelope: unexpected end of JSON input"},
+			{ID: 42, Consumer: "legion-go-LEGION-github", Subject: "notifications.github.acme.widgets.pr.17.review",
+				StreamSeq: 812004, StoredAt: time.Date(2026, 9, 22, 6, 2, 0, 0, time.UTC), EventID: new("github-9b2c71e0"), Deliveries: 3,
+				GaveUpAt: time.Date(2026, 9, 22, 7, 55, 0, 0, time.UTC), Reason: "consumer moved past",
+				LastError: "the consumer moved past it without delivering it again"},
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-213.issue.updated",
+				StreamSeq: 6044801, StoredAt: time.Date(2026, 9, 22, 6, 30, 0, 0, time.UTC), EventID: new("dispatch-6044801"), Deliveries: 21,
+				GaveUpAt: time.Date(2026, 9, 22, 7, 31, 4, 0, time.UTC), Reason: "bound",
+				LastError: "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"},
+		},
+	}
 	return state
 }
 
@@ -1119,18 +1160,21 @@ func TestStateGolden(t *testing.T) {
 }
 
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
-// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
-// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
-// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
-// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
-// schema of the block, so the narrowing is held to the reader it is written for, and its drift
-// gate holds every key of the file to that copy.
+// own state, asked through the route itself. The caller is served at the recorded contract at or
+// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
+// block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
+// row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
+// intakeGiveUpsContract's row does as well, and every other key as a caller at
+// shapedAnswersContract is served it, since no other row of stateNarrowings stands between
+// shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row and
+// pauseContract's stand at or below the contract it is served at, which is why the golden carries
+// `lowestPluginContract`, each claim view's `updateState` and `paused`.
+// `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
+// the block, so the narrowing is held to the reader it is written for, and its drift gate holds
+// every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
@@ -1491,7 +1535,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
@@ -1637,7 +1681,8 @@ func operatorClaim() OperatorClaim {
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// the other: the send that confirms a task clears all three (supervise's
+			// confirmCarrying).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
 			LastSendError:     "prompt the agent: context deadline exceeded",
@@ -1759,6 +1804,23 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
+// the routes above are. register_plan answers the plan it took, each task with the steps its block
+// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
+// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
+// there.
+func TestOwnerPlanRouteGoldens(t *testing.T) {
+	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+		Version:    4,
+		Tasks: []plan.Task{{
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+		}},
+	})})
+	golden(t, "task-stop.json", EmptyResponse{})
+}
+
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
 // written out so that the plugin's own side reads the same rows the daemon shapes by.
@@ -1778,9 +1840,9 @@ func TestEnumeratedFieldsGolden(t *testing.T) {
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of
-// refused turns the claim's reports now end with, and whether this report took that run to the
-// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
-// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+// refused turns the claim's reports now end with, and `failed` (claim.TurnOutcomeResponse says
+// what it holds). It is a golden because `@legion/contracts` reads it (LegionTurnOutcomeResponse),
+// and every answer schema that module exports is held to one.
 func TestTurnOutcomeResponseGolden(t *testing.T) {
-	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3})
 }

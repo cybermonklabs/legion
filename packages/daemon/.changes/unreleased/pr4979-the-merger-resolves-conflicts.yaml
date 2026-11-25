@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+    Past the review, a pull request whose head conflicts with its base is the merger's to resolve.
+    In `merging` the daemon asks the merger, not the implementer, to merge the base forward once two
+    reads confirm the conflict (a `merge_forward` ask whose role is `merger`); in `accepting` and
+    `retro` it records the conflict and asks nobody, and the move into `merging` asks the merger.
+    Before the review nothing changes. The role first asked to merge a head forward keeps that merge
+    until it lands: an implementer ask that has not landed when the issue reaches `merging` stays
+    the implementer's, and the merger is told to wait for it. When the merger's merge lands, the
+    reviewer is asked to read it (`git show --remerge-diff`) and approve the new head, and the
+    merger merges that head only once the approval is on the pull request. In `merging` a CI result
+    goes to the merger and the architect, not to the implementer, and a held issue's CI result
+    reaches the worker of the phase it is held from. The record's ask names its role
+    (`pull_requests.merge_forward`'s `role`, no migration); an ask an earlier release wrote reads as
+    the implementer's. A queued ask or hold whose merge has landed, and a queued message to the
+    merger once the issue has left `merging`, are not delivered. The merger's prompt says how it
+    merges, resolves and lands the change, and when it sends the issue back. An earlier release
+    refuses an ask to the merger: run the SQL in `docs/kubernetes.md`, "Rolling back the release
+    that asks the merger to merge the base forward", before rolling back.
+time: 2026-11-22T08:04:14Z
+custom:
+    Issue: pr4979

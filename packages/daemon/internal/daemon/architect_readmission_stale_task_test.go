@@ -20,6 +20,7 @@ import (
 // at c28f2ea12f32: the relaunch sent the old task first (outbox:5, "open at generation 1"), and the
 // re-admission's start only after the architect worked that one through a whole turn.
 func TestAReadmittedArchitectIsNotSentTheUnconfirmedTaskOfTheRunBefore(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

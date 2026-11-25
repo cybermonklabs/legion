@@ -27,6 +27,11 @@ package api
 // kinds (reasoning_write.go), and the reads answer the new state at once, since every one of them
 // reads the node's row.
 //
+// On an issue Legion runs, only a person or an architect of the issue or of an issue above it
+// writes the state of a requirement, criterion or check node: each route holds such a write to the
+// check of who writes one (refuseSpecWriterOfNode, spec_writer.go), past its own rule and under the
+// issue's owner lock, and refuses any other writer 403 DOCUMENT_WRITER_NOT_ARCHITECT.
+//
 // A block of an ask, a comment or a message is a node every read answers, and no node the store
 // holds: no writer, the backfill among them, writes a graph_nodes row for one, so every read
 // answers it live (refs.StoredStateAndVisibility). The state route refuses it every value, naming
@@ -122,12 +127,14 @@ type stateTarget struct {
 
 // goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
 // $2 as one every read answers as gone - gone, or a stale node of a standing kind - standing under
-// the issue $3 (refs.StandingIssueSQL), for a reader ($4) the node's own kind's predicate admits
-// but for that (refs.VisibleGoneRow).
+// the issue $3 (refs.GoneStandingIssueSQL), for a reader ($4) the node's own kind's predicate
+// admits but for that (refs.VisibleGoneRow). A node whose walk ends at a removed document, whose
+// row is deleted, stands under the issue the document's address spells: a lens on it and every
+// node under it, and the document's own node.
 var goneNodeUnderIssueQuery = `
 	select true from graph_nodes held
 	where held.kind = $1 and held.id = $2
-	  and ` + refs.StandingIssueSQL(`held.kind`, `held.id`) + ` = $3
+	  and ` + refs.GoneStandingIssueSQL(`held.kind`, `held.id`) + ` = $3
 	  and ` + refs.VisibleGoneRow("held", "$4")
 
 // findWrittenNode is the node a write is made on, which id names under the issue key, read for
@@ -137,10 +144,13 @@ var goneNodeUnderIssueQuery = `
 // and the store holds it gone, or stale (refs.StaleSQL), under the issue for a reader who may see
 // it, which every read of the graph leaves out, the write is 409 NODE_GONE, naming the node as id
 // names it (nodeGone): gone is final, so no write is made on a gone node, and a stale node and
-// everything under it are answered as gone ones. Anything else is FindNodeUnderIssue's own 404, word
-// for word, so a refusal tells nothing of a node the caller may not see, gone or not. A far end of
-// a tuple a write appends - the lens a lens is triggered by, a pointer's target - is found
-// through findEndUnderIssue or pointerEnd instead, so a gone one keeps that 404.
+// everything under it are answered as gone ones. That holds of a lens on a removed document and
+// of everything under it too, whichever build removed the document, since the test reads the
+// issue a removed document's address spells (goneNodeUnderIssueQuery). Anything else is
+// FindNodeUnderIssue's own 404, word for word, so a refusal tells nothing of a node the caller may
+// not see, gone or not. A far end of a tuple a write appends - the lens a lens is triggered by, a
+// pointer's target - is found through findEndUnderIssue or pointerEnd instead, so a gone one keeps
+// that 404.
 func findWrittenNode(ctx context.Context, q refs.Queryer, who model.Actor, key, id string) (model.GraphNode, storedEnd, error) {
 	node, end, err := findEndUnderIssue(ctx, q, who, key, id)
 	var refusal *apiError
@@ -192,6 +202,11 @@ type nodeStateRule struct {
 	unheld  func(target stateTarget) error
 }
 
+// nodeWriterCheck is the check of who writes the node a write of its state names, which each route
+// passes in its own call of writeNodeStateAs (refuseSpecWriterOfNode): the source guard reads that
+// call, so it holds each route to the check it names (spec_writer_route_guard_test.go).
+type nodeWriterCheck func(ctx context.Context, q queryer, writer specWriter, key string, end storedEnd, address string) error
+
 // writeNodeStateAs is the one body of POST /api/v1/issues/{key}/nodes/{id}/state and of its
 // settle: one write of asked on the node {id} names, by the caller, under rule. The caller is
 // resolved once, and its writer by the one rule of both routes: a person - a browser's cookie, or a
@@ -202,8 +217,12 @@ type nodeStateRule struct {
 // 400 INVALID_ATTRIBUTE_VALUE, naming the attribute and the word, and nothing is read or stored.
 // The node is found under the issue for the caller (findWrittenNode): 404 NOT_FOUND for a node the
 // caller may not see, and 409 NODE_GONE for a gone one. The write is writeNodeState's, in one
-// transaction, and the answer is the node as it left it with the state it held before.
-func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, supplied *model.Actor, asked string, rule nodeStateRule) {
+// transaction, and the answer is the node as it left it with the state it held before. Past the
+// route's rule, under the issue's owner lock writeNodeState takes, the write is held to
+// refuseWriter, the check of who writes a requirement, criterion or check node: 403
+// DOCUMENT_WRITER_NOT_ARCHITECT on such a node of an issue Legion runs from a writer who is no
+// person and no architect of the issue or of an issue above it, and nothing is stored.
+func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, supplied *model.Actor, asked string, rule nodeStateRule, refuseWriter nodeWriterCheck) {
 	proving, resolved, ok := s.resolveCaller(w, r)
 	if !ok {
 		return
@@ -239,9 +258,15 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		return
 	}
 	target := stateTarget{kind: found.Kind, address: cmp.Or(found.Ref, id), end: end.stored()}
+	checked := specWriter{actor: writer, person: proving.Credential.Holds(model.ScopePerson)}
 	node, previous, err := writeNodeState(ctx, tx, nodeStateWrite{
 		issue: key, target: target, state: asked, who: writer, at: at,
-		allowed: func(stored graphstore.Node) error { return rule.refused(target, stored, proving) },
+		allowed: func(stored graphstore.Node) error {
+			if err := rule.refused(target, stored, proving); err != nil {
+				return err
+			}
+			return refuseWriter(ctx, tx, checked, key, target.end, target.address)
+		},
 	})
 	if errors.Is(err, errNodeNotHeld) {
 		err = rule.unheld(target)
@@ -302,9 +327,12 @@ func stateRefusal(target stateTarget, held, asked string) error {
 // subtree with it. Any other move of the node into or out of proposed or settled
 // (takesTheSettleRule) then takes the settle's caller rule over the node's made_by (maySettle).
 // Any other caller is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the
-// shared bearer, which proves no author, makes no such move. The write appends one state tuple,
-// written by the caller, and a gone one on each node of the subtree it takes with it too
-// (writeNodeState); a write of the state the node holds appends none.
+// shared bearer, which proves no author, makes no such move. On a requirement, criterion or check
+// node of an issue Legion runs, a writer who is no person and no architect of the issue or of an
+// issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT (refuseSpecWriterOfNode), and nothing is
+// stored. The write appends one state tuple, written by the caller, and a gone one on each node of
+// the subtree it takes with it too (writeNodeState); a write of the state the node holds appends
+// none.
 func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 	var input nodeStateInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -340,7 +368,7 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 				"the %s %s is %s and takes no %s yet: the store holds no row of it, which envoy-dispatch backfill-graph-store writes",
 				target.kind, target.address, graphstore.StateLive, input.State)
 		},
-	})
+	}, refuseSpecWriterOfNode)
 }
 
 // takesTheSettleRule is whether a write of asked on a node the store holds at held is a move the
@@ -383,7 +411,10 @@ func maySettle(proving, author model.Actor) bool {
 // among them, which every read answers live, is 409 NODE_NOT_PROPOSED; and a caller who is neither
 // a person nor the proposal's own author (maySettle) is 403 SETTLE_NOT_PERMITTED. A node's author
 // is its made_by: for a block of a document the writer of the version that first held the block,
-// not whoever marked it proposed.
+// not whoever marked it proposed. On a requirement, criterion or check node of an issue Legion
+// runs, a writer who is no person and no architect of the issue or of an issue above it is then
+// 403 DOCUMENT_WRITER_NOT_ARCHITECT (refuseSpecWriterOfNode), its own proposal among them, and
+// nothing is stored.
 func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -406,7 +437,7 @@ func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 		unheld: func(target stateTarget) error { return notProposed(target, graphstore.StateLive) },
-	})
+	}, refuseSpecWriterOfNode)
 }
 
 // --- GET /api/v1/issues/{key}/proposed ----------------------------------------------------------
@@ -486,7 +517,7 @@ func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The store keys a document by its ref_key, which is the id its loader reads it by.
-	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, true, targets)
+	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

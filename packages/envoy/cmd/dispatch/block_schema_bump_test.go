@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -18,13 +21,15 @@ var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.u
 // The branch moves the block schema one version, once (dispatch://INFRA-1253/spec R21): its
 // elements stand at the version after the one the type migrations before it carry, however many
 // type migrations it adds. The test reads the version blocks.json gives at this head and the one
-// the store's type nodes build once every migration has run, which must agree, and then runs again,
-// in order, the type migrations of store.TypeMigrations this branch did not add - the seed and each
-// later one, which every set the version on every block type - through runTypeMigrationsAgain,
-// which takes out first the rows of a literal one among them, and reads the version the nodes
-// build then, which is the version the store held before this branch's type migrations. A second
-// bump - blocks.json, or a type migration of this branch, moving past the version after that one
-// - is one step too many, and so is none.
+// the store's type nodes build once every migration has run, which must agree, and then the version
+// the nodes build on a store this tree's runner migrated through the newest type migration of
+// store.TypeMigrations this branch did not add and no further: the version the store held before
+// this branch's type migrations moved it. A type migration of this branch that moves the version
+// is numbered after every one it did not add, each of which sets the version on every block type,
+// so that store holds none of this branch's moves. A second bump - blocks.json, or a type
+// migration of this branch, moving past the version after that one - is one step too many, and so
+// is none; and a move of this branch numbered before that migration shows here as a version that
+// store builds already.
 func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -50,10 +55,22 @@ func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *t
 	if len(ours) == 0 {
 		t.Fatal("store.TypeMigrations names no type migration of this branch, so nothing moves the block schema's version")
 	}
-	runTypeMigrationsAgain(t, ctx, database.Pool, before)
-	earlier, err := schemanodes.Read(ctx, database.Pool)
+	newest := slices.Max(before)
+	through, err := strconv.Atoi(newest[:14])
 	if err != nil {
-		t.Fatalf("build the schema from the store's nodes as the type migrations before this branch's leave them: %v", err)
+		t.Fatalf("read the version of %s: %v", newest, err)
+	}
+	earlierStore := storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (the block schema bump)", through), func(databaseURL string) error {
+		database, err := store.Open(ctx, databaseURL)
+		if err != nil {
+			return fmt.Errorf("open the database: %w", err)
+		}
+		defer database.Pool.Close()
+		return database.MigrateThrough(ctx, through)
+	})
+	earlier, err := schemanodes.Read(ctx, earlierStore.Pool)
+	if err != nil {
+		t.Fatalf("build the schema from the store's nodes through %s, the newest type migration before this branch's: %v", newest, err)
 	}
 	t.Logf("the type migrations before this branch's (%d of them) carry version %d; this branch's %v and %s carry version %d",
 		len(before), earlier.Version, ours, blockSchemaFile, file.Version)

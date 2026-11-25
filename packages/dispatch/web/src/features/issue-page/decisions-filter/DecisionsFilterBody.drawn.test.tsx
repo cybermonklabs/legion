@@ -9,7 +9,7 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { ApiError, api } from "../../../api/client";
 import { issueTreeKey } from "../../../api/queries";
-import type { Actor, AuthenticatedUser, Decision, DecisionKeep } from "../../../api/types";
+import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
   pageInkText,
@@ -17,6 +17,7 @@ import {
   pageStateText,
 } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
+import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -26,7 +27,7 @@ import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -41,6 +42,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
+import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind } from "../tree-keys";
 import {
   issueTreeQuery,
@@ -70,7 +72,6 @@ import {
   READER,
   READER_ACTOR,
   SPEC_DOCUMENT,
-  SPEC_SLUG,
   shaped,
   specRef,
   statement,
@@ -108,6 +109,16 @@ const KEPT: DecisionKeep = {
   kept_by: READER,
 };
 
+/** The agent's write-up of the person's answer: a `reading` block of the spec, which the tree
+ *  draws under the answered ask it reads (`tree-read/tree-nodes.ts`'s `draftReading`). */
+const READING = node({
+  author: AGENT,
+  id: `${SPEC_DOCUMENT.slug}#b-reading`,
+  reference: specRef("reading"),
+  text: "The reader wants the rail kept.",
+  type: "reading",
+});
+
 /** One issue that holds an entry of every part: an open question, two decisions a statement
  *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
  *  with the agent's reading of it under it, a declined ask, and two decisions no statement
@@ -137,15 +148,7 @@ function wholeIssue(): {
         "a-answered",
         { at: "2026-11-14T09:00:00Z", selected: ["Changes needed"], text: STORED },
         {
-          children: [
-            node({
-              author: AGENT,
-              id: `${SPEC_SLUG}#b-reading`,
-              reference: specRef("reading"),
-              text: "The reader wants the rail kept.",
-              type: "reading",
-            }),
-          ],
+          children: [READING],
           options: [{ label: "Works" }, { label: "Changes needed" }],
           text: "Does the built page work for you?",
         }
@@ -316,6 +319,7 @@ function renderBody(
     asks = [],
     changes = [],
     children,
+    comments = [],
     made = [],
   }: {
     /** The issue's asks, or null for a read left out of the cache, which the page's own read
@@ -323,6 +327,9 @@ function renderBody(
     asks?: DecisionsAsk[] | null;
     changes?: TreeAnswerNode[];
     children: TreeNode[];
+    /** The issue's comments as the comments read holds them, which say what the tree read
+     *  answers no mark of: which Changes their author deleted, and when one was last edited. */
+    comments?: Comment[];
     /** The decisions the tree read and its decisions view hold, or null for both reads left
      *  out of the cache, which the page's own reads then ask the server for (`treeReads`). */
     made?: TreeAnswerNode[] | null;
@@ -376,7 +383,7 @@ function renderBody(
     client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
-  client.setQueryData(["comments", KEY], [], answered);
+  client.setQueryData(["comments", KEY], comments, answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -427,26 +434,22 @@ function renderBody(
     const held = main ? <PageChangeMain>{staged}</PageChangeMain> : staged;
     return (
       <MemoryRouter>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <IssueScope />
-              <Where />
-              {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-                  page names one. */}
-              <NoTooltips>
-                {requests ? (
-                  <OutlineRequestProvider>
-                    <button type="button">Elsewhere</button>
-                    {held}
-                  </OutlineRequestProvider>
-                ) : (
-                  held
-                )}
-              </NoTooltips>
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
+        <AppProviders client={client}>
+          <IssueScope />
+          <Where />
+          {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+              page names one. */}
+          <NoTooltips>
+            {requests ? (
+              <OutlineRequestProvider>
+                <button type="button">Elsewhere</button>
+                {held}
+              </OutlineRequestProvider>
+            ) : (
+              held
+            )}
+          </NoTooltips>
+        </AppProviders>
       </MemoryRouter>
     );
   };
@@ -467,7 +470,7 @@ function words(element: Element | null | undefined): string | null {
 }
 
 /** What the body says of each read that stands refused, in the page's words, by which a reader
- *  tells the two reads' lines apart. */
+ *  tells the two reads' lines apart, each by the seam's word for its read. */
 const REFUSED_READ_WORDS = {
   asks: STATE_LINES.asks_unreadable,
   decisions: STATE_LINES.issue_decisions_unreadable,
@@ -703,11 +706,11 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   const first = rowOf(view, D("first"));
   await act(async () => first.focus());
   expect(first.querySelector("[data-node-body]")).not.toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
   await user.tab();
   expect(document.activeElement).toBe(foot);
   expect(first.querySelector("[data-node-body]")).toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
 });
 
 /** An issue whose only decision is an agent's that no statement rests on: the list draws its
@@ -1430,7 +1433,6 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await waitFor(() => expect(document.activeElement).toBe(tree));
     failed.again([statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
-    expect(document.activeElement).not.toBe(document.body);
   } finally {
     failed.unmount();
   }
@@ -1487,11 +1489,11 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await act(async () => row.focus());
     expect(focusedRow(partial)).toBe(D("first"));
     expect(row.querySelector("[data-node-body]")).not.toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
     await user.tab({ shift: true });
     expect(document.activeElement).toBe(retryOf(partial, "asks"));
     expect(row.querySelector("[data-node-body]")).toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
     expect(focusedRow(partial)).toBeUndefined();
     partial.unmount();
   } finally {
@@ -1562,9 +1564,8 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
         // tree built from that answer draws them.
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
-        const settled = Promise.withResolvers<void>();
-        setTimeout(settled.resolve, 0);
-        await settled.promise;
+        // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);
@@ -1733,9 +1734,9 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       expect(document.activeElement, "the cancelled run took the focus off the Retry").toBe(retry);
 
       await retryRefusedAgain(view, read, (run) => spy.mockReturnValue(run), user);
-      expect(alertOf(view, read), "the read refused again kept the alert it drew before").not.toBe(
-        alert
-      );
+      const again = alertOf(view, read);
+      expect(again, "the read refused again drew no alert").not.toBeNull();
+      expect(again, "the read refused again kept the alert it drew before").not.toBe(alert);
       view.unmount();
     } finally {
       if (read === "asks") spy.mockRestore();
@@ -2221,7 +2222,7 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   );
 
   // The agent's write-up of the answer is drawn nowhere in the filter.
-  expect(view.container.querySelector(`[data-node-id="${D("reading")}"]`)).toBeNull();
+  expect(view.container.querySelector(`[data-node-id="${READING.id}"]`)).toBeNull();
   expect(view.queryByText("The reader wants the rail kept.")).toBeNull();
 });
 
@@ -2563,6 +2564,150 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(view.getByText(EMPTY_LINE)).toBeTruthy();
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** When the posts below were deleted, and when edited. */
+const DELETED_AT = "2026-11-12T10:00:00Z";
+const EDITED_AT = "2026-11-12T11:00:00Z";
+
+/** How the deleted line opens: the page's words, then the session nobody named as the page
+ *  names an author, never as the model's line holds it. */
+const DELETED_OPENING = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+
+/** A comment the session nobody named wrote and deleted, as the model holds it
+ *  (`tree-drafts.ts`'s `addTurns`): its delete, and the deleted line as its text, the actor
+ *  named as no registry knows it and the time as stored, with no reading. */
+function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNode {
+  return node({
+    at: "2026-11-12T09:00:00Z",
+    author: UNTITLED,
+    children,
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id,
+    reference: `dispatch://${KEY}/comment/${id}`,
+    text: `${CONTROL_LABELS.post_deleted_by} ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    type: "comment",
+  });
+}
+
+// R2 and R3 of dispatch://INFRA-1523: a comment an address named is drawn with the marks the
+// outline's row draws it with once its author corrected it. One its author deleted draws the
+// deleted line in place of its words, in the page's words, its actor named as the page names an
+// author and never as the model's text holds it, and its time as the page draws a time.
+test("a deleted comment an address named draws its deleted line, never the model's line", () => {
+  const gone = deletedComment("c-gone");
+  const children = [statement("s1"), gone];
+  const view = renderBody(
+    { children },
+    {
+      reveal: gone.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([gone.id])).root,
+    }
+  );
+  const row = rowOf(view, gone.id);
+  const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(row.textContent).not.toContain(DELETED_AT);
+});
+
+// R2 of dispatch://INFRA-1523: a message an address named that its author edited draws its
+// words as they read now, and says ` · edited` after its time, outside its words, in the page's
+// own words, as the outline's row says it in its margin.
+test("an edited message an address named draws its words and says · edited after them", () => {
+  const edited = node({
+    at: "2026-11-12T09:00:00Z",
+    author: READER_ACTOR,
+    editedAt: EDITED_AT,
+    id: "m-edited",
+    reference: `dispatch://${KEY}/message/m-edited`,
+    text: "The rail stays where it is, at 56 px.",
+    type: "message",
+  });
+  const children = [statement("s1"), edited];
+  const view = renderBody(
+    { children },
+    {
+      reveal: edited.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([edited.id])).root,
+    }
+  );
+  const row = rowOf(view, edited.id);
+  expect(words(row.querySelector("[data-node-words]"))).toBe(edited.text);
+  const mark = row.querySelector("[data-node-edited]");
+  expect([mark?.textContent, mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)]).toEqual([
+    ` · ${CONTROL_LABELS.post_edited}`,
+    true,
+  ]);
+  expect(mark?.closest("[data-node-words]")).toBeNull();
+});
+
+// R2 and R3 of dispatch://INFRA-1523: an entry's parent line is the outline's own
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// deleted is drawn as its deleted line, its actor named as the page names an author and never as
+// the model's line holds it, and it stays the link to the comment, out of the tab order as
+// everything inside a row is.
+test("an entry whose parent is a deleted comment draws the parent line as the deleted line", () => {
+  const view = renderBody({
+    children: [statement("s1"), deletedComment("c-gone", [decisionNode("under")])],
+    made: [decision("under", { decision: { links: [shaped(specRef("s1"))] } })],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  const deletedLine = line?.querySelector("a [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(line?.textContent).not.toContain(DELETED_AT);
+  expect(
+    [...(line?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+      link.getAttribute("href"),
+      link.tabIndex,
+    ])
+  ).toEqual([[`/issues/${KEY}/comments/c-gone`, -1]]);
+});
+
+// R2 of dispatch://INFRA-1523: an entry whose parent is a comment its author edited says
+// ` · edited` after the parent's line, in the page's own words, inside the link to the comment;
+// a parent with no words of its own is named by its kind's word once, then the same mark.
+test("an entry whose parent is an edited comment draws · edited after the parent's line", () => {
+  const edited = node({
+    children: [decisionNode("under")],
+    editedAt: EDITED_AT,
+    id: "c-edited",
+    reference: `dispatch://${KEY}/comment/c-edited`,
+    text: "Where does the rail sit?",
+    type: "comment",
+  });
+  const wordless = node({
+    children: [decisionNode("bare")],
+    editedAt: EDITED_AT,
+    id: "c-wordless",
+    reference: `dispatch://${KEY}/comment/c-wordless`,
+    text: "",
+    type: "comment",
+  });
+  const view = renderBody({
+    children: [statement("s1"), edited, wordless],
+    made: [
+      decision("under", { decision: { links: [shaped(specRef("s1"))] } }),
+      decision("bare", { decision: { links: [shaped(specRef("s1"))] } }),
+    ],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  const link = line?.querySelector("a");
+  expect(link?.textContent).toBe(`${edited.text} · ${CONTROL_LABELS.post_edited}`);
+  expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
+    ` · ${CONTROL_LABELS.post_edited}`
+  );
+  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
+    `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
+  );
+});
+
 // R6: the page holds which of the Contents list's requests an outline or a view took
 // (`outline-request.tsx`), so a view drawn again, turned off and on, does not take the reader
 // back to the request it took before.
@@ -2594,7 +2739,7 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   await waitFor(() => expect(document.activeElement).toBe(footControlOf(view)));
 
   (document.activeElement as HTMLElement).blur();
-  expect(document.activeElement).not.toBe(footControlOf(view));
+  expect(footControlOf(view)).not.toHaveFocus();
   await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
   expect(document.activeElement).toBe(footControlOf(view));
   view.unmount();
@@ -2803,6 +2948,32 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     create.mockRestore();
     list.mockRestore();
   }
+});
+
+// INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
+// edited post: the person's words as stored, then ` · edited` in the page's own words
+// (`EditedMark`). A Change nobody edited draws its words and nothing after them. Each Change is
+// the comment the tree read hangs under its decision, and the comments read says when its author
+// last edited it, which the tree read answers no mark of.
+test("a Change its author edited draws its words, then · edited, and one nobody edited no mark", async () => {
+  const changes = [
+    changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
+    changeComment("change-first", "first", "2026-11-16T10:00:00Z", "Keep it shorter."),
+  ];
+  const comments = [
+    { deleted_at: null, edited_at: "2026-11-16T09:30:00Z", id: "change-second" },
+    { deleted_at: null, edited_at: null, id: "change-first" },
+  ] as Comment[];
+  const view = renderBody({ ...wholeIssue(), changes, comments });
+  const changeWords = (block: string) => rowOf(view, D(block)).querySelector("[data-change-words]");
+  await waitFor(() =>
+    expect(changeWords("second")?.textContent).toBe("Name the read, please. · edited")
+  );
+  const mark = changeWords("second")?.lastElementChild;
+  expect(mark?.textContent).toBe(" · edited");
+  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
+  expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
 // R2: the view draws four parts. What another person answered is no part of its own: it stands

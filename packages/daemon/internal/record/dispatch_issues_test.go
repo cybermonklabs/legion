@@ -202,8 +202,9 @@ func TestEachValueKeepsItsOwnSequence(t *testing.T) {
 		holdsValues(t, tx, "LEGION-900", "readings at 100, 200 without the parent, and 150", map[string]copied{
 			"parent": {"LEGION-802", 150}, "status": {"in_progress", 200}, "blockers": {[]string{"LEGION-902"}, 200},
 			"labels": {[]string{"legion", "urgent"}, 200}, "rank": {"b0", 200}})
-		if seq, held, err := records.DispatchIssueSeq(t.Context(), tx, "LEGION-900"); err != nil || !held || seq != 200 {
-			t.Fatalf("the row's sequence = %d, %v, %v; want 200", seq, held, err)
+		var seq int64
+		if err := tx.QueryRow(t.Context(), `select dispatch_seq from dispatch_issues where key = 'LEGION-900'`).Scan(&seq); err != nil || seq != 200 {
+			t.Fatalf("the row's sequence = %d, %v; want 200", seq, err)
 		}
 	})
 }
@@ -220,11 +221,49 @@ func TestAReadingThatCarriesNoValueIsRefused(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "LEGION-900") {
 			t.Fatalf("a reading carrying no value = %v, want an error naming LEGION-900", err)
 		}
-		if _, held, err := records.DispatchIssueSeq(t.Context(), tx, "LEGION-900"); err != nil || held {
-			t.Fatalf("the copy holds a row of LEGION-900 (%v, %v), want none", held, err)
+		var rows int
+		if err := tx.QueryRow(t.Context(), `select count(*) from dispatch_issues where key = 'LEGION-900'`).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("the copy holds %d rows of LEGION-900 (%v), want none", rows, err)
 		}
 		if holder, err := records.DispatchClaim(t.Context(), tx, "LEGION-900"); err != nil || holder != "" {
 			t.Fatalf("the claim of LEGION-900 = %q, %v; want none", holder, err)
+		}
+	})
+}
+
+// The applied sequence of a row is the highest sequence of an issue fact the daemon applied: a
+// reading marked Applied raises it, and only where it stands lower, and no other reading moves it.
+// So a turn's re-read or a listing at 6 leaves it at 0; an issue fact at 5, older than every value
+// those wrote, still raises it to 5, though it replaces no value; an older one at 4 leaves it at 5;
+// a newer one at 7 raises it to 7; and a reading at 9 that is no issue fact leaves it at 7. A key
+// the copy holds no row of reads 0.
+func TestOnlyAnAppliedReadingRaisesTheAppliedSequence(t *testing.T) {
+	st := migratedStore(t)
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) {
+		reading := func(seq int64, applied bool) DispatchReading {
+			return DispatchReading{Key: "LEGION-900", Project: "LEGION", Seq: seq, Status: Carry("todo"), Parent: Carry(""),
+				Blockers: Carry([]string{}), Labels: Carry([]string{"legion"}), Rank: Carry("a0"), Applied: applied}
+		}
+		for _, step := range []struct {
+			name    string
+			reading DispatchReading
+			want    int64
+		}{
+			{"a reading at 6 that is no issue fact", reading(6, false), 0},
+			{"an issue fact at 5", reading(5, true), 5},
+			{"an issue fact at 4", reading(4, true), 5},
+			{"an issue fact at 7", reading(7, true), 7},
+			{"a reading at 9 that is no issue fact", reading(9, false), 7},
+		} {
+			must(t, records.PutDispatchIssue(t.Context(), tx, step.reading))
+			if got, err := records.DispatchIssueApplied(t.Context(), tx, "LEGION-900"); err != nil || got != step.want {
+				t.Fatalf("after %s the applied sequence = %d, %v; want %d", step.name, got, err, step.want)
+			}
+		}
+		holdsValues(t, tx, "LEGION-900", "the five readings", map[string]copied{"status": {"todo", 9}, "rank": {"a0", 9}})
+		if got, err := records.DispatchIssueApplied(t.Context(), tx, "LEGION-901"); err != nil || got != 0 {
+			t.Fatalf("the applied sequence of a key the copy holds no row of = %d, %v; want 0", got, err)
 		}
 	})
 }

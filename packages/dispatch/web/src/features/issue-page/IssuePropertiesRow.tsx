@@ -23,7 +23,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { gatedStepEntries } from "../issue/gated-steps";
+import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
@@ -38,6 +38,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -81,8 +82,9 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the coverage's statements, and the decisions the tree read answers as nodes,
-  // with each Change it hangs under one - and kept fresh by the outline's own rule
+  // reader's login, the coverage's statements, the decisions the tree read answers as nodes,
+  // with each Change it hangs under one, and the comments, which say which of those Changes
+  // their author deleted - and kept fresh by the outline's own rule
   // (`reference-target.ts`'s `EVENT_FRESH`), but for the tree read, which keeps its own
   // (`TREE_FRESH`): events refresh them, never their age (decision 180). Staleness is per
   // observer, so each read here takes that rule too, and the count costs no request of its own
@@ -90,14 +92,15 @@ export function IssuePropertiesRow({
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
+  const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, isCoverageStatement, tree),
-    [issue, viewer, isCoverageStatement, tree]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, tree, comments.data),
+    [issue, viewer, isCoverageStatement, tree, comments.data]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -105,11 +108,11 @@ export function IssuePropertiesRow({
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, kept fresh by the feed's events as the count's reads are
-  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root issue
-  // has gated steps at all (`gatedStepEntries`), so a child does not ask for the list, and while
-  // the read is pending or failed the issue draws its one chip rather than claiming a gate it has
-  // not read.
-  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: issue.parent === null });
+  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root of the
+  // issue's project has gated steps at all (`isProjectRoot`: no parent, or a parent of another
+  // project), so a child does not ask for the list, and while the read is pending or failed the
+  // issue draws its one chip rather than claiming a gate it has not read.
+  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn

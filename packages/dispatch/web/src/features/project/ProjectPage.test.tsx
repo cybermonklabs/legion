@@ -103,6 +103,7 @@ function renderPage(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ],
   login: string | null = "alice",
@@ -605,6 +606,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Core",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
       {
         created_at: "2026-09-10T00:00:00Z",
@@ -612,6 +614,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Other",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
     ]
   );

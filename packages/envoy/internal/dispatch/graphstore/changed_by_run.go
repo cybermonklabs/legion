@@ -24,10 +24,12 @@ import (
 
 // PlanChangedForRun is the write of a writer whose own write reaches no node of the store, and
 // that writes a node for no other reason than to name it changed by the run ctx carries (spec
-// requirement r-interaction): the issue PATCH (api's patchIssue), and the edit of an ask's or a
-// comment's words (api's editAsk and editComment). On a context that carries no run it calls
-// nothing and plans nothing, and answers the zero Uncaused, for which QueueNodes and QueueCaused
-// queue nothing, so a write made for no run sends no statement more than it did.
+// requirement r-interaction): the issue PATCH (api's patchIssue), the edit of an ask's or a
+// comment's words (api's editAsk and editComment), and the edit and the delete of an issue
+// message and the delete of a comment (api's editMessage, deleteMessage and deleteComment). On a
+// context that carries no run it calls nothing and plans nothing, and answers the zero Uncaused,
+// for which QueueNodes and QueueCaused queue nothing, so a write made for no run sends no
+// statement more than it did.
 //
 // On a context that carries a run it plans the write of the node that node answers, as
 // PlanUncaused plans one: the node as the object's create and the backfill write it - in its

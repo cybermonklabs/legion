@@ -107,6 +107,7 @@ func requireReadsAsALensNobodyWrote(t *testing.T, failure func(read, status, log
 // form nobody wrote answers once that id is read as the hidden one's, and it is absent from the
 // edges of the nodes it stands on. An address of each kind nobody wrote is a 404, never a 500.
 func TestTheReferencesReadAnswersEachNewKindAtItsAddress(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	created := func(name string, response *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 		t.Helper()
@@ -275,10 +276,10 @@ func TestTheReferencesReadAnswersEachNewKindAtItsAddress(t *testing.T) {
 	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
 	requireRefused(t, "a prevented_by at the finding", rig.post(nodePath("risk/"+risk.ID, "pointers"), map[string]any{
 		"kind": graphstore.TuplePreventedBy, "action": pointerAppend, "to": finding.Address,
-	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", "at a lens_block")
+	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", graphstore.TuplePreventedBy, graphstore.KindRisk, graphstore.KindLensBlock)
 	requireRefused(t, "a risk under the finding", rig.post("/risks", map[string]any{
 		"lens": finding.Address, "heading": "No lens.", "early_warning": "None.", "prevention": "None.",
-	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", "at a lens_block")
+	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", graphstore.TuplePartOf, graphstore.KindRisk, graphstore.KindLensBlock)
 	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
 		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
 			afterRisks, afterPreventions, risks, preventions)

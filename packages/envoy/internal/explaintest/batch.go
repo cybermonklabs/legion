@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -72,9 +73,9 @@ func BatchedBy(t testing.TB, send func(pgx.Tx) error) []Statement {
 	return recorder.sent
 }
 
-// RecordedTx is a transaction that keeps every statement read through it by Query or QueryRow,
-// with the arguments it bound, and runs each on the transaction it wraps: a reader handed it
-// answers as it would, and the test reads the plan of the statement the reader sent.
+// RecordedTx is a transaction that keeps every statement sent through it by Query, QueryRow or
+// Exec, with the arguments it bound, and runs each on the transaction it wraps: a reader or a
+// writer handed it answers as it would, and the test reads the plan of the statement it sent.
 type RecordedTx struct {
 	pgx.Tx
 	Sent []Statement
@@ -88,6 +89,11 @@ func (r *RecordedTx) Query(ctx context.Context, sql string, args ...any) (pgx.Ro
 func (r *RecordedTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	r.Sent = append(r.Sent, Statement{SQL: sql, Args: args})
 	return r.Tx.QueryRow(ctx, sql, args...)
+}
+
+func (r *RecordedTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	r.Sent = append(r.Sent, Statement{SQL: sql, Args: args})
+	return r.Tx.Exec(ctx, sql, args...)
 }
 
 // Holding is the one statement of r.Sent whose text holds marker, which names the statement
@@ -118,8 +124,12 @@ var preparedPlans atomic.Int64
 // plan-cache mode is what Postgres does with a prepared statement: an EXPLAIN that binds its own
 // parameters is planned for those values, a custom plan, whatever the mode says. EXECUTE takes no
 // bind parameter, so each argument is written as the text pgx encodes it in for the type
-// Postgres inferred for that parameter, quoted as a literal of that type. The statement runs, so
-// the caller explains in a transaction it rolls back.
+// Postgres inferred for that parameter, quoted as a literal of that type. pgx answers a nil buffer
+// for the SQL value NULL alone, so the buffer it appends to is an empty one, not nil: from nil, a
+// value whose text is empty, an empty string, would come back nil too and be written as null, and
+// a statement explained with null where its writer bound the empty string is another statement (a
+// keyset walk from the empty string reads every row, from null none). The statement runs, so the
+// caller explains in a transaction it rolls back.
 //
 // The statement's own failure - Postgres refusing to prepare it, to plan it or to run it - is
 // answered as an error, which a control's caller reads as the control proving nothing
@@ -142,7 +152,7 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 	}
 	literals := make([]string, len(args))
 	for index, argument := range args {
-		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, nil)
+		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, []byte{})
 		if err != nil {
 			t.Fatalf("write argument %d (%T) as a literal: %v", index+1, argument, err)
 		}

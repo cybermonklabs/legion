@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -102,6 +103,7 @@ func projectTokens(t *testing.T, project string) func(issue string, role claim.R
 // re-adopted live, each a relaunch away from the refusal, and the test fails naming them (the pull
 // request records the run).
 func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.LaunchFailureLimit = 1
 	project, err := claim.ProjectToken(cfg.Project)
@@ -246,6 +248,7 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 // The control (the pull request records the run): SessionConflicts without its unholdable names;
 // both claims are re-adopted live, and the test fails naming them.
 func TestABootSuspendsAClaimRecordingANameNoRowCanHold(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -297,6 +300,7 @@ func TestABootSuspendsAClaimRecordingANameNoRowCanHold(t *testing.T) {
 // The control (the pull request records the run): the boot failing on that error, as before; the
 // daemon never answers, and the test fails at its start.
 func TestABootThatCannotStopAClaimStillServes(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -355,6 +359,7 @@ func TestABootThatCannotStopAClaimStillServes(t *testing.T) {
 // registered claim and resumes it, the backfill keeps that claim's row, and the test fails naming
 // the resume and the holder (the pull request records the run).
 func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -382,7 +387,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	if _, err := st.Pool().Exec(ctx, `update claims set tree_epoch = 1 where token = $1`, string(registered)); err != nil {
 		t.Fatalf("bind the registered claim to its tree's epoch: %v", err)
 	}
-	row, err := st.Pool().Begin(ctx)
+	row, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,6 +481,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 // conflict read leaves the taker idle on the other claim's session; counting the abandoned
 // session's names as the current session's suspends the claim that lost the conflict again.
 func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {

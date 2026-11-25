@@ -121,8 +121,8 @@ const (
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
-//   - the blocks child's document version node, the node of a removed document's version and of a
-//     version an erase deletes stated gone, an artifact's part_of its issue, an issue's child_of,
+//   - the blocks child's document version node, the node of a removed document's version stated
+//     gone, an artifact's part_of its issue, an issue's child_of,
 //     needs, filed_from and duplicate_of, an issue's room - its tree artifact, its decisions query
 //     and their first versions - and the values of each query node, a document's references, a
 //     comment's anchored_in its anchor's block, the authored_by of a block of an issue's room, a
@@ -268,11 +268,6 @@ func storeKinds() []StoreKind {
 		Driver: "artifact.removed events in the window: the node of the one version an untouched document holds, stated" +
 			" gone with the document (api's removedDocumentNodes)",
 		count: `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
-	}, {
-		Name: "erased_version", MovedBy: movedWithBlocks, Tuples: 1, Assumed: sizingWindowDays / 7,
-		Driver: "assumed at one a week, since its one writer is an operator's erase of a block a version held" +
-			" (grapherase's endErasedVersions), which no table the sizing reads records: the node of each version the" +
-			" erase deletes, stated gone",
 	}, {
 		Name: "message_delivery", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "message_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its session",
@@ -564,27 +559,30 @@ func storeKinds() []StoreKind {
 			" block terms count",
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
-		// frame path and the backfill (graphstore.WriteRun) and migration 20261116205055 write a run
-		// through: the words and ends_at values, and graphstore.AuthorFacts' authored_by with its
-		// author's aliases (an alias_of and a recorded_as at most); graphstore.Write's base attributes
-		// of the node it makes, the visibility, the state and the project where the run names one; and
-		// the changed_by_run a write made for the run appends out of a node it changed
-		// (store.WithRun).
-		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
+		// frame path and the backfill (graphstore.WriteRun) write a run through, the backfill each run
+		// recorded before this release: the words, ends_at and source values, and
+		// graphstore.AuthorFacts' authored_by with its author's aliases (an alias_of and a recorded_as
+		// at most); graphstore.Write's base attributes of the node it makes, the visibility, the state
+		// and the project where the run names one; the changed_by_run a write made for the run appends
+		// out of a node it changed (store.WithRun); and the state the sweep states the run's node gone
+		// at, an hour after it was asked (api's goRunGone, through graphstore.WriteState).
+		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
-			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
-			" table of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
-			" most its project, its words and ends_at values, its authored_by, at most two aliases of its author and" +
-			" one changed_by_run into it",
+			" going_requests holds a run for an hour alone (contracts.GoingRequestTTL): the release before" +
+			" deletes it then, and this release's sweep states its node gone and removes its row, so no table" +
+			" of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
+			" most its project, its words, ends_at and source values, its authored_by, at most two aliases of" +
+			" its author, one changed_by_run into it and its state gone an hour on",
 	}, {
 		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
 		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
-		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before this one" +
-			" deletes a run's going_events rows with its going_requests row: one frame value each",
+		Driver: "assumed at 50 for each assumed run, 500 a day, since a run's going_events rows go with its" +
+			" going_requests row an hour after it was asked: one frame value each",
 	}, {
-		// Counted off writeGoneRun, the one writer that states a run's node gone (backfillGoneRuns):
-		// the state value it moves.
+		// Counted off writeGoneRun, the backfill's writer that states gone a run's node whose row the
+		// release before deleted (backfillGoneRuns): the state value it moves. The sweep's state of a
+		// run's node gone (api's goRunGone) is counted under interaction.
 		Name: "interaction_gone", MovedBy: movedWithLenses, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one for each assumed run, 10 a day, since the release before deletes every run an hour" +
 			" old (contracts.GoingRequestTTL) and no table holds the window's runs: the run's node stated gone once" +
@@ -621,7 +619,7 @@ func storeKinds() []StoreKind {
 			" project, its part_of its lens, its text value, its authored_by and at most two aliases of its author," +
 			" which over-states a finding written with its lens, whose write states those aliases once",
 	}, {
-		// Counted off the seed of migrations 20261116123354, ten kinds, and 20261116123355, twelve,
+		// Counted off the seed of migrations 20261123174710, ten kinds, and 20261123174720, twelve,
 		// which graphstore.AddLensKind writes the shape of: the lens_kind node's visibility, state and
 		// words values and its constrained_by, and its constraint node's visibility, state, standard
 		// and reference values, in no project and by no author.
@@ -670,11 +668,10 @@ func storeKinds() []StoreKind {
 // sizingAuthors is the relation recordedSessions reads storedAuthors as when the sizing reads it:
 // a FROM item named stored, of (kind, id, at), that holds no row. Every writer storedAuthors adds
 // is read off the store itself - a decision's or a reading's decided_by or authored_by, an ask
-// node's authored_by, an erase's record of its writers - and the sizing reads no table of the
-// store, so it runs on a database the store does not exist in yet. A session that asked is
-// counted all the same, by the asks rows and the ask.opened events recordedSessions reads beside
-// it, and a decision or a reading is a kind production writes none of yet, whose rate the sizing
-// assumes.
+// node's authored_by - and the sizing reads no table of the store, so it runs on a database the
+// store does not exist in yet. A session that asked is counted all the same, by the asks rows and
+// the ask.opened events recordedSessions reads beside it, and a decision or a reading is a kind
+// production writes none of yet, whose rate the sizing assumes.
 const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // reachesANode is true of a topic the outbox reads as a node of the store (outbox's
@@ -710,9 +707,7 @@ func reachesANode(topic string) string {
 // first arm reads one. rooms says the database holds the issue rooms' tables (documentTexts).
 //
 // The people are the ones the census holds to a node (commentWriterPeople), each with the time
-// the first comment naming them was written, and with no erasure taken out: an erase removes a
-// node and never moves the rate the node was written at, and graph_erasures is a table of this
-// branch, which the sizing reads none of.
+// the first comment naming them was written.
 func sizingWritesWith(rooms bool) string {
 	return `
 	with recursive sized_comments as (

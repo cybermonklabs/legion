@@ -1,6 +1,11 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
@@ -20,6 +25,7 @@ import { realClock } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -29,6 +35,7 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, referenceTargetsQuery, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
+  Actor,
   ArchitectureSource,
   CommentWithTrees,
   DispatchEvent,
@@ -37,22 +44,22 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  MessageWithTrees,
   Priorities,
   ReferenceTargets,
-  RepoProject,
   UserState,
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
-import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
+import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { ReferencedBy } from "../refs/ReferencedBy";
-import { buildDispatchReference } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -282,9 +289,6 @@ function stubIssueApi() {
     >),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([]),
-    // The repository's control reads the project's repository mappings at once for an issue
-    // that resolves to none, as this one does; a project that maps none suggests no repository.
-    spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
@@ -1563,8 +1567,8 @@ test("Details' Blocks draws each issue that waits on this one through needs, and
 // leaves the read standing on that answer (`standsFailed`): the row keeps what the answer drew and
 // says no failure, since nothing it draws is missing. Each read of the panel whose failure Details
 // says in a line of its own (`DetailsErrorLine`) is refreshed here with a failure: the titles of
-// the issues this one waits on, what waits on it, the titles of those, and the repository
-// mappings. Referenced by's list, which draws its own line, has a case of its own.
+// the issues this one waits on, what waits on it, and the titles of those. Referenced by's list,
+// which draws its own line, has a case of its own.
 test("a refresh that fails over an answer a row of Details holds keeps that answer drawn and says no failure", async () => {
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
@@ -1573,30 +1577,21 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
     issueNames(refs, { "CORE-3": "Fix the build", "CORE-5": "Ship the release" })
   );
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await waitFor(() => {
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build");
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release");
-      expect(queryClient.getQueryState(["repo-projects"])?.status).toBe("success");
     });
 
     titles.mockRejectedValue(readFailure());
-    listRepoProjects.mockRejectedValueOnce(readFailure());
-    await act(() =>
-      Promise.all([
-        queryClient.refetchQueries({ queryKey: ["reference-targets"] }),
-        queryClient.refetchQueries({ queryKey: ["repo-projects"] }),
-      ])
-    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
     await readWhatWaits(queryClient, getReferences, readFailure());
     const refreshed = [
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-3", kind: "issue" })]).queryKey,
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-5", kind: "issue" })]).queryKey,
       ["references", "to", reference, "blocked_by"],
-      ["repo-projects"],
     ].map((queryKey) => queryClient.getQueryState(queryKey));
     expect(
       refreshed.map((state) => [state?.status, state?.data !== undefined]),
@@ -1605,14 +1600,9 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
       ["error", true],
       ["error", true],
       ["error", true],
-      ["error", true],
     ]);
 
-    for (const label of [
-      PROPERTY_LABELS.blocked_by,
-      PROPERTY_LABELS.blocks,
-      PROPERTY_LABELS.repository,
-    ]) {
+    for (const label of [PROPERTY_LABELS.blocked_by, PROPERTY_LABELS.blocks]) {
       const row = within(detailsRow(label));
       expect(
         row.queryByRole("alert"),
@@ -1633,7 +1623,6 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
     ).toHaveTextContent("Ship the release");
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
     titles.mockRestore();
     getReferences.mockRestore();
     restore();
@@ -3358,12 +3347,12 @@ test("closing References or Details takes an open Referenced by list, and its re
 });
 
 // Details' reads of the titles of the issues this one waits on, of what waits on it and the
-// titles of those, of what references it, of the project's repository mappings and of the
-// projects, whose gated steps a top-level issue's approvals name, are each read again by the
-// events that change them (`api/event-refresh.ts`), so in Details a window focus past the app's
-// 30 s staleness reads none of them again. The reader's state keeps the app's defaults, so its
-// second read shows the focus was handled.
-test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by, repository mapping or project again", async () => {
+// titles of those, of what references it and of the projects, whose gated steps a top-level
+// issue's approvals name and whose default repository the Repository row suggests, are each read
+// again by the events that change them (`api/event-refresh.ts`), so in Details a window focus
+// past the app's 30 s staleness reads none of them again. The reader's state keeps the app's
+// defaults, so its second read shows the focus was handled.
+test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
@@ -3391,7 +3380,6 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       expect(blocksReads(getReferences, reference)).toBe(1);
       expect(titleReads(titles, waiter)).toBe(1);
       expect(listReads()).toBe(1);
-      expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
       expect(api.listProjects).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
@@ -3410,10 +3398,6 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       "a window focus read the titles of the issues that wait on this one again"
     ).toBe(1);
     expect(listReads(), "a window focus read what references the issue again").toBe(1);
-    expect(
-      api.listRepoProjects,
-      "a window focus read the project's repository mappings again"
-    ).toHaveBeenCalledTimes(1);
     expect(api.listProjects, "a window focus read the projects again").toHaveBeenCalledTimes(1);
   } finally {
     unmount();
@@ -4942,14 +4926,14 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
   }
 });
 
-// With Details open, the repository's control drew its select only once its own read of the
-// project's mappings answered, in a commit of that control alone, and Add, read after its own
-// commits only, never saw it, so on an issue with a value for every other property Details drew
-// no Add beside the control it would press. The control is drawn at once, whatever that read
-// answers: on an issue that resolves to no repository the row reads "None", a button whose press
-// draws the box in its place. So nothing here waits on the read, which is held out throughout;
-// what the case still holds is that Add is drawn beside that one control, lists Repository, and
-// that choosing it reaches the box.
+// With Details open, the repository's control drew its select only once a read of its own
+// answered, in a commit of that control alone, and Add, read after its own commits only, never
+// saw it, so on an issue with a value for every other property Details drew no Add beside the
+// control it would press. The control is drawn at once, whatever its read of the project list,
+// which its suggestion comes from, answers: on an issue that resolves to no repository the row
+// reads "None", a button whose press draws the box in its place. So nothing here waits on that
+// read, which is held out throughout; what the case still holds is that Add is drawn beside that
+// one control, lists Repository, and that choosing it reaches the box.
 test("Add lists Repository on an empty repository row and presses None, which opens the box", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -4960,11 +4944,10 @@ test("Add lists Repository on an empty repository row and presses None, which op
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  // The issue resolves to no repository, so its control reads the mappings at once; the read
-  // never answers here, and the control is drawn without it.
-  const mappings = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
-    () => mappings.promise
+  // The control reads the project list as it is drawn; the read never answers here, and the
+  // control is drawn without it.
+  const listProjects = spyOn(api, "listProjects").mockImplementation(
+    () => new Promise(() => undefined)
   );
   getIssue.mockResolvedValue({
     ...issue,
@@ -4990,7 +4973,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
     );
-    expect(listRepoProjects).toHaveBeenCalled();
+    expect(listProjects).toHaveBeenCalled();
     const none = within(detailsRow(PROPERTY_LABELS.repository)).getByRole("button", {
       name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
     });
@@ -5021,7 +5004,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     expect(none, "the menu's Repository left None drawn beside the box").not.toBeInTheDocument();
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
+    listProjects.mockRestore();
     getReferences.mockRestore();
     priorities.mockRestore();
     restore();
@@ -5042,11 +5025,6 @@ test("Add lists Repository on a row that inherits its repository and presses its
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  // The focus in the box reads the mappings; the read never answers here.
-  const mappings = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
-    () => mappings.promise
-  );
   // A value for every property Add lists but the repository, which the issue inherits: the API
   // answers no repository of its own and the one it resolves to.
   getIssue.mockResolvedValue({
@@ -5086,7 +5064,6 @@ test("Add lists Repository on a row that inherits its repository and presses its
     ).not.toBeInTheDocument();
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
     getReferences.mockRestore();
     priorities.mockRestore();
     restore();
@@ -5111,40 +5088,8 @@ function expectPageFailure(row: HTMLElement, alert: HTMLElement): void {
   ).toHaveClass(pageHeaderControl);
 }
 
-// The repository's control reads the project's mappings at once on an issue that resolves to no
-// repository, as this one does. A read that fails is said in the Repository row as every other
-// row of Details says a failed read, and its Retry reads the mappings again.
-test("a failed read of the repository mappings is said in the page's colours, with Retry", async () => {
-  const user = userEvent.setup();
-  const { restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockResolvedValue([]);
-  const { unmount } = renderDetails();
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    const alert = await within(row).findByRole("alert");
-    expectPageFailure(row, alert);
-    expect(alert.textContent).toBe("Could not load the repositories mapped to CORE.");
-    const reads = listRepoProjects.mock.calls.length;
-    await user.click(within(row).getByRole("button", { name: CONTROL_LABELS.retry }));
-    await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
-    await waitFor(() =>
-      expect(
-        within(row).queryByRole("alert"),
-        "the failure is still said after the mappings were read"
-      ).not.toBeInTheDocument()
-    );
-  } finally {
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// A repository Dispatch refuses is said in the Repository row the same way, in Dispatch's words,
-// and its Retry makes the refused pick again.
+// A repository Dispatch refuses is said in the Repository row as Details says its own failures
+// (`expectPageFailure`), in Dispatch's words, and its Retry makes the refused pick again.
 test("a repository Dispatch refuses is said in the page's colours, with Retry", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -5188,122 +5133,12 @@ test("a repository Dispatch refuses is said in the page's colours, with Retry", 
   }
 });
 
-// A fetch of mappings that hold no answer clears their error, so a line drawn from the error
-// alone went at the press of its Retry, and the focus of a reader who pressed Retry by keyboard
-// went with it to the page's body. The line stays while the read is out, its Retry busy and
-// holding the focus, a second press joins the read that is out, and once the mappings answer and
-// the line goes, the focus goes to the row's control rather than to the page.
-test("the mappings' Retry keeps the focus while the read is out, and hands it to the row's control once it answers", async () => {
-  const user = userEvent.setup();
-  const { restore } = stubIssueApi();
-  const retried = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockImplementation(() => retried.promise);
-  const { unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-  const retryOfMappings = () =>
-    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
-    const retry = retryOfMappings();
-    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
-
-    act(() => retry.focus());
-    await user.keyboard("{Enter}");
-    expect(listRepoProjects, "Retry did not read the mappings again").toHaveBeenCalledTimes(2);
-    await waitFor(() =>
-      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
-        "aria-busy",
-        "true"
-      )
-    );
-    expect(retryOfMappings(), "the line and its Retry went while the read is out").toBe(retry);
-    expect(
-      within(row).getByRole("alert").textContent,
-      "the line no longer says the read failed while it is read again"
-    ).toBe("Could not load the repositories mapped to CORE.");
-    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
-      retry
-    );
-    await user.keyboard("{Enter}");
-    expect(
-      listRepoProjects,
-      "a press of Retry while its read is out sent another"
-    ).toHaveBeenCalledTimes(2);
-
-    await act(async () => retried.resolve([]));
-    await waitFor(() =>
-      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
-    );
-    expect(
-      document.activeElement,
-      "the mappings answered, and the focus fell to the page rather than to the row's control"
-    ).toBe(
-      within(row).getByRole("button", {
-        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
-      })
-    );
-  } finally {
-    stopBlurring();
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// The mappings' line goes once they answer. Read again as the event of a mapping's write reads
-// them, rather than by the reader's press of the line's Retry, that answer is no press of the
-// reader's, so the focus Retry held stays on the page's body, as for every change the reader did
-// not make, rather than going to the row's control.
-test("the mappings read again on an event, not by their Retry, leave the focus their Retry held on the page's body", async () => {
-  const { restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockResolvedValue([]);
-  const { queryClient, unmount } = renderDetails();
-  const retryOfMappings = () =>
-    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
-    const retry = retryOfMappings();
-    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
-    act(() => retry.focus());
-    await act(() => queryClient.refetchQueries({ queryKey: ["repo-projects"] }));
-    await waitFor(() =>
-      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
-    );
-    await settleFocus();
-    expect(
-      document.activeElement,
-      "the mappings answered on an event, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
-  } finally {
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// The Repository row draws a failed read of the mappings and a refused write at once, each with
-// its own Retry. The reader presses the read's Retry by keyboard and, while that read is out, tabs
-// on to the write's Retry; a close made in another session then takes that Retry away, as a closed
-// issue's write line offers none. The reader pressed nothing on that line, so the focus stays on
-// the page's body.
-test("a close made elsewhere that takes the refused repository's Retry after a press of the mappings' Retry leaves its focus on the page's body", async () => {
+// A refused repository's line offers its Retry while the issue is open. With the reader's focus
+// on that Retry, a close made in another session takes it away, as a closed issue's line offers
+// none. The reader pressed nothing on that line, so the focus stays on the page's body.
+test("a close made elsewhere that takes the refused repository's Retry leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockRejectedValueOnce(
-    new Error("the network dropped the read")
-  );
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "repository refused" }))
   );
@@ -5311,48 +5146,31 @@ test("a close made elsewhere that takes the refused repository's Retry after a p
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
     await user.click(
-      within(row).getByRole("button", {
+      await screen.findByRole("button", {
         name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
     await user.paste("acme/web");
     await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(within(row).getAllByRole("button", { name: CONTROL_LABELS.retry })).toHaveLength(2)
-    );
-    const [readRetry, writeRetry] = within(row).getAllByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-    if (readRetry === undefined || writeRetry === undefined) {
-      throw new Error("the Repository row draws no two Retries");
-    }
-
-    listRepoProjects.mockImplementationOnce(() => new Promise(() => undefined));
-    act(() => readRetry.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(readRetry).toHaveAttribute("aria-busy", "true"));
-    await user.tab();
-    expect(document.activeElement, "Tab from the mappings' Retry reached no other Retry").toBe(
-      writeRetry
-    );
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    await within(row).findByRole("alert");
+    const retry = within(row).getByRole("button", { name: CONTROL_LABELS.retry });
+    act(() => retry.focus());
 
     drawIssue(getIssue, queryClient, closedIssue);
     await waitFor(() =>
-      expect(writeRetry, "the close left the refused write's Retry").not.toBeInTheDocument()
+      expect(retry, "the close left the refused write's Retry").not.toBeInTheDocument()
     );
     await settleFocus();
     expect(
       document.activeElement,
-      "a close elsewhere took the write's Retry, and the focus left the page's body though the reader pressed only the read's Retry"
+      "a close elsewhere took the refused write's Retry, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
   } finally {
     stopBlurring();
     unmount();
-    listRepoProjects.mockRestore();
     restore();
   }
 });
@@ -7090,8 +6908,8 @@ test("with no pin, Pinned reads None and sends no request", async () => {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
     expect(pins).toHaveTextContent(CONTROL_LABELS.none);
     expect(within(pins).queryAllByRole("link")).toHaveLength(0);
-    // Every other read of the panel has answered by the time the repository's has.
-    await waitFor(() => expect(api.listRepoProjects).toHaveBeenCalled());
+    // The panel's reads have gone out by the time the Repository row has read the project list.
+    await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
     expect(pinReads.asks, "Pinned read the issue's questions with no pin").not.toHaveBeenCalled();
     expect(
       pinReads.comments,
@@ -7201,6 +7019,29 @@ function commentOf(id: string, body: string, tree?: DisplayTree): CommentWithTre
   };
 }
 
+/** A root message of CORE-1 as the messages read answers it, with what `more` sets over it: its
+ *  author's corrections of it, where they made one. */
+function messageOf(
+  id: string,
+  body: string,
+  more: Partial<MessageWithTrees> = {}
+): MessageWithTrees {
+  return {
+    author: { id: "alice", kind: "user" },
+    body,
+    broadcast_id: null,
+    created_at: "2026-09-09T00:00:00Z",
+    deliveries: [],
+    ...messageCorrectionFields(),
+    id,
+    in_reply_to: null,
+    issue_key: "CORE-1",
+    reply_block: null,
+    target: null,
+    ...more,
+  };
+}
+
 // Until the read that holds a pin's words answers, the pin is drawn by the page's word for its
 // kind, never by the id it was pinned under; once it answers, by its first line.
 test("a pin whose words are not read yet is drawn by its kind's word, never its id", async () => {
@@ -7289,6 +7130,216 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
       ).toBe("Bold words.")
     );
     expect(within(pins).getByRole("link").textContent).not.toContain("*");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** When the pinned posts below were edited, and when deleted. */
+const PIN_EDITED_AT = "2026-09-09T01:00:00Z";
+const PIN_DELETED_AT = "2026-09-09T02:00:00Z";
+
+/** A session nobody named, which the page calls by its word for an agent and never by its id. */
+const UNNAMED_SESSION: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** Pinned's row of the pin `id` (`conversationItemId`'s `<kind>:<id>`, or `eventItemId`'s). */
+function pinRow(id: string): HTMLElement {
+  const row = document.querySelector(`[data-pin="${id}"]`);
+  if (!(row instanceof HTMLElement)) throw new Error(`Pinned draws no row for ${id}`);
+  return row;
+}
+
+/** The link of Pinned's row of the pinned conversation `id`, to what it pins. */
+function pinLink(id: string): HTMLElement {
+  return within(pinRow(id)).getByRole("link");
+}
+
+// R2 of dispatch://INFRA-1523: a pinned comment or message its author edited is drawn by its first
+// line, then ` · edited`, inside its link, as a parent line in the outline says it (`NodeRow.tsx`'s
+// `ParentLink`). The mark is the page's own word, marked as its chrome.
+test("a pinned comment and a pinned message their authors edited say edited after their lines", async () => {
+  const comment = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const message = "7b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e";
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
+  );
+  pinReads.comments.mockResolvedValue([
+    {
+      ...commentOf(comment, "Ship the fix tonight. Then watch the board."),
+      edited_at: PIN_EDITED_AT,
+    },
+  ]);
+  pinReads.messages.mockResolvedValue([
+    {
+      message: messageOf(message, "Hold the deploy. Until Friday.", { edited_at: PIN_EDITED_AT }),
+      replies: [],
+    },
+  ]);
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    for (const [kind, id, line] of [
+      ["comment", comment, "Ship the fix tonight."],
+      ["message", message, "Hold the deploy."],
+    ] as const) {
+      const pin = conversationItemId(kind, id);
+      await waitFor(() =>
+        expect(
+          pinLink(pin).textContent,
+          `the pinned ${kind} its author edited is not drawn by its line, then the edited mark`
+        ).toBe(`${line}${mark}`)
+      );
+      expect(
+        pinLink(pin).querySelector("[data-page-chrome]")?.textContent,
+        `the pinned ${kind}'s edited mark is not the page's own word`
+      ).toBe(mark);
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: a pinned comment or message its
+// author deleted is drawn as the deleted line, from the delete and never from its words, as its
+// row in the outline draws it (`DeletedLine`), and stays a link to the post. Its actor is named as
+// the page names an author: a session nobody named reads as the page's word for an agent, never
+// by its id. The read and the cache both hold a deleted post's body empty; the words are kept
+// here so the line is shown to come from the delete and never from them.
+test("a pinned comment and a pinned message their authors deleted are drawn as the deleted line", async () => {
+  const comment = "8c3d4e5f-6a7b-4c8d-ae9f-1a2b3c4d5e6f";
+  const message = "9d4e5f6a-7b8c-4d9e-bf0a-2b3c4d5e6f7a";
+  const deletion = { deleted_at: PIN_DELETED_AT, deleted_by: UNNAMED_SESSION };
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
+  );
+  pinReads.comments.mockResolvedValue([
+    { ...commentOf(comment, "Ship the fix tonight."), ...deletion },
+  ]);
+  pinReads.messages.mockResolvedValue([
+    { message: messageOf(message, "Hold the deploy.", deletion), replies: [] },
+  ]);
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    for (const [kind, id, words] of [
+      ["comment", comment, "Ship the fix tonight."],
+      ["message", message, "Hold the deploy."],
+    ] as const) {
+      const pin = conversationItemId(kind, id);
+      await waitFor(() =>
+        expect(
+          pinLink(pin).querySelector("[data-post-deleted]")?.textContent?.slice(0, opening.length),
+          `the pinned ${kind} its author deleted is not drawn as the deleted line, its actor named as the page names an author`
+        ).toBe(opening)
+      );
+      const link = pinLink(pin);
+      expect(
+        link.textContent,
+        `the pinned ${kind} its author deleted draws its words`
+      ).not.toContain(words);
+      expect(
+        link.textContent,
+        `the pinned ${kind}'s deleted line names its actor by its id`
+      ).not.toContain(UNNAMED_SESSION.id.slice(0, 8));
+      expect(link, `the pinned ${kind} its author deleted is no link to it`).toHaveAttribute(
+        "href",
+        buildIssuePath({ id, key: "CORE-1", kind })
+      );
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** CORE-1's `comment.created` event `id`, of a comment its author edited at `editedAt` (null for
+ *  one nobody edited), as the history's read answers it: the read stamps the post's own marks on
+ *  the event (`attachPostMarks` in `api/events.go`). */
+function commentCreated(
+  id: number,
+  body: string,
+  editedAt: string | null
+): Extract<DispatchEvent, { type: "comment.created" }> {
+  // A person, typed as the event's actor union reads one (its kind a literal).
+  const alice = { id: "alice", kind: "user" } as const;
+  return {
+    actor: alice,
+    created_at: "2026-09-09T00:00:00Z",
+    id,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      anchor: null,
+      answers: null,
+      artifact_id: null,
+      artifact_name: "",
+      ask_id: null,
+      author: alice,
+      body,
+      created_at: "2026-09-09T00:00:00Z",
+      deleted_at: null,
+      deleted_by: null,
+      deliveries: [],
+      edited_at: editedAt,
+      id: `comment-${id}`,
+      issue_key: "CORE-1",
+      mentions: [],
+      reply_block: null,
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: null,
+    },
+    seq: id,
+    type: "comment.created",
+  };
+}
+
+// R2 of dispatch://INFRA-1523: a pinned line of the history whose post its author edited since
+// says ` · edited` after the line, as the margin's Pinned tab says it (`EventEditedMark`). The
+// mark is the page's own word, marked as its chrome. A line whose post nobody edited says nothing
+// of an edit.
+test("a pinned history line of an edited post's event says edited after the line", async () => {
+  const edited = commentCreated(21, "Hold the deploy.", PIN_EDITED_AT);
+  const standing = commentCreated(22, "Ship on Friday.", null);
+  const { getMyState, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(eventItemId(edited), eventItemId(standing)));
+  const client = detailsQueryClient();
+  // The history's log, which Pinned draws a pinned line from and never reads (`IssuePins.tsx`).
+  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1"], {
+    pageParams: [undefined],
+    pages: [[edited, standing]],
+  });
+  const { unmount } = renderDetails(undefined, undefined, client);
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    await waitFor(() =>
+      expect(
+        pinRow(eventItemId(edited)).textContent,
+        "the pinned line of an edited post's event does not say edited after the line"
+      ).toContain(`Hold the deploy.${mark}`)
+    );
+    expect(
+      [...pinRow(eventItemId(edited)).querySelectorAll("[data-page-chrome]")].map(
+        (chrome) => chrome.textContent
+      ),
+      "the pinned line's edited mark is not the page's own word"
+    ).toContain(mark);
+    const line = pinRow(eventItemId(standing)).textContent;
+    expect(line).toContain("Ship on Friday.");
+    expect(line, "the pinned line of a post nobody edited says edited").not.toContain(mark);
   } finally {
     unmount();
     restore();

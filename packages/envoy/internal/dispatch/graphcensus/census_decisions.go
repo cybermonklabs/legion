@@ -62,8 +62,9 @@ var decisionProjections = []projection{
 		cross join lateral (select ` + refs.DocumentTopSQL("a") + ` as at) document_top
 		join graph_nodes reading on reading.kind = '` + refs.BlockNodeKind + `' and reading.id = d.node_id
 		  and reading.supertag = '` + refs.ReadingSupertag + `'`,
-		tuples:      readingParents,
-		owed:        typedNodeOwed,
+		tuples: readingParents,
+		owed:   typedNodeOwed,
+		// kept for one release: deferred-typed-rows
 		rowOwed:     typedRowOwed,
 		emptyAgrees: true,
 	},
@@ -199,7 +200,7 @@ func heldTuples(kinds string, holders ...string) string {
 		`t.from_kind = n.kind and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'
 		  and held.asserted`
 }
 
@@ -274,14 +275,17 @@ var typedNodeOwed = `exists (
 // typedRowOwed is the row-side owed predicate (projection.rowOwed) of a kind whose row may name a
 // decision's or a reading's node: the node the row names is a decision or a reading the store
 // holds gone, in a document that still owes its block index (owesBlockIndex). Above the deferral
-// bound no block index runs in the write, and the typed-node pass states each decision and
-// reading the version no longer holds gone in that write's own transaction
-// (refs.PlanDecisionNodes), while the document_blocks row of its block and the block_refs rows it
-// holds stay until the block-index reconciliation deletes them. Such a row is owed its deletion,
-// and no difference until then; once the document owes nothing, the same row names a gone node
-// and is one. A gone node of any other supertag under its row is a difference still, since no
-// writer leaves one so. A ref_key holds no '#', so a block node's document is the part of its id
-// before the first one.
+// bound a process of the release before runs no block index in the write, and its typed-node pass
+// states each decision and reading the version no longer holds gone in that write's own
+// transaction, while the document_blocks row of its block and the block_refs rows it holds stay
+// until the block-index reconciliation deletes them; this build's pass deletes them in the same
+// write (refs.PlanDecisionNodes), so such a row is left only during the roll. Such a row is owed
+// its deletion, and no difference until then; once the document owes nothing, the same row names a
+// gone node and is one. A gone node of any other supertag under its row is a difference still,
+// since no writer leaves one so. A ref_key holds no '#', so a block node's document is the part of
+// its id before the first one. The release after this one deletes it, with the rowOwed of each
+// projection that reads it, once no process of the release before is live.
+// kept for one release: deferred-typed-rows
 var typedRowOwed = `node.kind = '` + refs.BlockNodeKind + `' and node.state = '` + graphstore.StateGone + `'
 		  and node.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
 		  and exists (select 1 from artifacts a where a.ref_key = split_part(node.id, '#', 1) and ` + owesBlockIndex("a.id") + `)`
@@ -324,7 +328,8 @@ func tieProjection(kind, note string, holders ...string) projection {
 		where r.kind = '` + kind + `' and ` + tieInBound,
 		tuples:    heldTuples(`t.kind = '`+kind+`'`, holders...),
 		pastBound: tiePastBound(kind),
-		rowOwed:   typedRowOwed,
+		// kept for one release: deferred-typed-rows
+		rowOwed: typedRowOwed,
 	}
 }
 
@@ -340,9 +345,10 @@ const edgeSuffix = "_edge"
 // answers no edge for is a tuple no row projects, and an edge that reaches the wrong node reads as
 // both.
 //
-// The view's definition
-// (store/migrations/20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql, which
-// restates the arms 20261116094101_graph_edges_asks.up.sql and
+// The view's last restatement
+// (store/migrations/20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql, which
+// states 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql's view again: the
+// arms 20261116094101_graph_edges_asks.up.sql and
 // 20261117020856_graph_edges_asks_and_store_class.up.sql give these ties, with 20261120122700's
 // filter of the tuple arm) answers each of these ties from one arm, which the projection row
 // decides. For a row that names its node, the tuple arm answers the newest tuple of the triple

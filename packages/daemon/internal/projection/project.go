@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -35,11 +36,12 @@ type Inputs struct {
 	Tx pgx.Tx
 	// Store is what every record read goes through.
 	Store record.Store
-	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
-	// state lists.
+	// Project is the Dispatch project whose pending status writes, held lifecycle rows and open
+	// intake give-ups the state lists.
 	Project string
-	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-	// root's view answers its own state of; the empty list gates none.
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
+	// view answers the steps its tree is gated on, which these steps and the root's gate rows
+	// make (record.TreeSteps); the empty list gates none.
 	Steps []record.DesignStep
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order each issue's `assignments` ride in (assignmentViews); the empty list declares
@@ -79,11 +81,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	knownIssues := make(map[string]struct{}, len(issues))
+	keys := make([]string, 0, len(issues))
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
@@ -100,6 +104,20 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The task of each issue that has plan rows at its generation, in one statement for the whole
+	// state (record.Store.PlanTasksOf), joined to the issue records of project as the answers
+	// above are. Such an issue counts its returns on its task (record.ReturnCounts), so its
+	// implementer's view shows the task's counts; an issue with no plan rows shows its
+	// implementer's phases row, where the counts lived before plans. A plan this release takes
+	// holds one task (plan.Supported).
+	planTasks, err := in.Store.PlanTasksOf(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	for _, task := range planTasks {
+		taskCounts[task.Issue] = task.Counts
+	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
@@ -113,6 +131,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	giveUps, err := in.Store.OpenIntakeGiveUps(ctx, in.Tx, in.Project, stateNewestGiveUps)
+	if err != nil {
+		return api.State{}, err
+	}
 	// The open production checks, by issue: the check is read once for the whole state, since a
 	// closed check shows nothing and the open ones are few.
 	openChecks, err := in.Store.OpenProductionChecks(ctx, in.Tx)
@@ -122,6 +144,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	checks := make(map[string]record.ProductionCheck, len(openChecks))
 	for _, check := range openChecks {
 		checks[check.Issue] = check
+	}
+	// Every issue's pull request, by issue key, in one statement for the whole state rather than a
+	// read an issue (record.Store.PullRequestsOf). It loads none of what each pull request
+	// remembers of its settled heads: the state shows none of it, a read of one pull request would
+	// load up to 32 rows of it for every issue, and the state writes no record back.
+	pullRequests, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
+	if err != nil {
+		return api.State{}, err
 	}
 
 	// The wake each claim's own view names, read from the one list the state names under
@@ -247,13 +277,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The worker's view exists only while its claim is live, so its counts of the moves
 			// back ride with the claim exactly as `rounds` does: a role whose process has gone
-			// shows neither, and the record keeps both for the role's next claim.
+			// shows neither, and the record keeps both for the role's next claim. The counts are
+			// the implementer's row's, or its issue's task's where the issue has plan rows.
+			counts := record.ReturnCounts{Pass: item.Pass, Rounds: item.Rounds, BackwardMoves: item.BackwardMoves}
+			if planned, ok := taskCounts[issue.Key]; ok && item.Role == claim.RoleImplementer {
+				counts = planned
+			}
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
-				Pass:          item.Pass,
-				Rounds:        item.Rounds,
-				BackwardMoves: item.BackwardMoves,
+				Pass:          counts.Pass,
+				Rounds:        counts.Rounds,
+				BackwardMoves: counts.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
@@ -293,9 +328,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		pr, err := in.Store.PullRequest(ctx, in.Tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
+		var pr *record.PullRequest
+		if recorded, found := pullRequests[issue.Key]; found {
+			pr = &recorded
 		}
 		if pr != nil {
 			reviewDecision := ""
@@ -325,14 +360,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				ApprovedVersion: gate.ApprovedVersion,
 			}
 		}
-		// The deployment's gate as this root stands in it, one entry for each step it gates. Only
-		// a root holds gate rows — a child's work is held at its root's steps — so a child answers
-		// no entry at all rather than one unregistered step for each the deployment gates. The
-		// entries are the configured steps and not the rows: a row of a step the deployment no
-		// longer gates is kept in the record, where a deployment that gates it again reads its
-		// true state, and is in no entry here, since it holds nothing (classify.DesignGatesOpen).
+		// The tree's gate as this root stands in it, one entry for each step the tree is gated on
+		// (record.TreeSteps): each step the deployment gates, and criteria where the root's
+		// architect registered its Verification document beside a deployment that gates spec and
+		// not criteria, since that row holds the tree as the spec's does. Only a root holds gate
+		// rows — a child's work is held at its root's steps — so a child answers no entry at all
+		// rather than one unregistered step for each the deployment gates. The entries are the
+		// tree's steps and not the rows: a row of a step the deployment no longer gates is kept in
+		// the record, where a deployment that gates it again reads its true state, and is in no
+		// entry here, since it holds nothing (classify.DesignGatesOpen).
 		if issue.Key == issue.Tree {
-			view.GatedSteps = api.GatedStepViewsOf(in.Steps, gates)
+			view.GatedSteps = api.GatedStepViewsOf(record.TreeSteps(in.Steps, gates), gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
 			view.Check = checkView(check)
@@ -487,13 +525,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
-	// (atWorkPastReview).
+	// (atWorkInSlotlessPhase).
 	//
-	// The running roots are the term that says an issue past its review is at work: it holds no
+	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
-	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
@@ -501,11 +539,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child past its own
-	// review, which holds no slot, and a done child recorded under the tree among them, since
-	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
-	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
-	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	// tree's, so every issue of one tree carries the same two values — a child in accepting,
+	// retro or merging, which holds no slot, and a done child recorded under the tree among
+	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
+	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
+	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
+	// neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own
@@ -544,7 +583,60 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			WaitsOn:       row.WaitsOn,
 		}
 	}
+	projected.IntakeGiveUps = intakeGiveUpsView(giveUps)
 	return projected, nil
+}
+
+// stateNewestGiveUps is how many open give-ups the state lists (api.IntakeGiveUpsView.Newest).
+// The state is read by every agent's read_state and by `legion state`, and a burst of give-ups
+// runs to thousands (2,293 terminated in a day on one daemon, 2026-11-18): fifty records of a few
+// hundred bytes each keep the key to tens of kilobytes of a body that measured 4 MB, and the
+// per-consumer counts and newest sequences say the rest, which a bulk replay or discard takes by
+// consumer and sequence without the list naming each record.
+const stateNewestGiveUps = 50
+
+// stateGiveUpErrorRunes is how much of each listed give-up's last error the state carries, cut on
+// a rune boundary: enough for the error's first sentence and its cause, which tell one failure
+// from another. The record keeps the error up to storetext.FarSideErrorRunes and the give-up's log
+// line the whole of it, so the state, which reaches every agent's context, carries no more than a
+// reader needs to choose between a replay and a discard.
+const stateGiveUpErrorRunes = 300
+
+// intakeGiveUpsView is open as the state shows it: each consumer's count and newest sequence, and
+// each listed record with its subject as the store keeps text (storetext.Text), since the record
+// keeps the publisher's bytes and the state is JSON text a reader takes in, its error cut to
+// stateGiveUpErrorRunes, and a null event id for a message that did not decode.
+func intakeGiveUpsView(open record.IntakeGiveUps) api.IntakeGiveUpsView {
+	view := api.IntakeGiveUpsView{
+		Consumers: make([]api.IntakeGiveUpCountView, len(open.Consumers)),
+		Newest:    make([]api.IntakeGiveUpView, len(open.Newest)),
+	}
+	for i, count := range open.Consumers {
+		view.Consumers[i] = api.IntakeGiveUpCountView{Name: count.Consumer, Open: count.Open, NewestSeq: count.NewestSeq}
+	}
+	for i, failure := range open.Newest {
+		listed := api.IntakeGiveUpView{
+			ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject), StreamSeq: failure.StreamSeq,
+			StoredAt: failure.StoredAt, Deliveries: failure.Deliveries, GaveUpAt: failure.GivenUpAt,
+			Reason: failure.GiveUpReason, LastError: firstRunes(failure.LastError, stateGiveUpErrorRunes),
+		}
+		if failure.EventID != "" {
+			listed.EventID = &failure.EventID
+		}
+		view.Newest[i] = listed
+	}
+	return view
+}
+
+// firstRunes is text's first n runes, cut on a rune boundary, or text whole when it is shorter.
+func firstRunes(text string, n int) string {
+	for offset := range text {
+		if n == 0 {
+			return text[:offset]
+		}
+		n--
+	}
+	return text
 }
 
 // assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
@@ -578,7 +670,7 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 	}
 	views := make([]api.AssignmentView, len(rows))
 	for i, row := range rows {
-		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt, Plan: row.Plan}
 	}
 	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
 		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))

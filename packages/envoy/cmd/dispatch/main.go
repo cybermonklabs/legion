@@ -87,9 +87,11 @@ type bootConfig struct {
 	DatabaseURL string
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
-	AgentTokens    *auth.SharedAgentTokens
-	RepoProjects   string
-	DefaultProject string
+	AgentTokens *auth.SharedAgentTokens
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE=on: main runs R25's one-time fix at boot
+	// (api.RunParentStatusFixAtBoot), and the server it builds refuses a write that leaves a
+	// parent's status out of line with its children's. Unset or off is false.
+	ParentStatusRule bool
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -102,7 +104,12 @@ type bootConfig struct {
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
-	ReviewerAppID  string
+	ReviewerAppID string
+	// VerdictAppID is DISPATCH_VERDICT_APP_ID, the id of the App that writes `legion-verdict`, as
+	// the text of the number GitHub's own objects carry it as. The CI reconcile pass leaves that
+	// App's check suites out of the record, as the listener does (ENVOY_VERDICT_APP_ID). Empty
+	// means the pass records every App's completed suite.
+	VerdictAppID   string
 	IdentityHeader string
 	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
 	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
@@ -439,11 +446,28 @@ func main() {
 	// install is here, beside the migration run: a process serving on a schema that is not the
 	// store's would hold documents to types the deployment has moved on from, so a failure
 	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
-	// own, started beside the other woken loops below.
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	// own, started beside the other woken loops below. Each opens the pool's transactions, so
+	// each marks its context for the pool's nested-acquire guard (store.WithTransactionTracking).
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
+
+	// The rename pairs are read once, here, before any part that reads them is built: the API,
+	// the delivery reconcile and intakes and the CI reconcile are each given this one value
+	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
+	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
+	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
+	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
+	// name reads as a repository of its own until a later boot reads the pairs.
+	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
+	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
+	cancelRenames()
+	if renamesErr != nil {
+		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
+	}
+	renames := refs.NewRenames(renamePairs)
+	attributor := delivery.NewAttributor(renames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
@@ -493,11 +517,6 @@ func main() {
 		slog.Warn("dispatch: count the anchored asks left out of asks_anchor_artifact_id", "error", err)
 	} else if outside > 0 {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
-	}
-
-	if err := validateDefaultProject(ctx, database, boot.DefaultProject); err != nil {
-		slog.Error("dispatch: validate default project", "error", err)
-		os.Exit(1)
 	}
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
@@ -574,12 +593,7 @@ func main() {
 	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
-	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
-	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
-	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, boot.RepoProjects); err != nil {
-		slog.Error("dispatch: seed repository projects", "error", err)
-		os.Exit(1)
-	}
+	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -632,6 +646,7 @@ func main() {
 		Docs:           documentService,
 		Embedder:       embedder,
 		Events:         broker,
+		Renames:        renames,
 		App:            appCfg,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
@@ -663,12 +678,6 @@ func main() {
 	built.Metrics = met
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
-	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
-
-	if err != nil {
-		slog.Error("dispatch: build app context", "error", err)
-		os.Exit(1)
 	}
 
 	// Two or more envoy-dispatch processes serve one Postgres and one NATS, so each background
@@ -759,9 +768,9 @@ func main() {
 	//     the other processes' writes and answers their room queries) and the document sockets'
 	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
-	//     above, and the embedding coverage pass (two processes' passes at once leave what one
-	//     leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
+	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
+	//     once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -801,6 +810,10 @@ func main() {
 	// same in every configuration.
 	redeliverLeases := reserve("webhook redelivery")
 	ciReconcileLeases := reserve("CI reconcile")
+	// The CI verify loop's (cireconcile.Reconciler.Verify), apart from the reconcile pass's: a
+	// reconcile pass holds its lease connection for up to five minutes while a verify pass that has
+	// requests to answer holds another under its own lease.
+	ciVerifyLeases := reserve("CI verify")
 	architectureImportLeases := reserve("architecture import")
 	deliveryReconcileLeases := reserve("delivery reconcile")
 	maintenanceSweepLeases := reserve("maintenance sweep")
@@ -817,6 +830,10 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
+	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
+	// process's count is the same with the setting off.
+	parentStatusFixLeases := reserve("parent status fix")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -839,6 +856,33 @@ func main() {
 	// has started yet - no loop, no intake, no listener - so this exit has nothing to stop.
 	if err := leaseCallers.Complete(); err != nil {
 		slog.Error("dispatch: the lease pool's callers are not its connections", "error", err)
+		os.Exit(1)
+	}
+
+	// R25's one-time fix, with DISPATCH_PARENT_STATUS_RULE on (api.RunParentStatusFixAtBoot): one
+	// process unlinks each open issue from its done parent and moves each not-started ancestor of an
+	// issue in work to in_progress, under the lease parent-status-fix, and then records that it ran.
+	// A process that finds the lease held waits for that record. The fix runs here, before the
+	// outbox, every loop and the listen, so the server takes no write and no loop writes until it is
+	// over. With the setting off it reads and writes nothing. A stop during the wait is a clean stop,
+	// as one during the registry's admission wait below is; a step that fails ends the boot with no
+	// record, and the next boot plans again from what stands.
+	parentStatusRule, err := api.RunParentStatusFixAtBoot(store.WithTransactionTracking(ctx),
+		api.Deps{Store: database, Docs: documentService, Events: broker}, parentStatusFixLeases, boot.ParentStatusRule)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			slog.Info("dispatch: stopped while waiting for the parent status fix")
+			return
+		}
+		slog.Error("dispatch: run the parent status fix", "error", err)
+		os.Exit(1)
+	}
+	// The app context is built only now, so the rule the fix answered reaches the server
+	// (api.DepsInput through appContextOptions). Nothing above reads it.
+	built.ParentStatusRule = parentStatusRule
+	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	if err != nil {
+		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
 
@@ -965,7 +1009,7 @@ func main() {
 			}
 			documentService.CloseDocumentSockets()
 		},
-	}).Run(ctx)
+	}).Run(store.WithTransactionTracking(ctx))
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
@@ -1116,7 +1160,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1126,11 +1170,24 @@ func main() {
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
+		if boot.VerdictAppID == "" {
+			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
+		}
 		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
 		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
+		// A listener with ENVOY_CI_VERIFY on publishes a head's settlement only after this loop has
+		// read the head from GitHub after it asked. It lists the requests every VerifyInterval with
+		// no lease, and answers any it finds under a lease of its own (VerifyLeases), so a pass with
+		// nothing to answer takes no lease connection and logs nothing, and a reconcile pass that
+		// runs for minutes holds none back.
+		reconciler.VerifyLeases = ciVerifyLeases
+		go duty.RunWoken(ctx, duty.WokenLoop{
+			MinGap: cireconcile.VerifyInterval,
+			Pass:   reconciler.Verify,
+		})
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
@@ -1148,7 +1205,7 @@ func main() {
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker).RecordGitHubReads(recordGitHubRead)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker, attributor).RecordGitHubReads(recordGitHubRead)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -1181,7 +1238,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture())
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1227,12 +1284,14 @@ func main() {
 	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
 	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
 	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
-	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
+	// the process says so once, with whether each table the fill writes holds a row
+	// (searchFillTableRows), and fillStopped is closed from the start, so nothing waits for it.
 	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
-		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
+			searchFillTableRows(ctx, database.Pool)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1270,18 +1329,12 @@ func main() {
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. Before its first tick,
-	// on the same goroutine, the boot pass ends every answer run past its ends_at with no terminal
-	// frame stored, at any age, where each tick's sweep reads the last day alone
-	// (api.EndGoingRunsOverdueAtBoot); it takes no lease, so every process runs it once a boot.
+	// it resumes those deliveries through the API server built just above.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go func() {
-		api.EndGoingRunsOverdueAtBoot(ctx, database.Pool)
-		api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
-	}()
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1493,8 +1546,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:          strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject:        strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1586,6 +1637,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
+		return bootConfig{}, err
+	}
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -1602,6 +1656,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
+	case "", "off":
+	case "on":
+		boot.ParentStatusRule = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_PARENT_STATUS_RULE=%q (expected on, off or unset)", rule)
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1942,6 +2003,11 @@ func publishDashboard(ctx context.Context, pool *store.Pool, webDistDir string, 
 // documents it leaves owed took 0.17-0.77 s.
 const decidedWordingRestoreTimeout = 30 * time.Second
 
+// repoRenamesReadTimeout bounds the boot's read of the rename pairs (store.ReadRepoRenames).
+// The read is of a table of tens of rows, so the bound is reached only when another session
+// holds a lock on that table, and a boot that waited for it would not serve.
+const repoRenamesReadTimeout = 30 * time.Second
+
 // restoreDecidedWordings is the boot's restoration of the wording each decided ask was decided on,
 // where a task of an earlier release reworded it, and its marking owed of each such block ask's own
 // document and copies (docs.Service.RestoreDecidedWordings), bounded by timeout. Each ask it
@@ -1968,6 +2034,32 @@ func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
 		})
+}
+
+// repoRenamePassTimeout bounds the boot's repository rename pass: one short transaction for each
+// line of fields (store.repoRenameLines). A pass that reaches the bound fails the transaction in
+// flight and the lines after it, and the next boot writes what is left. The pass's count of the
+// rows left has a bound of its own after this one, so the summary says what the bound left.
+const repoRenamePassTimeout = 30 * time.Second
+
+// renameRepositories is the boot's pass that writes, in every stored repository field, the new
+// name of each rename pair in place of its old name (store.RewriteRenamedRepositories), bounded by
+// timeout. pairs and readErr are what the boot's read of the pairs answered. A read that failed is
+// one failure of the pass, which then has no pairs and writes nothing, and the rows left on an old
+// name are unknown, since the pairs are. The pass logs its own lines; this logs its summary at
+// every boot, at INFO when nothing failed and no old name is known to be left, and at ERROR
+// otherwise, with left=unknown where nothing counted it. Either way the start goes on, and the
+// next boot tries again.
+func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
+	const summary = "dispatch: rewrote renamed repositories' old names"
+	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
+		if readErr != nil {
+			pass.Failures++
+			pass.Left = store.RepoRenamesLeft{}
+		}
+		return pass.LogArgs(), pass.Err()
+	})
 }
 
 // issueAskRepairBootTimeout bounds the boot's repair of the asks of closed and reopened issues.
@@ -2012,7 +2104,6 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
 	built.SignInRule = signInRule(boot)
 	built.AgentTokens = boot.AgentTokens
-	built.DefaultProject = boot.DefaultProject
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
@@ -2048,25 +2139,6 @@ func loadEnvoyConfig(env settingValues, options config.LoadOptions) (*config.Env
 	return cfg, nil
 }
 
-// validateDefaultProject confirms DISPATCH_DEFAULT_PROJECT names a project
-// that already exists, so a misconfigured deployment fails loudly at boot
-// instead of silently rejecting every unmapped external issue at request
-// time. An empty project (no default configured) is not validated here.
-func validateDefaultProject(ctx context.Context, database *store.Store, project string) error {
-	if project == "" {
-		return nil
-	}
-	ctx = store.WithTransactionTracking(ctx)
-	var exists bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, project).Scan(&exists); err != nil {
-		return fmt.Errorf("query DISPATCH_DEFAULT_PROJECT %q: %w", project, err)
-	}
-	if !exists {
-		return fmt.Errorf("DISPATCH_DEFAULT_PROJECT %q does not exist", project)
-	}
-	return nil
-}
-
 // parsePort reads the port a setting names: decimal digits alone, 1-65535. The error names the
 // setting, so a refusal says which variable to fix.
 func parsePort(name, raw string) (int, error) {
@@ -2095,6 +2167,77 @@ func positiveSetting(env settingValues, name string) (int, error) {
 // searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
 // keeps it from starting the keyword fill.
 const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillTables are the tables the keyword fill writes: search_text_versions, the keyword
+// table, and search_text_versions_fill, its cursor. searchFillTableHoldsRow writes their names into
+// SQL, so they are fixed here and never read from input.
+var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
+
+// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
+// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
+// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
+// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
+// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
+// server that answers nothing: pgx then closes the connection and asks the server to cancel the
+// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
+// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
+// errors to end the read. The two reads run one after the other before the server listens, so
+// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
+// delays it by about searchFillTableLockTimeout for that table.
+const (
+	searchFillTableLockTimeout      = 5 * time.Second
+	searchFillTableStatementTimeout = 6 * time.Second
+	searchFillTableReadTimeout      = 10 * time.Second
+)
+
+// searchFillTableRows answers the deferral line's fields that say whether each of
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
+// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
+// and the boot goes on: the line reports the tables and never decides whether the process starts.
+// The line is how a deployment learns, from the boot log alone, that a process booted with the
+// fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+	fields := make([]any, 0, 4*len(searchFillTables))
+	for _, table := range searchFillTables {
+		key := table + "_rows"
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
+		switch {
+		case err != nil:
+			fields = append(fields, key, "unknown", key+"_error", err.Error())
+		case holdsRow:
+			fields = append(fields, key, "some")
+		default:
+			fields = append(fields, key, "none")
+		}
+	}
+	return fields
+}
+
+// searchFillTableHoldsRow reads whether table holds a row by
+// `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
+// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
+// It reads in a read-only transaction of its own that first sets the bounds above, local to that
+// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
+// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
+// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
+// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+	defer cancel()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
+		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		return false, err
+	}
+	var holdsRow bool
+	err = tx.QueryRow(ctx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
+	return holdsRow, err
+}
 
 // searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
 // it. Any other value refuses the boot, naming the variable.

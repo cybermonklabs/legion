@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -237,6 +238,13 @@ func socketRoom(r *http.Request) string {
 // name, and the socket's frames are renamed between the two on their way in and out
 // (roomAliasWriter).
 //
+// A retired document takes no socket, which the admission reads of the document asked for twice:
+// first, before it reserves anything (refusedDocument), so a browser that keeps coming back to a
+// retired document costs a read and no load of the document; and again once the room is reserved
+// and the socket held (refuseRetired), the last step before ygo loads or joins the room, so a
+// retirement that commits while the socket reserves its room and loads the document refuses it
+// too.
+//
 // The name asked for has to be the document's id as Dispatch writes it, lower case and
 // hyphenated, and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free
 // run of hex, urn:uuid:<id> - is refused below rather than rewritten. That is what makes one
@@ -363,6 +371,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuseSwitchedAdmission(w, r, room)
 		return
 	}
+	// The retirement is read again here, once the room is reserved and the socket held, as the last
+	// step before ygo loads or joins the room: a retirement that committed after the read above,
+	// while this socket took its places and loaded the document, refuses it as that read would
+	// have. One that commits after this read closes the room once ygo has handed it out
+	// (documentRemoved, which closes a room GetDoc answers, so not one ygo is still loading). A
+	// room whose retirement it missed takes no version of the retired document: settlement writes
+	// none (settlement.commitVersion), and the room's text is kept in its stored updates.
+	if s.refuseRetired(w, r, asked) {
+		return
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go). ygo serves the socket under the room's name, which its peer's
 	// frames are renamed to and from where the socket asked for another (room_alias.go).
@@ -373,6 +391,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	routed := r.Clone(ctx)
 	routed.SetPathValue("room", room)
 	s.srv.ServeHTTP(served, routed)
+}
+
+// refuseRetired refuses a socket that asked for document 409 DOCUMENT_RETIRED while that document
+// is retired (RetireDocument, documentRetired), before the upgrade, and answers whether it refused
+// it. A read that fails refuses it 404, as a document the admission cannot read is.
+func (s *Service) refuseRetired(w http.ResponseWriter, r *http.Request, document string) bool {
+	retired, err := documentRetired(r.Context(), s.queryFrom(r.Context()), document)
+	if err != nil {
+		http.Error(w, "document not found", http.StatusNotFound)
+		return true
+	}
+	if retired {
+		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+	}
+	return retired
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
@@ -425,10 +458,7 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 		return c.Conn.Write(p)
 	}
 	status += len("\r\n")
-	answer := make([]byte, 0, len(p)+len(line))
-	answer = append(answer, p[:status]...)
-	answer = append(answer, line...)
-	answer = append(answer, p[status:]...)
+	answer := slices.Concat(p[:status], line, p[status:])
 	written, err := c.Conn.Write(answer)
 	// What was written, counted in p's bytes.
 	switch {

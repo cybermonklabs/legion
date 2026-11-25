@@ -53,13 +53,13 @@
 --
 -- It drops no arm of 20261116094101 and changes no row an arm answered before: the rows it adds
 -- are tuples of the class `store` and relations out of a finding, which only this child writes -
--- its writers, the lens catalogue its migrations 20261116123354 and 20261116123355 seed, and the
--- `authored_by` of each recorded run's interaction node 20261116205055 writes - and every other
--- row of every arm is answered as it was. So a build of the release before, which reads the view
--- this one states, reads every row it read, and the kinds `refs.TupleKinds` lists grow by the
--- seven of the class. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
--- migration's short transaction, so a reference read waits behind it. It creates nothing, and
--- refuses and rewrites no row.
+-- its writers, the lens catalogue its migrations 20261123174710 and 20261123174720 seed, and the
+-- `authored_by` of the interaction node `envoy-dispatch backfill-graph-store` gives each run
+-- recorded before this release - and every other row of every arm is answered as it was. So a
+-- build of the release before, which reads the view this one states, reads every row it read, and
+-- the kinds `refs.TupleKinds` lists grow by the seven of the class. Re-stating the view holds
+-- graph_edges ACCESS EXCLUSIVE for this migration's short transaction, so a reference read waits
+-- behind it. It creates nothing, and refuses and rewrites no row.
 
 -- graph_edges re-stated: every arm of 20261116094101, its tuple arm answering the store's own
 -- relations as the class `store`, and one arm after it answering those out of a finding of a lens

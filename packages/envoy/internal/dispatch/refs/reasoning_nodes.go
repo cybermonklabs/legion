@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -53,17 +54,41 @@ func init() { standingKinds = slices.Sorted(maps.Keys(standingText)) }
 // kinds - a lens on a lens, a finding under its lens, a risk under a pre-mortem - to the first
 // node of any other kind, whose issue is the answer: an issue is its own, a document's is the
 // issue it belongs to, a block's its document's, an ask's, a comment's or a message's the issue
-// it belongs to, and an item's block its item's. A walk that meets a node a second time stops
-// there, so a chain a move closed into a loop answers no issue rather than reading forever. The
-// walk reads each node's own tuples and no node's visibility: where a node stands is its own
-// fact, and whether a reader may see the nodes it stands on is each of those nodes' own
-// predicate's to say where a read answers them.
+// it belongs to, and an item's block its item's. A document's issue, and so its block's, is read
+// off the row the artifacts table holds at the document's address (documentIssueSQL), so a
+// document no row stands at, a removed one, stands under no issue here, and neither does anything
+// whose walk ends at it. A walk that meets a node a second time stops there, so a chain a move
+// closed into a loop answers no issue rather than reading forever. The walk reads each node's own
+// tuples and no node's visibility: where a node stands is its own fact, and whether a reader may
+// see the nodes it stands on is each of those nodes' own predicate's to say where a read answers
+// them.
 func StandingIssueSQL(kindExpr, idExpr string) string {
+	return standingIssueSQL(kindExpr, idExpr, documentIssueSQL)
+}
+
+// GoneStandingIssueSQL is StandingIssueSQL as a write's test of whether it writes on a gone node
+// reads it (api's findWrittenNode): where the walk ends at a document, or at a block of one, at
+// whose address no artifacts row stands, it is the issue key that address spells
+// (spelledDocumentIssueSQL) rather than null. A document's removal deletes its row, whichever build
+// removed it, so a lens on a removed document, and every node under it, stands under the issue
+// the document's address names to that test, gone with the document or stale behind it (StaleSQL),
+// and so does the removed document's own node. No read binds it: every read leaves a gone or a
+// stale node out, and a read of what stands under an issue reads StandingIssueSQL, under which a
+// lens on a removed document that records no row, and so is not stale, stands under no issue.
+func GoneStandingIssueSQL(kindExpr, idExpr string) string {
+	return standingIssueSQL(kindExpr, idExpr, spelledDocumentIssueSQL)
+}
+
+// standingIssueSQL is the walk of StandingIssueSQL, which reads the issue of the node it ends at
+// through issueOfSQL, each document's issue through documentIssue: documentIssueSQL for
+// StandingIssueSQL, and spelledDocumentIssueSQL, the issue key the address of a document no row
+// stands at spells, for GoneStandingIssueSQL.
+func standingIssueSQL(kindExpr, idExpr string, documentIssue func(address string) string) string {
 	address := graphstore.AddressKindSQL(`standing.kind`, `standing.id`)
 	return `(` + standingWalkSQL(`standing`, kindExpr, idExpr, nil) + `
-		select ` + issueOfSQL(`standing.kind`, `standing.id`) + `
+		select ` + issueOfSQL(`standing.kind`, `standing.id`, documentIssue) + `
 		from standing
-		where ` + address + ` not in (` + quotedKinds(standingKinds) + `)
+		where ` + address + ` not in (` + store.QuoteLiterals(standingKinds) + `)
 		limit 1)`
 }
 
@@ -90,9 +115,9 @@ func standingWalkSQL(name, kindExpr, idExpr string, carried *walkColumn) string 
 			select placed.to_kind, placed.to_id` + step + `
 			from ` + name + `
 			cross join lateral (
-				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
+				` + CurrentFarEndSQL(storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
 			) placed
-			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + quotedKinds(standingKinds) + `)
+			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + store.QuoteLiterals(standingKinds) + `)
 		)`
 }
 
@@ -136,7 +161,7 @@ func StaleSQL(kindExpr, idExpr string) string {
 			where stale_lens.kind = '` + graphstore.KindLens + `' and stale_lens.id = stale_foot.below
 			offset 0
 		) stale_lens
-		where ` + foot + ` not in (` + quotedKinds(standingKinds) + `)
+		where ` + foot + ` not in (` + store.QuoteLiterals(standingKinds) + `)
 		  and stale_lens.recorded is not null
 		  and (select stale_row.id::text from artifacts stale_row
 		       where stale_row.ref_key = split_part(stale_foot.id, '#', 1)) is distinct from stale_lens.recorded)`
@@ -147,7 +172,7 @@ func StaleSQL(kindExpr, idExpr string) string {
 // node without reading anything. The planner charges the walk to every row even so, so a
 // predicate over a column that can hold no standing kind binds none of it (NodeKinds).
 func staleOfKindSQL(kindExpr, idExpr string) string {
-	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + quotedKinds(standingKinds) + `)
+	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + store.QuoteLiterals(standingKinds) + `)
 		then ` + StaleSQL(kindExpr, idExpr) + ` else false end)`
 }
 
@@ -174,10 +199,10 @@ func notStaleOfLiteralKind(kind, address string) string {
 // kind and id, as the store keys them, are the SQL fromKind and fromID, for a relation that holds
 // one far end at a time - a node's part_of, its authored_by - as the subquery of a lateral join:
 // the newest tuple to each far end, kept while it asserts (graphstore.CurrentTupleRead), and of
-// those the first by far end where the store holds several. columns is what it answers, written
-// over newest: its to_kind, its to_id and its seq.
-func CurrentFarEndSQL(columns, fromKind, fromID, kind string) string {
-	return `select ` + columns + ` from (
+// those the first by far end where the store holds several. It answers the far end's to_kind and
+// to_id.
+func CurrentFarEndSQL(fromKind, fromID, kind string) string {
+	return `select newest.to_kind, newest.to_id from (
 					` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
 		`t.from_kind = `+fromKind+` and t.from_id = `+fromID+` and t.kind = '`+kind+`'
 						and t.to_kind <> '`+graphstore.KindValue+`'`) + `
@@ -192,9 +217,10 @@ func CurrentFarEndSQL(columns, fromKind, fromID, kind string) string {
 // own key; a document (by its ref_key, as the store keys it) belongs to its issue; an ask, a
 // comment or a message to its issue; and a block, named `<owner>#<block id>`, belongs to its
 // owner's issue, the item whose kind and uuid the owner spells (`comment/<uuid>`) or else the
-// document whose ref_key it is, whichever block kind names it. A kind of no node that stands
-// under an issue answers null.
-func issueOfSQL(kindExpr, idExpr string) string {
+// document whose ref_key it is, whichever block kind names it, each document's issue read through
+// documentIssue, which is given the SQL address of the document (documentIssueSQL or
+// spelledDocumentIssueSQL). A kind of no node that stands under an issue answers null.
+func issueOfSQL(kindExpr, idExpr string, documentIssue func(address string) string) string {
 	owner := `split_part(` + idExpr + `, '#', 1)`
 	var items, blocks strings.Builder
 	for _, item := range itemKinds {
@@ -206,11 +232,29 @@ func issueOfSQL(kindExpr, idExpr string) string {
 	}
 	return `(case ` + kindExpr + `
 			when '` + graphstore.KindIssue + `' then ` + idExpr + `
-			when '` + graphstore.KindArtifact + `' then (select owner_document.issue_key from artifacts owner_document where owner_document.ref_key = ` + idExpr + `)` +
+			when '` + graphstore.KindArtifact + `' then ` + documentIssue(idExpr) +
 		items.String() + `
 			else case when ` + kindExpr + ` in ` + blockNodeKinds + ` then case` + blocks.String() + `
-				else (select owner_document.issue_key from artifacts owner_document where owner_document.ref_key = ` + owner + `) end end
+				else ` + documentIssue(owner) + ` end end
 		end)`
+}
+
+// documentIssueSQL is the issue key of the document whose ref_key is the SQL address, read off the
+// row the artifacts table holds there, one probe of its unique index on ref_key: null for a
+// document of a project or of an agent's conversation, and null where no row stands there.
+func documentIssueSQL(address string) string {
+	return `(select owner_document.issue_key from artifacts owner_document where owner_document.ref_key = ` + address + `)`
+}
+
+// spelledDocumentIssueSQL is documentIssueSQL save that an address no row stands at answers the
+// issue key it spells instead, its first segment, as the block-index tick's read of the stale
+// lenses reads it (graphcensus's staleLenses): a document of an issue is `<issue key>/<slug>`, and
+// the first segment of any other document's address, a project's key or `agent`, is no issue's
+// key.
+func spelledDocumentIssueSQL(address string) string {
+	return `(select case when owner_document.id is null then split_part(addressed.ref_key, '/', 1) else owner_document.issue_key end
+				from (select ` + address + ` as ref_key) addressed
+				left join artifacts owner_document on owner_document.ref_key = addressed.ref_key)`
 }
 
 // standingText is the SQL of the text of a node of each standing kind (standingKinds), over its
@@ -546,7 +590,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`, `+pinnedParentColumns("pinned")+`
 		from graph_nodes held
 		left join lateral (
-			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TuplePartOf)+`
+			`+CurrentFarEndSQL(`held.kind`, `held.id`, graphstore.TuplePartOf)+`
 		) placed on true
 		left join lateral (
 			select parent_row.state as state_held from graph_nodes parent_row

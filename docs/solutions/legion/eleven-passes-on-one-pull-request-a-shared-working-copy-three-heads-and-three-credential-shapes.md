@@ -12,7 +12,7 @@ tags:
   - LEGION_GRANT_FILE
   - flakes
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: legion
 related_issues:
   - "LEGION-16"

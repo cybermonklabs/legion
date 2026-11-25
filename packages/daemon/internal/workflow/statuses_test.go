@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,7 +175,8 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 		{phase.Testing, "testing", []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
 		{phase.Accepting, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
-		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger, claim.RoleImplementer}},
+		// In merging the implementer is not told (cybermonklabs/legion#4979).
+		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
 	} {
 		t.Run(string(tc.from), func(t *testing.T) {
 			pool := migratedPool(t)
@@ -381,6 +383,13 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 			applyRefusingNothing(t, pool, mergingEngineAt(base.Add(time.Minute)), older)
 			want := settled
 			want.Statuses = []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}
+			// The head's remembered fence takes the same change (record.PullRequest.SettledHeads).
+			want.SettledHeads = slices.Clone(settled.SettledHeads)
+			for i := range want.SettledHeads {
+				if want.SettledHeads[i].Head == "head" {
+					want.SettledHeads[i].Statuses = want.Statuses
+				}
+			}
 			if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the older settlement the pull request is\n  %+v\nwant the newer settlement's record with ci's failure its one change:\n  %+v", got, want)
 			}

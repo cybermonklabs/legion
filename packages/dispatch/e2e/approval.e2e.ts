@@ -327,10 +327,10 @@ test("an undo one character away from the approved spec leaves its approval stal
   }
 });
 
-// Today's rule for a version whose decision blocks changed is the answer carry: it carries an
-// approval only when every block it changed is the approver's own answer, given since. A version
-// holding the approved text around a block the agent reworded holds no answer of hers, so its
-// approval stays stale, as it did before restored text carried an approval.
+// A version carries an approval only where its text is the approved text exactly, or where every
+// change is one Dispatch carries an approval over: a reading, a server-owned attribute of an ask
+// block, or the decisions step's own write. A version holding the approved text around a block the
+// agent reworded is neither, so its approval stays stale.
 test("an undo that restores the approved text around a decision block the agent reworded leaves the approval stale", async ({
   browser,
 }) => {

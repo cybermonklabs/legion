@@ -76,6 +76,7 @@ test("a human adds an architecture source and the verified row appears", async (
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockResolvedValue(
@@ -126,6 +127,7 @@ test("a failed architecture source access check shows the server's reason inline
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockRejectedValue(
@@ -191,6 +193,7 @@ test("each architecture source of a project is its own row, refreshed and delete
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockImplementation(server.put);
@@ -287,6 +290,7 @@ async function sourcesOf(
         key: "CORE",
         name: "Core",
         open_asks: 0,
+        proven_sessions: false,
       },
     ]),
     spyOn(api, "putArchitectureSource").mockImplementation(put),

@@ -30,10 +30,12 @@ type Pending interface {
 	// transaction writes (DocumentAddress: its ref_key, issue, project and band among the rest),
 	// false when it writes none.
 	PendingDocument(id string) (DocumentAddress, bool)
-	// PendingRoomKey is the ref_key of the issue room the document of ref_key refKey is edited in
-	// where this transaction writes the artifacts row of both and the document_rooms row joining
-	// them, false otherwise: no read of the transaction sees those rows before its write phase.
-	PendingRoomKey(refKey string) (string, bool)
+	// PendingRoom is the id of the issue room the document of ref_key refKey is edited in where
+	// this transaction writes the document's artifacts row and the document_rooms row joining it
+	// to that room, false otherwise: no read of the transaction sees those rows before its write
+	// phase. The room's own artifacts row is one the transaction writes too (PendingDocument) or
+	// one the store holds.
+	PendingRoom(refKey string) (string, bool)
 	// PendingMarkdown is the markdown of the latest version of document artifactID as this
 	// transaction leaves it: the version it has queued, false when it has queued none and the
 	// stored version is the latest (docs.latestVersion answers from the same entry).

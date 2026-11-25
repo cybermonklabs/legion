@@ -1,7 +1,12 @@
 import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
-import { decisionNodeChanges, inReviewList } from "./decision-review";
+import {
+  type ChangeComment,
+  decisionNodeChanges,
+  deletedPostIds,
+  inReviewList,
+} from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -30,7 +35,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * count is the same without them. One the reader asked to change waits on its agent and is not
  * counted, by the outline's one rule (`decisionNodeChanges`): its Change is a comment the tree
  * read hangs under its node, whether or not the comments read holds that comment yet, so the
- * count matches no quote and reads no block of a document.
+ * count matches no quote and reads no block of a document. A Change its author deleted asks
+ * nothing any more, as in the outline: `comments`, the page's comments read, says which were
+ * (`deletedPostIds`), since the tree read answers a deleted comment with no mark of the delete.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -49,7 +56,8 @@ export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   isCoverageStatement: (reference: string) => boolean,
-  tree: TreeAnswer | undefined
+  tree: TreeAnswer | undefined,
+  comments?: readonly Pick<ChangeComment, "deleted_at" | "id">[]
 ): WaitingOnReader {
   const open =
     viewer === undefined
@@ -69,9 +77,10 @@ export function waitingOnReader(
   // Nothing waits on a reader whose login has not resolved, so the decisions are read only for
   // one who has. The decision nodes a Change waits on, by the node's id, are from the tree read
   // alone, as the outline finds them, so the two agree while the comments read is out or older.
+  // A Change its author deleted asks nothing any more, as in the outline.
   let reviewing = 0;
   if (viewer !== undefined && tree !== undefined) {
-    const changes = decisionNodeChanges(tree);
+    const changes = decisionNodeChanges(tree, undefined, deletedPostIds(comments));
     reviewing = [...decisionsOfAnswer(tree, issue.key).values()].filter((decision) =>
       inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
     ).length;

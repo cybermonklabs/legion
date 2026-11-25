@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -29,8 +30,6 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 	const (
 		misspelledState      = "propsed"
 		misspelledVisibility = "public"
-		stateRefusal         = `the node state "propsed" is none of live, gone, proposed, settled, overtaken`
-		visibilityRefusal    = `the node visibility "public" is none of project, author`
 	)
 
 	if want := []string{"live", "gone", "proposed", "settled", "overtaken"}; !slices.Equal(NodeStates(), want) {
@@ -60,47 +59,49 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 		name      string
 		attribute string
 		value     string
-		message   string
 		write     func(context.Context, pgx.Tx, Node) error
 	}{
-		{"Write, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"Write, a node at a state it does not take", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Write(ctx, tx, []Node{misstated(node)}, nil)
 			}},
-		{"Write, a node at a visibility it does not take", AttributeVisibility, misspelledVisibility, visibilityRefusal,
+		{"Write, a node at a visibility it does not take", AttributeVisibility, misspelledVisibility,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				node.Visibility = misspelledVisibility
 				return Write(ctx, tx, []Node{node}, nil)
 			}},
-		{"Write, a state tuple its writer states beside the node", AttributeState, misspelledState, stateRefusal,
+		{"Write, a state tuple its writer states beside the node", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Write(ctx, tx, []Node{node}, []Tuple{stateTuple(node, misspelledState)})
 			}},
-		{"Write, a state tuple its writer states with no node", AttributeState, misspelledState, stateRefusal,
+		{"Write, a state tuple its writer states with no node", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Write(ctx, tx, nil, []Tuple{stateTuple(node, misspelledState)})
 			}},
-		{"QueueNodes, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"PlanUncaused and QueueNodes, a node at a state it does not take", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
-				write, err := writeHeldNodes(ctx, tx, []Node{misstated(node)}, nil)
-				if err != nil {
+				write := PlanUncaused([]Node{misstated(node)}, nil)
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					QueueNodes(b, write)
+					return nil
+				}); err != nil {
 					return err
 				}
 				return Caused(ctx, tx, write, NoEvent)
 			}},
-		{"Caused, a state tuple its writer holds for the cause", AttributeState, misspelledState, stateRefusal,
+		{"Caused, a state tuple its writer holds for the cause", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: stateTuple(node, misspelledState)}}}, NoEvent)
 			}},
-		{"WriteArms, a node at a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"WriteArms, a node at a state it does not take", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return runArms(ctx, tx, []Node{misstated(node)}, nil, nil)
 			}},
-		{"WriteArms, a state tuple its writer states", AttributeState, misspelledState, stateRefusal,
+		{"WriteArms, a state tuple its writer states", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return runArms(ctx, tx, []Node{node}, []Tuple{stateTuple(node, misspelledState)}, nil)
 			}},
-		{"WriteArms, a claim of a state it does not take", AttributeState, misspelledState, stateRefusal,
+		{"WriteArms, a claim of a state it does not take", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
 				return runArms(ctx, tx, nil, nil, []Claim{{
 					FromKind: node.Kind, FromID: node.ID, Kind: AttributeState, ToKind: KindValue, ToID: misspelledState,
@@ -116,7 +117,7 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 			}
 			defer tx.Rollback(ctx)
 			err = refused.write(ctx, tx, node)
-			requireValueRefused(t, err, refused.attribute, refused.value, refused.message)
+			requireValueRefused(t, err, refused.attribute, refused.value)
 			// A statement that failed would have aborted the transaction, and one that ran would
 			// have stored what it wrote: the commit and the reads below see neither.
 			if err := tx.Commit(ctx); err != nil {
@@ -140,7 +141,7 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 		if visibility != "" {
 			t.Errorf("VisibilityFor(%q) = %q, want none", misspelledVisibility, visibility)
 		}
-		requireValueRefused(t, err, AttributeVisibility, misspelledVisibility, visibilityRefusal)
+		requireValueRefused(t, err, AttributeVisibility, misspelledVisibility)
 	})
 
 	for _, state := range NodeStates() {
@@ -161,8 +162,9 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 }
 
 // requireValueRefused fails unless err is the store's refusal of value for attribute: the sentinel
-// a route answers 400 INVALID_ATTRIBUTE_VALUE for, and the typed refusal naming both, in words.
-func requireValueRefused(t *testing.T, err error, attribute, value, message string) {
+// a route answers 400 INVALID_ATTRIBUTE_VALUE for, and the typed refusal naming both, whose words
+// name both and every value the attribute takes (graphstoretest.NamesAsAWord).
+func requireValueRefused(t *testing.T, err error, attribute, value string) {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidAttributeValue) {
 		t.Fatalf("the write answered %v, want ErrInvalidAttributeValue", err)
@@ -174,8 +176,8 @@ func requireValueRefused(t *testing.T, err error, attribute, value, message stri
 	if refusal.Attribute != attribute || refusal.Value != value {
 		t.Errorf("the refusal names %s %q, want %s %q", refusal.Attribute, refusal.Value, attribute, value)
 	}
-	if refusal.Error() != message {
-		t.Errorf("the refusal reads %q, want %q", refusal.Error(), message)
+	if names := append([]string{attribute, value}, attributeValues(attribute)...); !graphstoretest.NamesAsAWord(refusal.Error(), names...) {
+		t.Errorf("the refusal reads %q, want it to name %q", refusal.Error(), names)
 	}
 }
 

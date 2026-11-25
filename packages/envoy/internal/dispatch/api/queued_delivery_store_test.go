@@ -37,6 +37,7 @@ const heldSession = "ses_held0a1b2c3d4"
 // it reads no node of the session, no tuple naming it and no receipt the outbox could state one
 // from.
 func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
+	t.Parallel()
 	hold := newSendHold()
 	defer hold.free()
 	listener := newQueueingListener(t, map[string]fakeSession{
@@ -136,6 +137,7 @@ func requireAPendingAttemptEarnsNothing(t *testing.T, database *store.Store, com
 // the message (model.DeliveryTaken). Before that settle wrote it, the flip left the census
 // holding the store to a session node nothing had written.
 func TestAQueuedMessageAnsweredLaterLeavesTheCensusAtZero(t *testing.T) {
+	t.Parallel()
 	listener := newQueueingListener(t, map[string]fakeSession{
 		"s1": {title: "planner", capabilities: queuedModes, stopped: true},
 	})

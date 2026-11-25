@@ -149,26 +149,44 @@ func (r *freshSessionRig) operator(method, target string, body any) *httptest.Re
 	return recorder
 }
 
-// refuseEveryTurn works the claim's pending task through turns the provider refuses, until the
-// trailing run of refusals reaches the launch failure limit and the claim fails.
-func (r *freshSessionRig) refuseEveryTurn(message string) {
+// refusal400 is what the claim's producer reports of each refused turn below: the provider's words
+// for a malformed request, which the turn-outcome report carries as the provider gave them.
+const refusal400 = "400 invalid_request_error: messages: unexpected role"
+
+// refuseTurns works the claim's pending task through turns its provider refuses, each reported
+// refused by the claim's producer, and then answers the task's prompt with a provider error that
+// cannot clear: an HTTP 400, a client error that is none of 401, 403, 408 and 429, which fails the
+// claim (supervise's holdsTheIssue). The reports fail nothing, however many there are
+// (dispatch://INFRA-4508): they are the claim's run of refused turns, which the daemon answers each
+// report with and which decides nothing.
+func (r *freshSessionRig) refuseTurns(turns int) {
 	r.t.Helper()
-	for turn := 1; turn <= r.sup.deps.Limits.LaunchFailures; turn++ {
+	// The phase task's prompt is acknowledged once its send is over, so its result is awaited
+	// across the turns below.
+	r.machine.Wait()
+	pending := r.machine.Claim().Pending
+	if pending == nil {
+		r.t.Fatal("the implementer holds no task for its provider to refuse")
+	}
+	for turn := 1; turn <= turns; turn++ {
 		generation := r.machine.Claim().Generation
 		r.must(supervise.StreamTurnStart{Claim: r.implementer})
-		r.must(supervise.RequestTurnOutcome{Claim: r.implementer, Generation: generation, Sequence: uint64(turn), Refused: true, Message: message})
-		if r.machine.Claim().State == supervise.StateFailed {
-			return
-		}
+		r.must(supervise.RequestTurnOutcome{Claim: r.implementer, Generation: generation, Sequence: uint64(turn), Refused: true, Message: refusal400})
 		r.must(supervise.StreamTurnEnd{Claim: r.implementer})
+		if got := r.machine.Claim(); got.State == supervise.StateFailed {
+			r.t.Fatalf("the report of refused turn %d failed the claim (%q); a run of refused turns fails none", turn, got.Failure)
+		}
 	}
+	r.must(supervise.StreamPromptResult{Claim: r.implementer, DeliveryID: pending.ID, AgentInvoked: true,
+		Error: "invalid_request_error", HTTPStatus: 400})
+	r.machine.Wait()
 }
 
 // told is one notice the workflow queued, whether for the issue's architect or for the
-// controller, as this rig reads it: its kind, the `reason` it carries and the `detail` of the
-// failure record beside it, which is where the sentence the failure wrote stands
-// (record.NoticeFailure; a notice with no record reads "").
-type told struct{ kind, reason, detail string }
+// controller, as this rig reads it: its kind and the `detail` of the failure record beside it,
+// which is where the sentence the failure wrote stands (record.NoticeFailure; a notice with no
+// record reads "").
+type told struct{ kind, detail string }
 
 // failureDetail is the sentence a notice's failure record carries, and "" for a notice with no
 // record: the tree architect's own, a production-check look's, and a fact that carried no cause.
@@ -199,9 +217,9 @@ func (r *freshSessionRig) notices() []told {
 		}
 		switch notice := payload.(type) {
 		case record.Notice:
-			notices = append(notices, told{kind: string(notice.Kind), reason: notice.Reason, detail: failureDetail(notice.Failure)})
+			notices = append(notices, told{kind: string(notice.Kind), detail: failureDetail(notice.Failure)})
 		case record.ControllerNotice:
-			notices = append(notices, told{kind: string(notice.Kind) + " (controller)", reason: notice.Reason, detail: failureDetail(notice.Failure)})
+			notices = append(notices, told{kind: string(notice.Kind) + " (controller)", detail: failureDetail(notice.Failure)})
 		default:
 			r.t.Fatalf("outbox row %d is no notice: %#v", row.ID, payload)
 		}
@@ -223,36 +241,119 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 	return current, *from
 }
 
-// A claim the provider refused out of its budget fails; its issue is held, so the tree's architect
-// can retry it. That one retry must reach a working agent: a new session, because every turn of
-// the recorded one was refused, and the phase's task in it.
-func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
-	rig := newFreshSessionRig(t)
-	ctx := context.Background()
-	refusal := "Refusal (reasoning_extraction): this request was blocked"
-
-	rig.refuseEveryTurn(refusal)
-
-	if got := rig.machine.Claim(); got.State != supervise.StateFailed || got.Session != oldSession {
-		t.Fatalf("after its refused turns the implementer is %s on session %q, want failed with the refused session still recorded", got.State, got.Session)
-	}
-	current, from := rig.recordedPhase()
+// wantsHeldForTheArchitect holds what a failure that holds the issue leaves: the issue held from
+// implementing, and the architect's and the controller's held notices and the worker-died notice,
+// each carrying the failure's sentence in its failure record's `detail`, where every reader of the
+// notice finds it beside the cause word, so each names the status the provider answered.
+func (r *freshSessionRig) wantsHeldForTheArchitect() {
+	r.t.Helper()
+	current, from := r.recordedPhase()
 	if current != phase.Held || from != phase.Implementing {
-		t.Fatalf("after the refusals the issue is in %s held from %q, want held from implementing", current, from)
+		r.t.Fatalf("after the refusal the issue is in %s held from %q, want held from implementing", current, from)
 	}
-	notices := rig.notices()
 	var kinds []string
-	for _, notice := range notices {
+	for _, notice := range r.notices() {
 		kinds = append(kinds, notice.kind)
-		// The sentence the failure wrote rides in the failure record's `detail`, where every
-		// reader of the notice finds it beside the cause word; `reason` is the escalation's own.
-		if !strings.Contains(notice.detail, refusal) {
-			t.Errorf("the %s notice's failure detail says %q, want the provider's refusal in it", notice.kind, notice.detail)
+		if !strings.Contains(notice.detail, "HTTP 400") {
+			r.t.Errorf("the %s notice's failure detail says %q, want the status the provider answered in it", notice.kind, notice.detail)
 		}
 	}
 	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
-		t.Fatalf("the failure queued %v, want %v", kinds, want)
+		r.t.Fatalf("the failure queued %v, want %v", kinds, want)
 	}
+}
+
+// A refused turn whose provider error cannot clear fails the claim at once, and the workflow holds
+// the issue for its architect. The turn makes both reports an Oh My Pi worker's refused turn
+// makes: its producer's report of the turn, refused, and the result of the prompt the turn ran,
+// which names the status and is what decides (supervise's providerErrored). The claim keeps its
+// session and the task it owes, which are the architect's to decide, and the task is not sent
+// again. The supervise tests of the same decision have no workflow, and the retry test below reads
+// the same hold after a run of refused turns that reaches launch_failure_limit, so this is the one
+// test in which a single refused turn holds the issue, with the claim's task kept and sent no
+// second time.
+func TestARefusal400HoldsTheIssueForItsArchitect(t *testing.T) {
+	t.Parallel()
+	rig := newFreshSessionRig(t)
+
+	rig.refuseTurns(1)
+
+	got := rig.machine.Claim()
+	if got.State != supervise.StateFailed || got.FailureCause != supervise.CauseProviderError ||
+		!strings.Contains(got.Failure, "cannot clear") || !strings.Contains(got.Failure, "HTTP 400") {
+		t.Fatalf("the implementer is %s (%q, %q), want it failed by a provider error that cannot clear, naming HTTP 400",
+			got.State, got.FailureCause, got.Failure)
+	}
+	if got.Session != oldSession || got.Pending == nil {
+		t.Fatalf("the failed implementer records session %q holding %+v, want its session and the task it owes kept", got.Session, got.Pending)
+	}
+	rig.wantsHeldForTheArchitect()
+	if prompts := rig.conn.Prompts(); len(prompts) != 1 {
+		t.Fatalf("the implementer was prompted %d times, want once: a provider error that cannot clear sends nothing again", len(prompts))
+	}
+}
+
+// A turn that ran no prompt of the daemon's — the phase reminder's, which the plugin starts itself
+// with pi.sendMessage — has no prompt result, so the daemon judges it from its producer's report,
+// marked unprompted and carrying the status the provider refused it with (supervise's
+// turnOutcome, dispatch://INFRA-4508's R4). Refused with a 400, it fails the claim at once with
+// cause provider_error, and the workflow holds the issue for its architect, as a refused prompt's
+// 400 does in the test above. The claim first finishes its task's turn with no error, so it is
+// idle and owes nothing, which is where a worker is when its reminder fires.
+func TestAPluginTurnRefused400HoldsTheIssueForItsArchitect(t *testing.T) {
+	t.Parallel()
+	rig := newFreshSessionRig(t)
+	rig.machine.Wait()
+	pending := rig.machine.Claim().Pending
+	if pending == nil {
+		t.Fatal("the implementer holds no task to finish before its reminder's turn")
+	}
+	rig.must(supervise.StreamTurnStart{Claim: rig.implementer})
+	rig.must(supervise.StreamTurnEnd{Claim: rig.implementer})
+	rig.must(supervise.StreamPromptResult{Claim: rig.implementer, DeliveryID: pending.ID, AgentInvoked: true})
+	rig.machine.Wait()
+	if got := rig.machine.Claim(); got.State != supervise.StateIdle || got.Pending != nil {
+		t.Fatalf("after its task's turn the implementer is %s holding %+v, want it idle owing nothing", got.State, got.Pending)
+	}
+
+	rig.must(supervise.RequestTurnOutcome{Claim: rig.implementer, Generation: rig.machine.Claim().Generation, Sequence: 2,
+		Refused: true, Message: refusal400, HTTPStatus: 400, Unprompted: true})
+	rig.machine.Wait()
+
+	got := rig.machine.Claim()
+	if got.State != supervise.StateFailed || got.FailureCause != supervise.CauseProviderError ||
+		!strings.Contains(got.Failure, "cannot clear") || !strings.Contains(got.Failure, "HTTP 400") {
+		t.Fatalf("the implementer is %s (%q, %q), want it failed by a provider error that cannot clear, naming HTTP 400",
+			got.State, got.FailureCause, got.Failure)
+	}
+	if got.Session != oldSession {
+		t.Fatalf("the failed implementer records session %q, want %q kept for its architect's retry", got.Session, oldSession)
+	}
+	rig.wantsHeldForTheArchitect()
+}
+
+// A claim whose provider refused the recorded session's last launch_failure_limit turns in a row
+// keeps that session at its retry, whoever retries it, unless the retry asks for a new one
+// (supervise's freshSession, dispatch://INFRA-4508's R5). The run of refusals fails no claim: this
+// one fails because the prompt those turns ran ended in a provider error that cannot clear, and
+// its issue is held, so the tree's architect can retry it. That one retry resumes the recorded
+// session with fresh budgets and gives it the task the claim owes; if the provider refuses it
+// again, the claim fails again at once, and a new session stays the operator's or the
+// controller's choice.
+func TestAnArchitectsRetryOfARefusedClaimResumesItsSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
+	rig := newFreshSessionRig(t)
+	ctx := context.Background()
+	limit := rig.sup.deps.Limits.LaunchFailures
+
+	rig.refuseTurns(limit)
+
+	if got := rig.machine.Claim(); got.State != supervise.StateFailed || got.Session != oldSession || got.RefusedRun() != limit {
+		t.Fatalf("after its refused turns the implementer is %s on session %q with a refused run of %d, want failed with the refused session still recorded and a run of %d",
+			got.State, got.Session, got.RefusedRun(), limit)
+	}
+	rig.wantsHeldForTheArchitect()
+	spawned := len(rig.rt.CallsOf("Spawn"))
 
 	// The one command: the architect's retry of the held phase.
 	if _, err := intake.ApplyFact(ctx, rig.pool, "api", "retry:"+rig.issue.Key,
@@ -268,29 +369,24 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	}
 	rig.machine.Wait()
 
-	if got := rig.machine.Claim(); got.State != supervise.StateLaunching || got.Session != "" || got.SessionFile != "" {
-		t.Fatalf("after the retry the implementer is %s on session %q (%s), want it launching with no session to resume", got.State, got.Session, got.SessionFile)
+	if got := rig.machine.Claim(); got.State != supervise.StateLaunching || got.Session != oldSession || got.Abandoned.Session != "" {
+		t.Fatalf("after the retry the implementer is %s on session %q, abandoned %+v, want it launching to resume %q",
+			got.State, got.Session, got.Abandoned, oldSession)
 	}
-	if resumes := resumesOf(rig.rt, rig.implementer); len(resumes) != 0 {
-		t.Fatalf("the retry resumed %+v, want the refused session left alone", resumes)
+	if resumes := resumesOf(rig.rt, rig.implementer); len(resumes) != 1 {
+		t.Fatalf("the retry resumed %+v, want the recorded session resumed once", resumes)
 	}
-	spawns := rig.rt.CallsOf("Spawn")
-	if len(spawns) != 2 || spawns[1].Spec.ResumeSessionFile != "" {
-		t.Fatalf("the retry's launch = %+v, want a spawn resuming no session file", spawns)
+	if spawns := rig.rt.CallsOf("Spawn"); len(spawns) != spawned {
+		t.Fatalf("the retry spawned %+v, want no new agent", spawns[spawned:])
 	}
-	rig.register(newSession, newSessionFile)
-	if got := rig.machine.Claim(); got.Session != newSession || got.Session == oldSession {
-		t.Fatalf("the retried implementer registered session %q, want the new %q", got.Session, newSession)
-	}
-	// The task of the retried phase, behind the sentence that says this session replaced one the
-	// provider refused: a worker reading an empty transcript would otherwise take the task for a
-	// fresh start and do again what the abandoned session already pushed.
+	rig.register(oldSession, oldSessionFile)
+	// The task the claim owes, which the provider error took back: the retried phase's own task
+	// waits behind it, as it does behind any task the claim still owes. No sentence of an
+	// abandoned session goes with it: the session is the one the agent was working in.
 	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
+	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, phaseTask) || strings.Contains(prompts[1].Message, "abandoned") {
+		t.Fatalf("the resumed session was prompted %+v, want it to end with the phase task the claim owes and name no abandoned session", prompts)
 	}
-	wantsAbandonment(t, prompts[1].Message, refusal)
 }
 
 // An operator who stops a worker whose agent can do nothing — a provider that refuses its session,
@@ -299,6 +395,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 // the one command that must give that phase a working agent: the stopped claim forgets the session
 // it recorded, the workflow starts its phase again, and the new session is given the phase's task.
 func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	route := "/legion/v1/operator/claims/" + string(rig.implementer)
@@ -349,9 +446,9 @@ func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePh
 }
 
 // wantsAbandonment is the check both retries make of the fresh session's first prompt: it names
-// the session that was abandoned and why — the provider's own words for a refused one, the
-// context size among them where the provider gave one — and the two things that outlived that
-// session, the issue's branch and the handoff records its phases wrote on the Dispatch issue.
+// the session that was abandoned and why, in the words the claim recorded, and the two things that
+// outlived that session, the issue's branch and the handoff records its phases wrote on the
+// Dispatch issue.
 func wantsAbandonment(t *testing.T, prompt, why string) {
 	t.Helper()
 	for _, want := range []string{

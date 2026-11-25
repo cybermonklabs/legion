@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -29,7 +30,8 @@ type personNode struct {
 	// delivered_to, or both where the person wrote a thing that was delivered back to a
 	// session of theirs.
 	Relations []string `json:"relations"`
-	// Title is the first line of the node's text, cut to personNodeTitleRunes.
+	// Title is the first line of the node's text, cut to personNodeTitleRunes. A comment its
+	// author deleted keeps its row with the title "", the body the delete cleared.
 	Title string `json:"title"`
 	// CreatedAt is when the node was written, which is the order the page reads in.
 	CreatedAt time.Time `json:"created_at"`
@@ -50,6 +52,14 @@ type personNode struct {
 	// author. It is optional in the document as State is, and a row that carries none is
 	// project.
 	Visibility string `json:"visibility" enum:"project,author" required:"false"`
+	// EditedAt is when the comment's author last edited it, so the page marks it as edited;
+	// absent on a comment nobody edited and on a row of every other kind.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a comment its author deleted, as every read of the post
+	// carries them (model.DeletedPostMark), so the page draws the deleted line in its place.
+	// Both are absent on a comment that stands and on a row of every other kind.
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *model.Actor `json:"deleted_by,omitempty"`
 }
 
 // personNodes is one page of a person's nodes, newest first.
@@ -204,13 +214,20 @@ func personNodeListed(kind, id string) string {
 // read it. Its text is read after the page is cut, for the rows on the page alone: such a row
 // carries no text into the page, and its own graph_nodes row, by the kind the store keys it by,
 // is read again for the rows the limit kept.
+//
+// Each comment row carries its comment's marks, as every read of a post does: edited_at where its
+// author edited it, and deleted_at and deleted_by where its author deleted it; a row of every
+// other kind carries none. A deleted comment keeps its row, and its text is the empty body the
+// delete left. An edit or a delete of a comment delivers from the comment's own node (the
+// outbox's deliveredItem), so the delivered_to tuples it writes fold into the comment's one row
+// in related, and no correction is a row of its own.
 var personNodesQuery = personNodesHeld + `, items as (
 		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored_state, h.stored_visibility,
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
 		       end as href,
-		       h.from_kind as stored_kind
+		       h.from_kind as stored_kind, c.edited_at, c.deleted_at, c.deleted_by
 		from held h
 		join comments c on h.from_kind = '` + graphstore.KindComment + `' and h.from_id = c.id::text
 		left join issues i on i.key = c.issue_key
@@ -218,28 +235,30 @@ var personNodesQuery = personNodesHeld + `, items as (
 		where (i.key is not null or a.id is not null)
 		union all
 		select standing.kind, standing.id, standing.relations, null::text, standing.made_at, standing.stored_state,
-		       standing.stored_visibility, '/issues/' || standing.issue_key, standing.stored_kind
+		       standing.stored_visibility, '/issues/' || standing.issue_key, standing.stored_kind,
+		       null::timestamptz, null::timestamptz, null::jsonb
 		from (
 			select ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` as kind, h.from_id as id, h.relations,
 			       n.made_at, h.stored_state, h.stored_visibility, ` + refs.StandingIssueSQL("n.kind", "n.id") + ` as issue_key,
 			       h.from_kind as stored_kind
 			from held h
 			join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
-			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `')
+			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in (` + store.QuoteLiterals(refs.StandingKinds()) + `)
 			offset 0
 		) standing
 		where standing.issue_key is not null
 		union all
 		select h.from_kind, h.from_id, h.relations, coalesce(n.attributes->>'` + graphstore.AttributeWords + `', ''), n.made_at,
-		       h.stored_state, h.stored_visibility, '', h.from_kind
+		       h.stored_state, h.stored_visibility, '', h.from_kind, null::timestamptz, null::timestamptz, null::jsonb
 		from held h
 		join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
 		where h.from_kind = '` + graphstore.KindInteraction + `'
 	)
 	select page.total, page.kind, page.id, page.relations, coalesce(page.text, ` + refs.StandingTextSQL("n", "$2") + `, ''),
-	       page.created_at, page.href, page.stored_state, page.stored_visibility
+	       page.created_at, page.href, page.stored_state, page.stored_visibility, page.edited_at, page.deleted_at, page.deleted_by
 	from (
-		select count(*) over () as total, kind, id, relations, text, created_at, href, stored_state, stored_visibility, stored_kind
+		select count(*) over () as total, kind, id, relations, text, created_at, href, stored_state, stored_visibility, stored_kind,
+		       edited_at, deleted_at, deleted_by
 		from items
 		order by created_at desc, kind, id desc
 		limit $3 offset $4
@@ -337,8 +356,10 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		var row personNode
 		var body string
 		var stored refs.StoredNode
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
 		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
-			&stored.State, &stored.Visibility); err != nil {
+			&stored.State, &stored.Visibility, &editedAt, &deletedAt, &deletedBy); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -346,6 +367,14 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		first, _, _ := strings.Cut(body, "\n")
 		row.Title = text.HeadRunes(first, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
+		if editedAt != nil {
+			edited := editedAt.UTC()
+			row.EditedAt = &edited
+		}
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {

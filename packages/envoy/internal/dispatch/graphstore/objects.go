@@ -112,7 +112,7 @@ const KindVersion = "version"
 // document version, and a version of a query node is a query version; a document that a query
 // replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
 // (20261109051232); `query` and `query version` are this child's
-// (20261116121500_issue_tree_query_supertags).
+// (20261123174750_issue_tree_query_supertags).
 const (
 	SupertagDocumentVersion = "document version"
 	SupertagQuery           = "query"
@@ -448,8 +448,8 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 // CommentScopeOf is ScopeOf of a comment that belongs to issueKey or artifactID, read in the same
 // statement as whether the comment's row names its node (comments.node_kind): a comment left out
 // of the store, or one a process of the release before wrote and the backfill has not stated yet,
-// names none. It is the one read of an edit of a comment's words made for a run (api's
-// editComment).
+// names none. It is the one read of an edit of a comment's words and of a comment's delete, each
+// made for a run (api's planCommentChangedForRun, for editComment and deleteComment).
 func CommentScopeOf(ctx context.Context, q Queryer, commentID string, issueKey, artifactID *string) (stored bool, project string, parties []string, err error) {
 	var projectKey, session *string
 	if err := q.QueryRow(ctx, `select (select node_kind is not null from comments where id = $3), `+scopeRead,

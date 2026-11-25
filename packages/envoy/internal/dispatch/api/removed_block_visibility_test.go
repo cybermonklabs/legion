@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -30,8 +30,9 @@ import (
 // The store's writer refuses a block of a document reserved for its author, since not every read
 // of a block binds the predicate (graphstore.ErrVisibilityNotAdmitted), so the blocks' rows are
 // written by hand and their nodes seeded straight into the store, as
-// TestNoReadAnswersANodeTheActingPersonMayNotSee seeds its own (graphstoretest.SeedAuthorOnly).
+// TestNoReadAnswersANodeTheActingPersonMayNotSee seeds its own (graphseedtest.SeedAuthorOnly).
 func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "PRIV", "Private blocks with a recorded text", "# Spec\n\nA public passage.\n")
@@ -81,7 +82,7 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	}
 	defer tx.Rollback(ctx)
 	madeAt := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
-	if err := graphstoretest.SeedAuthorOnly(ctx, tx,
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx,
 		graphstore.Node{Kind: "block", ID: spec.address("gone"), Supertag: "block", State: graphstore.StateGone,
 			MadeAt: madeAt, MadeBy: author, SourceEvent: graphstore.NoEvent},
 		graphstore.Node{Kind: "block", ID: spec.address("private"), Supertag: "block", State: graphstore.StateLive,

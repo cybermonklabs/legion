@@ -444,7 +444,7 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 	mark(graphstore.StateSettled)
 	moved := version("We ship it today.", false)
 	indexed(t, document, 2, moved)
-	requireRestatedBlock(t, document, requirement, graphstore.StateSettled,
+	requireBlockState(t, document, requirement, graphstore.StateSettled, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled})
 	if text, _ := document.currentValue(t, requirement, textAttribute); text != "We ship it today.\n" {
 		t.Errorf("the settled requirement's text is %q after the version that changed it, want the new words", text)
@@ -455,14 +455,14 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 
 	mark(graphstore.StateOvertaken)
 	indexed(t, document, 3, version("We ship it this week.", false))
-	requireRestatedBlock(t, document, requirement, graphstore.StateOvertaken,
+	requireBlockState(t, document, requirement, graphstore.StateOvertaken, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken})
 
 	indexed(t, document, 4, blockDoc{markdown: "bb\n", blocks: []model.ArtifactBlock{{ID: "b", Type: "paragraph", From: 0, To: 3}}})
-	requireRestatedBlock(t, document, requirement, graphstore.StateGone,
+	requireBlockState(t, document, requirement, graphstore.StateGone, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken, graphstore.StateGone})
 	indexed(t, document, 5, moved)
-	requireRestatedBlock(t, document, requirement, graphstore.StateLive,
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken, graphstore.StateGone, graphstore.StateLive})
 }
 

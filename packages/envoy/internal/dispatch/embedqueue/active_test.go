@@ -12,9 +12,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// liveProcess writes the server_processes row of a server process of this build, at its owner
-// lock protocol (store.OwnerLockProtocol), whose embedder has identity, started startedAgo before
-// the database's now() and live now, and returns its instance id.
+// liveProcess writes the server_processes row of a server process whose embedder has identity,
+// started startedAgo before the database's now() and live now, and returns its instance id. The
+// row names this build's owner lock protocol, as processes.Register writes it.
 func liveProcess(t *testing.T, database *store.Store, identity string, startedAgo time.Duration) string {
 	t.Helper()
 	var id string

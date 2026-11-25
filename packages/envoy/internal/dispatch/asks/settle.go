@@ -82,9 +82,10 @@ func Restored(state string, answer *model.AskAnswer) Change {
 	return Change{State: state, Answer: answer}
 }
 
-// Recorded is the whole answer state an event recorded - state, answer and resolution - as the
-// catch-up of the boot step reads it off an event a process of another build appended
-// (docs' decision step).
+// Recorded is the whole answer state an event or a row recorded - state, answer and resolution -
+// as the catch-up of the boot step reads it off an event a process of another build appended
+// (docs' decision step), and as the boot step's backfill reads it off an asks row written before
+// this release (AnswerFacts).
 func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolution) Change {
 	return Change{State: state, Answer: answer, Resolution: resolution}
 }
@@ -269,10 +270,11 @@ func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswe
 
 // Queue puts the change's statements on b (store.WriteBatch), in Settle's order: the node write
 // of what it states on the ask's node, then, where the change names its cause rather than holding
-// its facts for a later event, those facts under that cause, then the asks row. The row's update
-// names the state the change answers from where it names one (Change.From), and a row no longer
-// in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
-// write phase there.
+// its facts for a later event, those facts under that cause, then the asks row, and last, beside
+// those facts, the ask node's head rows (graphstore.QueueHeads), the last rows a write takes. The
+// row's update names the state the change answers from where it names one (Change.From), and a
+// row no longer in it is refused with ErrStateMoved as the batch reads the update's result, which
+// stops the write phase there.
 func (s Settled) Queue(b *store.WriteBatch) error {
 	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
@@ -293,6 +295,9 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 		}
 		return fmt.Errorf("settle ask %s: no such ask", s.askID)
 	})
+	if s.change.Held == nil {
+		graphstore.QueueHeads(b, graphstore.HeldHeads(s.Held))
+	}
 	return nil
 }
 

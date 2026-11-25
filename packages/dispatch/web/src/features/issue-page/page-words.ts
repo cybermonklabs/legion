@@ -33,9 +33,11 @@
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
- *   `isViewer`, whether an actor is the signed-in person.
+ *   `isViewer`, whether an actor is the signed-in person;
+ * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
+ *   post's mark say on every surface.
  *
- * The last two are the module's links to files today's pages use.
+ * The last three are the module's links to files today's pages use.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */
@@ -48,9 +50,10 @@ import {
   type ResultCommitStands,
 } from "@legion/contracts";
 
-import type { Actor } from "../../api/types";
+import type { Actor, IssueCoverage } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
+import { POST_MARK_WORDS } from "../refs/post-marks";
 import {
   freeze,
   HELP_LINES,
@@ -587,10 +590,49 @@ export const GAP_WORDS = freeze({
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
  * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing.
+ * gap the page draws (R10), so that line answers nothing, and so does the line of a document
+ * still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
+}
+
+/**
+ * The line the coverage read writes for a document of the issue that owes its block index, in
+ * place of every missing check and plan task while it does (the server's `owedGap`): `<file
+ * name> version <n> is still being indexed; its coverage shows once that ends.`.
+ */
+const OWED_COVERAGE_LINE =
+  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
+
+/**
+ * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
+ * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
+ * of a document still being indexed, the line's own words. While a document owes its block
+ * index the server names no requirement as lacking a check, so the page draws none as lacking
+ * one either, and says instead which document's coverage waits and at which version; that line
+ * names a file, which the server's words name and no word of the page could. Any other line
+ * draws nothing.
+ */
+export function coverageLineWords(line: string): string | undefined {
+  const kind = coverageGapKind(line);
+  if (kind !== undefined) return GAP_LINES[kind];
+  return OWED_COVERAGE_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
+ * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
+ * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
+ * document still being indexed, which says why no requirement is drawn as lacking a check: today's
+ * Spec tab draws these over its list of requirements (`SpecRequirements`), and the outline in the
+ * body of each statement (`TreeNode.coverageNotes`).
+ */
+export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
+  return (coverage?.gaps ?? []).flatMap((line) => {
+    const words = coverageGapKind(line) === undefined ? coverageLineWords(line) : undefined;
+    return words === undefined ? [] : [words];
+  });
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
@@ -1023,6 +1065,14 @@ export const CONTROL_LABELS = freeze({
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",
+  /** A deleted post's line, where a row draws it in place of the post's words, and a chip names
+   *  the post by: `Deleted` for a delete that names nobody, else `Deleted by` and the actor, whose
+   *  name is the author's text (INFRA-1523, R3). The words every surface's deleted line says. */
+  post_deleted: POST_MARK_WORDS.deleted,
+  post_deleted_by: POST_MARK_WORDS.deleted_by,
+  /** What a row's byline, a parent line and a chip say after an edited post's time or words:
+   *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
+  post_edited: POST_MARK_WORDS.edited,
   /** The row of five controls, Conversation and the four filters, as a reader hears it named
    *  (R2). */
   presets: "Filters",
@@ -1221,6 +1271,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   /** How unsure the agent was of a decision, and in the next one why. */

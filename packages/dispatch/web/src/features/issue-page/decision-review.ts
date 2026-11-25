@@ -8,6 +8,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { ownTree, ownWords } from "../issue/decision-text";
+import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import type { DecisionState } from "./page-words";
@@ -29,15 +30,23 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * (`decisionNodeChanges`); no quote is matched for it. The decision then waits on its agent, not
  * on the reader: it says it was changed, and it leaves the review list and every count of what
  * waits on the reader. Once the agent edits the decision, every change is older than its words
- * and the decision waits for review again.
+ * and the decision waits for review again. A change its author deleted is no longer asked for:
+ * it stays drawn under the decision, as the deleted line (`tree-read/tree-nodes.ts`'s
+ * `draftTurn`), but no decision waits on it (`decisionNodeChanges`), so a decision whose every
+ * change was deleted waits for review again.
  *
  * A Change is written as a comment anchored to the decision's own words (`DecisionActions.tsx`):
  * the decision node's document, and its `heading`, the words of its first paragraph
  * (`decision-nodes.ts`).
  */
 
-/** The fields of a Change the Decisions filter reads (`decisionsParts`). */
-export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "id">;
+/** The fields of a Change the Decisions filter reads (`decisionsParts`), and when its author
+ *  deleted it and last edited it, which the Decisions view draws a Change with
+ *  (`decisions-parts.ts`'s `DecisionChange`). */
+export type ChangeComment = Pick<
+  Comment,
+  "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
+>;
 
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
@@ -223,18 +232,23 @@ export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, Tre
 
 /**
  * The Change each decision node waits on, by the id `idOf` gives the node: the newest of the
- * Changes the read hangs under it (`nodeChangeComments`). The outline (`tree-read/tree-nodes.ts`)
- * names each node by its tree id (`treeIdOfNode`), so two decision nodes of one block id in two
- * documents are two decisions there; a caller that names no id reads the node's own id in the
- * read. The outline, the Decisions filter (`decisions-filter/decisions-entries.ts`) and the
- * header's count (`waiting.ts`) read this one rule.
+ * Changes the read hangs under it (`nodeChangeComments`) that its author has not deleted
+ * (`deleted`, the comments the page's comments read says were: the tree read answers a deleted
+ * comment with no body and no mark). A deleted Change keeps its place under the decision, as the
+ * read puts it, and asks nothing any more. The outline (`tree-read/tree-nodes.ts`) names each
+ * node by its tree id (`treeIdOfNode`), so two decision nodes of one block id in two documents
+ * are two decisions there; a caller that names no id reads the node's own id in the read. The
+ * outline, the Decisions filter (`decisions-filter/decisions-entries.ts`) and the header's count
+ * (`waiting.ts`) read this one rule.
  */
 export function decisionNodeChanges(
   answer: TreeAnswer,
-  idOf: (node: TreeAnswerNode) => string = (node) => node.id
+  idOf: (node: TreeAnswerNode) => string = (node) => node.id,
+  deleted: ReadonlySet<string> = NO_DELETED
 ): ReadonlyMap<string, TreeAnswerNode> {
   const changes = new Map<string, TreeAnswerNode>();
   for (const [comment, decision] of nodeChangeComments(answer)) {
+    if (deleted.has(comment.id)) continue;
     const id = idOf(decision);
     const held = changes.get(id);
     // Every Change holds a time (`nodeChangeComments`).
@@ -243,6 +257,21 @@ export function decisionNodeChanges(
     }
   }
   return changes;
+}
+
+/** No comment is known deleted: the same empty set on every call. */
+const NO_DELETED: ReadonlySet<string> = new Set();
+
+/** The ids of the comments among `comments` that their author deleted (`postDeletion`): the
+ *  Changes that ask nothing any more (`decisionNodeChanges`). */
+export function deletedPostIds(
+  comments: readonly Pick<ChangeComment, "deleted_at" | "id">[] | undefined
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const comment of comments ?? []) {
+    if (postDeletion(comment) !== null) ids.add(comment.id);
+  }
+  return ids.size === 0 ? NO_DELETED : ids;
 }
 
 /** Whether a comment made at `at` is newer than the decision node's words and its last Keep, as

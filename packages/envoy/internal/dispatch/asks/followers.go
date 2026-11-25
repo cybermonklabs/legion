@@ -88,7 +88,11 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+		return nil
+	}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 	}
 	return followed, nil
@@ -317,6 +321,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
 	return held, nil
 }
 
@@ -362,6 +367,8 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 // gone retracts the followed_by the node still asserts. It writes no follower row and deletes
 // none, so an event caught up after a later one never brings back a row the later one took away.
 // It reports whether it stated anything.
+//
+// kept for one release: catch-up
 func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, added bool, who model.Actor, at time.Time, event int64) (bool, error) {
 	if !graphstore.AddressFits(sessionID) {
 		return false, nil
@@ -381,7 +388,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{followedBy(askID, sessionID, true, who, since, event)}); err != nil {
+		relation := followedBy(askID, sessionID, true, who, since, event)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, []graphstore.Tuple{relation})
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+			return nil
+		}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 		}
 		return true, nil
@@ -399,7 +411,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{followedBy(askID, sessionID, false, who, at, event)}); err != nil {
+	retraction := followedBy(askID, sessionID, false, who, at, event)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
 	}
 	return true, nil

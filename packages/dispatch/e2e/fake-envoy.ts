@@ -64,9 +64,9 @@ const SESSION_STATES: readonly SessionState[] = ["live", "unresponsive"];
 /** How the listener answers a send to a session. `200` takes it. `404` is its "no live session"
  *  refusal: Dispatch then publishes a targeted message on the session's agent subject itself and
  *  records the attempt queued, while a mention's attempt fails. `503` is the listener behind its
- *  starting gate (`service starting`, packages/envoy/cmd/listener/main.go startingGate): Dispatch
- *  tries it again through its take-over window and then records the attempt failed, which is the
- *  failure a row stages to read a failed card and its Retry. */
+ *  starting gate (`service starting`, packages/envoy/cmd/listener/starting_gate.go startingGate):
+ *  Dispatch tries it again through its take-over window and then records the attempt failed, which
+ *  is the failure a row stages to read a failed card and its Retry. */
 type SendStatus = 200 | 404 | 503;
 
 const SEND_STATUSES: readonly SendStatus[] = [200, 404, 503];
@@ -97,12 +97,18 @@ type ListsState = "ok" | "refilling" | "down";
 
 const LISTS_STATES: readonly ListsState[] = ["ok", "refilling", "down"];
 
+/** The `Retry-After` the real listener's refilling answer carries, in seconds, which this one
+ *  answers with unless a test set its own (`/__fixture/lists`'s `retry_after_seconds`): a row that
+ *  waits through several refilling reads waits each one's retries, and only the row that pins
+ *  what Dispatch passes on needs the listener's own figure. */
+const LISTENER_REFILLING_RETRY_AFTER_SECONDS = 5;
+
 /** The listener's list answer for a state other than `ok`. */
-function listRefusal(lists: Exclude<ListsState, "ok">): Response {
+function listRefusal(lists: Exclude<ListsState, "ok">, retryAfterSeconds: number): Response {
   if (lists === "refilling") {
     return Response.json(
       { code: "refilling", error: "envoy: the agent list is refilling; try again in a moment" },
-      { headers: { "Retry-After": "5" }, status: 503 }
+      { headers: { "Retry-After": String(retryAfterSeconds) }, status: 503 }
     );
   }
   return Response.json(
@@ -200,6 +206,9 @@ interface FakeEnvoyState {
   readonly publishedKeys: Set<string>;
   readonly unsubscribeCalls: unknown[];
   lists: ListsState;
+  /** The `Retry-After` of a refilling answer, `LISTENER_REFILLING_RETRY_AFTER_SECONDS` unless a
+   *  test set its own with the list state. */
+  listsRetryAfterSeconds: number;
 }
 
 function emptyState(): FakeEnvoyState {
@@ -208,6 +217,7 @@ function emptyState(): FakeEnvoyState {
     legionAgents: [],
     legionRegistry: "ok",
     lists: "ok",
+    listsRetryAfterSeconds: LISTENER_REFILLING_RETRY_AFTER_SECONDS,
     liveSessions: new Set(),
     publishedKeys: new Set(),
     records: new Map(),
@@ -433,7 +443,7 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/v1/sessions") {
-      if (state.lists !== "ok") return listRefusal(state.lists);
+      if (state.lists !== "ok") return listRefusal(state.lists, state.listsRetryAfterSeconds);
       const now = Date.now();
       const unresponsive = includes(url, "unresponsive");
       return Response.json(
@@ -622,6 +632,7 @@ const server = Bun.serve({
         legionAgents: state.legionAgents,
         legionRegistry: state.legionRegistry,
         lists: state.lists,
+        listsRetryAfterSeconds: state.listsRetryAfterSeconds,
         liveSessions: new Set(ids),
         sendStatuses: new Map(ids.map((id) => [id, 200] as const)),
         sessions,
@@ -718,12 +729,20 @@ const server = Bun.serve({
       return Response.json({ state: state.legionRegistry });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/lists") {
-      const body = (await request.json()) as { state?: ListsState };
+      const body = (await request.json()) as { retry_after_seconds?: number; state?: ListsState };
       if (body.state === undefined || !LISTS_STATES.includes(body.state)) {
         return Response.json({ error: "state must be ok, refilling or down" }, { status: 400 });
       }
+      const retryAfter = body.retry_after_seconds ?? LISTENER_REFILLING_RETRY_AFTER_SECONDS;
+      if (!Number.isInteger(retryAfter) || retryAfter < 1) {
+        return Response.json(
+          { error: "retry_after_seconds must be a whole number of seconds, 1 or more" },
+          { status: 400 }
+        );
+      }
       state.lists = body.state;
-      return Response.json({ state: state.lists });
+      state.listsRetryAfterSeconds = retryAfter;
+      return Response.json({ retry_after_seconds: retryAfter, state: state.lists });
     }
     if (request.method === "PATCH" && url.pathname.startsWith("/__fixture/sessions/")) {
       const sessionID = decodeURIComponent(url.pathname.slice("/__fixture/sessions/".length));
@@ -829,7 +848,7 @@ const server = Bun.serve({
       return Response.json(state.sentMessages);
     }
     if (request.method === "GET" && url.pathname === "/v1/interests/") {
-      if (state.lists !== "ok") return listRefusal(state.lists);
+      if (state.lists !== "ok") return listRefusal(state.lists, state.listsRetryAfterSeconds);
       return Response.json(state.interests);
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/interests") {

@@ -7,7 +7,7 @@ import { KEY } from "./decisions-filter/decisions-fixtures";
 
 /**
  * What the outline's unit tests share (`IssueTree.test.tsx`, `outline-reads.test.tsx`, and the
- * stage's in `view-decisions-slot.test.tsx`): frames run by hand (`framesByHand`), the
+ * stage's tests): frames run by hand (`framesByHand`), the
  * comments the comments' read answers for the fixtures' issue (`issueDetails`), and a wait inside
  * `act`.
  */

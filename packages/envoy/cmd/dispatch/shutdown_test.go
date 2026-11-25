@@ -449,7 +449,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {
@@ -556,7 +556,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {
@@ -735,7 +735,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -1398,8 +1398,8 @@ type dispatchProcess struct {
 	*cmdtest.Process
 	port int
 	// database is the Postgres database the test gave the process (DATABASE_URL's). The wait
-	// for the event feed's events_start needs it to tell a horizon stall held by this
-	// process's own write transaction from one held by a foreign transaction
+	// for the event feed's events_start needs it to judge a horizon stall, which an event write of
+	// that database holds, as the process's own hold past horizontest.OwnHoldBound
 	// (live_events_wait_test.go).
 	database string
 	// databaseURL is the URL the test gave the process (DATABASE_URL). A start that exits before

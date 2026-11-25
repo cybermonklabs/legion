@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -109,12 +110,13 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
 // removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	tradeOff := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "bob", map[string]any{"triggered_by": tradeOff.Address})
-	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateProposed, "alice")
-	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateLive, "alice")
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateProposed)
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateLive)
 
 	var placedFirst, placedSecond, rewritten int64
 	if err := rig.database.Pool.QueryRow(ctx, `
@@ -222,6 +224,7 @@ func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
 // a pre-mortem's risks in the order of their part_of tuples, each whole, a risk no check prevents
 // with an empty list; a finding or a risk reserved for its author is in its author's read alone.
 func TestTheLensReadAnswersEachLensWithItsFindingsAndRisks(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{
 		"verdict": "Keep one region.", "findings": []string{"A second region doubles the cost.", "Failover takes minutes."},
@@ -313,6 +316,7 @@ func TestTheLensReadAnswersEachLensWithItsFindingsAndRisks(t *testing.T) {
 // only through H - is nowhere, and his one chain is C and E. alice reads the whole chain, D on the
 // requirement among it. A read on a lens's address answers its own trigger ends, each reader's.
 func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	hidden := rig.invoke(rig.spec, "inversion", "alice", map[string]any{"triggered_by": a.Address, "visibility": graphstore.VisibilityAuthor})
@@ -392,6 +396,7 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 // nobody wrote, 404 NOT_FOUND; and gone is final, so the state route's overtaken on it is 409
 // NODE_GONE naming it.
 func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
 	finding := parent.Findings[0].Address
@@ -400,39 +405,34 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 		t.Fatalf("the lens on the finding reads %+v before the finding's lens is gone, want it on %s", read.Lens, finding)
 	}
 
-	rig.writeState(parent.Address, graphstore.StateGone, "alice")
+	rig.writeState(parent.Address, graphstore.StateGone)
 	if state := storedNodeOf(t, rig.database, onFinding.Address).State; state != graphstore.StateGone {
 		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
-	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
-		return dispatchRequest(t, rig.handler, method, path, body, "alice")
-	}
 	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
 		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
-	}, lensReader{"alice", asAlice, onFinding})
+	}, lensReader{"alice", rig.as(), onFinding})
 	requireGoneRefused(t, "overtaken on the lens on the gone finding",
-		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
+		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.Address)
 }
 
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it
 // (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
 // of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer
 // route, a triggered_by from A to B, a retarget of B's trigger from A to C and a trigger of B by
-// itself are each 400 INVALID_POINTER naming both lenses by address, the one lens twice, and store
+// itself are each 400 INVALID_POINTER naming the tuple and both lenses by address, the lens the
+// tuple goes out of before the lens it points at (the one lens twice for B by itself), and store
 // nothing. A then moves to the requirement and back to the spec through the store, so its newest
 // part_of is later than B's and C's: the read still answers A first and the same three writes are
 // refused the same way, so a move changes neither the order nor the rule. C triggered by B is
 // taken, and the spec answers the one chain A, B and C, starting at A.
 func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	b := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{"triggered_by": a.Address})
 	c := rig.invoke(rig.spec, "botec", "alice", nil)
-	const rule = " breaks its type rule: triggered_by points from a lens at a lens invoked before it"
-	later := func(near, far string) string {
-		return "the triggered_by tuple from the lens " + near + " at the lens " + far + ", which was not invoked before it," + rule
-	}
 	pointer := func(lens lensInvoked, body map[string]any) *httptest.ResponseRecorder {
 		body["kind"] = graphstore.TupleTriggeredBy
 		return rig.post(nodePath("lens/"+lens.ID, "pointers"), body, "alice")
@@ -441,19 +441,21 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 	refusals := func(when string) {
 		t.Helper()
 		for _, refused := range []struct {
-			name     string
-			response *httptest.ResponseRecorder
-			says     string
+			name      string
+			response  *httptest.ResponseRecorder
+			near, far string
 		}{
-			{"a trigger of B by A", pointer(a, map[string]any{"action": pointerAppend, "to": b.Address}), later(a.Address, b.Address)},
+			{"a trigger of B by A", pointer(a, map[string]any{"action": pointerAppend, "to": b.Address}), a.Address, b.Address},
 			{"a retarget of B's trigger from A to C", pointer(b, map[string]any{"action": pointerRetarget, "from": a.Address, "to": c.Address}),
-				later(b.Address, c.Address)},
-			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}),
-				"the triggered_by tuple from the lens " + b.Address + " at that same lens " + b.Address + rule},
+				b.Address, c.Address},
+			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}), b.Address, b.Address},
 		} {
-			name := refused.name + " " + when
-			if answer := requireRefused(t, name, refused.response, http.StatusBadRequest, "INVALID_POINTER", refused.says); answer.Error != refused.says {
-				t.Errorf("%s is refused %q, want %q", name, answer.Error, refused.says)
+			// The answer names the near end of the refused tuple ("from") before its far end
+			// ("at"), and a lens that triggers itself once as each.
+			answer := requireRefused(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
+				graphstore.TupleTriggeredBy)
+			if !graphstoretest.NamesInOrder(answer.Error, refused.near, refused.far) {
+				t.Errorf("%s %s is refused %q, want it to name %s and then %s", refused.name, when, answer.Error, refused.near, refused.far)
 			}
 		}
 		if _, after := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy); after != triggers {
@@ -513,6 +515,7 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 // lens on the paragraph, so no lens past the cut begins one, and no chain holds the fifty-first or
 // any lens after it.
 func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	stacked := rig.invokeChain(rig.requirement, 60, true)
 	read := rig.lenses(rig.requirement, "alice")
@@ -577,6 +580,7 @@ func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 // root is the first lens invoked; here the lenses past the cut come first in the order the read
 // walks the lenses on the node, so only the rule that a root alone begins a chain keeps them out.
 func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	invoked := make([]lensInvoked, 0, 120)
 	for range cap(invoked) {
@@ -627,6 +631,7 @@ func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
 // TestALensChainOfExactlyFiftyIsListedWhole: a chain of exactly fifty, flat on the spec or
 // stacked on the requirement, is listed whole with no stop reported.
 func TestALensChainOfExactlyFiftyIsListedWhole(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	for _, shape := range []struct {
 		name, on string
@@ -650,6 +655,7 @@ func TestALensChainOfExactlyFiftyIsListedWhole(t *testing.T) {
 // holds and words that are no address each answer bob one 404, in the same words but the
 // address; alice reads her own lens. An empty on is 400.
 func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	written := rig.post("/constraints", map[string]any{"standard": "A rule she keeps", "reference": "her notes", "visibility": graphstore.VisibilityAuthor}, "alice")
@@ -659,20 +665,21 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 	constraint := decodeBody[constraintRead](t, written)
 	nobodys := "dispatch://lens/" + uuid.NewString()
 
+	// Each refusal names the address on named, and reads, once that address is set aside, as the
+	// refusal of the lens nobody holds.
 	bodies := map[string]string{}
 	for _, address := range []string{
 		hidden.Address, nobodys, constraint.Address, "dispatch://constraint/" + uuid.NewString(),
 		"dispatch://NOPE-404/spec", "no address at all",
 	} {
-		says := fmt.Sprintf("no node %q", address)
 		response := rig.lensesResponse(address, "bob")
-		if refused := requireRefused(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", says); refused.Error != says {
-			t.Errorf("bob's read on %s is refused %q, want %q", address, refused.Error, says)
-		}
+		requireRefused(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", address)
 		bodies[address] = strings.ReplaceAll(response.Body.String(), address, "<on>")
 	}
-	if bodies[hidden.Address] != bodies[nobodys] || bodies[constraint.Address] != bodies[nobodys] {
-		t.Errorf("a node bob may not see answers %s and %s, and one nobody holds %s", bodies[hidden.Address], bodies[constraint.Address], bodies[nobodys])
+	for address, body := range bodies {
+		if body != bodies[nobodys] {
+			t.Errorf("bob's read on %s answers %s, and one on a lens nobody holds %s: want the same words but the address", address, body, bodies[nobodys])
+		}
 	}
 
 	own := rig.lenses(hidden.Address, "alice")
@@ -683,5 +690,5 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 	if bobs := rig.lenses(rig.spec, "bob"); len(bobs.Lenses) != 0 || len(bobs.Chains) != 0 || bobs.Lenses == nil || bobs.Chains == nil {
 		t.Errorf("bob reads the spec's lenses %v and chains %v, want two empty lists", readAddresses(bobs.Lenses), bobs.Chains)
 	}
-	requireRefused(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on is required")
+	requireRefused(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on")
 }

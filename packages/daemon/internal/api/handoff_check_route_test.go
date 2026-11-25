@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -101,7 +102,7 @@ func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveC
 		Project: testProject, Title: "LEGION-208", Phase: phase.Accepting, Generation: 1, Status: "in_progress"})
 	h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-209", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", MergeSHA: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0", Failing: []string{}})
 	}); err != nil {

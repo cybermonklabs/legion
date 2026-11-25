@@ -1,5 +1,7 @@
 package docs
 
+//ci:reads packages/contracts/fixtures/decision-blocks/* decisionBlockFixture
+
 import (
 	"context"
 	"errors"
@@ -173,11 +175,12 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 	}
 
 	// A process of the release before answered own, and the decisions step's catch-up has not yet
-	// stated that answer on own's node, which still holds it open: every write on a fleet of one
-	// build writes a block's kept attributes from the node (keptAskState, onItsNode), which keep no
-	// state of an open ask, so a block showing what the node holds agrees, as one showing the row's
-	// does. A block showing a state neither holds disagrees, and so does `state="open"`, which no
-	// write of this build stores and the release before wrote only beside its own row's open state.
+	// stated that answer on own's node, which still holds it open: a write on a fleet of one build
+	// then keeps the row's state (keptAskState, keptFromItsNode), and a version written from the
+	// node (onItsNode), which keeps no state of an open ask, shows the ask as its node holds it, so
+	// a block showing what the node holds agrees, as one showing the row's does. A block showing a
+	// state neither holds disagrees, and so does `state="open"`, which no write of this build stores
+	// and the release before wrote only beside its own row's open state.
 	behind := rows["own"]
 	behind.State, behind.Answer = asks.StateOpen, nil
 	for name, test := range map[string]struct {

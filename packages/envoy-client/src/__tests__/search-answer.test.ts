@@ -304,3 +304,59 @@ describe("searchAnswer: where an ask hit stands", () => {
     ]);
   });
 });
+
+describe("searchAnswer: a deleted post's hit", () => {
+  // A deleted post is no hit once its delete commits, which takes its windows with its body;
+  // the mark is the backstop for a hit of one all the same, whose snippet is empty. The line says who deleted it and when where the snippet would be, and a post nobody
+  // deleted keeps its snippet.
+  test("prints the deleted line in place of the snippet, on an issue's hit and a document's", () => {
+    const deleted = {
+      deleted_at: "2026-10-02T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+      edited_at: "2026-10-01T00:00:00Z",
+      snippet: "",
+    } as const;
+    const onDocument: SearchResult = {
+      ...hit,
+      ...deleted,
+      id: "comment-4",
+      owner: {
+        kind: "document",
+        project: "CORE",
+        slug: "notes",
+        name: "Notes",
+        artifact_id: "a-1",
+      },
+      href: "/projects/CORE/documents/notes?comment=comment-4",
+    };
+
+    expect(searchText({ ...hit, ...deleted })).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Deleted by user alice at 2026-10-02T00:00:00Z -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+    expect(searchText(onDocument)).toEqual([
+      askHeader,
+      "dispatch://CORE/artifact/notes [document] Notes - comment: Deleted by user alice at 2026-10-02T00:00:00Z -> http://dispatch.test/projects/CORE/documents/notes?comment=comment-4",
+    ]);
+    expect(searchText(hit)).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+  });
+});
+
+describe("searchAnswer: an edited post's hit", () => {
+  // A hit's snippet is of the words the post holds now, which an edit replaced: the line says the
+  // post was edited and when, beside them, as every line that prints an edited post does. A post
+  // nobody edited keeps its snippet alone.
+  test("prints the edited mark after the snippet of a post its author edited", () => {
+    expect(searchText({ ...hit, edited_at: "2026-10-01T00:00:00Z" })).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** · edited 2026-10-01T00:00:00Z -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+    expect(searchText(hit)).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+  });
+});

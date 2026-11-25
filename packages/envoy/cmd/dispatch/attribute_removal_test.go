@@ -59,6 +59,13 @@ func removalDocument(name string) string {
 		":::ask{#pending-" + name + " urgency=\"low\" multiple=\"false\"}\nWhich region takes " + name + "?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 }
 
+// declinedRemovalAsk is an ask block of the first or the second document, name, that the person
+// declines through the base release before approving the document, so its ask is resolved and
+// every version written once the fleet is one build keeps its state (requireKeptForm).
+func declinedRemovalAsk(name string) string {
+	return ":::ask{#declined-" + name + " urgency=\"low\" multiple=\"false\"}\nShould " + name + " wait for the census?\n\n- Wait: Until it runs.\n- Go: Now.\n:::\n"
+}
+
 // uploadDocument uploads content under name to the issue through p, as the test's person, and
 // answers the answer: a new document, or a new version of the issue's document of that name, which
 // names the token of the version it replaces.
@@ -205,15 +212,20 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	previous.waitHealthy(t)
 	baseCommit := announcedBaseCommit(t, ctx, database)
 	previous.call(t, http.MethodPost, "/api/v1/projects", `{"key":"RMV","name":"The removal"}`, http.StatusCreated)
-	issue, first := createCensusIssue(t, previous, "RMV", "The removal", removalDocument("one"))
+	issue, first := createCensusIssue(t, previous, "RMV", "The removal", removalDocument("one")+"\n"+declinedRemovalAsk("one"))
 	sourceDocument := uploadedID(t, uploadDocument(t, previous, issue, "source.md", "# Source\n\n:::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n"))
 	blockAskOf(t, previous, issue, "shared")
 	previous.call(t, http.MethodPost, "/api/v1/artifacts/"+first+"/edits", encodeJSON(t, map[string]any{"ops": []map[string]string{{
 		"op": "insert", "after": "end", "markdown": ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n",
 	}}}), http.StatusOK)
 	answerAsk(t, previous, blockAskOf(t, previous, issue, "decided-one"), "Ship", "Ship one now.")
-	second := uploadedID(t, uploadDocument(t, previous, issue, "lonely.md", "# Lonely\n\nA line of prose.\n\n"+lonelyAsk))
+	second := uploadedID(t, uploadDocument(t, previous, issue, "lonely.md", "# Lonely\n\nA line of prose.\n\n"+lonelyAsk+"\n"+declinedRemovalAsk("two")))
 	lonelyAskID := blockAskOf(t, previous, issue, "lonely")
+	// The person declines one ask of each of the first two documents, as a person resolves one,
+	// and the base release settles that state into its block before the person approves.
+	for _, name := range []string{"one", "two"} {
+		previous.call(t, http.MethodPost, "/api/v1/asks/"+blockAskOf(t, previous, issue, "declined-"+name)+"/decline", `{"note":"Not before the census."}`, http.StatusOK)
+	}
 	// The fifth and the sixth document: two open asks of each one's own and a copy of the second
 	// document's open ask, which the base release settles as a copy, open, naming its source.
 	fifth := uploadedID(t, uploadDocument(t, previous, issue, "fifth.md", copyingDocument("fifth")))
@@ -246,8 +258,13 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 			t.Fatalf("the base release's first document holds no %s on its ask blocks:\n%s", name, one.markdown)
 		}
 	}
-	if lonely := askOpener.FindString(two.markdown); !strings.Contains(lonely, `state="open"`) || strings.Contains(lonely, "answered") || strings.Contains(lonely, "copied") {
-		t.Fatalf("the base release's second document's only ask reads %q, want state=\"open\" alone", lonely)
+	if lonely := copyOpenerOf(two.markdown); !strings.Contains(lonely, `state="open"`) || strings.Contains(lonely, "answered") || strings.Contains(lonely, "copied") {
+		t.Fatalf("the base release's second document's ask lonely reads %q, want state=\"open\" alone", lonely)
+	}
+	for _, declined := range []struct{ document, block string }{{one.markdown, "declined-one"}, {two.markdown, "declined-two"}} {
+		if opener, _, _ := strings.Cut(askBlockText(declined.document, declined.block), "\n"); !strings.Contains(opener, `state="resolved"`) {
+			t.Fatalf("the base release's block %s reads %q once the person declined its ask, want state=\"resolved\"", declined.block, opener)
+		}
 	}
 	captured := make([]approvedDocument, len(superseding))
 	for index, id := range superseding {
@@ -493,8 +510,9 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	// approval.
 	sourceAddress := "dispatch://" + issue + "/artifact/" + sourceSlug
 	keptBlocks := map[string][]keptBlock{
-		one.id: {{"decided-one", blockAskOf(t, current, issue, "decided-one"), ""}, {"pending-one", blockAskOf(t, current, issue, "pending-one"), ""}, {"shared", blockAskOf(t, current, issue, "shared"), sourceAddress}},
-		two.id: {{"lonely", blockAskOf(t, current, issue, "lonely"), ""}},
+		one.id: {{"decided-one", blockAskOf(t, current, issue, "decided-one"), ""}, {"pending-one", blockAskOf(t, current, issue, "pending-one"), ""}, {"shared", blockAskOf(t, current, issue, "shared"), sourceAddress},
+			{"declined-one", blockAskOf(t, current, issue, "declined-one"), ""}},
+		two.id: {{"lonely", blockAskOf(t, current, issue, "lonely"), ""}, {"declined-two", blockAskOf(t, current, issue, "declined-two"), ""}},
 	}
 	for _, document := range []approvedDocument{one, two} {
 		before := newestReviewOf(t, current, document.id)
@@ -508,10 +526,20 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		settledDocument(t, ctx, current, database, document.id)
 		number, rendering := latestMarkdown(t, current, document.id)
 		// Every ask block, the blocks nobody edited included, holds the form R10 keeps, each value
-		// as its ask's node holds it, and none holds the answer's words or selection.
+		// as its ask's node holds it, and none holds the answer's words or selection. Each document
+		// holds a block of a resolved ask, so the form's `state` is read where the ask is resolved
+		// as well as where it is answered.
+		resolved := 0
 		for _, block := range keptBlocks[document.id] {
-			requireKeptForm(t, ctx, database, document.name+"'s version "+strconv.Itoa(number), rendering, block)
+			if requireKeptForm(t, ctx, database, document.name+"'s version "+strconv.Itoa(number), rendering, block) == asks.StateResolved {
+				resolved++
+			}
 		}
+		if resolved == 0 {
+			t.Errorf("%s's version %d holds no block of a resolved ask, so the form R10 keeps where an ask is resolved was never read:\n%s",
+				document.name, number, rendering)
+		}
+		t.Logf("%s's version %d: %d blocks of resolved asks hold the form R10 keeps", document.name, number, resolved)
 		requireNoAnswerWords(t, document.name+"'s version "+strconv.Itoa(number), rendering)
 		approval := approvalOf(t, current, document.id)
 		carried := newestReviewOf(t, current, document.id)

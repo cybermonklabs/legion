@@ -430,21 +430,31 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples", "block_index_event_cursors", "document_block_versions"},
 	}, store.IssueOwner("CORE-1"))
+	// Each hold holds the rows of its own step alone, written in a write phase of the store's writer
+	// with no head write (graphstore.QueueWrite, where graphstore.Write would queue one): the head
+	// rows are a step of their own (lockstep.StepHead), and two holds writing facts of one node would
+	// otherwise each hold that node's head row, the second waiting for the first.
 	node := lockstep.Hold{
 		Name: ref + "'s node row", Step: lockstep.StepNode, Taken: true,
 		Kind: graphstore.KindArtifact, ID: ref, Statement: "insert into graph_nodes (",
 	}
 	lockstep.Begin(t, database, &node)
-	if err := graphstore.Write(ctx, node.Tx, []graphstore.Node{graphstore.ArtifactNode(ref, "CORE", "", alice, now)}, nil); err != nil {
+	if err := store.RunWrite(ctx, node.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, []graphstore.Node{graphstore.ArtifactNode(ref, "CORE", "", alice, now)}, nil)
+		return nil
+	}); err != nil {
 		t.Fatalf("hold %s: %v", node.Name, err)
 	}
 	state := lockstep.Hold{Name: ref + "'s state tuple", Step: lockstep.StepTuple, Taken: true, Statement: "with written as ("}
 	lockstep.Begin(t, database, &state)
-	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
-		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
-		ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
-		At: now, Who: alice, SourceEvent: created, Asserted: true,
-	}}); err != nil {
+	if err := store.RunWrite(ctx, state.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
+			FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
+			ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
+			At: now, Who: alice, SourceEvent: created, Asserted: true,
+		}})
+		return nil
+	}); err != nil {
 		t.Fatalf("hold %s: %v", state.Name, err)
 	}
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},

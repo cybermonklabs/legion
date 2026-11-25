@@ -42,3 +42,27 @@ func TestTwoClonesInOneProcessBuildOneTemplate(t *testing.T) {
 		t.Fatalf("two clones in one process built %d templates, want 1; the run's stderr was:\n%s", builds, stderr.String())
 	}
 }
+
+// The admin pool holds twice the drops in flight (dropSlots), whatever pool size
+// LEGION_TEST_PG_DSN sets: drops take at most half its connections, so a clone always finds one,
+// which is what dropSlots' count is for. A DSN that sized it at 2 would put every connection on
+// drops, and one that sized it at 64 would open that many admin connections in every package that
+// clones, all on one server.
+func TestTheAdminPoolHoldsTwiceTheDropsInFlightWhateverTheDSNSets(t *testing.T) {
+	t.Setenv("PGPORT", "")
+	t.Setenv("PGUSER", "legion_test")
+	for _, dsn := range []string{
+		"postgres://legion_test@127.0.0.1:5433/legion?sslmode=disable",
+		"postgres://legion_test@127.0.0.1:5433/legion?pool_max_conns=2&sslmode=disable",
+		"postgres://legion_test@127.0.0.1:5433/legion?pool_max_conns=64&pool_min_conns=8&sslmode=disable",
+	} {
+		config, err := adminConfig(dsn)
+		if err != nil {
+			t.Fatalf("adminConfig(%s): %v", dsn, err)
+		}
+		if config.MaxConns != int32(2*cap(dropSlots)) || config.MinConns != 0 {
+			t.Errorf("the admin pool on %s holds %d connections (at least %d), want %d: twice the %d drops in flight, and none held open",
+				dsn, config.MaxConns, config.MinConns, 2*cap(dropSlots), cap(dropSlots))
+		}
+	}
+}

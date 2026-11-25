@@ -2,12 +2,13 @@
 
 Legion runs teams of coding agents on the issues you hand it, and brings each one back as a pull
 request that is ready to merge. Root processes own issue trees: each root issue gets an architect
-that writes its spec and splits the work, and the daemon runs a planner, an implementer, a tester, a
-reviewer and a merger over each change. The Legion daemon keeps the durable state, gives each agent
+that writes its spec and splits the work, and the daemon runs over each change the steps its plan
+names (in the default steps a planner, an implementer, a tester, a reviewer and the architect's own
+acceptance), then a merger. The Legion daemon keeps the durable state, gives each agent
 its credentials and routes the events between them. Issues, specs and every decision a person makes
 live in Dispatch. Legion is for people who want agents to work tracked issues end to end while they
 keep the decisions: what to build, whether the spec is right, the answers to the agents' questions,
-which credentials the agents may use, and the merge.
+which credentials the agents may use, and the rules the merge lands under.
 
 Documentation: <https://cybermonklabs.github.io/legion/>
 
@@ -19,15 +20,19 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 `legion`: you label an issue yourself, or ask the controller session the operator starts to label
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
-only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
-pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
+only you can answer. Once you approve the spec, the daemon runs the phase workers of the steps the
+architect's plan names, in the order it names them (planner, implementer, tester and reviewer in
+the default steps), and then the merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, or a
+Claude Code one for a phase worker the deployment puts there, in a tmux pane on one host or, on
+Kubernetes, in the one [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod of
+its issue, and the planner, the implementer, the tester and the reviewer each record a handoff on
+the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
-from Todo through In Progress, Testing, Needs Review and Retro to Done. The architect accepts the
-reviewed change, the merger posts `READY` on the issue and submits the merge, the pull request
-merges under the repository's own rules and closes the issue, and the implementer then checks the
-change in production once it is deployed, recording that on the pull request.
+from Todo through the statuses of the steps it runs (In Progress, Testing, Needs Review and Retro
+in the default steps) to Done. The architect accepts the change where its plan has that step, the
+merger merges the pull request itself under the repository's own rules, the merge closes the
+issue, and the role your project's `production_check` names (the tester by default) then checks
+the change in production once it is deployed, recording that on the pull request.
 
 [Legion's documentation](https://cybermonklabs.github.io/legion/legion/) ·
 [a walkthrough video of one issue](https://cybermonklabs.github.io/legion/legion/walkthrough/)
@@ -160,13 +165,16 @@ Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read i
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
-(`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
-or later, since an older one answers a retry of a publish its full stream refused as a duplicate
-it does not hold. The suites that run the real Oh My Pi or Claude Code skip unless
-`LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names the pinned binary, and the Bun ones print no line
-saying so; the Oh My Pi suites of `packages/pi-envoy` and `packages/pi-legion` that need NATS read
-`LEGION_TEST_NATS_URL` too. On GitHub Actions they fail instead, and `.github/actions/install-omp`
-and `.github/actions/install-claude-code` install the pins there.
+(`go test -p 1`). That server's JetStream store must be on this host, writable by the user running
+the tests, and named by an absolute path (`nats-server -js -sd /abs/path`): one `testnats` row
+plants a directory in the store the monitoring endpoint reports. That server, and any nats-server
+an Envoy of your own runs against, must be 2.12 or later, since an older one answers a retry of a
+publish its full stream refused as a duplicate it does not hold. The suites that run the real Oh My
+Pi or Claude Code skip unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names the pinned binary, and
+the Bun ones print no line saying so; the Oh My Pi suites of `packages/pi-envoy` and
+`packages/pi-legion` that need NATS read `LEGION_TEST_NATS_URL` too. On GitHub Actions they fail
+instead, and `.github/actions/install-omp` and `.github/actions/install-claude-code` install the
+pins there.
 
 A change worth a changelog line adds a fragment to each package it changes that
 `.github/changelog-packages` lists. Open the pull request first, since the fragment carries its
