@@ -42,14 +42,19 @@ request's base, the merge group's base, which the generation step hands the scri
 computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
 could have moved runs. Each such filter is printed in the step's log and summary with the patterns
-only one side has. A base tree whose filters cannot be computed makes every filter `'**'`. A
+only one side has. A base tree whose filters cannot be computed makes every filter `'**'`, as a
+failed computation does (below). A
 change that touches none of those files is not compared, and costs no second computation.
 
 When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
 and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
-runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
+runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The file's
+names are the filters the changes job's outputs hand on, so it holds no filter a step reads out of
+the list of matched filters (#one-list-for-the-test-jobs-step-gates); the script also writes
+`every_filter=true` to its step's outputs, which makes that list `all`, so every such step runs
+too. The run is
 red all the same: the lint job's two readers of the filters refuse a fail-open file, whatever the
 cause. The ci-filters job, which every filter then selects, fails as well when the cause is the
 engine's own (a go command, a gate file, a `//ci:` line), but not when it is the Bun install or the
@@ -1056,12 +1061,6 @@ a race job of twenty minutes or more must not run on every change under that tre
 its own tests read - this package's, and pmdoc's, which one of them names through
 `..`. A dependency's testdata no test of this job reads is not an input.
 
-## envoy_go_race_docs: Two jobs run this package under the detector and share
-
-Two jobs run this package under the detector and share this filter, so it names
-both of their files (ci_job_reads.py gates envoy-go-race-docs and
-envoy-go-docs-finalizers on it).
-
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
@@ -1171,7 +1170,7 @@ it while it ran the daemon's Go suite and does not now), go-docs (docs, and the 
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-build, which build the
 listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
-job, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+job, and envoy-go-race-docs), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
@@ -1436,12 +1435,62 @@ The session message-wait suite, in a job of its own: it is the one test of the t
 that needs a database, and a Postgres service there would start one for every change
 that selects any of that job's harness steps.
 
-## One output per test.sh step of the test job
+## One list for the test job's step gates
 
-One output per `*.test.sh` step of the test job: each names that harness and the script
-it tests, so the step runs when either changes and skips when neither does. The job's
-own filter names every one of these lists, since a step gate decides nothing in a job
-that was not selected.
+Each `*.test.sh` step of the test job, and tooling-checks' guides layout step, has a filter of its
+own naming that harness and the script it tests (the guides' step, the guides), so the step runs
+when either changes and skips when neither does. Each job's own filter names every one of these
+lists, since a step gate decides nothing in a job that was not selected.
+
+The steps read those filters out of one output of the changes job, `matched_filters`: the
+paths filter's own `changes` output, the JSON array of every filter that matched
+(`["release_push_test","test"]`, written by JSON.stringify), or `all` on a dispatched run, whose
+filter step is skipped, and on a run whose filters fell open: the fallback file
+(#the-changes-job-computes-its-filters-when-it-runs) is named from the changes job's outputs and
+holds none of these filters, and the generate step's `every_filter` output, which the script
+writes `true` with that file, turns the list to `all`. Without that term every step gated on the
+list would be skipped on exactly the run whose filters could not be computed, which is the run
+the filter engine's own harnesses must run in. Each of ci-job-test.yaml's two callers hands it on as one input,
+`matched-filters`, and the whole of each gated step's condition is
+`inputs.changes-result != 'success' || inputs.matched-filters == 'all' ||
+contains(inputs.matched-filters, '"<filter>"')`, with one more `|| contains(...)` term for each
+other filter whose match also runs the step (the step that fetches the computed filters runs for
+either of the two harnesses that read them). The quotes make the `contains` match one whole
+name of the array: `ci_tools_test` without them would match `mirror_ci_tools_test` too. Before,
+each gate was an output of the changes job and a `with:` line of its calling job, about 197
+bytes of ci.yaml per gate, in a file .github/scripts/check-workflow-files.sh holds under 64,000
+bytes; replacing the 50 of them with this one output took 10,512 bytes out of the file, and a
+gate added now costs ci.yaml nothing.
+
+.github/scripts/check-ci-filters.sh reads a step's filter out of the `contains` as it reads one
+out of an output (rules 2 and 3, both through one reader, `gated_filters`); rule 2 asks an
+output of the changes job only of a filter read through one, since the list hands on every filter
+that matched. It holds the shape:
+rule 19 holds `matched_filters` to its one value, `all` on a dispatched run and on a fall-open
+run included, and its job to one step of id `generate` running the generation; it refuses a
+gate declaring a filter named `changes`, under which the paths filter would write that filter's
+verdict in place of the list, or `<another filter>_count` or `_files`, names the paths filter
+writes those filters' counts and files under, and refuses a filter name JSON would escape or two names that
+differ only in case, which the quoted `contains` (GitHub's ignores case) could not tell apart;
+rule 23 refuses a condition naming the list that is not that whole shape (`!= ''`, a `!` before
+a `contains` or a term after the last, a `contains` without the quotes, a missing `all` or
+result term), a job-level
+read of it, and, in a condition or in any other `${{ }}` of a job, a spelling of the changes job
+or an input it does not read (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`,
+`toJSON(inputs)`). It also refuses every other read of a value that carries every filter's
+verdict - the list, `filter_verdicts`, the ci-ok payload (`toJSON(needs.changes)`, which holds
+both), `toJSON(needs)` and every job's outputs through `needs.*` (but `needs.*.result`): in a
+condition but the payload's `!= ''`, which asks only whether ci.yaml is the caller, and in a
+`run:`, `env:` or `with:` but ci.yaml's own `with:` to a called workflow, the ci-ok report
+action's `changes:` and the ci-ok job itself. A step that read one of them for a filter
+(`case '${{ inputs.matched-filters }}' in *apx*)`) would be gated on a filter no rule reads. No
+job is gated on the list: ci-ok's CI_OK_SELECTED_BY maps a job to the output that is `'true'`
+when changes selects it, and the list is never `'true'`, so each job
+keeps an output of its own and that map needs no change.
+.github/scripts/ci-router-outputs.test.sh evaluates each gated step's `if:` through ci.yaml's
+`with:` as GitHub would (`ci_router_outputs.py --steps`): with each filter matched alone, the
+steps that run are exactly the steps naming that filter, and every one runs on a dispatched run
+and when changes did not succeed.
 
 ## Why the browser image's build carries no full-ci term
 
@@ -1487,8 +1536,8 @@ a job's time from its first leg's start to its last leg's end; the numbers below
 
 What that gives, with each job's 90th percentile in minutes:
 
-- held back: daemon-go 43.1, envoy-go 39.1, envoy-go-race-api 36.4, envoy-go-race-docs 33.7
-  and envoy-go-docs-finalizers 19.8 (one output), dispatch-memory 32.5, envoy-go-race 29.8,
+- held back: daemon-go 43.1, envoy-go 39.1, envoy-go-race-api 36.4, envoy-go-race-docs 33.7,
+  dispatch-memory 32.5, envoy-go-race 29.8,
   envoy-go-claim-model 21.1, dispatch-multiprocess 18.7, envoy-go-checks (24.0 as the one job
   it was; its script tests 17.4), pi-legion (14.8 as one job), envoy-infra-go (14.0 as one
   job), test (12.3 as one job), dispatch-browser (the full lane), dispatch-two-builds 13.7 and
@@ -1531,12 +1580,11 @@ them. `<output>` is one of the fifteen outputs the `full-ci` term gates, and the
 that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
-`envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
-`envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull request that needs
-one slow suite's result at its head - a test that only that suite runs, or a `ci_check` naming
-that job - without running the others. Each term names its own label, so the label that turns
-a job on is written beside it and nowhere else, and the paths term stays: a lane label never
-runs a suite its filter did not select.
+`envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
+request that needs one slow suite's result at its head - a test that only that suite runs, or a
+`ci_check` naming that job - without running the others. Each term names its own label, so the
+label that turns a job on is written beside it and nowhere else, and the paths term stays: a
+lane label never runs a suite its filter did not select.
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
 output is `lane:envoy_go`, or an output that is not held back - turns on nothing and fails
@@ -1592,7 +1640,8 @@ beside them ci-ok's report tells the two apart and says which
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
-holds nothing back there, and the changes job's other outputs are all 'true'.
+holds nothing back there, and the changes job's other outputs are all 'true', but for the
+list of matched filters, which is `all` there.
 
 A job a pull request held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
@@ -1620,9 +1669,10 @@ each changes, to name a number no other one has taken. The pull request's text i
 
 ## Why every Biome step prints every warning and error
 
-Every step that runs Biome over a tree carries `--diagnostic-level=warn --max-diagnostics=none`,
-and links here. Biome prints 20 diagnostics by default, and infos count among the 20, so the
-error that fails a step can be one it does not print. #5195's lint run
+Every step that runs Biome over a tree links here, and each but lint's whole-tree check carries
+`--diagnostic-level=warn --max-diagnostics=none`. Biome prints 20 diagnostics by default, and
+infos count among the 20, so the error that fails a step can be one it does not print. #5195's
+lint run
 (https://github.com/cybermonklabs/legion/actions/runs/45179104499/job/137708378563) printed 20
 infos, then `Diagnostics not shown: 17.` and `Found 1 error.`: the error, a formatting error in
 packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json, was among the 17, and the
@@ -1634,6 +1684,13 @@ error fail, and it makes warnings fail, not infos. The level must not go above `
 counts only the diagnostics the level keeps, so with `--diagnostic-level=error
 --error-on-warnings` a tree whose one fault is a warning exits 0, where the step without the
 level exits 1.
+
+Lint's whole-tree check runs .github/scripts/check-biome-tree.sh, which passes
+`--max-diagnostics=none` and keeps the infos. It must: Biome does not read a file of its
+`files.maxSize` or more and says so only in an info, and the script fails naming each such file
+from that info. `--files-max-size` would not stand in for the info: it does not change the limit
+of a nested biome.json that sets none (packages/claude-envoy's), which stays at Biome's default of
+1 MiB.
 
 ## What the ci-images job copies, and why the order is the point
 
@@ -1814,9 +1871,9 @@ nothing tested: re-run every job instead.
 
 The script harnesses and the Bun suites of scripts/, a slow suite the merge queue runs
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue). Each
-`*.test.sh` step runs behind a `changes` output of its own naming that harness and the
-script it tests, handed down as an input of the same name
-(.github/workflows/ci-job-test.yaml), so a change to one script runs one harness. The job's
+`*.test.sh` step runs behind a filter of its own naming that harness and the script it tests,
+which the step reads out of the changes job's one list of the filters that matched
+(#one-list-for-the-test-jobs-step-gates), so a change to one script runs one harness. The job's
 own filter names every one of those lists, since a job's `if:` tests one output and a step
 gate decides nothing in a job that was not selected. When `changes` did not succeed every step
 runs. The plugin build, the changelog check, the guides' layout step, the lints and the
@@ -1858,7 +1915,8 @@ pick a job
 The steps of the old test job that a pull request runs: the Claude Code plugin's build, check
 and pack as the release runs them, the check that the plugin's build-input list covers what the
 build reads, the render check of every changelog fragment with the changie it installs, the
-guides' layout step behind its own guide_layout gate, and the lints and typechecks of
+guides' layout step behind its own guide_layout filter, read out of the same list of matched
+filters (#one-list-for-the-test-jobs-step-gates), and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
 typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
@@ -2235,17 +2293,21 @@ without its lock races the room's peers, which no ordinary run shows
 (TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:39,
 LEGION-499).
 
-## The cleanup detector run of the document service
-
-The same package under Go's cleanup detector, which names what the memory of envoy-go-race-docs' race run went to:
-GODEBUG=checkfinalizers=1 makes the runtime report a cleanup or a finalizer whose closure or
-argument reaches the object it is attached to, a cycle that keeps that object alive for the
-life of the process, and that is the defect that held this package's memory
-(dispatch://INFRA-1085). This is the only package of the repository that registers a cleanup,
-so no other job needs it. It runs without -race: the detector is the runtime's own
-bookkeeping, and a plain binary leaves the runner room the race binary does not. It reads the
-same closure as envoy-go-race-docs, so it reuses that filter and that `changes` output rather
-than taking one of its own.
+The same run is the package's run under Go's cleanup detector: GODEBUG=checkfinalizers=1 makes
+the runtime report a cleanup or a finalizer whose closure or argument reaches the object it is
+attached to, a cycle that keeps that object alive for the life of the process, and that is the
+defect that held this package's memory (dispatch://INFRA-1085). This is the only package of the
+repository that registers a cleanup, so no other job needs it. The detector is the runtime's own
+bookkeeping and runs beside the race detector in one process, so no job runs the package again
+for it: the job envoy-go-docs-finalizers that ran all of its tests a second time, plain, for this
+detector alone (994.286 s, job 137289139624, against 1770.949 s for this run, job 137289139255)
+is gone.
+The package's TestMain count of the services its tests left alive, which that job ran with -v
+to print, prints here too, since -json streams the binary's own output (`docs: 1286 services
+built, 0 still alive` in job 137289139255), and fails the run as it did there. What the race
+build cannot run or runs shrunk - the room-memory bounds, the full-size render-reuse storms and
+the xid window tests, whose gap bound only a plain build judges - runs plain, under the cleanup
+detector too, in envoy-go's step "Test what the race build cannot run at all or at full size".
 
 ## The real-process memory tests, and why they are a job of their own
 
