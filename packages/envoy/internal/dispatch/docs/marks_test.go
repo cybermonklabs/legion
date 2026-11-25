@@ -107,15 +107,17 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
 	}
 
-	// The looks around the wait cost what the machine gives them: here one takes longer than
-	// the bound below, as the package's parallel tests made them take on CI (job 138998017546).
-	service.afterReadWarm = func(string) { time.Sleep(1200 * time.Millisecond) }
+	// The call answers ErrAnchorMissing only from the look after its MarkWait timer fires, so it
+	// takes at least MarkWait. What it takes beyond that is the machine's: the owner's read, the
+	// room's load and the looks cost what the package's parallel tests leave them (2.08 s against
+	// a 300 ms MarkWait in envoy-go-race-docs job 138998017546). So the upper bound is only the
+	// package's hang guard (roomWait), never a multiple of MarkWait.
 	started := time.Now()
 	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
 		t.Fatalf("missing mark err = %v", err)
 	}
-	if waited := time.Since(started); waited < 250*time.Millisecond || waited > time.Second {
-		t.Fatalf("waited %v, want approximately MarkWait", waited)
+	if waited, bound := time.Since(started), roomWait(t); waited < 250*time.Millisecond || waited > bound {
+		t.Fatalf("waited %v, want at least MarkWait (300ms) and at most the hang guard %v", waited, bound)
 	}
 }
 
