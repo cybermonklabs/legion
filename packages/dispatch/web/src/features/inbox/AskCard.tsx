@@ -196,7 +196,7 @@ export function AskCard({
     initiallyChanging: mode === "change",
     onAnswered,
   });
-  const { completed, displayedAsk, edits, threadQuery } = form;
+  const { completed, displayedAsk, edits, questionReads, threadQuery } = form;
   const [handlesOpen, setHandlesOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   // One page can host the same ask twice (a decision block and the margin sheet), so the
@@ -352,6 +352,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         {body}
         {referencedByNode}
         {threadNode}
@@ -375,6 +376,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"

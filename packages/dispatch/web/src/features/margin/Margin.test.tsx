@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -16,6 +16,7 @@ import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
@@ -36,6 +37,12 @@ import {
   stubDocumentBridge,
   stubViewport,
 } from "./margin-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const secondIssue: IssueDetails = {
   ...issue,
@@ -232,6 +239,60 @@ test("clicking a document mark opens its thread in the margin and stays on the d
     });
     expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id);
     expect(screen.getByLabelText("Current path").textContent).toBe(specPath);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// A document renamed to a slug-shaped name keeps its first slug, and its page opens at its current
+// name too (`artifactAtAddress`): the margin there shows that document's comments, as the page
+// shows the document, and none of another document's.
+test("the margin of a document opened at its current name, not its slug, lists that document's comments", async () => {
+  const notes = {
+    ...specArtifact,
+    id: "artifact-notes",
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    slug: "notes-md",
+  };
+  const notesComment: Comment = {
+    ...comment,
+    anchor: comment.anchor === null ? null : { ...comment.anchor, artifact_id: notes.id },
+    body: "A note on the notes.",
+    id: "comment-notes",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  queryClient.setQueryData(["issue", issue.key], {
+    ...issue,
+    artifacts: [...(issue.artifacts ?? []), notes],
+  });
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["asks", issue.key], []);
+  queryClient.setQueryData(["user-state"], {});
+  queryClient.setQueryData(["comments", issue.key], [comment, notesComment]);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter
+      initialEntries={[buildIssuePath({ key: issue.key, kind: "artifact", slug: "launch-notes" })]}
+    >
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <Margin />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId(`margin-comment-${notesComment.id}`);
+    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).toBeNull();
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -1829,7 +1890,7 @@ test("a stopped compose that gives way to a newer one is offered saying it may h
       heldSends(queryClient).send(marginComposeSendKey(specArtifact.id), {
         anchor: markComposerAnchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "Stopped words", mentions: [], replacement: "" },
+        draft: { body: "Stopped words", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner,

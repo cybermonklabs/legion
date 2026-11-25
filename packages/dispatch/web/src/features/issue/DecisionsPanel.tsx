@@ -23,8 +23,10 @@ import {
 import { useDecisionWrites } from "../decision-card/useDecisionWrites";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { PlainText } from "../refs/plain-text";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { useDecisionHeadingWords } from "./decision-heading";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -62,6 +64,7 @@ function wordsOf(node: DisplayTree): string {
   let apart = false;
   const read = (current: DisplayTree): void => {
     if (typeof current.text === "string") {
+      // A tree's words joined to match a quote against, drawn nowhere.
       words += apart && words !== "" ? ` ${current.text}` : current.text;
       apart = false;
       return;
@@ -203,6 +206,7 @@ function DecisionBlocks({
           markdown={block.text}
           referenceText={block.references}
           source={source}
+          surface="issue-decision"
           tree={block.tree}
         />
       </div>
@@ -213,6 +217,7 @@ function DecisionBlocks({
         markdown={block.text}
         referenceText={block.references}
         source={source}
+        surface="issue-decision"
         tree={block.tree}
       />
     )
@@ -220,20 +225,28 @@ function DecisionBlocks({
 }
 
 /** A decision waiting for the reader's review, with the writes the tab hands the card: Keep and
- *  Change (`useDecisionWrites`). */
+ *  Change (`useDecisionWrites`), named after the heading's plain words. */
 function WritableDecision({
   documentId,
   issueKey,
   model,
+  name,
   ...props
-}: DecisionCardProps & { documentId: string; issueKey: string; model: Decision }): ReactNode {
-  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey });
-  return <DecisionCard {...props} change={change} keep={keep} />;
+}: DecisionCardProps & {
+  documentId: string;
+  issueKey: string;
+  model: Decision;
+  name: string;
+}): ReactNode {
+  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey, name });
+  return <DecisionCard {...props} change={change} issueKey={issueKey} keep={keep} />;
 }
 
 /** One decision in its section, drawn by the decision card with its setting off (R20, R21) and
  *  the tab's own renderer; in "Waiting for your review" with Keep and Change, where the issue is
- *  open and its decisions document is known. */
+ *  open and its decisions document is known. The heading is a record of the decisions document
+ *  too: the card draws it by the renderer, and names a link, a write and a form by its plain
+ *  words (`useDecisionHeadingWords`). */
 function TabDecision({
   decision,
   documentId,
@@ -255,10 +268,23 @@ function TabDecision({
   /** Whether this section takes the decision's Keep and Change. */
   writes: boolean;
 }): ReactNode {
-  const source = textSourceOf("artifact", documentId);
+  const source = textSourceOf("artifact", documentId, issueKey);
+  const { reads, tree: headingTree, words: name } = useDecisionHeadingWords(decision, source);
   const props: DecisionCardProps = {
     authorLine: false,
     decision: shown,
+    heading: {
+      node: (
+        <MarkdownBody
+          markdown={decision.heading}
+          source={source}
+          surface="issue-decision"
+          tree={headingTree}
+          variant="inline"
+        />
+      ),
+      words: name,
+    },
     paths: {
       ask: (id) => buildIssuePath({ id, key: issueKey, kind: "ask" }),
       statement: (blockId) => specBlockPath(issueKey, spec, blockId),
@@ -269,8 +295,15 @@ function TabDecision({
   };
   return (
     <li className={`rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
+      {reads}
       {writes && !isClosed && documentId !== undefined ? (
-        <WritableDecision {...props} documentId={documentId} issueKey={issueKey} model={decision} />
+        <WritableDecision
+          {...props}
+          documentId={documentId}
+          issueKey={issueKey}
+          model={decision}
+          name={name}
+        />
       ) : (
         <DecisionCard {...props} />
       )}
@@ -294,7 +327,16 @@ function OpenQuestion({
   return (
     <li className={`rounded-lg border p-3 ${card}`}>
       <Link className={`text-sm ${linkText} ${linkHoverText}`} to={path}>
-        {ask.question}
+        <PlainText
+          markdown={ask.question}
+          source={textSourceOf("ask", ask.id, issueKey)}
+          surface="issue-open-question"
+          tree={ask.question_tree}
+        >
+          {/* The question as its plain words, and as written until the engine has answered:
+              the reading list's `issue-open-question`. */}
+          {(words) => words ?? ask.question}
+        </PlainText>
       </Link>
     </li>
   );

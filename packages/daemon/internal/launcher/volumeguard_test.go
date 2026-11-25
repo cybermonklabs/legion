@@ -180,6 +180,7 @@ func reclaimableRootPaths() []string {
 // itself in use counts as used. The negative control is a sibling path no process names, so a
 // pass is not a reader answering yes to everything.
 func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
+	t.Parallel()
 	const (
 		entry = "/legion/scratch/cache/ms-playwright"
 		held  = entry + "/chromium-1200/chrome-linux/chrome"
@@ -227,6 +228,7 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 // everything it was about to delete. The control is another process holding a path the same way,
 // which must count: without it a reader that found nothing at all would pass.
 func TestTheUsedPathSetLeavesTheReadersOwnProcessOut(t *testing.T) {
+	t.Parallel()
 	const (
 		own   = "/legion/go/build/ab/abcdefabcdefabcdefabcdefabcdefab-a"
 		other = "/legion/go/build/cd/cdefabcdefabcdefabcdefabcdefabcd-d"
@@ -256,6 +258,7 @@ func TestTheUsedPathSetLeavesTheReadersOwnProcessOut(t *testing.T) {
 // stages, and it refuses only a reader that is not root; the file where the fd directory belongs
 // refuses every reader, and is what this case runs when the test process is root.
 func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
+	t.Parallel()
 	const (
 		stillRead = "/legion/scratch/tmp/go-build2026/one"
 		gone      = "/legion/scratch/tmp/go-build1999/two"
@@ -304,6 +307,7 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 // process alone, then the whole set. The negative control is descriptors keeping an entry per
 // descriptor, as it did at 8a30be78, which held 302.
 func TestAProcessHoldsEachRootOnceHoweverManyDescriptorsItHasOnIt(t *testing.T) {
+	t.Parallel()
 	roots := reclaimableRootPaths()
 	tmp, build, bun := roots[0], roots[1], roots[3]
 	process := fixtureProcess{pid: 101}
@@ -335,6 +339,7 @@ func TestAProcessHoldsEachRootOnceHoweverManyDescriptorsItHasOnIt(t *testing.T) 
 // `go-build` tree leaves the tree's own time as old as its creation; a guard that read that time
 // would delete the cache the build is writing.
 func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
+	t.Parallel()
 	old := time.Now().Add(-48 * time.Hour)
 	fresh := time.Now().Add(-time.Minute)
 	dir := t.TempDir()
@@ -452,6 +457,7 @@ func writeAged(t *testing.T, path string, at time.Time) {
 // would have given, and newerThan walks the same way. A refused level is the error the guard
 // answers with, and the listing passes the entry over and names it (list, volumetrim.go).
 func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnAbsoluteOne(t *testing.T) {
+	t.Parallel()
 	old := time.Now().Add(-48 * time.Hour)
 	fresh := time.Now().Add(-time.Minute)
 	dir := t.TempDir()
@@ -551,6 +557,7 @@ func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnA
 // whole, as fs.ReadDir read it at b7085e21, which held every name's entry and lstat for as long
 // as the level was being visited.
 func TestTheGuardWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
+	// Not parallel: it measures the whole process's heap, which parallel tests allocate on.
 	const names, sample, bound = 20000, 2000, 1 << 20
 	dir := t.TempDir()
 	wide := filepath.Join(dir, "entry", "wide")
@@ -603,6 +610,7 @@ func TestTheGuardWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
 // with the stop's own error. The negative control is the walk at dd846980, which asks only before
 // it opens the directory: it visited every name and answered no error.
 func TestTheGuardWalkAsksItsStopBetweenTheBatchesOfOneDirectory(t *testing.T) {
+	t.Parallel()
 	const names = 2000
 	dir := t.TempDir()
 	wide := filepath.Join(dir, "wide")
@@ -645,6 +653,7 @@ func TestTheGuardWalkAsksItsStopBetweenTheBatchesOfOneDirectory(t *testing.T) {
 // carries the reason, since a cache root filling with such entries is why a pod stays over its
 // mark.
 func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	workspace := filepath.Join(dir, "workspaces", "cybermonklabs", "legion", "infra-2009")
 	mkdirFixture(t, workspace)
@@ -766,6 +775,7 @@ var guardHeldFile *os.File
 // The negative control is a path of the same tree no process uses: a reader that answered yes to
 // everything would pass every case above and fail this one.
 func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -901,6 +911,7 @@ func threadCwdNames(t *testing.T, cwd string) bool {
 // TestVolumeGuardNamespaceHelper is the child the case clones into a role's namespaces: it
 // starts the four processes the case looks for and then waits to be killed with its namespace.
 func TestVolumeGuardNamespaceHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(volumeGuardNamespaceEnv)
 	if encoded == "" {
 		return
@@ -945,6 +956,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 // TestVolumeGuardProcessHelper is one process inside those namespaces: it takes hold of the one
 // thing its kind is for, reports itself ready and waits.
 func TestVolumeGuardProcessHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(volumeGuardProcessEnv)
 	if encoded == "" {
 		return
@@ -1020,6 +1032,7 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 // container's own /proc: the go-build tree under it stayed, and the line said the root "is held
 // open by a process of the pod and is skipped whole".
 func TestAProcessStandingInARootIsNoHoldOnIt(t *testing.T) {
+	t.Parallel()
 	for _, stand := range []struct {
 		name  string
 		place func(process *fixtureProcess, path string)

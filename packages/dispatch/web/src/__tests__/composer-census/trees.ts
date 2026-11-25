@@ -39,13 +39,14 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *   drafts are the asks' replies (`reply-drafts.ts`): each element drawing one is a mount of the
  *   component it is drawn in, and its address props are the props of its own that its `homes`
  *   calls read. A `MentionComposer` mount is named by its send name.
- * - The answer field the ask body draws (`ask-body/AskBody.tsx`), a plain `<textarea>` under the
+ * - The answer field the ask body draws (`ask-body/AskBody.tsx`), the shared field
+ *   (`MentionField`) under the prop that makes it the answer box (`askAnswer`), which writes the
  *   handle the Inbox finds the box by (`data-ask-answer`), whose drafts are the asks' answers
- *   (`answer-drafts.ts`), held by the form hook (`useAskAnswerForm`): each element under the
- *   handle is a mount of the component it is drawn in, named by the handle, and its address props
- *   are what is handed the hook where the hook's `homes` calls read it - by the host, where it
- *   calls the hook, else by each component that draws the host and hands it the hook's answer as
- *   its `formProp` (the card hands the body its `form`).
+ *   (`answer-drafts.ts`), held by the form hook (`useAskAnswerForm`): each element under the prop
+ *   is a mount of the component it is drawn in, named by the prop, and its address props are what
+ *   is handed the hook where the hook's `homes` calls read it - by the host, where it calls the
+ *   hook, else by each component that draws the host and hands it the hook's answer as its
+ *   `formProp` (the card hands the body its `form`).
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
  * component that holds each and not past it: the answer field's to the ask body (`ASK_BODY`),
@@ -96,7 +97,7 @@ const DRAFT_FIELDS: readonly DraftField[] = [
   },
   {
     formProp: "form",
-    handle: "data-ask-answer",
+    handle: "askAnswer",
     homes: new Set(["useAnswerDraft"]),
     hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
     upTo: ASK_BODY,
@@ -109,7 +110,7 @@ export interface Mount {
   readonly element: ts.Node;
   readonly host: Comp;
   /** The mount as its host draws it, by its send name or its handle where it has one:
-   *  `<MentionComposer mutationKey={…}>`, `<AskReplyComposer>`, `<textarea data-ask-answer="">`. */
+   *  `<MentionComposer mutationKey={…}>`, `<AskReplyComposer>`, `<MentionField askAnswer={true}>`. */
   readonly shown: string;
   /** The host and `shown`, which name the mount among all of them. */
   readonly name: string;

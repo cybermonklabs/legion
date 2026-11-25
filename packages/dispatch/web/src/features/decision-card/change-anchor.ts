@@ -36,21 +36,34 @@ export function decisionsDocumentId(
 }
 
 /**
- * The words of the decision's first block below its heading, which is what a change is anchored
- * to: the server matches an anchor quote against the document's own text (`pmdoc.FindQuote`),
- * never its markdown, so a list or a hard break quoted as markdown would anchor on nothing. They
- * are read from the decision's reading (`readingOf`), whose top-level blocks are the paragraphs
- * the markdown would have been split into: the tree Go read the decision's text into
- * (`Decision.text_tree`), and where the read carried none that holds blocks - a pod of the build
- * before during a rolling deploy - the reading of its stored text (`storedReading`), so a
- * decision's quote is the words of its text either way, never its markdown. Undefined for a
- * decision whose heading is all it holds.
+ * The decision's first block below its heading, which is what a change is anchored to, as a
+ * reading of that block alone: the server matches an anchor quote against the document's own
+ * text (`pmdoc.FindQuote`), never its markdown, so a list or a hard break quoted as markdown
+ * would anchor on nothing. It is read from the decision's reading (`readingOf`), whose top-level
+ * blocks are the paragraphs the markdown would have been split into: the tree Go read the
+ * decision's text into (`Decision.text_tree`), and where the read carried none that holds blocks
+ * - a pod of the build before during a rolling deploy - the reading of its stored text
+ * (`storedReading`). Undefined for a decision whose heading is all it holds. The Change draws
+ * this block's plain-text projection (`DecisionActions.tsx`), and anchors to its words
+ * (`anchorQuote`).
  */
-export function anchorQuote(decision: Pick<Decision, "text" | "text_tree">): string | undefined {
-  const blocks = readingOf(decision).content;
+export function anchorBlock(
+  decision: Pick<Decision, "text" | "text_tree">
+): DisplayTree | undefined {
+  const reading = readingOf(decision);
+  const blocks = reading.content;
   const block = Array.isArray(blocks)
     ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")
     : undefined;
+  return block === undefined ? undefined : { ...reading, content: [block] };
+}
+
+/** The words a change is anchored to: the words of the decision's first block below its heading
+ *  (`anchorBlock`), as the document's own text holds them, so a decision's quote is the words of
+ *  its text either way, never its markdown. Undefined for a decision whose heading is all it
+ *  holds. */
+export function anchorQuote(decision: Pick<Decision, "text" | "text_tree">): string | undefined {
+  const block = anchorBlock(decision);
   return block === undefined ? undefined : wordsOf(block);
 }
 

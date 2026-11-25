@@ -95,7 +95,7 @@ export const ASK_FORM_WORDS = Object.freeze({
    *  changes". */
   reason_hint: "Add a reason to send",
   question_shaped: "Your answer reads as a question",
-  reason: "Reason",
+  reason_label: "Reason",
   reason_required: "Reason (required)",
   save_answer: "Save answer",
   saving: "Saving…",
@@ -160,7 +160,7 @@ export const ASK_RECORD_WORDS = Object.freeze({
   previous_versions: Object.freeze({ after: "previous versions", before: "Show" } as const),
   reworded_by: "Reworded by",
   /** The tick of a chosen option, for a screen reader. */
-  selected: "Selected",
+  option_selected: "Selected",
 } as const);
 
 /** The tables of other files this list reads where they are: how a closed question was closed,

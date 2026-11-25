@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { Decision } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { fromDecision } from "./adapters";
 import {
@@ -74,6 +75,7 @@ function drawCard(
         authorLine={authorLine}
         change={change}
         decision={decision}
+        heading={{ node: decision.heading, words: decision.heading }}
         keep={keep}
         paths={PATHS}
         renderText={renderText}
@@ -191,6 +193,32 @@ test("each statement is a link by its first line, with Changed since and out of 
     expect(within(card).getAllByText(DECISION_LINK_WORDS.changed_since)).toHaveLength(1);
     expect(within(card).getAllByText(DECISION_LINK_WORDS.out_of_date)).toHaveLength(1);
     expect(card.textContent).not.toContain("Shaped in the spec:");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A link holds no markup, so a statement's line is the first line of its text as plain words:
+// the formatting is gone and a link reads as its words, never as its source (the reading list's
+// `decision-statement-line`).
+test("a statement's link reads its first line as plain words", async () => {
+  await warmMarkdownRenderer();
+  const { card, view } = drawCard({
+    ...WHOLE,
+    links: [
+      {
+        block_id: "p1",
+        created_at: "2026-11-02T00:00:00Z",
+        stale: false,
+        text: "**Warm** the [index](https://example.test/index) first.\nThen cut.",
+      },
+    ],
+  });
+  try {
+    const link = await within(card).findByRole("link", { name: "Warm the index first." });
+    expect(link.getAttribute("href")).toBe("/issues/CORE-1/spec#b-p1");
+    expect(card.textContent).not.toContain("**");
+    expect(card.textContent).not.toContain("Then cut.");
   } finally {
     view.unmount();
   }

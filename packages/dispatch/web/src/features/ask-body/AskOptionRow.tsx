@@ -10,6 +10,7 @@ import {
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import type { TextSource } from "../refs/text-references";
 import { ASK_RECORD_WORDS } from "./ask-body-words";
 import type { AskTextRenderer } from "./ask-text";
 
@@ -23,19 +24,29 @@ const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 t
 function OptionText({
   option,
   renderText,
+  source,
 }: {
   option: AskOptionWithTrees;
   renderText: AskTextRenderer;
+  source?: TextSource;
 }): ReactNode {
   return (
     <span className="min-w-0">
       <span className={`font-medium ${textPrimaryOnSurface}`}>
-        {renderText({ markdown: option.label, tree: option.label_tree, variant: "inline" })}
+        {renderText({
+          markdown: option.label,
+          source,
+          surface: "ask-option-text",
+          tree: option.label_tree,
+          variant: "inline",
+        })}
       </span>
       {option.description === undefined ? null : (
         <span className={`mt-0.5 block text-sm ${textOptionDescription}`}>
           {renderText({
             markdown: option.description,
+            source,
+            surface: "ask-option-text",
             tree: option.description_tree,
             variant: "inline",
           })}
@@ -58,6 +69,7 @@ export function AskChoiceRow({
   onChange,
   option,
   renderText,
+  source,
 }: {
   checked: boolean;
   className?: string;
@@ -68,6 +80,10 @@ export function AskChoiceRow({
   onChange: () => void;
   option: AskOptionWithTrees;
   renderText: AskTextRenderer;
+  /** The ask whose option this is (`TextSource`), so a `#id` in its label resolves against the
+   *  document that ask is scoped to; none where the option is a document block's own
+   *  attribute, which no ask row stands behind. */
+  source?: TextSource;
 }): ReactNode {
   // A chosen option takes the same border and fill the recorded answer shows afterwards, so
   // choosing and having chosen read alike.
@@ -83,7 +99,7 @@ export function AskChoiceRow({
         onChange={onChange}
         type={multiple ? "checkbox" : "radio"}
       />
-      <OptionText option={option} renderText={renderText} />
+      <OptionText option={option} renderText={renderText} source={source} />
     </label>
   );
 }
@@ -94,11 +110,14 @@ export function AskRecordRow({
   option,
   renderText,
   selected,
+  source,
 }: {
   className?: string;
   option: AskOptionWithTrees;
   renderText: AskTextRenderer;
   selected: boolean;
+  /** The ask whose option this is (`TextSource`); see `AskChoiceRow`. */
+  source?: TextSource;
 }): ReactNode {
   return (
     <li
@@ -107,7 +126,7 @@ export function AskRecordRow({
     >
       {selected ? (
         <span
-          aria-label={ASK_RECORD_WORDS.selected}
+          aria-label={ASK_RECORD_WORDS.option_selected}
           className={`font-semibold ${linkText}`}
           role="img"
         >
@@ -116,7 +135,7 @@ export function AskRecordRow({
       ) : (
         <span aria-hidden className="w-3" />
       )}
-      <OptionText option={option} renderText={renderText} />
+      <OptionText option={option} renderText={renderText} source={source} />
     </li>
   );
 }

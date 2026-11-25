@@ -30,18 +30,23 @@ export function useDecisionWrites({
   decision,
   documentId,
   issueKey,
+  name,
 }: {
   decision: Decision;
   /** The issue's decisions document, which both writes name. */
   documentId: string;
   issueKey: string;
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which both writes are
+   *  named after (`decision-heading-words`). */
+  name: string;
 }): { change: CardChangeAct | undefined; keep: CardKeepAct } {
   const queryClient = useQueryClient();
   // Read once per answer of the decisions read, which is when the decision is a new object.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
-    label: () => `${DECISION_ACT_WORDS.keep} ${decision.heading}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${DECISION_ACT_WORDS.keep} ${name}`,
     method: "POST",
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
@@ -70,7 +75,8 @@ export function useDecisionWrites({
   });
   const send = useKeyedWrite({
     inline: true,
-    label: () => `${DECISION_ACT_WORDS.change} ${decision.heading}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${DECISION_ACT_WORDS.change} ${name}`,
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).

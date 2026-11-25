@@ -1,5 +1,6 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
@@ -7,7 +8,6 @@ import { compareTimestamps } from "../../lib/timestamps";
 import {
   dangerText,
   decisionUnsureText,
-  inputClasses,
   linkHoverText,
   linkText,
   pageKindBullet,
@@ -18,10 +18,11 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { useAgentText } from "../refs/AgentName";
+import { usePlainHeadline } from "../refs/plain-text";
 import { blockQuery, blockText, blockTextTree } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
-import { wordsOf } from "../refs/tree-fragment";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
   DECISION_ACT_WORDS,
@@ -126,18 +127,33 @@ export interface CardChangeAct {
   readonly quote: string;
 }
 
+/** The decision's heading as its caller hands it to the card: drawn by the caller's renderer
+ *  where the heading links nowhere, and as plain words where it words a link, names the Change
+ *  form or names a stopped Keep, none of which holds markup (`useDecisionHeadingWords`). The card
+ *  draws no heading of its own: a heading is the writer's own markdown, which only a renderer
+ *  may draw. */
+export interface CardHeading {
+  /** The heading rendered for this surface (`MarkdownBody`), where it links nowhere. */
+  readonly node: ReactNode;
+  /** The heading as plain words (`decision-heading-words`). */
+  readonly words: string;
+}
+
 export interface DecisionCardProps {
   /** R20's setting: on, the card draws the author and the level word the read holds. */
   readonly authorLine: boolean;
   /** Change, on a decision that waits for review; none where the caller writes none. */
   readonly change?: CardChangeAct;
   readonly decision: CardDecision;
+  /** The decision's heading as its caller draws and words it (`CardHeading`). */
+  readonly heading: CardHeading;
+  /** The issue the decision is on, for the Change composer's reference picker. */
+  readonly issueKey?: string;
   /** Keep, on a decision that waits for review; none where the caller writes none. */
   readonly keep?: CardKeepAct;
   readonly paths: CardPaths;
   readonly renderText: DecisionTextRenderer;
 }
-
 /** The mark between two parts of a line, which a screen reader does not read. */
 function Dot(): ReactNode {
   return (
@@ -155,37 +171,34 @@ function levelWord(decision: CardDecision, authorLine: boolean): string | undefi
   return decision.unsure || level === "high" ? DECISION_LINE_WORDS.unsure : undefined;
 }
 
-/** The words of the first block of a reading that holds any, as a row of the new issue page
- *  draws a block's line; undefined for no reading, and "" for one none of whose blocks holds a
- *  word. */
-function firstBlockWords(reading: DisplayTree | undefined): string | undefined {
-  const content = reading?.content;
-  if (!Array.isArray(content)) return undefined;
-  for (const block of content as DisplayTree[]) {
-    const words = wordsOf(block);
-    if (words.trim() !== "") return words;
-  }
-  return "";
-}
-
 /** One statement the decision shaped, as a link by its first line, with "Changed since" and
  *  "out of date" where they apply. Where the decision's read holds no words for it, which is
  *  how the server answers a tie today, its line is read from the statement's own reference read
  *  (`blockQuery`), the read every reference to it on the page shares; a statement with no
- *  words is drawn as nothing, and never by its block's id. */
+ *  words is drawn as nothing, and never by its block's id. A link holds no markup, so the line
+ *  is the first line of the statement's text as plain words, from the reading the server made
+ *  of it where the read carries one (`usePlainHeadline`): the reading list's
+ *  `decision-statement-line`. */
 function StatementLink({ link, to }: { link: CardLink; to: string }): ReactNode {
   const read = useQuery({
     ...blockQuery(link.ref),
     enabled: link.text === undefined && link.ref !== undefined,
   });
   const node = read.data?.node;
-  const words =
-    link.text ??
-    (node === undefined ? undefined : (firstBlockWords(blockTextTree(node)) ?? blockText(node)));
-  const line = (words ?? "").trim().split("\n", 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
+  const markdown = link.text ?? (node === undefined ? undefined : blockText(node));
+  const { reads, text } = usePlainHeadline(
+    link.text === undefined && node !== undefined ? blockTextTree(node) : undefined,
+    markdown,
+    { firstLine: true, surface: "decision-statement-line" }
+  );
+  // Until the engine has answered, the first line as written: the load state of
+  // `decision-statement-line`.
+  const asWritten = (markdown ?? "").trim().split("\n", 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
+  const line = text?.text ?? asWritten;
   if (line === "") return null;
   return (
     <li>
+      {reads}
       <Link className={`${linkText} ${linkHoverText}`} to={to}>
         {line}
       </Link>
@@ -223,6 +236,8 @@ export function DecisionCard({
   authorLine,
   change,
   decision,
+  heading,
+  issueKey,
   keep,
   paths,
   renderText,
@@ -266,10 +281,11 @@ export function DecisionCard({
             className={`min-w-0 flex-1 text-[15px] leading-6 font-medium ${textPrimaryOnSurface}`}
           >
             {paths.decision === undefined ? (
-              decision.heading
+              heading.node
             ) : (
               <Link className={`${linkText} ${linkHoverText}`} to={paths.decision}>
-                {decision.heading}
+                {/* A link's words hold no markup: the reading list's `decision-heading-words`. */}
+                {heading.words}
               </Link>
             )}
           </h3>
@@ -331,7 +347,7 @@ export function DecisionCard({
           </p>
         )}
         {acts && (keep !== undefined || change !== undefined) ? (
-          <DecisionActs change={change} heading={decision.heading} keep={keep} />
+          <DecisionActs change={change} issueKey={issueKey} keep={keep} name={heading.words} />
         ) : null}
       </div>
     </div>
@@ -341,12 +357,16 @@ export function DecisionCard({
 /** Keep and Change, and the form Change opens. */
 function DecisionActs({
   change,
-  heading,
+  issueKey,
   keep,
+  name,
 }: {
   change: CardChangeAct | undefined;
-  heading: string;
+  issueKey: string | undefined;
   keep: CardKeepAct | undefined;
+  /** The decision's heading as plain words, which a stopped Keep and the Change form are named
+   *  after (`decision-heading-words`). */
+  name: string;
 }): ReactNode {
   const [changing, setChanging] = useState(false);
   const { stopped } = DECISION_ACT_WORDS;
@@ -380,7 +400,7 @@ function DecisionActs({
               under a key of its own. */}
           {keep.error instanceof SendStoppedError
             ? stoppedWriteNote(
-                `${stopped.keep.before}${heading}${stopped.keep.after}`,
+                `${stopped.keep.before}${name}${stopped.keep.after}`,
                 stopped.keep_done,
                 { anew: stopped.keep_anew }
               )
@@ -388,7 +408,12 @@ function DecisionActs({
         </p>
       )}
       {changing && change !== undefined ? (
-        <ChangeForm change={change} heading={heading} onDone={() => setChanging(false)} />
+        <ChangeForm
+          change={change}
+          issueKey={issueKey}
+          name={name}
+          onDone={() => setChanging(false)}
+        />
       ) : null}
     </div>
   );
@@ -397,15 +422,17 @@ function DecisionActs({
 /** The change itself: the words it is anchored on, the reader's own, and Send change. */
 function ChangeForm({
   change,
-  heading,
+  issueKey,
+  name,
   onDone,
 }: {
   change: CardChangeAct;
-  heading: string;
+  issueKey: string | undefined;
+  /** The decision's heading as plain words, which names the form. */
+  name: string;
   onDone: () => void;
 }): ReactNode {
   const [body, setBody] = useState("");
-  const fieldId = useId();
   const { stopped } = DECISION_ACT_WORDS;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -417,7 +444,8 @@ function ChangeForm({
   };
   return (
     <form
-      aria-label={`${DECISION_ACT_WORDS.change} ${heading}`}
+      // A form's name holds no markup: the reading list's `decision-heading-words`.
+      aria-label={`${DECISION_ACT_WORDS.change} ${name}`}
       className="space-y-2"
       onSubmit={submit}
     >
@@ -425,17 +453,17 @@ function ChangeForm({
         className={`border-l-2 pl-2 text-sm ${textSecondaryOnSurface}`}
         data-testid="decision-quote"
       >
+        {/* The decision's own words, as they are: the reading list's `anchor-quote`. */}
         {change.quote}
       </blockquote>
-      <label className={`block text-sm ${textPrimaryOnSurface}`} htmlFor={fieldId}>
-        {DECISION_ACT_WORDS.your_change}
-      </label>
-      <textarea
-        className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-        id={fieldId}
-        onChange={(event) => setBody(event.target.value)}
+      <MentionField
+        body={body}
+        issueKey={issueKey}
+        label={DECISION_ACT_WORDS.your_change}
+        labelClassName={`block text-sm ${textPrimaryOnSurface}`}
+        onChange={(next) => setBody(next.body)}
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("decisions-change", "comment")}
       />
       {change.error === null ? null : (
         <p className={`text-sm ${dangerText}`} role="alert">

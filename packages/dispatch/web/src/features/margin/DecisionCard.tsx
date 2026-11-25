@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { Decision, DisplayTree } from "../../api/types";
@@ -18,40 +18,63 @@ import {
 } from "../decision-card/DecisionCard";
 import { useDecisionWrites } from "../decision-card/useDecisionWrites";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, buildReferencePath, parseDispatchReference } from "../refs/routes";
-import { regionOrigin } from "./ThreadList";
+import { buildIssuePath, parseDispatchReference, referenceHref } from "../refs/routes";
+import { type TextSource, textSourceOf } from "../refs/text-references";
+import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** The margin's renderer of a decision's text (R21): the text whole, by `MarkdownBody`, below
- *  the heading the card draws, so the reading's own heading is left out of it. */
-function MarginDecisionText({ markdown, tree }: DecisionText): ReactNode {
+ *  the heading the card draws, so the reading's own heading is left out of it. The passage is a
+ *  record of the issue's `decisions.md` (`source`). */
+function MarginDecisionText({
+  markdown,
+  source,
+  tree,
+}: DecisionText & { source: TextSource | undefined }): ReactNode {
   const body = useMemo(() => {
     const content = tree?.content;
     return tree === undefined || !Array.isArray(content)
       ? tree
       : { ...tree, content: (content as DisplayTree[]).filter((node) => node.type !== "heading") };
   }, [tree]);
-  return <MarkdownBody markdown={markdown} tree={body} />;
+  return (
+    <MarkdownBody
+      markdown={markdown}
+      source={source}
+      surface="margin-decision-passage"
+      tree={body}
+    />
+  );
 }
 
 /** A decision waiting for review, with the writes the margin hands the card: Keep and Change,
- *  the Decisions tab's own (`useDecisionWrites`). */
+ *  the Decisions tab's own (`useDecisionWrites`), named after the heading's plain words. */
 function WritableDecision({
   documentId,
   issueKey,
   model,
+  name,
   ...props
-}: DecisionCardProps & { documentId: string; issueKey: string; model: Decision }): ReactNode {
-  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey });
-  return <DecisionCardBody {...props} change={change} keep={keep} />;
+}: DecisionCardProps & {
+  documentId: string;
+  issueKey: string;
+  model: Decision;
+  name: string;
+}): ReactNode {
+  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey, name });
+  return <DecisionCardBody {...props} change={change} issueKey={issueKey} keep={keep} />;
 }
 
 /** One decision beside a spec block it shaped, drawn by the decision card with its setting off
  *  (R20, R21): whose decision it is, its heading as a link to it in `decisions.md`, its text
  *  whole, the statements it shaped, its state, and Keep and Change where it waits for review.
- *  Selecting the card lights up the block, as selecting an anchored comment lights up its text. */
+ *  Selecting the card lights up the block, as selecting an anchored comment lights up its text.
+ *  The heading names the card and words a link, neither of which holds markup, so there it is
+ *  read as its plain words; with no page to link to it is drawn by the renderer, as the passage
+ *  is. Both are the record the issue's `decisions.md` is. */
 export function DecisionCard({
   decisionsDocument,
   hovered = false,
@@ -72,22 +95,48 @@ export function DecisionCard({
   const { decision } = item;
   const shown = useMemo(() => fromDecision(decision), [decision]);
   const route = parseDispatchReference(decision.ref);
+  // A decision names the record it was made in; one naming no page of this dashboard - a
+  // person (R5) - leaves the heading as plain words.
+  const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
+  const source = textSourceOf(
+    "artifact",
+    item.documentId,
+    route !== undefined && "key" in route ? route.key : undefined
+  );
+  // The heading's plain words name the card and word its link (the reading list's
+  // `decision-heading-words`); the heading's reading draws it where there is no link.
+  const { reads, tree: headingTree, words: heading } = useDecisionHeadingWords(decision, source);
   const props: DecisionCardProps = {
     authorLine: false,
     decision: shown,
+    heading: {
+      node: (
+        <MarkdownBody
+          markdown={decision.heading}
+          source={source}
+          surface="margin-decision-passage"
+          tree={headingTree}
+          variant="inline"
+        />
+      ),
+      words: heading,
+    },
     paths: {
       ask: (id) => buildIssuePath({ id, key: issueKey, kind: "ask" }),
-      decision: route === undefined ? undefined : buildReferencePath(route),
+      decision: href,
       statement: (blockId) =>
         `${buildIssuePath({ key: issueKey, kind: "spec" })}${blockFragment(blockId)}`,
     },
-    renderText: (text) => <MarginDecisionText markdown={text.markdown} tree={text.tree} />,
+    renderText: (text) => (
+      <MarginDecisionText markdown={text.markdown} source={source} tree={text.tree} />
+    ),
   };
   return (
     <article
       aria-current={selected ? "true" : undefined}
-      aria-label={`Decision: ${decision.heading}`}
+      // The card's name is its heading's plain words: the reading list's `decision-heading-words`.
+      aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
       } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
@@ -108,12 +157,14 @@ export function DecisionCard({
         onSelect(item.id);
       }}
     >
+      {reads}
       {decision.waiting_review && decisionsDocument !== undefined ? (
         <WritableDecision
           {...props}
           documentId={decisionsDocument}
           issueKey={issueKey}
           model={decision}
+          name={heading}
         />
       ) : (
         <DecisionCardBody {...props} />
@@ -122,9 +173,13 @@ export function DecisionCard({
   );
 }
 
+/** A decision card's key in its region's stack (`useCardStack`). */
+const decisionKey = (item: DecisionMarginItem): string => item.id;
+
 /**
  * The decision cards, each beside the spec block it shaped: placed at that block's height in the
- * document, below the card before it where two would overlap, as the anchored comments are.
+ * document, below the card before it where two would overlap, as the anchored comments are
+ * (`useCardStack`).
  *
  * Keep and Change write against the decisions document, whose id comes from the reads the page
  * already holds: the issue read's documents and the decisions read's address of it
@@ -154,65 +209,30 @@ export function DecisionList({
   const decisionsDocument = isClosed
     ? undefined
     : decisionsDocumentId(issue.data?.artifacts, decisionsRead.data);
-  const region = useRef<HTMLElement>(null);
-  const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
-  const measure = useCallback(() => {
-    const origin = region.current === null ? undefined : regionOrigin(region.current);
-    const next = new Map<string, number>();
-    let previousBottom = 0;
-    for (const item of decisions) {
+  // A card wants its block's height in the document; one whose block has no placement yet
+  // stacks below the card before it.
+  const wantedTop = useCallback(
+    (item: DecisionMarginItem, origin: number) => {
       const placement = blockPlacements.get(item.blockId);
+      if (placement === undefined) return undefined;
       const block = document.querySelector<HTMLElement>(
         `[data-block-id="${CSS.escape(item.blockId)}"]`
       );
-      const wanted =
-        placement === undefined
-          ? previousBottom
-          : block === null || origin === undefined
-            ? placement.top
-            : block.getBoundingClientRect().top - origin;
-      const top = Math.max(wanted, previousBottom);
-      next.set(item.id, top);
-      previousBottom = top + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8;
-    }
-    setTops((current) =>
-      current.size === next.size && [...next].every(([id, top]) => current.get(id) === top)
-        ? current
-        : next
-    );
-  }, [blockPlacements, decisions]);
-  useLayoutEffect(() => {
-    measure();
-  }, [measure]);
-  useLayoutEffect(() => {
-    const observer = new ResizeObserver(measure);
-    for (const element of cardRefs.current.values()) {
-      observer.observe(element);
-    }
-    return () => observer.disconnect();
-  }, [measure]);
+      return block === null ? placement.top : block.getBoundingClientRect().top - origin;
+    },
+    [blockPlacements]
+  );
+  const { cardRef, height, region, topOf } = useCardStack(decisions, decisionKey, wantedTop);
   if (decisions.length === 0) {
     return null;
   }
-  const bottom = Math.max(
-    ...decisions.map(
-      (item) => (tops.get(item.id) ?? 0) + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8
-    )
-  );
   return (
-    <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: bottom }}>
+    <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: height }}>
       {decisions.map((item) => (
         <div
           key={item.id}
-          ref={(element) => {
-            if (element === null) {
-              cardRefs.current.delete(item.id);
-            } else {
-              cardRefs.current.set(item.id, element);
-            }
-          }}
-          style={{ left: 0, position: "absolute", right: 0, top: tops.get(item.id) ?? 0 }}
+          ref={cardRef(item.id)}
+          style={{ left: 0, position: "absolute", right: 0, top: topOf(item.id) }}
         >
           <DecisionCard
             decisionsDocument={decisionsDocument}

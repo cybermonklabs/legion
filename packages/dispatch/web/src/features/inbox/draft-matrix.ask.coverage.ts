@@ -28,7 +28,7 @@ const REASONS = {
 
 /** The answer field's mount, which the ask body draws, with the ask body's own items about it;
  *  and the reply composer's in each thread. */
-const ANSWER_MOUNT = 'AskBody <textarea data-ask-answer="">';
+const ANSWER_MOUNT = "AskBody <MentionField askAnswer={true}>";
 const ANSWER_FIELD = `AskBody | ${ANSWER_MOUNT}`;
 const INLINE_COMPOSER = "AskThread | AskThread <AskReplyComposer>";
 const COLLAPSED_COMPOSER = "AskThreadDisclosure | AskThreadDisclosure <AskReplyComposer>";
@@ -45,7 +45,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers(
-    `${ANSWER_FIELD} | lifetime | <textarea data-ask-answer="">`,
+    `${ANSWER_FIELD} | lifetime | <MentionField askAnswer={true}>`,
     cells(`${ANSWER} · the page reloaded, then back`, TYPED)
   ),
 

@@ -52,6 +52,7 @@ function ApprovedChangeView({
     return <p className={`text-sm ${dangerText}`}>{ASK_APPROVAL_WORDS.diff_failed}</p>;
   }
   if (cut !== undefined) {
+    // The exact characters a change swaps: the reading list's `change-view-diff`.
     return <ChangeView after={cut.after} before={cut.before} />;
   }
   return <p className={`text-sm ${textMutedOnSurface}`}>{ASK_APPROVAL_WORDS.diff_loading}</p>;

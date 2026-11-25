@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 import type { ArtifactOwner, DeclineAskInput, WriteBounds } from "../../api/client";
@@ -11,7 +12,6 @@ import {
   cardHoverBorder,
   focusBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   pageHairBorder,
@@ -32,6 +32,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { DraftUploadStatus } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { UnsentBox } from "../inbox/AskThread";
 import type { OwnedAsk } from "../inbox/ask-name";
 import { askTurnHolder } from "../inbox/ask-turn";
@@ -261,10 +262,10 @@ export function AskBody({
   const inBlock = frame === "block";
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   const uploadOwner = askUploadOwner(ask, displayedAsk, owner);
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists on. The
   // form keeps whether the field stood for a reason at the last commit
   // (`reasonFieldShownBefore`), so the field takes the focus as it comes to, and a body drawn
@@ -273,7 +274,7 @@ export function AskBody({
     if (reasonRequired === reasonFieldShownBefore.current) return;
     reasonFieldShownBefore.current = reasonRequired;
     if (reasonRequired) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonRequired, reasonFieldShownBefore]);
   // A control that disables itself under the reader's focus - Ask back while sending and once
@@ -358,53 +359,55 @@ export function AskBody({
     : ON_PAGE.action;
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired
-              ? `mb-1 block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`
-              : "sr-only"
-          }
-        >
-          {reasonRequired
+      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
+          under it in the page's words, and while the body refuses it is `readOnly` rather than
+          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
+          `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in the
+          box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
+          `data-ask-option` (`Inbox.tsx`). */}
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal"
+        disabled={disabledWhileOut}
+        fieldClassName={tooltips ? undefined : ON_PAGE.field}
+        fieldRef={answerFieldRef}
+        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={
+          reasonRequired
             ? ASK_FORM_WORDS.reason_required
             : isApproval
-              ? ASK_FORM_WORDS.reason
-              : ASK_FORM_WORDS.your_answer}
-        </span>
-        <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
-          // The Inbox's Enter puts the caret in the box by this handle, as its 1 to 9 find an
-          // option by `data-ask-option` (`Inbox.tsx`).
-          data-ask-answer=""
-          disabled={disabledWhileOut}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.drop(event, uploadOwner, ask.id);
-                }
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
-          onPaste={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.paste(event, uploadOwner, ask.id);
-                }
-          }
-          placeholder={answerPlaceholder}
-          readOnly={holdsFocus && refusing}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+              ? ASK_FORM_WORDS.reason_label
+              : ASK_FORM_WORDS.your_answer
+        }
+        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.drop(event, uploadOwner, ask.id);
+              }
+        }
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
+        onPaste={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.paste(event, uploadOwner, ask.id);
+              }
+        }
+        placeholder={answerPlaceholder}
+        project={(ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project}
+        readOnly={holdsFocus && refusing}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -614,6 +617,7 @@ export function AskBody({
             {renderText({
               markdown: displayedAsk.question,
               source,
+              surface: "ask-card-question",
               tree: displayedAsk.question_tree,
             })}
           </div>
@@ -692,6 +696,7 @@ export function AskBody({
                 }}
                 option={option}
                 renderText={renderText}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -705,6 +710,7 @@ export function AskBody({
                 }}
                 option={{ label: ASK_FORM_WORDS.other }}
                 renderText={renderText}
+                source={source}
               />
             )}
           </fieldset>

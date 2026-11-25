@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type {
@@ -72,7 +72,8 @@ export function AskEditHistory({
                 <div className={`font-medium ${textPrimaryOnSurface}`}>
                   {renderText({
                     markdown: edit.previous.question,
-                    source: textSourceOf("ask", ask.id),
+                    source: textSourceOf("ask", ask.id, ask.issue_key),
+                    surface: "ask-edit-history",
                     tree: edit.previous.question_tree,
                   })}
                 </div>
@@ -80,6 +81,7 @@ export function AskEditHistory({
                   options={edit.previous.options ?? []}
                   renderText={renderText}
                   selected={[]}
+                  source={textSourceOf("ask", ask.id, ask.issue_key)}
                 />
                 <p className="mt-1">
                   {`${ASK_RECORD_WORDS.reworded_by} `}
@@ -95,12 +97,20 @@ export function AskEditHistory({
   );
 }
 
-/** Earlier answers to an ask whose answer was changed, oldest first. */
+/** Earlier answers to an ask whose answer was changed, oldest first. Every text here is the
+ *  ask's own (`refs.ScopeOf`), answer and question alike, so each is drawn as a record of that
+ *  ask. A chosen option's label is drawn from the tree the answer carries beside it
+ *  (`selected_trees`), which is the label's own whether or not the ask still holds that option. */
 export function AskAnswerHistory({
   answers,
+  askId,
+  issue,
   renderText,
 }: {
   answers: AskAnswerWithTrees[];
+  askId: string;
+  /** The issue the ask is on, none for a project document's ask. */
+  issue: string | null;
   renderText: AskTextRenderer;
 }): ReactNode {
   const earlier = answers.slice(0, -1);
@@ -123,10 +133,33 @@ export function AskAnswerHistory({
             const selected = previous.selected ?? [];
             return (
               <div key={previous.at}>
-                {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
+                {selected.length === 0 ? null : (
+                  <p>
+                    {selected.map((label, index) => (
+                      <Fragment key={label}>
+                        {index === 0 ? null : ", "}
+                        {/* Only a server older than `selected_trees` answers a label with no
+                            tree, and the renderer then parses it, as it parses every stored
+                            text of that server's answers. */}
+                        {renderText({
+                          markdown: label,
+                          source: textSourceOf("ask", askId, issue),
+                          surface: "earlier-chosen-option",
+                          tree: previous.selected_trees?.[index],
+                          variant: "inline",
+                        })}
+                      </Fragment>
+                    ))}
+                  </p>
+                )}
                 {previous.text === null || previous.text === ""
                   ? null
-                  : renderText({ markdown: previous.text, tree: previous.text_tree })}
+                  : renderText({
+                      markdown: previous.text,
+                      source: textSourceOf("ask", askId, issue),
+                      surface: "ask-answer-history",
+                      tree: previous.text_tree,
+                    })}
                 <p className="mt-1">
                   {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
                 </p>
@@ -216,7 +249,8 @@ function AnsweredAsk({
           <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
             {renderText({
               markdown: ask.question,
-              source: textSourceOf("ask", ask.id),
+              source: textSourceOf("ask", ask.id, ask.issue_key),
+              surface: "answered-ask",
               tree: ask.question_tree,
             })}
           </div>
@@ -234,6 +268,7 @@ function AnsweredAsk({
           options={ask.options ?? []}
           renderText={renderText}
           selected={answer?.selected ?? []}
+          source={textSourceOf("ask", ask.id, ask.issue_key)}
         />
         {otherText !== null && otherText !== "" ? (
           <div className="mt-2">
@@ -243,7 +278,8 @@ function AnsweredAsk({
             <div className="mt-1">
               {renderText({
                 markdown: otherText,
-                source: textSourceOf("ask", ask.id),
+                source: textSourceOf("ask", ask.id, ask.issue_key),
+                surface: "answered-ask",
                 tree: answer?.text_tree,
               })}
             </div>
@@ -252,7 +288,8 @@ function AnsweredAsk({
           <div className="mt-1">
             {renderText({
               markdown: answer.text,
-              source: textSourceOf("ask", ask.id),
+              source: textSourceOf("ask", ask.id, ask.issue_key),
+              surface: "answered-ask",
               tree: answer.text_tree,
             })}
           </div>
@@ -271,7 +308,12 @@ function AnsweredAsk({
             <Timestamp at={answer.at} />
           </p>
         )}
-        <AskAnswerHistory answers={answers} renderText={renderText} />
+        <AskAnswerHistory
+          answers={answers}
+          askId={ask.id}
+          issue={ask.issue_key}
+          renderText={renderText}
+        />
         {onChangeAnswer === undefined ? null : (
           <button
             className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
@@ -315,7 +357,8 @@ function ResolvedAsk({
           <div className={`font-medium ${textPrimaryOnSurface}`}>
             {renderText({
               markdown: ask.question,
-              source: textSourceOf("ask", ask.id),
+              source: textSourceOf("ask", ask.id, ask.issue_key),
+              surface: "resolved-ask",
               tree: ask.question_tree,
             })}
           </div>
@@ -334,7 +377,12 @@ function ResolvedAsk({
             <AskApprovalLink ask={ask} />
           </p>
         ) : null}
-        <AskOptionList options={ask.options ?? []} renderText={renderText} selected={[]} />
+        <AskOptionList
+          options={ask.options ?? []}
+          renderText={renderText}
+          selected={[]}
+          source={textSourceOf("ask", ask.id, ask.issue_key)}
+        />
         <AskEditHistory agentNames={agentNames} ask={ask} edits={edits} renderText={renderText} />
         <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
           {`${ASK_RECORD_WORDS.asked} `}
@@ -347,7 +395,8 @@ function ResolvedAsk({
               -{" "}
               {renderText({
                 markdown: reason,
-                source: textSourceOf("ask", ask.id),
+                source: textSourceOf("ask", ask.id, ask.issue_key),
+                surface: "resolved-ask",
                 tree: ask.resolution.reason_tree,
                 variant: "inline",
               })}
