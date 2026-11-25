@@ -16,6 +16,7 @@ import (
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -33,13 +34,25 @@ type operatorCall struct {
 	configPath     *string
 	port           *int
 	stdout, stderr io.Writer
-	// wait is the bound the command's whole call runs under, when the command takes one
-	// (withWait), and until the moment that bound expires: fixed when check reads the call, or set
-	// and moved by a command that bounds its call otherwise (`legion project release`,
-	// waitUntil). Every request the command makes is bounded by that one moment, so a command that
-	// reads the claims in a loop is bounded by its --wait and not by --wait per request.
-	wait  *time.Duration
-	until time.Time
+	// wait is the --wait flag, when the command takes one (withWait), and waited the bound the
+	// whole call runs under: the flag's value, or defaultWait when the flag is left unset. until
+	// is the moment that bound expires: fixed when check reads the call, or set and moved by a
+	// command that bounds its call otherwise (`legion project release`, waitUntil). Every request
+	// the command makes is bounded by that one moment, so a command that reads the claims in a
+	// loop is bounded by its --wait and not by --wait per request.
+	wait   *time.Duration
+	waited time.Duration
+	until  time.Time
+}
+
+// defaultWait is --wait's default, the bound of a call that names none: a minute. The call reads
+// it through programbound when the flag is left unset, so this package's tests can give it their
+// own deadline: a stand-in daemon a loaded machine made slower than the minute would have the call
+// refused, and the row would read the refusal.
+var defaultWait = time.Minute
+
+func init() {
+	programbound.Register(&defaultWait)
 }
 
 // withWait gives the command a --wait flag bounding its whole call, which every `legion claims`
@@ -49,7 +62,7 @@ type operatorCall struct {
 // deadlines: a call this bound ends says what it asked for and that the daemon goes on with it,
 // and never cancels the decision the daemon is making.
 func (c *operatorCall) withWait(usage string) {
-	c.wait = c.flags.Duration("wait", time.Minute, usage)
+	c.wait = c.flags.Duration("wait", defaultWait, usage)
 }
 
 // bound is ctx under the command's deadline (until), and ctx itself while none is set. check sets
@@ -91,7 +104,11 @@ func (c *operatorCall) check(required ...string) (code int, ok bool) {
 		}
 	}
 	if c.wait != nil && *c.wait > 0 {
-		c.until = time.Now().Add(*c.wait)
+		c.waited = *c.wait
+		if !c.flags.Changed("wait") {
+			c.waited = programbound.Of(&defaultWait)
+		}
+		c.until = time.Now().Add(c.waited)
 	}
 	return 0, true
 }
@@ -142,7 +159,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 	status, answer, cut, ok := c.requestCut(ctx, op, method, path, body)
 	if cut {
 		fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
-			c.name(), method, op.base+path, *c.wait)
+			c.name(), method, op.base+path, c.waited)
 	}
 	return status, answer, ok
 }
