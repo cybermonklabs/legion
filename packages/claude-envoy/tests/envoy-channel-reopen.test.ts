@@ -288,7 +288,16 @@ test(
       expect(stderr()).toContain(
         `${gaveUp} (could not connect to NATS at the server ENVOY_NATS_URL names presenting an nkey seed: Authorization Violation); dialing again at the next heartbeat`,
       )
-      expect(count(stderr(), "; dialing again in")).toBe(0)
+      // The refusal is not dialed again inside its dial: its line names Authorization Violation.
+      // A dial that a loaded host keeps past its own bound is dialed again at once
+      // (`NatsDialBoundError`), which a correct run on a slow host makes: at the 96 rung one run
+      // in 20 did (the Job infra-1580-r30ce3-hqq47 of the cluster's `builds` namespace, at
+      // b96dcc3e), so the row counts the refusal's own redials alone.
+      expect(
+        stderr()
+          .split("\n")
+          .filter((line) => line.includes("Authorization Violation; dialing again in")),
+      ).toEqual([])
       // Told once over every refusal, naming the close.
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
       expect(notices("Envoy inbound unavailable")[0]?.message.text).toContain(
