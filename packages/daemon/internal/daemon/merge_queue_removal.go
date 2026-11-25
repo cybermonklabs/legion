@@ -166,11 +166,11 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // row's end on a claim that failed or retired, and the delivery. Each message is for the session
 // of the role's current launch: it is published only once that launch has registered its session,
 // and it is delivered unless the listener names a session other than the one the claim records
-// (deliverHeld). end, where set, is the row's end itself, which deletes the row: delivered says
-// whether the row was delivered, and told is the launch whose session the listener stored the
-// message for, 0 for the end at a claim that failed or retired, and for a delivery where the
-// listener named no holder (a merge-forward ask's, endMergeForwardAsk). nil leaves the row's end
-// to its settle.
+// (deliverHeld). end, where set, is the row's end itself, which deletes the row: end's delivered
+// argument says whether the row was delivered, and told is the launch whose session the listener
+// stored the message for, 0 for the end at a claim that failed or retired, and for a delivery
+// where the listener named no holder (a merge-forward ask's, endMergeForwardAsk). nil leaves the
+// row's end to its settle.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -224,9 +224,9 @@ type heldMessage struct {
 // before the line is logged, and after the publish, delivered, with told the launch read before
 // the publish where the listener stored the message for the session that launch registered, and 0
 // where it named no holder. A launch's session is fixed once it registered, and a later launch is
-// a later generation, so told is a launch whose session took the message. An end that fails fails the
-// attempt: undelivered, the row is read again at its retry; delivered, it is published again and
-// ends again, so a launch may be told twice and none is told nothing.
+// a later generation, so told is a launch whose session took the message. An end that fails fails
+// the attempt: undelivered, the row is read again at its retry; delivered, it is published again
+// and ends again, so a launch may be told twice and none is told nothing.
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {

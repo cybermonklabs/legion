@@ -449,34 +449,40 @@ func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, ke
 	if err != nil || issue == nil {
 		return false, err
 	}
-	role := ask.Role
-	if (delivered && told > 0) || (!delivered && ask.SentLaunch != 0) {
-		pr, err := store.PullRequest(ctx, tx, key)
-		if err != nil {
-			return false, err
-		}
-		if pr != nil && pr.MergeForward != nil {
-			own := *pr.MergeForward
-			sent := own.SentLaunch
-			if own.Head == ask.Head && own.Landed == "" && own.Asked() == role {
-				switch {
-				case delivered && told > own.SentLaunch:
-					sent = told
-				case !delivered && own.SentLaunch == ask.SentLaunch:
-					sent = ask.SentBefore
-				}
-			}
-			if sent != own.SentLaunch {
-				own.SentLaunch = sent
-				pr.MergeForward = &own
-				if err := store.PutPullRequest(ctx, tx, *pr); err != nil {
-					return false, err
-				}
-			}
-		}
+	if err := recordAskEnd(ctx, store, tx, key, ask, delivered, told); err != nil {
+		return false, err
 	}
-	pr, err := askAgain(ctx, store, tx, *issue, role, launch, now)
+	pr, err := askAgain(ctx, store, tx, *issue, ask.Role, launch, now)
 	return pr != nil, err
+}
+
+// recordAskEnd writes what the end of ask's row says on the record's ask of issue key, where that
+// ask is the row's own - of its head, naming its role, not landed (MergeForwardAskEnded): a row
+// delivered to told, a later launch than the ask names, records told; a row sent again that ends
+// undelivered while the ask still names the launch it was sent at puts back the launch named
+// before (record.MergeForwardMessage.SentBefore). Every other end writes nothing.
+func recordAskEnd(ctx context.Context, store record.Store, tx pgx.Tx, key string, ask record.MergeForwardMessage, delivered bool, told uint64) error {
+	if delivered && told == 0 || !delivered && ask.SentLaunch == 0 {
+		return nil
+	}
+	pr, err := store.PullRequest(ctx, tx, key)
+	if err != nil || pr == nil || pr.MergeForward == nil {
+		return err
+	}
+	own := *pr.MergeForward
+	if own.Head != ask.Head || own.Landed != "" || own.Asked() != ask.Role {
+		return nil
+	}
+	switch {
+	case delivered && told > own.SentLaunch:
+		own.SentLaunch = told
+	case !delivered && own.SentLaunch == ask.SentLaunch:
+		own.SentLaunch = ask.SentBefore
+	default:
+		return nil
+	}
+	pr.MergeForward = &own
+	return store.PutPullRequest(ctx, tx, *pr)
 }
 
 // owedAskClause is the clause the notice of role's failed claim names the merge owed to role with

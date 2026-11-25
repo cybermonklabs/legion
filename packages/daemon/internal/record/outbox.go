@@ -1988,8 +1988,8 @@ func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool
 // SentBefore back where the record's ask is still the row's own (workflow's MergeForwardAskEnded),
 // so the record never names a launch nothing told. Every other row carries neither. A release
 // before the two keys refuses a row that carries them (DecodeOutboxPayload, DisallowUnknownFields),
-// so its rollback deletes such rows first (docs/kubernetes.md, "Rolling back the release that holds
-// every worker while a merge forward is owed").
+// so its rollback takes the two keys off such rows first, leaving a plain ask (docs/kubernetes.md,
+// "Rolling back the release that holds every worker while a merge forward is owed").
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released implementer must still be woken for the merge; its executor

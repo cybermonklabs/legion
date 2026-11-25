@@ -701,8 +701,6 @@ func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	r.register(oldSession, oldSessionFile)
 	launch := r.machine.Claim().Generation
 
-	// The ask sent again carries the launch it is sent at and the launch the record's ask named
-	// before (record.MergeForwardMessage.SentLaunch, SentBefore), which an undelivered end puts back.
 	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch, SentBefore: told}}
 	if asks := r.queuedMergeForwards(); !slices.Equal(asks, want) {

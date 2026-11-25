@@ -22,18 +22,19 @@ body: |-
   role's current launch has registered its session, and is not taken as delivered where Envoy says
   it stored it for another session: a copy Envoy stored for the session of an earlier launch, whose
   stop has not yet reached Envoy, tells the new launch nothing, so the row waits until the new
-  session holds the role. The record's ask keeps the launch it was delivered or
-  sent to (`sentLaunch`); an ask sent again records that launch as its row is queued, and a row
-  of it that ends undelivered puts back the launch the record named before, where the record's
-  ask is still the row's own (the same head and role, not landed, still naming that launch), so
-  no later send skips a launch nothing told. A failed claim's notice tells the owning architect. One case can be
-  told two times: a launch that resumes the session of an earlier launch, where the message was
-  stored for that session. Envoy stores a message for a session, and it cannot say which launch read
-  it. The second ask names the same merge and the same commit, and changes nothing that the
-  daemon holds. A launch with a new session that takes the role between the daemon's read of the
-  launch and its publish is told once: the copy is stored for its session, which is not the one
-  the daemon read, so the row waits and ends at the next attempt, which Envoy answers with that
-  copy. A worker held at the ready of a launch that resumes its session reads the hold two times.
+  session holds the role. The record's ask keeps the launch it was delivered or sent to
+  (`sentLaunch`); an ask sent again records that launch as its row is queued, and a row of it
+  that ends undelivered puts back the launch the record named before, where the record's ask is
+  still the row's own (the same head and role, not landed, still naming that launch), so no later
+  send skips a launch nothing told. A failed claim's notice tells the owning architect. One case
+  can be told two times: a launch that resumes the session of an earlier launch, where the
+  message was stored for that session. Envoy stores a message for a session, and it cannot say
+  which launch read it. The second ask names the same merge and the same commit, and changes
+  nothing that the daemon holds. A launch with a new session that takes the role between the
+  daemon's read of the launch and its publish is told once: the copy is stored for its session,
+  which is not the one the daemon read, so the row waits and ends at the next attempt, which Envoy
+  answers with that copy. A worker held at the ready of a launch that resumes its session reads
+  the hold two times.
   A merge-queue removal is held to the merger's launch the same way: it is published only once
   the merger's current launch has registered its session, and is not taken as delivered where
   Envoy says it stored it for another session, so a merger whose launch starts a fresh session
@@ -43,12 +44,13 @@ body: |-
   `accepting` names, as its move-back targets, the phases of the task's steps before the acceptance.
 
   The release before refuses a merge-forward row whose step is `withdrawn`, a hold or landed
-  row to the planner, and an ask sent again at a launch, which carries `sentLaunch` and
-  `sentBefore` that its strict decode knows as no field. A rollback past this release deletes
-  those queued `merge_forward` rows first (docs/kubernetes.md, "Rolling back the release that
-  holds every worker while a merge forward is owed"); the first ask of a merge forward carries
-  neither key and stays. The release before reads the record's ask without `withdrawn` and
-  `sentLaunch`, drops both at its next write, and sends no ask again at a role's next launch.
+  row to the planner, and an ask sent again at a launch, which carries `sentLaunch` (and
+  `sentBefore` where the ask had been told an earlier launch), fields its strict decode knows as
+  none. A rollback past this release first deletes the queued `withdrawn` and planner rows and
+  takes the two keys off each queued ask, which the release before then delivers as a plain ask
+  (docs/kubernetes.md, "Rolling back the release that holds every worker while a merge forward is
+  owed"). The release before reads the record's ask without `withdrawn` and `sentLaunch`, drops
+  both at its next write, and sends no ask again at a role's next launch.
 time: 2026-11-24T01:50:00Z
 custom:
     Issue: pr5312
