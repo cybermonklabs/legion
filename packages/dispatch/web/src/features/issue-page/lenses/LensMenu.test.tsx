@@ -1147,8 +1147,8 @@ test("Escape with a dialog open over the menu closes the dialog alone", async ()
 });
 
 /** The kinds of node the invoke route takes, written out rather than read from the code:
- *  every block of the issue's documents, a criterion and a reading as much as a statement, and
- *  an ask, a comment, a message, a lens, a finding, a risk and a constraint. */
+ *  every block of the issue's documents, a criterion, a reading and a plain paragraph as much as
+ *  a statement, and an ask, a comment, a message, a lens, a finding, a risk and a constraint. */
 const OFFERED: readonly NodeType[] = [
   "requirement",
   "check",
@@ -1158,6 +1158,7 @@ const OFFERED: readonly NodeType[] = [
   "image",
   "criterion",
   "reading",
+  "prose",
   "ask",
   "comment",
   "message",
