@@ -470,14 +470,14 @@ func TestTheGraphReadOfARunWithdrawnBeforeItsEndingAnswersWhatItsStreamWillAnswe
 
 // Row 8: a withdrawn run whose rows a process of the release before deleted. During a roll and
 // after a rollback such a process deletes the going_requests row of every run an hour old, which
-// takes its going_request_posts and going_events rows with it, and marks no node gone (R4 and R11
-// of the spec of dispatch://INFRA-1950, dispatch://INFRA-1950/spec#b-r-interaction and
-// dispatch://INFRA-1950/spec#b-r-one-truth). The run's node stays live until this
-// build's sweep reads it as rowless (goingRowlessRuns), at most one maintenance pass later. In that
-// time the stream answers 404, and the read of the run's own address must still give no part of a
-// deleted post's body, which R3 of dispatch://INFRA-1523 holds for every read that quotes the post:
-// with the posts rows gone, the withdrawal test (graphstore.RunWithdrawnSQL) no longer finds the
-// deleted post, so a read that trusts it answers the frames the run stored, which quote it.
+// takes its going_request_posts and going_events rows with it, and marks no node gone (this
+// change's spec, its interaction and one-truth requirements). The run's node stays live until a
+// maintenance pass of this build reads it as rowless (goingRowlessRuns). The builds share one
+// maintenance lease, and a pass takes at most goingGoneBatch such nodes, so that can come later
+// than the next pass. In that time the stream answers 404, and the read of the run's own address
+// must still give no part of a deleted post's body, as no read that quotes the post may: with the
+// posts rows gone, the withdrawal test (graphstore.RunWithdrawnSQL) no longer finds the deleted
+// post, so a read that trusts it answers the frames the run stored, which quote it.
 func TestTheGraphReadOfAWithdrawnRunWhoseRowsAnOlderBuildDeletedQuotesNoDeletedPost(t *testing.T) {
 	t.Parallel()
 	answerer := &fakeAnswerer{}
