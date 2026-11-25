@@ -1,0 +1,21 @@
+kind: Changed
+body: |-
+    The `tester-proof` skill scenario seeds an implement handoff of `head` alone, and its scorer
+    refuses a test handoff that holds any key but `head`, `note`, `implementerProof`, `failures` and
+    `failed`, naming each key (`a test handoff holds no <key>`). It takes the issue from the record,
+    not from the body. The spec scorer names the parts of a spec as the outline of
+    `dispatch-writing-specs` names them: `Verification` is one of them, and no `Acceptance` part
+    states a design. A batch given both `SKILL_SCENARIOS_POSTGRES_URL` and
+    `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container. Such a batch needs
+    `psql` and `python3` with libpq. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or
+    `postgresql://` URL with no `sslpassword` parameter, whose values each run's connection string
+    can carry. The given Postgres must be on this machine: the batch refuses a URL whose host is
+    not `127.0.0.1`, `localhost` or `::1`, and it refuses each of these before it starts anything.
+    When `LEGION_E2E_MODEL_PROVIDER` names a
+    built-in provider such as `anthropic`, the provider route's profile no longer disables that
+    provider. The scenario's world names one repository, `example/widgets`, with the default
+    branch `trunk`, in the pane's addressing, in the record the daemon stand-in serves and in the
+    pull request fixture, and the `gh` stand-in answers `gh pr list` for the fixture's branch.
+time: 2026-11-23T21:30:48Z
+custom:
+    Issue: INFRA-4942

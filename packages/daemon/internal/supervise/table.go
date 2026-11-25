@@ -2684,8 +2684,8 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
-// since it is what dates the death's cause beside it — a death older than this ready is one the
-// agent running now has survived (machine.go's Claim).
+// since a death recorded before this ready (Claim.LastDeathAt) is one the agent running now has
+// survived (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
@@ -2696,7 +2696,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
 	// again later, as the reason it is not running now (dispatch://INFRA-5463).
-	m.claim.Budgets.LaunchFailures, m.claim.PendingCause, m.claim.LastStartFailure = 0, "", ""
+	// The start failure's time goes with it (Claim.LastStartFailureAt).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	m.claim.LastStartFailure, m.claim.LastStartFailureAt = "", time.Time{}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

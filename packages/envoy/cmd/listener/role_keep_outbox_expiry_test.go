@@ -88,7 +88,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		again := rig.keepAttempt(role, outboxCopy(role, "ses_outbox_told_sender", "a Dispatch event kept again"), 2)
 		listened := rig.keep(role, listenerCopy(role, "ses_listener_told_sender", "a publish the listener kept"))
 		rig.startSweeps()
-		letSweepsRun()
+		rig.letSweepsRun()
 		if notices := rig.expiryNotices(role); len(notices) != 0 {
 			t.Fatalf("inside the copies' hour the stream holds expiry notices %+v, want none", notices)
 		}
@@ -98,7 +98,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		droppedAfter := before.Add(time.Hour)
 		rig.waitPassed(role, listened.sequence)
 		rig.waitDeadLetter(listened)
-		letSweepsRun()
+		rig.letSweepsRun()
 		droppedBy := rig.now()
 
 		notices := rig.expiryNotices(role)
@@ -133,7 +133,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		rig.moveClock(3 * time.Hour)
 		rig.startSweeps()
 		rig.waitPassed(role, held.sequence)
-		letSweepsRun()
+		rig.letSweepsRun()
 		notices := rig.expiryNotices(role)
 		if len(notices) != 1 {
 			t.Fatalf("the stream holds %d expiry notices for the stale copy, want one: %+v", len(notices), notices)

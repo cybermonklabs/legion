@@ -88,11 +88,32 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
 		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
 	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
-	}},
+	"dispatch_issue_update": {
+		// A call that sets an option of the status change sends that route, which takes the
+		// status and the option: the PATCH takes no option and would drop it. One row per option,
+		// each guarded by its own argument, and all three tried before the PATCH row, which takes
+		// every call that sets none.
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionUnlinkChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeParent, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"child_of", "blocked_by", "affects"},
+		},
+	},
 	"dispatch_claim": {
 		{
 			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",

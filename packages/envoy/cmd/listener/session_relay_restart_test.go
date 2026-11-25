@@ -104,6 +104,7 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 // consumer was missing, once and in stream order. Without the pending start the retry found no
 // consumer and paused the relay until the next heartbeat, whose create started at the stream's end.
 func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
 	agent := contracts.LegacyAgentSubject(sessionID)
 
@@ -134,6 +135,7 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 // at the start that restart read, not at the stream's end (the registration carries no resume
 // point), so the session receives the held message and the messages stored meanwhile.
 func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFloor(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_registered_in_gap_")
 	agent := contracts.LegacyAgentSubject(sessionID)
 
@@ -364,6 +366,7 @@ func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []str
 // session, a pause or a restart at the ack floor (relayCopyCauses). A copy with no such line is
 // a duplicate the contract does not allow.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	const machineID = "relay-burst"
