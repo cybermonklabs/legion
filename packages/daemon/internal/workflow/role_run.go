@@ -212,16 +212,18 @@ func queuedStart(run record.RoleRun) bool {
 	return false
 }
 
-// startBringsBack is whether a queued start of run resumes its claim once the pod that refused
-// the claim's launch is replaced (podRefusedLaunch): any start of the claim at the issue's
-// generation, which is all RoleRun reads of a role's starts, the outbox start whose own launch the
-// pod refused among them, but a wake's. A wake's start (record.SuperviseRequest.WakeKind) finishes
-// without acting on a claim the daemon suspended, and the daemon suspends every claim whose launch
-// its pod refused (supervise's podRefused). A start of an earlier generation finishes without
-// acting too, and RoleRun reads none.
-func startBringsBack(run record.RoleRun) bool {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.WakeKind == "" {
+// startBringsBack is whether a queued start of the claim resumes it once the pod that refused the
+// claim's launch is replaced (podRefusedLaunch): any start that reaches the claim's token at the
+// issue's generation, whatever role its payload names (record.Store.ClaimQueued), the outbox start
+// whose own launch the pod refused among them, but a wake's. A keyed agent's claim holds the role
+// of each of its steps in turn, so the start of its next step reaches it as much as a start of the
+// role it holds now. A wake's start (record.SuperviseRequest.WakeKind) finishes without acting on a
+// claim the daemon suspended, and the daemon suspends every claim whose launch its pod refused
+// (supervise's podRefused). A start of an earlier generation finishes without acting too, and
+// ClaimQueued reads none.
+func startBringsBack(queued []record.QueuedSupervise) bool {
+	for _, row := range queued {
+		if row.Request.Op == "start" && row.Request.WakeKind == "" {
 			return true
 		}
 	}

@@ -33,8 +33,8 @@ const StrandedReleaseWake = 10 * time.Minute
 // state serves (api.Issue.ArchitectStalls) and reads no bound of its own.
 const ArchitectGateWake = 90 * time.Minute
 
-// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
-// the claim the wake brought back, when its stuck clock started, and whether a stuck pass has
+// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the claim the
+// wake brought back, when its stuck clock started, and whether a stuck pass has
 // already said so. The daemon reads them from its own records
 // (store.Store.UnfinishedPodResumesTx, which selects the resumes whose woken claim has taken no
 // first turn and passes over a paused project's) and hands them in, so this rule stays what every
@@ -49,7 +49,6 @@ const ArchitectGateWake = 90 * time.Minute
 // that held it (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the pacing,
 // or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
-	Issue   string
 	Claim   claim.Token
 	ClockAt time.Time
 	Stuck   bool

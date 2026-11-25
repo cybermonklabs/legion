@@ -277,7 +277,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 		t.Fatalf("the boot's line = %v, want an error for project %s naming %q to resume, %q as suspended workers, %q to retry and %q needing a workflow start",
 			line, cfg.Project, resume, workers, retry, workflowStart)
 	}
-	// Each entry names its claim's token (contract 222's `strandedClaims.*.token`): two claims of
+	// Each entry names its claim's token (contract 259's `strandedClaims.*.token`): two claims of
 	// one issue can hold one role, so the issue and the role do not name the claim.
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -535,7 +535,7 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tester's one row takes the keyed agent's claim and its step, or is written where none
-	// stands: the primary key of phases holds the step (20261124044450), so an upsert keyed on it
+	// stands: the primary key of phases holds the step (20261125044726), so an upsert keyed on it
 	// would add a second tester row beside one of no step rather than move that one to the step.
 	if _, err := st.Pool().Exec(ctx, `with moved as (update phases set claim = $2, step_task = 'a', step_place = 2
 		where issue = $1 and role = 'tester' returning 1)
@@ -559,23 +559,23 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	}
 	stranded := func() []claim.Token {
 		t.Helper()
-		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-		if err != nil {
-			t.Fatalf("begin the state snapshot: %v", err)
-		}
-		defer tx.Rollback(ctx)
 		view := &source{
 			store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
 			startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 			reports: func() map[claim.Token]capabilities.Report { return nil },
 		}
-		state, _, err := view.State(ctx, tx)
-		if err != nil {
-			t.Fatalf("State: %v", err)
-		}
 		var tokens []claim.Token
-		for _, c := range state.StrandedClaims {
-			tokens = append(tokens, c.Token)
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			state, _, err := view.State(ctx, tx)
+			if err != nil {
+				return err
+			}
+			for _, c := range state.StrandedClaims {
+				tokens = append(tokens, c.Token)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("State: %v", err)
 		}
 		return tokens
 	}

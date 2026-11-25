@@ -221,7 +221,7 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 				steps := record.NameAgents(nil, []record.PlanStep{
 					{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: key, Generation: 2, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
-				})
+				}, nil)
 				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 					return err
 				}
@@ -287,7 +287,7 @@ func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.
 		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
-		})
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
@@ -384,7 +384,7 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 			woke := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 			recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: pauseIssue,
 				Role: string(claim.RoleImplementer), Claim: string(implementer), Kind: pods.WakeBackstop, At: woke})
-			if _, err := w.idleStore.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: pauseIssue, Generation: 1,
+			if _, _, err := w.idleStore.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: pauseIssue, Generation: 1,
 				Roles: []string{string(claim.RoleImplementer)}, At: woke.Add(time.Minute)}); err != nil {
 				t.Fatalf("record the pod's release: %v", err)
 			}

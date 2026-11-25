@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Plan steps can share an agent key across roles and tasks. Each key keeps one claim and session; a default agent that takes a reserved name starts in its own session, including after a carried plan. Starts and queued-work readers share their fences and decoding, and refused launches remain visible until their facts are recorded.
+  Workspace checks address the reading claim, and releases and left-pod closes stop each live claim independently, including two claims of one role.
+  Stale completion and backward-move refusals name the served and current issue-wide entries without treating their difference as entries missed by the role.
+time: 2026-11-24T20:14:11Z
+custom:
+    Issue: pr5156

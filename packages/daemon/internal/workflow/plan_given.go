@@ -76,6 +76,14 @@ type givenVersion struct {
 // steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
 // need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
 // never by the write.
+//
+// A recorded issue whose group takes no plan from its owner (groupOf, takesNoPlan) is answered
+// PLAN_NOT_TAKEN, right after the generation is judged, so no plan of it is stored, also one given
+// at generation 0 for an issue the daemon recorded meanwhile. The fact is left unspent as well:
+// the group never changes, so the same registration sent again gets the same answer, never the
+// answer of a registration applied, which the route gives as the plan taken. An issue the daemon
+// has not recorded has no draw yet; its plan waits at generation 0, and its first step passes it
+// over where the issue's group takes none (planFirstStep).
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -88,6 +96,15 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		waits, err := e.waitsAtZero(ctx, tx, *issue)
 		if err != nil || !waits {
 			return givenVersion{}, refusalUnless(err, intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation)), err
+		}
+	}
+	if issue != nil {
+		group, err := e.groupOf(ctx, tx, issue.Key)
+		if err != nil {
+			return givenVersion{}, nil, err
+		}
+		if takesNoPlan(group) {
+			return givenVersion{}, intake.PlanNotTaken(issue.Key, group), nil
 		}
 	}
 	if given.stored, err = e.store.Plan(ctx, tx, fact.Issue, fact.Generation); err != nil {
@@ -130,11 +147,15 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	given.steps = record.NameAgents(earlier, given.steps)
-	if unnamed := record.UnnamedAgents(earlier, given.steps); len(unnamed) > 0 {
+	held, err := e.store.KeyNames(ctx, tx, fact.Issue)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
+	given.steps = record.NameAgents(earlier, given.steps, held)
+	if unnamed := record.UnnamedAgents(earlier, given.steps, held); len(unnamed) > 0 {
 		reasons := make([]plan.Refusal, len(unnamed))
 		for i, agent := range unnamed {
-			reasons[i] = intake.AgentUnnamed(agent.Step.Task, agent.Step.Position, string(agent.Name))
+			reasons[i] = intake.AgentUnnamed(agent.Step.Task, agent.Step.Position, string(agent.Name), agent.Holder)
 		}
 		return givenVersion{}, intake.PlanRefused(reasons), nil
 	}
@@ -229,9 +250,12 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // the route read it unrecorded, still waits there for the issue's first step: the issue stands
 // before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
 // only one an earlier owner gave, which the step passes over (passOverEarlierOwners) — so the
-// step takes the newest plan its owner gave (planFirstStep). Once a plan of the generation is the
-// one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
-// without the one given at generation 0.
+// step takes the newest plan its owner gave, or passes it over too for an issue whose group takes
+// none (planFirstStep). Once a plan of the generation is the one its run walks, the default steps
+// the step wrote or a plan of its owner's, the run went on without the one given at generation 0.
+// versionRefusal reads the group only after this judgement, so a plan given at generation 0 for an
+// issue whose group takes none is answered PLAN_STALE_GENERATION once its run went on, and
+// PLAN_NOT_TAKEN while it still waits.
 func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if !beforeItsWork(issue) {
 		return false, nil

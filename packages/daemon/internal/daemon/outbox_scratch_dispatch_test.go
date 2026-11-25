@@ -1,5 +1,7 @@
 package daemon
 
+//ci:builds packages/envoy ./cmd/dispatch startScratchDispatchOn starts the dispatch command testbuild.EnvoyBinary builds, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)
+
 import (
 	"bytes"
 	"context"
@@ -349,7 +351,7 @@ func scratchRoleHolders(t *testing.T, baseURL, token, issue string) []dispatch.R
 // phases row names on the tester's step, and the tester's own claim of an earlier version of the
 // plan. The daemon's board lane publishes both to a real Dispatch built from this tree, each with
 // its token and whether it works the step, and Dispatch lists both sessions as holders of the
-// tester's role. Before 20261123203843 Dispatch refused the set, a role named twice (400
+// tester's role. Before 20261124213825 Dispatch refused the set, a role named twice (400
 // INVALID_ROLE_HOLDER), the lane ended the row, and Dispatch kept a set with neither session.
 func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
 	t.Parallel()

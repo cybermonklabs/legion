@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,14 +44,6 @@ import (
 // ahead of the next turn (pi-legion, src/workspace-recreated.ts).
 const WorkspaceRecreatedVariable = "LEGION_WORKSPACE_RECREATED"
 
-// WorkspaceRestoredVariable is how the same launcher tells that generation whether the pod's one
-// workspace-bundle restore put the released workspace's unpushed work back: "true" or "false",
-// set on every generation beside WorkspaceRecreatedVariable, so no value from the container's
-// environment reaches the child. A workspace recreated by a release and restored holds the work
-// its session remembers, where one recreated by anything else holds only what was pushed, and
-// the two are different notices (pi-shared, src/workspace-recreated.ts).
-const WorkspaceRestoredVariable = "LEGION_WORKSPACE_RESTORED"
-
 // Config is the launcher's configuration. The controller's pod names one role: Token, read from
 // its role-private projected Secret before Run is called, Role, and PrivateDir, that container's
 // own memory-backed directory, which no other container mounts. An issue pod's one container
@@ -65,11 +56,6 @@ type Config struct {
 	Connect, Token, Sandbox, Role, PodUID, PrivateDir string
 	RolesDir                                          string
 	Roles                                             []string
-	// Workspace is the pod's workspace, the one directory the pod's bundle restore works and
-	// records in use before any role starts on it (bundleRestore). `legion launcher` sets it to
-	// its own working directory in an issue pod's container (RolesDir set), which the pod spec
-	// makes the issue's workspace; the controller's launcher leaves it empty and restores nothing.
-	Workspace string
 	// TestPostgres has this launcher serve the pod's own PostgreSQL for tests (testpg.go), which
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
@@ -329,24 +315,18 @@ var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 // is handed cfg.Stdout and cfg.Stderr themselves (command), so its descriptors stay the
 // container's files rather than a pipe through the launcher.
 func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
-	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
-	// connection it reaches, and the first role to start applies it for the pod, with every other
-	// role's start waiting on that one restore. Its jj and git start through the guard: they are
-	// this process's children, and the reaper would otherwise take an exit before the restore's
-	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
-	// `wait: no child processes` or `waitid: no such process`) and puts nothing back.
-	restore := newBundleRestore(guard.starter(), cfg.Workspace)
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through
-	// the guard for the same reason as the restore's jj and git: a run the reaper took first fails
-	// the install with `the served check could not be run: waitid: no child processes` (or, under
-	// gVisor, `wait: no child processes` or `waitid: no such process`), and the role's launch with it.
+	// the guard: it is this process's child, and the reaper would otherwise take its exit before
+	// the install's own wait read it, which fails the install with `the served check could not be
+	// run: waitid: no child processes` (or, under gVisor, `wait: no child processes` or `waitid: no
+	// such process`), and the role's launch with it.
 	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		}}, nil
 	}
@@ -368,7 +348,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			log: log, stderr: own, requests: map[string]request{}, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		})
 	}
@@ -405,7 +385,7 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start, stop, bundle and leak-check commands until the connection ends. The hello
+// state, then start, stop and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. It also says that this launcher looks a
 // session named by its id alone up in the session table (resumesBySession, which start's lookup
@@ -472,9 +452,6 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	if err := m.state(); err != nil {
 		return err
 	}
-	// A restore whose outcome no connection has carried yet goes over this one: until the daemon
-	// has it, the saved work stays in its database (bundleRestore.owed).
-	m.reportRestore()
 	// The kill reports of this role's processes go on this connection from here, after its state,
 	// or are dropped where the daemon behind it may not know them: a gVisor pod's launcher sends
 	// them where the acknowledgement carried guard settings, and a microVM pod's, the controller's
@@ -503,8 +480,6 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			m.startAnswered(command.Generation)
 		case shimwire.LauncherStop:
 			answer = m.stop(command)
-		case shimwire.LauncherBundle:
-			answer = m.restore.receive(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
 		default:
@@ -800,10 +775,6 @@ type manager struct {
 	// start's wait for its slot's gh files (awaitGitHubCredential). Guarded by mu; nil until the
 	// connection's first start.
 	startStops map[uint64]chan struct{}
-	// restore is the pod's one workspace-bundle restore, which every role manager of the
-	// container shares: the bundle a released pod's work was saved as arrives on one role's
-	// connection and is applied once, before the first role of the pod starts.
-	restore *bundleRestore
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
 	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
@@ -813,7 +784,7 @@ type manager struct {
 	// audience, holds a sweep that never finds a clone (newGitLockSweep).
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
-	// role manager of the container shares as it shares restore.
+	// role manager of the container shares as it shares gitLocks.
 	check *checkInstall
 	// guard holds the launcher's own children, which are no generation's, out of every reap of
 	// PID 1's (pidGuard): the orphan reaper's passes, and the controller pod's drain of an exited
@@ -923,13 +894,12 @@ func (m *manager) volumeTrimming() bool {
 //
 // A manager with no connection up, and one whose answer carries no settings, each answer an
 // error, which is what the trimmer reads as "not now": it holds the report until an
-// acknowledgement puts both back, as reportRestore holds its own confirmation, rather than
-// dropping a volume nobody was told about, and an answer with no settings has the held report
-// discarded the next time the trimmer waits for settings or tries its last report
-// (trimmer.settingsInForce). They are two errors rather than one so that the line the pod's log
-// carries says which of them it was. The writer is taken under the same mutex as state and
-// reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside the
-// command loop is safe.
+// acknowledgement puts both back, rather than dropping a volume nobody was told about, and an
+// answer with no settings has the held report discarded the next time the trimmer waits for
+// settings or tries its last report (trimmer.settingsInForce). They are two errors rather than one
+// so that the line the pod's log carries says which of them it was. The writer is taken under the
+// same mutex as state takes it, and shimwire.Writer has a mutex of its own, so writing here beside
+// the command loop is safe.
 func (m *manager) sendVolumeReport(report shimwire.LauncherVolumeReport) error {
 	m.mu.Lock()
 	writer, settings := m.writer, m.volumeTrimSettings
@@ -963,28 +933,6 @@ func (m *manager) state() error {
 		return fmt.Errorf("launcher state: %w", err)
 	}
 	return nil
-}
-
-// reportRestore tells the daemon what became of the bundle it sent this pod, when a report is
-// owed and this role has a connection to carry it: the daemon keeps the saved work in its
-// database until one arrives, so a report that cannot be written now is left for the next
-// connection of any role of the pod (serve) rather than dropped.
-func (m *manager) reportRestore() {
-	report := m.restore.owed()
-	if report == nil {
-		return
-	}
-	m.mu.Lock()
-	writer := m.writer
-	m.mu.Unlock()
-	if writer == nil {
-		return
-	}
-	if err := writer.WriteFrame(*report); err != nil {
-		m.logf("launcher: the restore's outcome did not reach the daemon (%v); the next connection reports it again", err)
-		return
-	}
-	m.restore.sent(report)
 }
 
 // start runs command's generation. ctx is the container's: once it has ended (the container's
@@ -1085,28 +1033,11 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(err)
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
-	// that had none sweeps it here, before the restore below runs real git and jj against that
-	// clone, where a stale lock would fail it (gitLockSweep.learn). A launcher that runs no sweep
-	// holds none here, and its restore runs over the clone as it stands.
+	// that had none sweeps it here, before the role's child runs git and jj against that clone,
+	// where a stale lock would fail them (gitLockSweep.learn). A launcher that runs no sweep holds
+	// none here, and the role starts on the clone as it stands.
 	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
-	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
-	// clears the role's private directory, and before any role of the pod runs, so no role works
-	// a workspace that is half restored. Every other role's start waits here for this one. A
-	// restore that fails still starts the role, with a notice of what was lost in the log. A start
-	// whose workspace cannot be recorded in use is refused, so no role works a workspace that a
-	// later launcher, finding no record, could restore a bundle over.
-	outcome, err := m.restore.apply(ctx, env)
-	if err != nil {
-		return abandon(err)
-	}
-	if outcome.Notice != "" {
-		m.logf("launcher: %s", outcome.Notice)
-	}
-	m.reportRestore()
-	env = mergeEnv(env, []string{
-		WorkspaceRecreatedVariable + "=" + strconv.FormatBool(recreated),
-		WorkspaceRestoredVariable + "=" + strconv.FormatBool(outcome.Restored),
-	})
+	env = mergeEnv(env, []string{WorkspaceRecreatedVariable + "=" + strconv.FormatBool(recreated)})
 	// The pod's own test database: the DSN this launcher serves, over whatever the daemon's start
 	// command carried, and no such variable at all when this launcher serves none (testPGEnv).
 	env = testPGEnv(env, m.cfg.TestPostgres)
@@ -1114,10 +1045,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// the daemon wrote into the slot's Secret just before: the child starts only once the kubelet's
 	// projection holds it, so its first push or comment is never made as the App the files held.
 	if command.GitHubCredential != nil {
-		m.mu.Lock()
-		stopped := m.startStops[command.Generation]
-		m.mu.Unlock()
-		if err := m.awaitGitHubCredential(ctx, env, command.Generation, *command.GitHubCredential, received, stopped); err != nil {
+		if err := m.awaitGitHubCredential(ctx, env, command.Generation, *command.GitHubCredential, received); err != nil {
 			return abandon(err)
 		}
 	}
@@ -1170,13 +1098,16 @@ func (m *manager) ghRoot(env []string) string {
 // awaitGitHubCredential waits, reading once a second, until the slot's hosts.yml that want names
 // holds a token whose SHA-256 is want's digest. Where the files do not hold it first, it answers
 // why it stopped waiting: the bound want names passed, counted from received, the moment the
-// start of generation reached the launcher; a stop of that generation closed stopped
-// (readCommands; nil for a start no connection marked); or ctx, the container's, ended. The
-// daemon sets the bound to what remains of its own wait on the start before the stop grace, so
-// the refusal reaches it while it still waits, and the stop it sends after a start it gave up on
-// finds no child.
+// start of generation reached the launcher; a stop of that generation closed the mark of its
+// start (startStops, which readCommands marks; a start no connection marked has none, and no stop
+// ends its wait); or ctx, the container's, ended. The daemon sets the bound to what remains of its
+// own wait on the start before the stop grace, so the refusal reaches it while it still waits,
+// and the stop it sends after a start it gave up on finds no child.
 func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, generation uint64, want shimwire.LauncherGitHubCredential,
-	received time.Time, stopped <-chan struct{}) error {
+	received time.Time) error {
+	m.mu.Lock()
+	stopped := m.startStops[generation]
+	m.mu.Unlock()
 	if !filepath.IsLocal(want.HostsFile) {
 		return fmt.Errorf("the start names the gh file %q, which is not under the slot's gh directory", want.HostsFile)
 	}
@@ -1189,8 +1120,7 @@ func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, gener
 	for {
 		if data, err := os.ReadFile(path); err == nil {
 			if token, err := ghconfig.TokenFromHosts(data); err == nil {
-				sum := sha256.Sum256([]byte(token))
-				if hex.EncodeToString(sum[:]) == want.TokenDigest {
+				if shimwire.GitHubTokenDigest(token) == want.TokenDigest {
 					return nil
 				}
 			}

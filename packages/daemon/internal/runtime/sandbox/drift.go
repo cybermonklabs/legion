@@ -617,6 +617,15 @@ func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
 }
 
+// templateLacks answers, for a role, whether the Sandbox s's template was built without it: a
+// template that holds roles (templateRoles) lacks each role it does not hold, and a template no
+// launcher of this layout wrote holds none and lacks nothing. It is the one rule both a launch into
+// a kept pod (runtime.PodLacks, in relaunch) and PodLacksRole judge a pod by.
+func templateLacks(s *sandbox) func(role claim.Role) bool {
+	held := templateRoles(s)
+	return func(role claim.Role) bool { return len(held) > 0 && !slices.Contains(held, role) }
+}
+
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
 // names (issuePod.launcherContainer writes one for each role of the launch,
 // controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored
@@ -647,7 +656,7 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 }
 
 // PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
-// template was built without role (templateRoles), and true; "" and false where the issue has
+// template was built without role (templateLacks), and true; "" and false where the issue has
 // no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
 // makes no API call.
 func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
@@ -663,7 +672,7 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+	if !templateLacks(s)(role) {
 		return "", false
 	}
 	return string(pod.UID), true

@@ -41,7 +41,7 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: root, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: roles["implementer"].Type},
 			{Issue: root, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: roles["reviewer"].Type},
-		})
+		}, nil)
 		if err := store.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}

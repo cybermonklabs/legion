@@ -71,7 +71,7 @@ func ownersPlanRows(t *testing.T, key, root string, generation uint64, task reco
 	steps := record.NameAgents(nil, []record.PlanStep{
 		{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: key, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-	})
+	}, nil)
 	return version, []record.PlanTask{task}, steps
 }
 
@@ -100,7 +100,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: "default", Position: i + 1, Role: role, Type: types[i]}
 	}
 	steps[4].AgentKey = "owner"
-	steps = record.NameAgents(nil, steps)
+	steps = record.NameAgents(nil, steps, nil)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPlan(context.Background(), tx, version, tasks, steps); err != nil {
 			t.Fatalf("seed the default plan of %s at generation %d: %v", key, generation, err)

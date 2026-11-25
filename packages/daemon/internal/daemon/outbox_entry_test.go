@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -377,8 +378,7 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
 // is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
 // which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries handed on the role's row of this issue, raised above every row of the role,
-// every row of the same claim and the entry that claim was given, and nothing of a re-admission
+// is one counter of the issue's phases rows (workflow's enter), and nothing of a re-admission
 // unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
@@ -521,20 +521,21 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // the entry its phases row names of its own accord once that task is retired.
 //
 // The sequence is the record's. The implementer's completion hands testing to the tester, whose
-// phases row is raised to entry 1 with that entry's task and whose claim takes it and begins a
-// turn on it. The promotion of a re-admitted tree's member then raises entry 2 with the phase's
-// resume task (workflow.Engine.StartPromotedWorker): the runner holds that task back, since the
-// claim is working entry 1's (keepsStartTask), and records nothing, so the claim stands below its
-// row.
+// phases row is raised to its first entry with that entry's task and whose claim takes it and
+// begins a turn on it. The promotion of a re-admitted tree's member then raises the next entry with
+// the phase's resume task (workflow.Engine.StartPromotedWorker): the runner holds that task back,
+// since the claim is working the first entry's (keepsStartTask), and records nothing, so the claim
+// stands below its row. Each entry is one above every entry of the issue's rows (workflow's
+// enter), so the case reads the two off the tester's phases row rather than counting them.
 //
 // What the claim standing below its row then gives the worker is the rest of this case. The
-// tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,
-// saying the task of entry 2, the entry the phase is on, is owed to this claim and arrives by
-// itself (intake.StaleEntry). The admission pass passes over the claim while that task
-// is still worked, and on the first pass after the turn ends and the delivery is retired it sends
-// entry 2's own task (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The worker takes
-// that task, and the completion it reports in its turn is the one the daemon takes: the issue
-// moves to reviewing.
+// tester's completion of the first entry is refused 409 HANDOFF_STALE_ENTRY with nothing
+// recorded, saying the task of the next entry, the entry the phase is on, is owed to this claim
+// and arrives by itself (intake.StaleEntry). The admission pass passes over the claim while that
+// task is still worked, and on the first pass after the turn ends and the delivery is retired it
+// sends the next entry's own task (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The
+// worker takes that task, and the completion it reports in its turn is the one the daemon takes:
+// the issue moves to reviewing.
 //
 // The supervisor writes its claims to the rig's own database here rather than to the outbox
 // tests' in-memory claim store, because what the admission pass weighs against the phases row is
@@ -567,6 +568,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	if issue := readIssue(t, rig.pool, rig.issue.Key); issue.Phase != phase.Testing {
 		t.Fatalf("the issue stands at %s after the implementer's completion, want testing: the case's own premise", issue.Phase)
 	}
+	first := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleTester).Entry
 
 	tester, err := claim.NewToken("legion", rig.issue.Key, claim.RoleTester)
 	if err != nil {
@@ -609,8 +611,8 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		}
 	}
 
-	// The tester takes entry 1's task and begins its turn on it.
-	run("the tester's start row of entry 1", testerStart(1))
+	// The tester takes the first entry's task and begins its turn on it.
+	run("the tester's start row of its first entry", testerStart(first))
 	machine, found := rig.sup.Machine(tester)
 	if !found {
 		t.Fatal("the tester's start row created no claim")
@@ -627,37 +629,41 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "entry 1's task to be acknowledged", func() bool {
+	testwait.Eventually(t, "the first entry's task to be acknowledged", func() bool {
 		p := machine.Claim().Pending
 		return p != nil && !p.DeliveredAt.IsZero()
 	})
 	worked := machine.Claim().Pending.ID
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester, DeliveryID: worked}); err != nil {
-		t.Fatalf("start the turn of entry 1's task: %v", err)
+		t.Fatalf("start the turn of the first entry's task: %v", err)
 	}
 
-	// The phase is handed out again while that turn runs: entry 2, with the phase's resume task,
-	// whose row the runner holds back because the claim is working entry 1's task.
+	// The phase is handed out again while that turn runs: the next entry, with the phase's resume
+	// task, whose row the runner holds back because the claim is working the first entry's task.
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := startPromoted(ctx, rig.pool, engine, *issue, claim.RoleTester); err != nil {
 		t.Fatalf("raise the tester's second entry: %v", err)
 	}
-	second := testerStart(2)
-	if !second.request.ResumeTask {
-		t.Fatalf("the start row of entry 2 = %+v, want it marked as the phase's resume task", second.request)
+	next := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleTester).Entry
+	if next <= first {
+		t.Fatalf("the tester's phases row stands at entry %d after the promotion, want one above its first entry %d", next, first)
 	}
-	run("the start row of entry 2", second)
+	second := testerStart(next)
+	if !second.request.ResumeTask {
+		t.Fatalf("the start row of entry %d = %+v, want it marked as the phase's resume task", next, second.request)
+	}
+	run("the start row of the next entry", second)
 	machine.Wait()
-	if got := machine.Claim(); got.Pending == nil || got.Pending.ID != worked || got.Pending.Entry != 1 || got.GivenEntry != 1 {
-		t.Fatalf("the claim after the start row of entry 2 = %+v, want it still working entry 1's delivery %s and given entry 1", got, worked)
+	if got := machine.Claim(); got.Pending == nil || got.Pending.ID != worked || got.Pending.Entry != first || got.GivenEntry != first {
+		t.Fatalf("the claim after the start row of entry %d = %+v, want it still working entry %d's delivery %s and given entry %d", next, got, first, worked, first)
 	}
 	row := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleTester)
-	if given := givenEntry(); given != 1 || row.Entry != 2 || row.EntryTask != second.request.Task {
-		t.Fatalf("the record holds the tester's claim given entry %d under a phases row at entry %d carrying %q, want 1 under 2 carrying the promotion's task %q: the claim stands below its row, which is what the admission pass reads",
-			given, row.Entry, row.EntryTask, second.request.Task)
+	if given := givenEntry(); given != first || row.Entry != next || row.EntryTask != second.request.Task {
+		t.Fatalf("the record holds the tester's claim given entry %d under a phases row at entry %d carrying %q, want %d under %d carrying the promotion's task %q: the claim stands below its row, which is what the admission pass reads",
+			given, row.Entry, row.EntryTask, first, next, second.request.Task)
 	}
 
-	// The completion that turn reports is of entry 1, which the phase has moved past.
+	// The completion that turn reports is of the first entry, which the phase has moved past.
 	grants := credential.New(nil)
 	handoffs := &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
@@ -682,11 +688,11 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	}
 	status, refusal := complete(handoffs.write(rig.issue.Key, "test", machine.Claim().Session), 1)
 	if status != http.StatusConflict {
-		t.Fatalf("the completion of entry 1's task = %d %s, want 409: the phase was entered again, and this turn is on the entry before", status, refusal)
+		t.Fatalf("the completion of the first entry's task = %d %s, want 409: the phase was entered again, and this turn is on the entry before", status, refusal)
 	}
 	for _, want := range []string{
 		"HANDOFF_STALE_ENTRY",
-		"this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		fmt.Sprintf("this completion is of entry %d, not the phase's current entry %d", first, next),
 		"nothing was recorded",
 		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 	} {
@@ -710,16 +716,16 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// production, rather than refusing nothing on an unmarked context (INFRA-3169).
 	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
 	if starts := testerStarts(); len(starts) != 0 {
-		t.Fatalf("the sweep wrote the tester %+v while its worker works entry 1's task, want nothing: the pass passes over a claim whose pending delivery is still worked", starts)
+		t.Fatalf("the sweep wrote the tester %+v while its worker works the first entry's task, want nothing: the pass passes over a claim whose pending delivery is still worked", starts)
 	}
 
 	// The turn ends, the delivery is retired, and the next pass sends the row's own entry's task.
 	endTurn(ctx, t, machine, tester)
-	if got := machine.Claim(); got.Pending != nil || got.GivenEntry != 1 || got.ServedEntry != 1 {
-		t.Fatalf("the claim after the turn = %+v, want its delivery retired, entry 1 given and entry 1 served", got)
+	if got := machine.Claim(); got.Pending != nil || got.GivenEntry != first || got.ServedEntry != first {
+		t.Fatalf("the claim after the turn = %+v, want its delivery retired, entry %d given and entry %d served", got, first, first)
 	}
 	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
-	owed := testerStart(2)
+	owed := testerStart(next)
 	if owed.row.ID == second.row.ID || owed.request.Task != row.EntryTask {
 		t.Fatalf("the start the sweep wrote = row %d carrying %q, want a row of its own carrying the task the tester's phases row names (%q)",
 			owed.row.ID, owed.request.Task, row.EntryTask)
@@ -728,27 +734,27 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// The worker is given that task and completes it, which is the completion the daemon takes.
 	run("the start row the sweep wrote", owed)
 	machine.Wait()
-	if got := machine.Claim(); got.Pending == nil || got.Pending.Entry != 2 || got.Pending.Task != row.EntryTask || got.GivenEntry != 2 {
-		t.Fatalf("the claim after the sweep's start row = %+v, want it queued entry 2's task and given entry 2", got)
+	if got := machine.Claim(); got.Pending == nil || got.Pending.Entry != next || got.Pending.Task != row.EntryTask || got.GivenEntry != next {
+		t.Fatalf("the claim after the sweep's start row = %+v, want it queued entry %d's task and given entry %d", got, next, next)
 	}
-	testwait.Eventually(t, "entry 2's task to be acknowledged", func() bool {
+	testwait.Eventually(t, "the next entry's task to be acknowledged", func() bool {
 		p := machine.Claim().Pending
 		return p != nil && !p.DeliveredAt.IsZero()
 	})
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester, DeliveryID: machine.Claim().Pending.ID}); err != nil {
-		t.Fatalf("start the turn of entry 2's task: %v", err)
+		t.Fatalf("start the turn of the next entry's task: %v", err)
 	}
-	// Entry 2's task is work of its own, so the turn that works it writes a handoff record of its
-	// own, which is what the refusal told the worker to do.
+	// The next entry's task is work of its own, so the turn that works it writes a handoff record
+	// of its own, which is what the refusal told the worker to do.
 	own := dispatch.Handoff{ID: "handoff-" + rig.issue.Key + "-test-v2", IssueKey: rig.issue.Key, Phase: "test",
 		Version: 2, Author: dispatch.HandoffAuthor{Kind: "session", ID: machine.Claim().Session}}
 	handoffs.mu.Lock()
 	handoffs.handoffs[own.ID] = own
 	handoffs.mu.Unlock()
 	if status, body := complete(own.ID, own.Version); status != http.StatusOK {
-		t.Fatalf("the completion of entry 2's task = %d %s, want 200: the worker's turn is on the entry its phases row names", status, body)
+		t.Fatalf("the completion of the next entry's task = %d %s, want 200: the worker's turn is on the entry its phases row names", status, body)
 	}
 	if got := readIssue(t, rig.pool, rig.issue.Key); got.Phase != phase.Reviewing {
-		t.Fatalf("the issue stands at %s after the completion of entry 2's task, want reviewing", got.Phase)
+		t.Fatalf("the issue stands at %s after the completion of the next entry's task, want reviewing", got.Phase)
 	}
 }

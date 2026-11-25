@@ -109,6 +109,7 @@ func lapsedClaim(holder, instance string) store.RoleClaim {
 // which is what keeps a role with the process that holds it: the claim stays renewed for as long
 // as its holder keeps registering, and nothing else on the record moves.
 func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_renewing_holder"
@@ -135,6 +136,7 @@ func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
 // claim to renew. The role was taken when it was taken, by whom it was taken from: adoption
 // writes the process and the renewal, nothing else.
 func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_adopting_holder"
@@ -172,6 +174,7 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // registration was answered 200 and its renewal's claim read ran out of time, so the claim was
 // never renewed while its holder kept registering.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_largest_holder"
@@ -229,6 +232,7 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 // - a renewal it could move would keep a role alive for a process that does not hold it, and
 // would hold the role against its real holder once that holder stopped.
 func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_shared_id"
@@ -249,6 +253,7 @@ func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
 // the claim record names the registering process, and a view that cannot answer is no failure
 // of the renewal, so nothing says the renewal was passed over.
 func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_refilling_view"
@@ -294,6 +299,7 @@ func (kv *racingRoleClaimUpdate) Update(key string, value []byte, revision uint6
 // it. The registration is answered 200, since a heartbeat is not the place to report a race it
 // has already lost.
 func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_raced_holder"

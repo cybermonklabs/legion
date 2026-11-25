@@ -38,29 +38,23 @@ Read, against the goal, every check and every requirement:
 ## The last round
 
 A parent has a last round only where its task names `acceptance:owner`.
-Sign it off only on a head that carries the merges of every child its checks need.
+Sign it off only on a head at which its checks pass.
 Each check needs a pass at that head; one in another repository needs a pass standing since the close of each child it needs, at a commit on the branch that issue's pull request merged into or on its default branch;
 a `default_branch` check needs the default branch.
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
 A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
 Nothing builds on the parent's merge, which comes last.
 Until those children close, leave the issue in `accepting`.
-Then, in one turn:
-
-1. Where a tester step comes before your acceptance, `envoy_publish` to its tester's role topic:
-   "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
-   With no tester step before your acceptance, the implementer's evidence for those checks at the merge head is the full round.
-
-2. `request_backward_move` to `implementing`, with the reason "Last round:
-   merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
-   Never hard-code `main`.
+Then start the last round: `request_backward_move` to `testing`, or to `implementing` where no tester step comes before your acceptance, its reason naming the children that closed and the checks of the parent that need their code.
+The tester sizes that round like any other; with no tester step before your acceptance, the implementer's evidence for those checks at its head is the round.
+The last round merges the base only on a trigger every pull request has: GitHub reads the pull request `CONFLICTING` (*A conflicting head*, below), or a check that needs a child's merged code fails at the head without it, and the implementer merges the base on that trigger.
 
 A child's merge while the parent waits needs no move of its own:
-the last round's forward merge takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
+the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
 If the pull request merged before its last round, move nothing back.
 Once the children close:
 
-1. Have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, and `wait` for its report.
+1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
 
 2. Read each `ci_check` result in `dispatch results`.
 

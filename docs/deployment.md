@@ -547,6 +547,7 @@ The `type` of its steps is one of `design`, `planning`, `implementation`, `testi
 The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.
 The `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose.
 The `github_app` is the App the role works as, `implement` or `review`, `review` by default.
+A role of the type `review` works as the review App, and the loader refuses one that names `implement`.
 `role_types` lists the types a deployment adds to Legion's five, each named once.
 The daemon's start reads each role's `prompt_file` and refuses one it cannot read (`roles.<name>.prompt_file <path> cannot be read: <error>`).
 `legion config check` makes the same refusal and prints one line for each role, `roles.<name>: type <type>, model <model>, App <app>, prompt <path>`.
@@ -554,8 +555,11 @@ The daemon's start reads each role's `prompt_file` and refuses one it cannot rea
 A step of such a role runs at the phase `step`, at the place the task's steps give it.
 Its agent's prompt is `mechanics/headless.md`, its `prompt_file` and the daemon's `worker-common.md`.
 It writes no handoff record: it reports its step with `handoff_complete`, the verdict `pass` or `fail` and the commit its workspace stands on, and a fail may name `return_to`, the place of an earlier step of its task.
-Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's, and under `runtime: kubernetes` every issue pod runs it beside Legion's six, with a Secret, a shim and a state home of its own, whatever the issue's plan names.
-An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod, and until then the role's start waits.
+Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's.
+Under `runtime: kubernetes` every issue pod is built for it beside Legion's six, whatever the issue's plan names, with its Secret and its launcher connection.
+The launcher starts its shim, with a state home of its own, only when the daemon starts the role.
+An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod.
+Until then a start the workflow asks for waits, and a launch the supervisor makes itself, such as an operator's resume or a retry, is refused and charged as a launch failure ([Kubernetes](kubernetes.md)).
 
 ## Phase workers on Claude Code
 
@@ -739,6 +743,19 @@ provider_keys:
   claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
   `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
   prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.
+- **An edited instructions file needs no restart.** The daemon reads the deployment's
+  `instructions` and each declared arm's `instructions` at boot, and again before every launch,
+  into its own copy under the state directory, so the next launch carries the edit. A role already
+  running keeps the prompt it launched with until its next launch, and an edit replaces no pod.
+  A file an edit leaves missing, unreadable or blank, which boot refuses, stops no launch of a
+  running daemon: each launch carries the text the daemon last read, and the daemon logs one WARN
+  line for each refusal, naming the file and the refusal (`legion daemon launches with the
+  instructions it last read: …`; a copy it cannot replace is the same line at ERROR), then one INFO
+  line once the file reads again (`legion daemon read an edited instructions file: …`, or
+  `legion daemon reads an instructions file again …` when it holds the text the daemon kept). Under
+  Kubernetes the daemon must read the file from a directory mount: the kubelet never refreshes a
+  file mounted by `subPath`. Naming another file, or a file for the first time, is a change of
+  `legion.yaml`, which still needs a restart.
 - **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).
@@ -753,7 +770,8 @@ provider_keys:
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with
   no block gets, `on` gives every new tree one, and `random` draws a fair coin for each new tree.
   `config_files` are the Oh My Pi overlays a memory-group tree's panes name, and `instructions` the
-  one markdown file the daemon reads at boot and appends to their prompt; both are absolute paths.
+  one markdown file the daemon reads at boot, and again at each launch, and appends to their
+  prompt; both are absolute paths.
   The draw is made once, when the tree's lifecycle row is first created, and is kept on the tree's
   root issue record with the mode it was drawn under and the time of the draw.
   A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its root
@@ -795,15 +813,17 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
-  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
-  issue role where the block names none; a pane of a role the list leaves out loads none of this
-  experiment's overlays or instructions while its unit keeps the arm it drew.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and it may
+  name only Legion's six. Where the block names none, every issue role loads them, each role of
+  `roles` included. A pane of a role the list leaves out loads none of this experiment's overlays
+  or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
-  of a unit drawn into it names, and `instructions`, one markdown file the daemon reads at boot
-  and appends to that pane's prompt.
+  of a unit drawn into it names, `instructions`, one markdown file the daemon reads at boot, and
+  again at each launch, and appends to that pane's prompt, and `plan`, how the issues drawn into it
+  are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files
@@ -815,8 +835,8 @@ provider_keys:
   The system prompt ends with each such arm's `instructions` in that same order, after the
   deployment's own.
   The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
-  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
-  mode in force and the instant.
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, its
+  `plan` where it names one, the mode in force and the instant.
   The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
   while the project's file still names the arm, whatever the mode is now, and taking the files
   away is taking the arm out of the file.
@@ -834,6 +854,19 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
+- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
+  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
+  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
+  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
+  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
+  whatever the file says later.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
+  most one experiment of a project sets it.
+  The loader refuses a `plan` that is neither `owner` nor `default` (`owner-alone`, which this
+  release does not carry out, among them), an arm that names no `plan` beside one that does, an
+  experiment that sets `plan` at `unit: tree`, and a second experiment of one project that sets
+  `plan`; `legion config check` makes each of these refusals.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

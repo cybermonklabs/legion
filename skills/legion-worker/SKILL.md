@@ -11,7 +11,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
 
 1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (below).
    Where your task has no such line, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
-   Your architect's decisions for you come in your task and your messages: read no other document for them.
+   Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
    A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
@@ -37,8 +37,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
     Do what it asks at the head it names, with a handoff of its own.
 
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or it names no head; nothing was recorded.
-    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head, with a handoff that names it where your phase writes one.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: `skill://legion-worker/references/conflicts-and-rewrites.md#the-daemons-ask`.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
@@ -54,6 +53,10 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
   - a pushing role whose second push still left the pull request off its commit.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+
+- **Ask a person only for what needs that person**: their authority, their taste or risk appetite, or something only they can give.
+
+- **Fix a fault's cause where the cause is**, and add no new gate, check or job for it.
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
@@ -82,7 +85,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
-  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
+  So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.

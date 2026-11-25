@@ -95,7 +95,9 @@ type idleRigAdoption struct {
 // HoldsBeforeEnvoy: a woken Oh My Pi still starting, whose session holds no role yet while the
 // daemon publishes to it. The stand-in otherwise claims its role within a second of its pod's
 // start, far sooner than an Oh My Pi does, and a test that needs the daemon's publish to meet a
-// role its woken session has not claimed yet would be racing it.
+// role its woken session has not claimed yet would be racing it. The rig also holds every process
+// this way, whatever its plan says, while newIdleWakeRig starts the listener again
+// (idleRigAgents.holdEnvoy).
 //
 // A process reads Topics and ExitsAsReleasedInProduction once, as it starts
 // (idleRigRoleProcess.run), after the plan no longer holds it, and TakeTurn and Background at
@@ -132,6 +134,9 @@ type idleRigAgents struct {
 	plans   map[string]idleRigPlan
 	// plan is the plan a role with none of its own gets.
 	plan idleRigPlan
+	// envoyHeld holds every role process before the Envoy listener, as a plan with
+	// HoldsBeforeEnvoy does, whatever plan the role has (holdEnvoy).
+	envoyHeld bool
 }
 
 func newIdleRigAgents(t *testing.T, pool *store.Pool) *idleRigAgents {
@@ -160,6 +165,17 @@ func (a *idleRigAgents) setPlan(pod, role string, plan idleRigPlan) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.plans[idleRigKey(pod, role)] = plan
+}
+
+// holdEnvoy holds every role process before the Envoy listener while held is true, on top of
+// each role's own plan, and lets each go on to its own plan's next step once it is false. A
+// process waits before it registers with the listener and claims its role, after it has
+// registered with the daemon (idleRigPlan.HoldsBeforeEnvoy). newIdleWakeRig holds them while it
+// starts the listener again, which they would otherwise meet half started.
+func (a *idleRigAgents) holdEnvoy(held bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.envoyHeld = held
 }
 
 // role is what the rig has seen of a role process, empty when it has seen none.
@@ -305,6 +321,7 @@ func (a *idleRigAgents) servePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		plan = a.plan
 	}
+	plan.HoldsBeforeEnvoy = plan.HoldsBeforeEnvoy || a.envoyHeld
 	a.mu.Unlock()
 	writeIdleRigJSON(w, plan)
 }
@@ -898,11 +915,11 @@ func (p *idleRigRoleProcess) serve() error {
 			if err := p.prompted(f); err != nil {
 				return err
 			}
-		case shimwire.BundleWorkspace:
-			// The release's save of the workspace's unpushed work. This workspace has none, which
-			// is the empty bundle a clean workspace saves.
-			if err := p.writer.WriteFrame(shimwire.BundleWorkspaceResult{
-				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000", At: time.Now().UTC(),
+		case shimwire.WorkspaceWork:
+			// The release's check of the workspace for work origin does not hold. This workspace
+			// holds none: its working copy is empty and every commit under it is on origin.
+			if err := p.writer.WriteFrame(shimwire.WorkspaceWorkResult{
+				ID: f.ID, OK: true, Head: "0000000000000000000000000000000000000000",
 			}); err != nil {
 				return err
 			}

@@ -1,0 +1,51 @@
+-- 20261125044726_phase_step_key.up.sql — the phases row of a step (record's store.go and
+-- record.go).
+--
+-- The key of phases is the issue, the role and the step the row runs (step_task, step_place),
+-- where it was the issue and the role. A role can stand at two steps of a task, one agent doing
+-- both or one agent each, and the run of each step keeps a row of its own, with its report, its
+-- completion and its entry, so the task of a later step names the report of each step before it
+-- (record.PhaseRowAt). An issue with no plan rows keeps the empty task and place 0 on each row, so
+-- it has one row for each role, as before, and so does every row the upgrade finds: the release
+-- before ran each role at most once in a task, so no two of its rows share an issue and a role.
+--
+-- A new generation clears the step of each row (record.Postgres.ClearGeneration), and it folds the
+-- rows of one role first, keeping the one with the highest entry, so the clear never makes two
+-- rows of one key.
+--
+-- The release before this one does not run over the new key. Its one write of a phases row is an
+-- upsert whose conflict target is (issue, role) (record.Postgres.PutPhase), and PostgreSQL takes a
+-- conflict target only where a unique index of exactly those columns stands, so each such write
+-- fails ("there is no unique or exclusion constraint matching the ON CONFLICT specification").
+-- So every project's daemon on the database moves to this release together, and a rollback runs
+-- the way back below before the earlier image starts.
+--
+-- There is no down file. This directory keeps none, so the way back is the one transaction that
+-- closes this header, its last paragraph (migrations.WayBack), run with every project's daemon on
+-- the database stopped, before the earlier image is pinned. It deletes each row of a role but the
+-- one with the highest entry, writes the key (issue, role) again, and deletes this migration's
+-- version row. The key is owed to the release before, whose writes need it; the delete is owed to
+-- that key, which two rows of one role would refuse; and the deleted version row is owed to the
+-- roll forward, which then runs this file again. What the delete costs is the report of each
+-- earlier step of a role that stands at two steps of a task: after the rollback, the task of a
+-- later step of such a task names the report of that role's latest step alone. So roll back past
+-- this release only once each task whose plan in force names a role at two steps is done or
+-- stopped (docs/kubernetes.md, "Rolling back the release that keys a phases row by its step",
+-- gives the read of plan_steps that finds them): the release before refuses such a plan, gives
+-- each step the agent of the first place that runs as its phase, so `implementer:a reviewer:b
+-- implementer:b`'s step 3 would go to key a's agent, and serves no move back to a phase that runs
+-- at two earlier places, so the tester's move back in `implementer:a reviewer implementer:a tester`
+-- would be refused. This release lets a project's default_steps name a role at two steps, and the
+-- release before refuses such a list when it loads legion.yaml (config/roles.go), so before the
+-- earlier image is pinned, remove from every project's default_steps each role it names at two
+-- steps. A rollback past 20261117034837_issue_plans, which drops step_task and
+-- step_place and this key with them, runs this way back first, and so does a rollback past the
+-- release that records each step, whose way back reads one row of each role (step_run_witness,
+-- 20261117004117_step_starts).
+--
+-- begin;
+-- delete from phases p using phases q where p.issue = q.issue and p.role = q.role and (p.entry, p.step_task, p.step_place) < (q.entry, q.step_task, q.step_place);
+-- alter table phases drop constraint phases_pkey, add primary key (issue, role);
+-- delete from schema_version where version = 20261125044726;
+-- commit;
+alter table phases drop constraint phases_pkey, add primary key (issue, role, step_task, step_place);

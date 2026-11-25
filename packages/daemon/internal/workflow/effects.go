@@ -25,12 +25,13 @@ import (
 // days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
 // records it, so an issue standing in accepting is always still waiting for it; every other
 // phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// answers nothing here: the merger's is recorded and moves no issue. The pull request's state is
+// all it reads, so it reads the row alone (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return false, err
 	}
@@ -471,7 +472,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{stored: true, walk: &w})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -592,7 +593,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, agent, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, agent, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession, walk: &w})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for agent,
@@ -651,9 +652,12 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.started(ctx, tx, issue, role, agent, task, row.Entry, marks)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises.
+// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's first run
+// brings back — its promotion, or the admission pass that finds the tree running when its design
+// gate opened first (admit's startMidPhaseMembers, returnMembersOfRunningTrees) — on the resume
+// task of the phase it stands in (ResumeTask), on the one walk of its run it reads for that task
+// and the entry it raises. Both are the promotion's start here: the pass's return is the one the
+// promotion would have made.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -676,7 +680,7 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{resumeTask: true, stored: true})
+	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{resumeTask: true, stored: true, walk: &w})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
@@ -727,10 +731,12 @@ type startMarks struct {
 	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
 	// refusedPod is the uid of the issue pod whose refusal of the claim's launch queued the start
-	// (record.SuperviseRequest.RefusedPod): the send of an owed entry queueRefusedStart makes sets
-	// it, so the end of that start asks the workflow nothing while that pod still refuses the claim
-	// (the daemon outbox's startRowEnded). Every other door leaves it empty.
+	// (record.SuperviseRequest.RefusedPod), which the send of an owed entry queueRefusedStart makes
+	// sets. Every other door leaves it empty.
 	refusedPod string
+	// walk is the walk of the issue's run the caller read for this start, which leaveSession reads
+	// the step from rather than reading the plan again; nil where the caller read none.
+	walk *Walk
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
@@ -785,10 +791,41 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
+	leave, err := e.leaveSession(ctx, tx, issue, role, marks.walk)
+	if err != nil {
+		return err
+	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: agent, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
-		RefusedPod: marks.refusedPod}, e.now(), move)
+		RefusedPod: marks.refusedPod, LeaveSession: leave}, e.now(), move)
+}
+
+// leaveSession is the session a start of role's worker leaves (record.PlanStep.LeaveSession): the
+// one the stored step the issue stands at names, where that step is role's, and "" for every
+// other start. Only the default steps of a run name one, for an agent that took a name a key's
+// agent held (leaveKeySessions), so every start of that agent in the generation carries it, and
+// its claim leaves it where it still records it (supervise's revive). It reads the step from w, the
+// walk its caller read, and reads the walk itself only where the caller read none.
+func (e *Engine) leaveSession(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, w *Walk) (string, error) {
+	if !recordsSteps(issue) {
+		return "", nil
+	}
+	if w == nil {
+		read, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return "", err
+		}
+		w = &read
+	}
+	place, ok := w.placeIn(record.StandsAt(issue))
+	if !ok {
+		return "", nil
+	}
+	if step, ok := w.stepAt(place); ok && step.Role == string(role) {
+		return step.LeaveSession, nil
+	}
+	return "", nil
 }
 
 // startClaim is the claim a start of role on issue is queued for, read on w, issue's walk
@@ -985,14 +1022,13 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
-// The number counts the entries handed on this role's row of the issue, numbered across the rows
-// of the step's claim and of its role and above what that claim was given (the last paragraph
-// says how), which is why it is raised here: this is the one place a claim is handed work it was
-// not on. It is only ever compared with a value the daemon itself wrote, never read from a
-// request — a completion carries no identity at all (api.HandoffCompleteRequest) — so it needs
-// to stand above every entry that claim and that role were handed, and no more. Nothing else at
-// hand counts them: the issue's generation is one run's whole life, and the round counts only
-// returns to implementing.
+// The number is one above every entry of the issue's phases rows (the counter below), which is why
+// it is raised here: this is the one place a claim is handed work it was not on. It needs to be
+// above every entry its claim was handed before and no more, since it is only ever compared with a
+// value the daemon itself wrote,
+// never read from a request — a completion carries no identity at all
+// (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
+// run's whole life, and the round counts only returns to implementing.
 //
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
@@ -1048,26 +1084,30 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // only a phase worker's raise reads; EnterArchitect gives none.
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
-// Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
-// that claim and of that role and above what that claim was given: it is the higher of the row's
-// own entry plus one, one above the highest entry of every row of the issue that names the claim
-// or is of the role, and one above the claim's given entry (record.RoleClaim.GivenEntry). The
-// steps of one key are one claim, whose given entry is the last its agent was handed, so an entry
-// numbered on the row alone would fall at or below it and the queue would refuse the task of the
-// agent's next step. The rows alone do not keep that number: a new generation folds a role's rows
-// into its highest (record.Store.ClearGeneration), and the first step of the new generation can
-// write another key's claim on the kept row, as step 1 of `implementer:a reviewer:b implementer:b`
-// does on the retro's row of key b, so the claim's own given entry, which no clear resets, is what
-// keeps its next step above every entry it was handed. Two agents of one role keep a row of it
-// each, as `implementer:a tester:b implementer:b`'s steps 1 and 3 do, so an entry numbered across
-// the claim's rows alone could stand level with the other agent's: the return of a failed review
-// to step 1 would raise key a's row to the entry key b still serves for step 3, and key b's
-// completion would pass the entry fence as step 1's (intake.EntryFence). Above every row of its
-// role, the row where the task stands holds the highest entry of the role, and every other run of
-// the role is behind it, which the fence, the fold of a new generation and the key's way back read.
-// No entry falls below its own row's, which a row the release before raised and no completion
-// named a claim on keeps. An issue with no plan rows has one row for each role, which a clear never
-// folds, so its entry is the row's own plus one.
+// Engine.stepToken), which record.WorkerClaim reads back.
+//
+// Every entry of an issue is one above the highest entry of every phases row of the issue, read in
+// this transaction: one counter for the issue, whatever role, claim, step, version or generation a
+// row is of. That is what makes each entry a claim is handed above every entry that claim was
+// handed before. No write lowers a row's entry, and the one delete of a row, the fold of a role's
+// rows into its highest at a new generation (record.Store.ClearGeneration), keeps the highest row
+// of each role and so the issue's highest; every entry a claim is handed is the entry of a row of
+// its own issue at the moment it was raised, so the highest entry of the issue's rows is at or
+// above every entry any claim of the issue holds, a start still queued or in flight included. A
+// number counted on the role's row, or across the rows that name the claim now, falls at or below a
+// claim's given entry wherever a version moves the row that held the claim's highest entry to
+// another claim, and the claim's queue then takes its next task as given already (supervise's
+// given) and no sweep owes it. A role's entries need not be consecutive because every role shares
+// the issue's counter.
+// The counter also puts the row where the task stands above every row of its role. Two agents of
+// one role keep a row of it each, as `implementer:a tester:b implementer:b`'s steps 1 and 3 do, and
+// an entry level with the other agent's would let the return of a failed review to step 1 raise
+// key a's row to the entry key b still serves for step 3, and key b's completion pass the entry
+// fence as step 1's (intake.EntryFence). Above every row of the issue, the row where the task stands
+// holds the highest entry of its role, and every other run of the role is behind it, which the
+// fence, the fold of a new generation and the key's way back read.
+// The facts that raise an entry are applied one at a time (intake.SerializeFacts), so two raises
+// of one issue never read the same highest entry.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (entered, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -1094,21 +1134,13 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 	}
 	row.Issue, row.Role = issue.Key, role
-	entry := row.Entry + 1
+	var entry int64
+	for _, other := range rows {
+		entry = max(entry, other.Entry)
+	}
+	entry++
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	if worker && recordsSteps(issue) {
-		for _, other := range rows {
-			if (other.Claim == agent || other.Role == role) && other.Entry >= entry {
-				entry = other.Entry + 1
-			}
-		}
-		held, err := e.store.RoleClaims(ctx, tx, []claim.Token{agent})
-		if err != nil {
-			return entered{}, err
-		}
-		if given := held[agent]; given != nil && given.GivenEntry >= entry {
-			entry = given.GivenEntry + 1
-		}
 		row.Claim = agent
 	}
 	row.Entry = entry
@@ -1222,8 +1254,8 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the
 // text before the colon of one of the task's lines. Every line of the task is built from its
-// label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
-// skills that tell the worker to read it, so a label renamed on one side alone fails there.
+// label here, and TestEachTaskLabelIsALineTheTaskWrites holds each label's text, so a label renamed
+// here alone fails there.
 // testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
 // tests of their own.
 const (
@@ -1371,7 +1403,8 @@ func HeldNotice(issue record.Issue) record.Notice {
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
+// tree's first run made the tree live: its root's promotion, or the admission pass that finds a
+// re-admitted tree running first.
 func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }

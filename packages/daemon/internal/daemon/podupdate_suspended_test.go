@@ -67,7 +67,7 @@ func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
 //     holds nothing back;
 //   - neither suspended claim is asked (no update-ask row, no publish to its topic), woken or
 //     resumed (no Resume call), and each is still suspended once the round is over;
-//   - no bundle of the workspace is saved.
+//   - no idle release declines the pod: the round's read writes no decline row.
 func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
 	t.Helper()
 	rig := newPodUpdateRig(t,
@@ -94,7 +94,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	}
 	// Nothing is deciding when the sweep reads the claims, so the first sweep after the answers
 	// is the one that replaces the pod, and the read cannot be followed by a refusal that a
-	// machine mid-decision would cause (roundGroup's mask).
+	// machine mid-decision would cause (masked).
 	rig.settleAll()
 	replaced := rig.awaitReplacement(1, "once both workers answered")
 
@@ -149,12 +149,12 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Errorf("the round resumed %d processes, want none", len(resumes))
 	}
-	var bundles int
-	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from workspace_bundles").Scan(&bundles); err != nil {
-		t.Fatalf("read the workspace bundles: %v", err)
+	var declines int
+	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from idle_release_declines").Scan(&declines); err != nil {
+		t.Fatalf("read the idle release declines: %v", err)
 	}
-	if bundles != 0 {
-		t.Errorf("the round saved %d workspace bundles, want none: the read keeps nothing", bundles)
+	if declines != 0 {
+		t.Errorf("the round recorded %d idle release declines, want none: its read is the round's, which declines no release", declines)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)

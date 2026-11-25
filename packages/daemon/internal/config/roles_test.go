@@ -178,3 +178,42 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		}
 	})
 }
+
+// A role of the type review acts as the review App: the account that reviews a change is never
+// the one that wrote it, a review step's fail counts a review round, and GitHub refuses an
+// approval from a pull request's author. So the loader refuses a review role that names the
+// implement App, naming the role, the key and both Apps, and loads one that names the review App
+// or none. A role of every other type, one of role_types among them, may act as either App.
+func TestAReviewRoleActsAsTheReviewApp(t *testing.T) {
+	_, err := Load(rolesFile(t, "roles: {critic: {type: review, prompt_file: critic.md, github_app: implement}}\n", "critic.md"), noEnv)
+	if err == nil {
+		t.Fatal("Load took a role of the type review acting as the implement App")
+	}
+	for _, word := range []string{"roles.critic", "github_app", RoleAppImplement, RoleAppReview} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal %q does not name %s", err, word)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, block, rest, roleType, app string
+	}{
+		{"a review role that names no App", "{type: review, prompt_file: critic.md}", "", "review", RoleAppReview},
+		{"a review role that names the review App", "{type: review, prompt_file: critic.md, github_app: review}", "", "review", RoleAppReview},
+		{"a design role on the implement App", "{type: design, prompt_file: critic.md, github_app: implement}", "", "design", RoleAppImplement},
+		{"a planning role on the implement App", "{type: planning, prompt_file: critic.md, github_app: implement}", "", "planning", RoleAppImplement},
+		{"an implementation role on the implement App", "{type: implementation, prompt_file: critic.md, github_app: implement}", "", "implementation", RoleAppImplement},
+		{"a testing role on the implement App", "{type: testing, prompt_file: critic.md, github_app: implement}", "", "testing", RoleAppImplement},
+		{"a role of role_types on the implement App", "{type: security, prompt_file: critic.md, github_app: implement}", "role_types: [security]\n", "security", RoleAppImplement},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(rolesFile(t, "roles: {critic: "+tc.block+"}\n"+tc.rest, "critic.md"), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(cfg.Roles) != 1 || cfg.Roles[0].Type != plan.Type(tc.roleType) || cfg.Roles[0].GitHubApp != tc.app {
+				t.Errorf("Roles = %+v, want the critic of the type %s on the %s App", cfg.Roles, tc.roleType, tc.app)
+			}
+		})
+	}
+}

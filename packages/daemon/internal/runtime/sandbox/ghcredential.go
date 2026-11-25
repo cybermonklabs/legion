@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -570,24 +568,30 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		r.log.Info("sandbox runtime: the start waits for its slot's gh files to hold its credential",
 			"claim", spec.Claim, "slot", slot, "app", held.app, "generation", spec.Generation)
 	}
-	sum := sha256.Sum256([]byte(held.token))
-	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
+	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: shimwire.GitHubTokenDigest(held.token)}, nil
 }
 
 // slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
 // as another App than the slot's gh files may hold: the App of the role the launch's process runs
-// as (runtime.SlotRole) against that of the slot's own name, the role a slot of a pod the release
+// as (runtime.SlotRoles) against that of the slot's own name, the role a slot of a pod the release
 // before built ran as, and that of the role the slot's last launch recorded on its Secret
 // (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment
 // defines is another App. It reads the slot's Secret and writes nothing; relaunch asks it only of a
 // launcher that does not wait for a start's credential.
+//
+// runtime.SlotRoles asks the runtime's ActsAs once, for the claim, and answers the rule each role
+// read here is judged by, which is the rule one role is judged by at a launch or a refresh
+// (runtime.SlotRole): an ActsAs that gives the claim a role gives it for every role read here. A
+// failed ask, or a failed read of the Secret, is an error the launch retries, never a slot read as
+// starting another App: that answer holds the launch for the pod's update round
+// (runtime.AwaitsPodUpdate), which a read that failed for a moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
+	slotRole, err := runtime.SlotRoles(ctx, r.actsAs, spec.Claim)
+	if err != nil {
+		return false, err
+	}
 	appOf := func(role claim.Role) (appauth.AppRole, error) {
-		acting, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, role)
-		if err != nil {
-			return "", err
-		}
-		return appauth.AppRoleFor(acting, r.deploymentApps)
+		return appauth.AppRoleFor(slotRole(role), r.deploymentApps)
 	}
 	app, err := appOf(spec.Role)
 	if err != nil {

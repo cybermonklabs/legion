@@ -32,17 +32,16 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the handoff of each implementer, tester and reviewer step: `dispatch handoff-read --issue <issue> --phase implement|test|review` reads the last of its kind, `--version <n>` an earlier one.
-   Your task's `Handoff:` line, where it has one, names its last worker step's handoff.
-   A role of the deployment writes none; `dispatch steps --issue <issue>` shows how each run ended.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the thread of each plan task in `plan.md`, and each handoff: `dispatch handoff-read --issue <issue> --phase implement|test|review` reads the last, `--version <n>` an earlier one; your `Handoff:` line names the last worker step's.
+   Read the GitHub review of the last worker step's head where it has a reviewer step.
+   Deployment roles write none; see `dispatch steps --issue <issue>`.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
-     A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
+     A `ci_check` check has no pass standing at that head when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` or `skipped` until the label is on.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it.
      Name each run that has not concluded in step 5's `Runs still going` line, and go on.
-     When CI settles, the daemon tells the architect and the worker of the issue's current phase.
-     A name that no run answers (`absent`), or a `run` that is a whole test suite, goes to the architect as a finding.
+     Send any other name that no run answers (`absent`), or a `run` that is a whole test suite, to the architect as a finding.
      The check's words are wrong.
      Neither that run nor that finding moves the issue back.
 
@@ -65,7 +64,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    When no point qualifies, write no comment and say so in step 5's message.
 
 4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
-   With no reviewer step, record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the handoff of each tester step where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+   With no reviewer step, record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from each tester step's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
 

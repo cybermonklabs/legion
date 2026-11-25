@@ -17,8 +17,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line; with no reviewer step, the implementer does)
 **Proven by:** <the surface and the run of the check the change turns on, one line>
-**Not proven / risk:**
-- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; with no reviewer step, the implementer does; `none` is invalid while such a claim stands)
+**Not proven / risk:** <a risk that stands, in one sentence; leave the line out where none stands. The reviewer writes it; with no reviewer step, the implementer does>
 **Size:** <files changed, +added/−removed>
 
 ## Verification
@@ -29,7 +28,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` <once at <head-sha> | not run (docs-only change)>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+**Thermo:** `simplify-settled-diff` once at <head-sha> (a docs-only PR has no `Thermo` line): <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
 - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
 - `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
 Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
@@ -53,10 +52,9 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 ## The brief for the human
 
 The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push.
-At each round the reviewer writes `Look at first` and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review).
+At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
 With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
 With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the handoff of each tester step where the task has one.
-A requirement there is unmet, unless only the deploy can show it and the plan names its observation.
 A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
 ## The simplify pass and the `Thermo` line

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -37,9 +38,9 @@ const (
 	ReleaseOver ReleaseAct = iota
 	// ReleaseCancel: the release is cancelled. The caller carries the cancel out
 	// (CancelIssueRelease): the claims this release suspended are resumed and the mark goes, in
-	// one transaction, and the bundle it stored is deleted, so the pod is left as a wake would
-	// have left it. The mark stands until that call, so a cancel that does not finish is read
-	// again by the row's retry rather than lost.
+	// one transaction, so the pod is left as a wake would have left it. The mark stands until
+	// that call, so a cancel that does not finish is read again by the row's retry rather than
+	// lost.
 	ReleaseCancel
 	// ReleaseActs: the row acts.
 	ReleaseActs
@@ -75,9 +76,8 @@ const (
 	// left the workflow, its tree lingers, or its cleanup is reserved. None of those is a
 	// release's business, and each of them is a close's.
 	ReleaseCauseUnauthorized
-	// ReleaseCausePaused: the project is paused at the release's save. The pause saves no
-	// workspace and deletes no pod, so the release is cancelled before it stores a bundle
-	// (IssueReleaseSave, decision 12 and departure 4 of dispatch://INFRA-3759).
+	// ReleaseCausePaused: the project is paused at the release's workspace check. The pause deletes
+	// no pod, so the release is cancelled before any role stops (IssueReleaseCheck).
 	ReleaseCausePaused
 )
 
@@ -97,19 +97,24 @@ func (c ReleaseCause) String() string {
 
 // ReleaseDecision is what the store decided about one row of a release: the act the row may
 // carry out, the cause of a cancel, the release's own id, the claims it has suspended so far and
-// the rule that decided the release. Release is the id the mark carries, which the save puts on
-// the bundle it stores, and Suspended is the set a cancel resumes and a finished release records.
+// the rule that decided the release. Release is the id the mark carries, and Suspended is the set
+// a cancel resumes and a finished release records.
 //
 // SuspendsNoRole is the mark's kind read back (issue_releases.kind, IdleReleaseMark): the
-// release of a pod no role can use suspends none and saves no bundle, so its rows must be able
+// release of a pod no role can use suspends none and reads no workspace, so its rows must be able
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
+//
+// Teardown is what the mark notes of the release's teardown (issue_releases.teardown,
+// ReleaseTeardown). Every decision that holds a mark carries all of the mark's half of it
+// (releaseMark.decision), so no reader gets the zero note, which is a real state, by accident.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
 	Release        int64
 	Suspended      []ReleasedClaim
 	SuspendsNoRole bool
+	Teardown       ReleaseTeardown
 }
 
 // ReleasedClaim is one claim of a release, by its token beside its role: a live claim the idle
@@ -124,6 +129,42 @@ type ReleasedClaim struct {
 	Role  claim.Role
 }
 
+// ReleaseTeardown is whether the teardown of the release of a pod no role can use may have taken
+// the pod, as its mark notes it (issue_releases.teardown, NoteReleaseTeardown).
+//
+// The rule: that release records a pod release when the runtime took a Sandbox (its own answer,
+// runtime.IssueReleaser's true) or the mark says TeardownReached, and otherwise records none — the
+// Sandbox was deleted by another hand, or by an earlier teardown of this daemon's, and nothing of
+// this release took it. The idle release reads no note: it records its release whatever the
+// runtime answered, since its stops suspended the roles a wake pairs with its record.
+//
+// The protocol: this release's mark starts at TeardownNotReached (ReleaseIdleIssue writes it), and
+// the teardown writes TeardownReached from the runtime's callback, under the pod lock, just before
+// the runtime's first write to the issue's Sandbox, so an attempt that took the pod and then
+// failed, or whose daemon died, before its record leaves its retry the note, and the
+// retry, which finds no Sandbox, still records the release. An attempt that fails before that
+// first write, or finds no Sandbox at all, leaves the note unset, and its retry decides afresh. A
+// teardown that records its release whatever the runtime answers, the idle release's or one whose
+// mark already says TeardownReached, gives the runtime no callback, since it has nothing to note.
+// The outbox's count of a row's attempts cannot stand in for the note: a run the daemon died in is
+// counted as no attempt (record.QueuedSupervise.Attempts), and a retry of a release that took
+// nothing and then failed is counted as one. A mark this release did not write — one standing when
+// the column was added, or one an earlier release writes, which names no teardown — reads the
+// column's default, TeardownReached: the daemon that wrote it records a release whatever its
+// teardown found, and so does this release's teardown of it.
+//
+// The window it leaves: a note written just before a first write that then failed or never ran,
+// its daemon dead or its write refused, over a Sandbox another hand deleted before the retry —
+// that retry finds no Sandbox, reads the note and records a release that no attempt made.
+type ReleaseTeardown string
+
+const (
+	// TeardownNotReached: no attempt of the teardown has come to the runtime's first write.
+	TeardownNotReached ReleaseTeardown = ""
+	// TeardownReached: an attempt came to the runtime's first write; the pod may have been taken.
+	TeardownReached ReleaseTeardown = "reached"
+)
+
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
 type releaseMark struct {
 	id                             int64
@@ -131,6 +172,10 @@ type releaseMark struct {
 	// wake is the newest wake this pod had when the mark was written (max pod_resumes.id), so a
 	// resume row above it is a wake taken since (releaseOvertaken).
 	wake int64
+	// turn is the newest turn of the pod's claims when the mark was written
+	// (issue_releases.turn_start, the greatest claims.last_turn_start), nil where none had one,
+	// so a claim whose last turn started after it ran a turn since (releaseOvertaken).
+	turn *time.Time
 	// suspended are the tokens of the claims this release's own stops have suspended as
 	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim), and roles
 	// the role each of those claims holds, in the same order ("" for a token no claim has).
@@ -139,12 +184,21 @@ type releaseMark struct {
 	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
 	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
 	kind string
+	// teardown is the mark's note of whether an attempt of the release's teardown came to the
+	// runtime's first write (ReleaseTeardown).
+	teardown ReleaseTeardown
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
 // written in the mark's own transaction, so its id lies between the release's first row and its
 // last; a row outside that range belongs to a release this mark is not.
 func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
+
+// decision is the mark's half of a ReleaseDecision — the release's id, the claims its stops have
+// suspended, its rule and its teardown's note — which every row of the release reads alike.
+func (m releaseMark) decision() ReleaseDecision {
+	return ReleaseDecision{Release: m.id, Suspended: m.claims(), SuspendsNoRole: m.suspendsNoRole(), Teardown: m.teardown}
+}
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
@@ -153,8 +207,8 @@ func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row 
 	err = tx.QueryRow(ctx, `select m.id, m.first_row, m.boundary_row, m.last_row, m.started_row, m.wake_row, m.suspended,
 		array(select coalesce(c.role, '') from unnest(m.suspended) with ordinality t(token, n)
 			left join claims c on c.token = t.token order by t.n),
-		m.kind from issue_releases m where m.project = $1 and m.issue = $2`, project, issue).Scan(&mark.id, &mark.first,
-		&mark.boundary, &mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.roles, &mark.kind)
+		m.kind, m.turn_start, m.teardown from issue_releases m where m.project = $1 and m.issue = $2`, project, issue).Scan(&mark.id, &mark.first,
+		&mark.boundary, &mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.roles, &mark.kind, &mark.turn, &mark.teardown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -184,7 +238,7 @@ func (m releaseMark) claims() []ReleasedClaim {
 }
 
 // suspendsNoRole is whether this mark's release is the one that suspends no role: the release
-// of a pod no role can use, which saves no bundle and queues the teardown alone
+// of a pod no role can use, which reads no workspace and queues the teardown alone
 // (IdleReleaseMark.SuspendsNoRole). Its rows read the kind rather than the empty role, because
 // the kind is what the rule wrote and the empty role is only how the table spells it.
 func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned }
@@ -201,6 +255,10 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     set. Either way the pod is coming back, so the release goes rather than the pod, whichever
 //     claim the wake was for and whatever that claim looks like by the time this reads it;
 //   - a claim of the issue started since the newest start the mark was taken at;
+//   - a claim of the issue started a turn since the newest turn the mark was taken at
+//     (releaseMark.turn): a whole turn that began after the workspace check's read and ended
+//     before that role's stop is a turn the next state check would not see, and it can have left
+//     work the read did not find;
 //   - a live claim in a turn, starting, or whose launch is not yet known — the states the idle
 //     rule refuses to release a pod in (workflow's idleStateReleasable);
 //   - a claim this release suspended that is no longer suspended as `released`: something
@@ -221,8 +279,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 	err := tx.QueryRow(ctx, `select exists (
 		select 1 from claims where project = $1 and issue = $2
 		and (last_start_row > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')
+			or last_turn_start > coalesce($5::timestamptz, '-infinity')
 			or (token = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
-		project, issue, mark.started, mark.suspended).Scan(&overtaken)
+		project, issue, mark.started, mark.suspended, mark.turn).Scan(&overtaken)
 	return overtaken, err
 }
 
@@ -270,7 +329,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
 		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
 		if err != nil {
 			return err
@@ -324,28 +383,26 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 	return nil
 }
 
-// IssueReleaseSave decides what the release's save of the workspace may do: it acts for a row the
-// release's mark holds, and is ReleaseOver for every other, which is a save of a release that is
-// over. The save reads no boundary — it stops nothing, so there is nothing yet to cancel — but it
-// does write the issue's one stored bundle, and a save of a finished release must not replace the
-// bundle the live one stored.
+// IssueReleaseCheck decides what the release's check of the workspace may do: it acts for a row
+// the release's mark holds, and is ReleaseOver for every other, which is a check of a release that
+// is over. The check reads no boundary, since it stops nothing, but a check of a finished release
+// must not decline, record a decline or tell a role anything about a release that is not the live
+// one. It cancels the release for two causes only: the project's pause (ReleaseCausePaused) and
+// the pod given work since the mark (ReleaseCauseOvertaken), each named below.
 //
-// A save that finds the project paused cancels the release (ReleaseCausePaused): the pause saves
-// no workspace and deletes no pod, so a release whose save had not run when the pause began is
-// cancelled and keeps its pod, whatever reached its roles first (decision 12 and departure 4 of
-// dispatch://INFRA-3759). The pause is project's, read by its token (readOpenPauseByToken,
-// which says why). No production row reaches a save for another project's issue: the save runs
-// from the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows
-// of its own project's keys (record's DueRows). A release that saved before the pause finishes
-// as it does while the project runs: its role stops and its teardown read no pause. The open
-// pause is the one fact this reads of it, in this transaction.
-//
-// The decision carries the release's id, which the save puts on the bundle it stores
-// (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release
-// whose work it put back, so a late report deletes no newer release's bundle.
-func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row int64) (ReleaseDecision, error) {
+// A check that finds the project paused cancels the release (ReleaseCausePaused): the pause
+// deletes no pod, so a release whose check had not run when the pause began is cancelled and keeps
+// its pod, whatever reached its roles first.
+// The pause is project's, read by its token (readOpenPauseByToken, which
+// says why). No production row reaches a check for another project's issue: the check runs from
+// the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows of its
+// own project's keys (record's DueRows). A release whose check ran before the pause finishes as it
+// does while the project runs: its role stops and its teardown read no pause. The open pause is the
+// one fact this reads of it, in this transaction. Where the project runs, a check that finds the pod
+// given work since the mark cancels the release (ReleaseCauseOvertaken, releaseOvertaken).
+func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (ReleaseDecision, error) {
 	if project == "" || issue == "" || row <= 0 {
-		return ReleaseDecision{}, errors.New("a release's save requires its project, its issue and its outbox row")
+		return ReleaseDecision{}, errors.New("a release's workspace check requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -354,19 +411,31 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Act, decision.Release = ReleaseActs, mark.id
-		decision.Suspended, decision.SuspendsNoRole = mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
+		decision.Act = ReleaseActs
 		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 		if err != nil {
 			return err
 		}
 		if paused {
 			decision.Act, decision.Cause = ReleaseCancel, ReleaseCausePaused
+			return nil
+		}
+		// The pod given work since the mark — a wake, a start, a claim in a turn or a turn that
+		// started after the mark's newest — cancels the release here, before any read, as it does
+		// at a role stop and at the teardown: a read made beside a turn could miss what that turn
+		// makes, and a decline taken then would hold the pod for work the turn may have pushed.
+		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
+		if err != nil {
+			return err
+		}
+		if overtaken {
+			decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseOvertaken
 		}
 		return nil
 	})
 	if err != nil {
-		return ReleaseDecision{}, fmt.Errorf("authorize the save of %s's release: %w", issue, err)
+		return ReleaseDecision{}, fmt.Errorf("authorize the workspace check of %s's release: %w", issue, err)
 	}
 	return decision, nil
 }
@@ -374,15 +443,14 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // IssueRelease decides whether an idle release may now stop its issue's Sandbox, in one short
 // transaction under the shared serializer. It is ReleaseOver for a row the release's mark does
 // not hold, which is a teardown of a release that is over: one a role stop cancelled, having
-// already resumed what it suspended, and one that finished, whose pod is gone and whose saved
-// bundle the issue's next pod is owed.
+// already resumed what it suspended, and one that finished, whose pod is gone.
 //
-// It cancels the release — the pod stays, the claims it suspended are resumed and the bundle it
-// stored goes — when the run it released has moved on, the issue has left the workflow or its
+// It cancels the release — the pod stays and the claims it suspended are resumed — when the run
+// it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
 // the mark: a claim started, resumed or holding a process now. It waits while the release's own
-// workspace save or one of its role stops is unfinished, or a stored claim of the issue may still
+// workspace check or one of its role stops is unfinished, or a stored claim of the issue may still
 // hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
 // other path that acts on a released pod reads (pods.InWorkflowNotLingering), down to the
@@ -410,7 +478,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
+		decision = mark.decision()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string
@@ -470,16 +538,19 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !may {
 			return nil
 		}
-		// The release's own save is its issue_bundle row inside the mark's range, the range holds
-		// reads; a save below it is an earlier release's and holds no pod of this one.
-		var saving bool
+		// The release's own check is its workspace-check row inside the mark's range, the range
+		// holds reads; a check below it is an earlier release's and holds no pod of this one. The
+		// row's kind keeps the name of the save it replaced (record.OutboxKindIssueBundle
+		// says why). The teardown never runs ahead of the check: a pod whose workspace nobody read
+		// could hold work that no branch on origin has, and the teardown deletes its disk.
+		var checking bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
-			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			release.Issue, mark.first, mark.last).Scan(&checking); err != nil {
 			return err
 		}
-		if saving {
-			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
+		if checking {
+			return wait.Errorf("issue %s release waits for its workspace check", release.Issue)
 		}
 		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
 		return nil

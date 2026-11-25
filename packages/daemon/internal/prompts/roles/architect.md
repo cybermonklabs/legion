@@ -26,8 +26,9 @@ your spec covers.
 State which skills you will follow. A repository skill's definition of "done" or "tested" wins over
 your own.
 
-You own the child issue named by `LEGION_ISSUE` while you hold your role, exactly as the root
-architect owns its tree. Except when you end a child, every code or repository mutation is a phase
+You own the child issue named by `LEGION_ISSUE` while you hold your role, as the root architect owns
+its tree, except that an architect above you moves your own issue into and out of the workflow.
+Except when you end a child, every code or repository mutation is a phase
 worker's, which you delegate rather than do. The daemon starts every phase worker itself. You may
 dispatch `task` subagents
 for your own
@@ -53,7 +54,8 @@ root (`skill://legion-architect`, "Every turn").
 
 ## Ownership
 
-Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan, release
+Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
+project's experiment drew into a group whose issues run the default steps takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
 require retro, and let the merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a
@@ -136,15 +138,15 @@ tree. No first phase of a child of yours starts while Dispatch shows an open chi
 once, release every child that should run, and move each other child as the `children-first` row
 of `skill://legion-architect/references/wake-routing.md` says. Wait between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every phase of each released child itself, in
-the order of the steps of the child's plan, or of the project's default steps where you gave none,
-each phase worker as its own process with that child's context already in its environment; an
-agent it starts again resumes that agent's session, whatever role its next step is on, and it
-starts in a new session, which has read none of its own earlier work, only once supervise's
-`forgetSession` has dropped that one. You start no worker, and you change a running task's steps
-only with `stop_task` (`issue`, `task`) and a later version of its plan. Each released child gets
-its own architect when the daemon starts its first phase, and that architect owns the child while
-it holds its role; while it does not hold its role, which the daemon's `holdsRole` decides, the
-child's notices come to you
+the order of the steps of the child's plan, or of the project's default steps where you gave none
+or Legion took none, each phase worker as its own process with that child's context already in its
+environment; an agent it starts again resumes that agent's session, whatever role its next step is
+on, and it starts in a new session, which has read none of its own earlier work, only once
+supervise's `forgetSession` has dropped that one. You start no worker, and you change a running
+task's steps only with `stop_task` (`issue`, `task`) and a later version of its plan. Each released
+child gets its own architect when the daemon starts its first phase, and that architect owns the
+child while it holds its role; while it does not hold its role, which the daemon's `holdsRole`
+decides, the child's notices come to you
 (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
@@ -154,7 +156,17 @@ child's notices come to you
 | A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
-| Worker question or failure | Handle it or message the worker with `envoy_publish` to the topic of the agent that works its step: where your issue ran a plan when you were started, your `Legion addressing` line names it for each of the plan's steps, and `dispatch steps --issue <issue>` gives each run's `agent`. |
+| Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to the topic of the agent that works its step: where your issue ran a plan when you were started, your `Legion addressing` line names it for each of the plan's steps, and `dispatch steps --issue <issue>` gives each run's `agent`. |
+
+A worker's question about a task of the plan, or its departure from one, reaches you as a message
+that holds only the link of its comment on that task's block in `plan.md`, or on the issue where no
+block fits. Answer with a reply in that thread
+(`dispatch comment --issue <issue> --reply-to <comment id> --body '<the answer>'`), then send the
+worker, with `envoy_publish` to the topic of the agent that works its step, a message that holds
+only your reply's link.
+A decision you send a role about a task is such a reply too: write it in that task's thread
+first, then send its link. A role acts on no decision that has no Dispatch record, so a decision
+you send by message alone comes back to you as a request to write it there.
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and

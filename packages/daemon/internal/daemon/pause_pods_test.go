@@ -422,7 +422,7 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 	t.Parallel()
 	const first, second = claim.RoleReviewer, pauseStoppedRole
 	// letsOutAtOnce is a wake pacing that lets every paced launch out at the moment it reserves it.
-	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now }}
+	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now }}
 	waitsFor := fmt.Sprintf("the held launch of the %s", second)
 	// firstRanSecondWaits is a rig of its own, taken to the moment where first's held launch has
 	// run and first has answered and has been suspended, and second's held start has not run.
@@ -504,9 +504,10 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 // launch with no process recorded (supervisor.restore). Its orphan reconciliation fails, so it does
 // not launch the claim again (reconcileBootOrphans). The sweeps before the bound keep the pod. The
 // next reconciliation succeeds, and the daemon releases the launch to queued, the first of the two
-// steps of its relaunch (launchUnfinishedClaim). The sweeps still keep the pod. The second step,
-// the spawn, waits in the wake pacing until the let-out. At the let-out the launch comes up in the
-// round's pod with one launch, and the hook's reason names the launch that the pause owes.
+// steps of its relaunch (releaseUnfinishedClaim, launchUnfinished). The sweeps still keep the pod.
+// The second step, the spawn, waits in the wake pacing until the let-out. At the let-out the launch
+// comes up in the round's pod with one launch, and the hook's reason names the launch that the
+// pause owes.
 //
 // Where the keep is read of a launching claim alone (review round 4), the claim restored
 // launch_uncertain is no launch the pause owes, and the first sweep after the restart replaces the
@@ -699,7 +700,7 @@ func TestPodUpdateReplacementReadsThePauseHoldsAgainUnderTheLaunchTurn(t *testin
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times, want none: the pause owes the %s a launch", len(calls), woken)
 	}
-	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it", woken))
+	rig.wantRefusedUnderTurn(backgroundNotDueLine, fmt.Sprintf("%s has not answered it, or its machine was deciding something", woken))
 	rig.wantPodKept(fmt.Sprintf("the answer of the %s", woken))
 }
 

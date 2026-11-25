@@ -64,7 +64,8 @@ func (p completionPosition) run(role claim.Role, entry int64, works bool) comple
 }
 
 // handoffPosition reads key's position (completionPosition); an issue the workflow does not record
-// is a position with no issue and no error.
+// is a position with no issue and no error. The pull request is its row alone
+// (record.Store.PullRequestRow): the route reads its head and its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
@@ -100,7 +101,7 @@ func (s *server) handoffPosition(ctx context.Context, key string) (completionPos
 			}
 			task, counts, at, steps = running.Task, running.Counts, running.Place, stored.Steps[running.Task]
 		}
-		pr, err := s.records.PullRequest(ctx, tx, key)
+		pr, err := s.records.PullRequestRow(ctx, tx, key)
 		if err != nil {
 			return err
 		}

@@ -47,7 +47,7 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
       handed.push({ issue, signal });
       return new Promise<LegionIssue | undefined>(() => {});
     },
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -84,7 +84,7 @@ function overDaemon(answer: typeof fetch) {
     saveEntry: () => {},
     claim: () => implementer,
     readRecord: (issue, signal) => daemon.record(issue, { signal }),
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -142,6 +142,11 @@ function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: EnvoyPublish;
   readonly record?: LegionIssue;
+  /** The publisher's build, which settles before the publisher is handed over, as a first build
+   *  that runs Envoy's token command does; the publisher is at hand at once otherwise. */
+  readonly buildPublisher?: () => Promise<void>;
+  /** The session's claim: the implementer's throughout unless a case names one. */
+  readonly claim?: () => typeof implementer | undefined;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -157,11 +162,14 @@ function rig(options: {
       timers.push({ callback, delayMs });
     },
     saveEntry: (entry) => entries.push(entry),
-    claim: () => implementer,
+    claim: options.claim ?? (() => implementer),
     readRecord: async () => options.record,
-    publisher: () => async (input) => {
-      published.push(input);
-      return options.publish === undefined ? {} : options.publish(input);
+    publisher: async () => {
+      await options.buildPublisher?.();
+      return async (input) => {
+        published.push(input);
+        return options.publish === undefined ? {} : options.publish(input);
+      };
     },
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
@@ -223,6 +231,66 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   expect(published[1]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   expect(published[1]?.idempotencyKey).not.toBe(firstKey);
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the worker meanwhile: a turn that resets the count lands inside that wait. The notice must then
+// tell nothing, since its run has ended: read after the wait, it would tell the architect of a
+// worker that "has let 0 phase reminders go unanswered". The next run is told as any run is.
+test("a notice whose publisher was still being built when the run ended tells nothing, and the next run is told", async () => {
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  let builds = 0;
+  const { reminder, timers, entries, published } = rig({
+    buildPublisher: () => {
+      builds += 1;
+      if (builds > 1) return Promise.resolve();
+      building.resolve();
+      return built.promise;
+    },
+  });
+
+  // The run reaches the threshold; its notice waits for the publisher.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  const delivered = fireLast(timers);
+  await building.promise;
+
+  // The worker acts meanwhile, which ends the run, and the publisher is built after.
+  reminder.apply({ kind: "tool-call" });
+  built.resolve();
+  await delivered;
+  expect(published).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ count: 0, reported: false });
+
+  // The next run reaches the threshold and tells the architect of its two reminders.
+  expect(await reminder.settle(said("Working on it."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(1);
+  expect(published[0]?.message).toContain("has let 2 phase reminders go unanswered");
+  expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// A run whose claim has ended sends no notice, so it builds no publisher for one either: the
+// first build can run Envoy's token command, and a broker trade would buy a token for nothing.
+test("a run whose claim has ended builds no publisher for its notice", async () => {
+  let claimed = true;
+  let builds = 0;
+  const { reminder, timers, published } = rig({
+    claim: () => (claimed ? implementer : undefined),
+    buildPublisher: async () => {
+      builds += 1;
+    },
+  });
+
+  // The run reaches the threshold, and its claim ends before the reminder that would tell.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  claimed = false;
+  await fireLast(timers);
+  expect(builds).toBe(0);
+  expect(published).toEqual([]);
 });
 
 // A failure other than "no live session holds the role" is not dropped: the next delivered
@@ -484,10 +552,10 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 
 // The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
-// continuation; but the daemon's task for the phase ended with that turn, and below
-// `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
-// delayed reminder follows it rather than silence (the architect's decision, review round 2).
-test("a refused turn below the limit reminds once, after the delay and not before", async () => {
+// continuation; but the daemon's task for the phase ended with that turn, and a refusal that can
+// clear fails no claim (dispatch://INFRA-4508), so one delayed reminder follows it rather than
+// silence (the architect's decision, review round 2).
+test("a refused turn reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;
 
@@ -513,11 +581,34 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// At `launch_failure_limit` the daemon fails the claim, which is its own word that this session
-// is finished: the retry runs in a session of its own, in which the phase's task is given again.
-// The timer the last refused turn armed still fires, and its record check drops the reminder, so
-// nothing is written into a session nobody can act on.
-test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
+// A run of refusals that can clear — a provider overloaded, a team limit — fails no claim, a
+// reminder's own turn included: the daemon judges that turn from its turn-outcome report, counts
+// it in the claim's run of provider-error turns, and tells the project's controller once at six
+// in a row (dispatch://INFRA-4508). So each refused turn arms the next reminder at the same pace,
+// for as long as the run lasts, and the worker is reminded again the moment its provider takes a
+// turn. Only the daemon failing the claim stops them (the case below).
+test("a run of refused turns that can clear keeps arming its reminder", async () => {
+  const { reminder, timers, sent } = rig({});
+
+  for (let turn = 1; turn <= 6; turn += 1) {
+    reminder.turnStarted();
+    expect(
+      await reminder.settle({ kind: "refused", message: "529 overloaded_error: Overloaded" })
+    ).toBeUndefined();
+    expect(timers).toHaveLength(turn);
+    expect(timers.at(-1)?.delayMs).toBe(DEFAULT_STALL_LIMITS.reminderMs);
+    await fireLast(timers);
+    expect(sent).toHaveLength(turn);
+  }
+});
+
+// A refusal that cannot clear fails the claim, which is the daemon's own word that this session's
+// work is the architect's to decide: the daemon fails it at once, whether the refused turn ran its
+// prompt or was a reminder's own, which it judges from the turn-outcome report
+// (dispatch://INFRA-4508). The timer the refused turn armed still fires, and its record check
+// drops the reminder, so nothing is written into a session nobody can act on, and the reminding
+// ends.
+test("a refused turn whose claim the daemon failed reminds nothing", async () => {
   const { reminder, timers, sent } = rig({ record: claimFailed });
 
   expect(
@@ -547,7 +638,7 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
     saveEntry: () => {},
     claim: () => implementer,
     readRecord: async () => claimFailed,
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -571,7 +662,7 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
   ]);
 });
 
-// Contract 221: a role of the deployment works the phase `step`, which no role's phase names, so
+// Contract 258: a role of the deployment works the phase `step`, which no role's phase names, so
 // the record check reads the issue's `stepRole`: the checker is reminded while its own step runs,
 // and not while the step of another role of the deployment runs.
 test("a role of the deployment is reminded at step while the issue's stepRole is its own", async () => {
@@ -597,7 +688,7 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
       saveEntry: () => {},
       claim: () => checker,
       readRecord: async () => record,
-      publisher: () => undefined,
+      publisher: async () => undefined,
       project: "legion",
       limits: DEFAULT_STALL_LIMITS,
       log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -616,11 +707,11 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
   }
 });
 
-// Contract 222: two claims of one issue can hold one role — the agent implementer's claim on the
+// Contract 259: two claims of one issue can hold one role — the agent implementer's claim on the
 // tester's step, beside the tester's own claim of an earlier version of the plan — and only the
 // worker on the role's step, the claim `workers.<role>.claim.token` names, works the phase. The
 // other claim of the role is not reminded, so it neither nudges a phase it does not work nor
-// reaches the architect as that role's worker. A record that names no token (a daemon below 222)
+// reaches the architect as that role's worker. A record that names no token (a daemon below 259)
 // keeps the role's rule.
 test("only the worker on its role's step is reminded, not another claim of that role", async () => {
   const worker = "legion-legion-legion-208-implementer";
@@ -642,7 +733,7 @@ test("only the worker on its role's step is reminded, not another claim of that 
       saveEntry: () => {},
       claim: () => ({ ...implementer, role: "tester", claimToken }),
       readRecord: async () => record,
-      publisher: () => undefined,
+      publisher: async () => undefined,
       project: "legion",
       limits: DEFAULT_STALL_LIMITS,
       log: { debug: (message) => debugged.push(message), warn: () => {} },

@@ -79,6 +79,24 @@ func (r *idleWakeRig) releaseMarked(issue idleRigIssue) bool {
 	return marked
 }
 
+// podUID is the uid of the issue's pod as the fake API holds it, "" while it holds no pod of the
+// issue. It reads the pod as main's rigs read a pod's uid (controllerSandboxPodOf).
+func (r *idleWakeRig) podUID(issue idleRigIssue) string {
+	pod, _ := r.kube.controllerSandboxPodOf(issue.pod)
+	return pod.uid
+}
+
+// livePodUID is podUID of a pod that must exist now. A read of no uid fails the test, so a later
+// read is never compared with an empty one.
+func (r *idleWakeRig) livePodUID(issue idleRigIssue) string {
+	r.t.Helper()
+	uid := r.podUID(issue)
+	if uid == "" {
+		r.t.Fatalf("the pod of %s reads no uid, want the live pod that later reads are compared with", issue.key)
+	}
+	return uid
+}
+
 // checkerStartTried is whether the outbox has tried the checker's start at least once: the row is
 // gone (a try that started the role) or it carries a try (a try that waits).
 func (r *idleWakeRig) checkerStartTried(issue idleRigIssue) bool {
@@ -157,7 +175,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		return !pod && !sandbox && !disk
 	})
 	idleRigEventually(r.t, idleRigPodWait, "the "+string(role)+" of "+issue.key+" registered in a new pod", func() bool {
-		uid := r.kube.podUID(issue.pod)
+		uid := r.podUID(issue)
 		return r.agents.role(issue.key, string(role)).Registered >= 1 && uid != "" && uid != before &&
 			r.claimOf(issue, role) && idleRigWorking(r.api.claim(claim.Token(token)).State)
 	})
@@ -173,7 +191,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 //  2. After the idle period, main's rule releases the pod, and the checker starts in a new pod.
 //  3. An operator's suspension keeps the pod past the idle period and is told once.
 func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) {
-	// Not parallel: each case sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	waiting := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 		t.Helper()
 		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {
@@ -184,7 +202,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		t.Helper()
 		for tick := range 3 {
 			time.Sleep(2 * idleRigTick)
-			if now := rig.kube.podUID(issue.pod); now != uid {
+			if now := rig.podUID(issue); now != uid {
 				t.Errorf("tick %d: the pod of %s is %q, want the pod %q kept", tick, issue.key, now, uid)
 			}
 			if rig.releaseMarked(issue) {
@@ -203,7 +221,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		rig := newIdleWakeRig(t, nil, "a")
 		issue := rig.issue("a")
 		rig.stopRole(issue)
-		uid := rig.kube.podUID(issue.pod)
+		uid := rig.livePodUID(issue)
 		rig.defineChecker(issue)
 		rig.startChecker(issue)
 		// The start's first try, whichever way it went, so the ticks below read what it did:
@@ -218,7 +236,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		rig := newIdleWakeRig(t, nil, "a")
 		issue := rig.issue("a")
 		rig.stopRole(issue)
-		uid := rig.kube.podUID(issue.pod)
+		uid := rig.livePodUID(issue)
 		rig.defineChecker(issue)
 		rig.startChecker(issue)
 		waiting(t, rig, issue)
@@ -240,7 +258,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 			suspended := rig.api.claim(token)
 			return suspended.State == "suspended" && suspended.Locator == nil
 		})
-		uid := rig.kube.podUID(issue.pod)
+		uid := rig.livePodUID(issue)
 		told := rig.countPodWaitHeld(issue)
 		rig.defineChecker(issue)
 		rig.startChecker(issue)
@@ -253,7 +271,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		for tick := range 3 {
 			rig.quiet()
 			time.Sleep(2 * idleRigTick)
-			if now := rig.kube.podUID(issue.pod); now != uid {
+			if now := rig.podUID(issue); now != uid {
 				t.Errorf("tick %d: the pod of %s is %q, want the pod %q the operator's suspension keeps", tick, issue.key, now, uid)
 			}
 			if rig.releaseMarked(issue) {

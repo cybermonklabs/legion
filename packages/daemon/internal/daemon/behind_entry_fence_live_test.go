@@ -387,8 +387,8 @@ func (r *behindEntryFenceLive) refused(commit string, says ...string) {
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("the behind completion at commit %q = %d %s %s, want 409 HANDOFF_STALE_ENTRY", commit, status, failure.Code, failure.Error)
 	}
-	behind := fmt.Sprintf("handed the tester phase testing again: this completion is of entry %d, which is %d behind the entry %d the phase is on",
-		r.served, r.entry-r.served, r.entry)
+	behind := fmt.Sprintf("handed the tester phase testing again: this completion is of entry %d, not the phase's current entry %d",
+		r.served, r.entry)
 	for _, want := range append([]string{behind, "nothing was recorded"}, says...) {
 		if !strings.Contains(failure.Error, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", failure.Error, want)

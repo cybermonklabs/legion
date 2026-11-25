@@ -88,10 +88,16 @@ export const STALL_DIGEST_LIMIT = 512;
 export const STALL_WATCH_ENTRY = "legion-stall-watch";
 
 /** One process of the agent's tree as the reader found it: what the evidence carries, plus the
- * two things it never carries — the parent, which is how the tree is built, and the few
- * environment names `src/stall-recovery.ts` reads to decide what belongs to a call. */
+ * three things it never carries — the parent, which is how the tree is built, the command line
+ * whole, and the few environment names `src/stall-recovery.ts` reads to decide what belongs to a
+ * call. */
 export interface StallScannedProcess extends StallProcess {
   readonly ppid: number;
+  /** `/proc/<pid>/cmdline` as the kernel holds it, NULs included, one character per byte
+   * (latin1), so two command lines are the same string exactly when they are the same bytes;
+   * empty where it could not be read. `command` is the bounded, one-line digest of it that the
+   * evidence prints, which two different command lines can share. */
+  readonly cmdline: string;
   /** The names of `STALL_READ_ENVIRONMENT` this process carries, and nothing else. Empty for the
    * agent's own process, whose environment is never read (measurement 1). */
   readonly environment: Readonly<Record<string, string>>;
@@ -172,9 +178,8 @@ export async function readStallProcesses(
   }
 
   const processes: StallScannedProcess[] = [];
-  // One level of the tree at a time, so a node's two reads are one `Promise.all` and a level's
-  // nodes are read together. The order is the breadth-first one the record documents: the agent,
-  // then its children by pid, then theirs.
+  // One level of the tree at a time, so a level's nodes are read together. The order is the
+  // breadth-first one the record documents: the agent, then its children by pid, then theirs.
   let level = [agentPid];
   while (level.length > 0) {
     const nodes = level.flatMap((pid) => {
@@ -184,20 +189,18 @@ export async function readStallProcesses(
     const scanned = await Promise.all(
       nodes.map(async (stat): Promise<StallScannedProcess> => {
         const directory = path.join(procRoot, String(stat.pid));
-        const reads: [Promise<Record<string, string>>, Promise<string>] = [
-          // Measurement 1: the agent's own environment is the one `/proc` will not hand it, and
-          // it is not evidence about anything — the reader reads other pids only.
+        // Measurement 1: the agent's own environment is the one `/proc` will not hand it, and it
+        // is not evidence about anything — the reader reads other pids only.
+        const { cmdline, environment } =
           stat.pid === agentPid
-            ? Promise.resolve({})
-            : readEnvironment(path.join(directory, "environ")),
-          readCommand(path.join(directory, "cmdline"), stat.comm),
-        ];
-        const [environment, command] = await Promise.all(reads);
+            ? { cmdline: await readCmdline(path.join(directory, "cmdline")), environment: {} }
+            : await readWithinOneExec(directory);
         const toolCallId = environment.PI_TOOL_CALL_ID;
         return {
           pid: stat.pid,
           ppid: stat.ppid,
-          command,
+          command: commandOf(cmdline, stat.comm),
+          cmdline: cmdline ?? "",
           startedAt: bootMs + Math.round((stat.startTicks / CLOCK_TICKS_PER_SECOND) * 1_000),
           state: stat.state,
           cpuMs: Math.round((stat.cpuTicks / CLOCK_TICKS_PER_SECOND) * 1_000),
@@ -293,13 +296,56 @@ async function bootTimeMs(procRoot: string): Promise<number | undefined> {
   return undefined;
 }
 
-/** `/proc/<pid>/cmdline`, whose arguments are separated by NUL bytes, bounded as every other text
- * here is; the name `stat` carries for a process that writes no command line, a kernel thread
- * among them. */
-async function readCommand(file: string, comm: string): Promise<string> {
-  const text = await readTextFile(file);
-  const argv = (text ?? "").split("\0").filter((part) => part !== "");
+/** `/proc/<pid>/cmdline` as its bytes, one character per byte (latin1), so two reads compare
+ * equal exactly when they read the same bytes; undefined for a process that ended or that this
+ * process may not read. */
+async function readCmdline(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "latin1");
+  } catch {
+    return undefined;
+  }
+}
+
+/** The command line as the evidence names it: its arguments, which the kernel separates with NUL
+ * bytes, decoded as UTF-8, on one line and bounded as every other text here is; the name `stat`
+ * carries for a process that writes no command line, a kernel thread among them. */
+function commandOf(cmdline: string | undefined, comm: string): string {
+  const text = cmdline === undefined ? "" : Buffer.from(cmdline, "latin1").toString("utf8");
+  const argv = text.split("\0").filter((part) => part !== "");
   return boundedText(oneLine(argv.length === 0 ? `[${comm}]` : argv.join(" ")), STALL_DIGEST_LIMIT);
+}
+
+/** How many times `readWithinOneExec` reads a process again while its command line moves. */
+const ONE_EXEC_TRIES = 5;
+
+/**
+ * A process's command line and the environment names this reader keeps, read within one program
+ * of the process. An exec replaces both, and two reads made at once can fall on either side of
+ * it: a child's environment read before its exec, beside its command line read after, shows the
+ * program it became with the environment of the agent that forked it, which names no call, and
+ * the first step's clock rule took that child of another call as a child of no call
+ * (`src/stall-recovery.ts`). An environment read across the exec itself comes back empty or cut
+ * short. So the environment is read between two reads of the command line and taken when the two
+ * are the same bytes, as #4784's process walk takes an environment read between two reads of the
+ * process's exec bounds (gVisor shows those bounds as 0, so the command line is the bound here).
+ * A process whose command line still moves after `ONE_EXEC_TRIES` reads — one that rewrites its
+ * own title, or execs again and again — is taken with the last command line read before its
+ * environment: in that order an exec between the two shows the program the process was with the
+ * environment it has since, which can make a child of a call read as that call's, never as a
+ * child of no call.
+ */
+async function readWithinOneExec(
+  directory: string
+): Promise<{ readonly cmdline: string | undefined; readonly environment: Record<string, string> }> {
+  const cmdlineFile = path.join(directory, "cmdline");
+  const environFile = path.join(directory, "environ");
+  for (let attempt = 1; ; attempt += 1) {
+    const before = await readCmdline(cmdlineFile);
+    const environment = await readEnvironment(environFile);
+    const after = await readCmdline(cmdlineFile);
+    if (before === after || attempt === ONE_EXEC_TRIES) return { cmdline: before, environment };
+  }
 }
 
 /** The names of `STALL_READ_ENVIRONMENT` this process carries. A process that ended, or one this
@@ -571,7 +617,7 @@ export interface StallTellerDeps {
   readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the notice goes to, or undefined when Envoy is off for this session.
    * Built lazily and once by the caller, as the phase reminder's is. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
   readonly log: StallWatchdogLog;
@@ -616,6 +662,22 @@ interface NoticeSent {
 }
 
 const NOTICE_UNTOLD: NoticeSent = { ownerTold: false, resend: undefined };
+
+/** Who a notice goes to, with the claim it was built from: a topic is built only from a claim. */
+type NoticeTarget =
+  | Extract<StallNotice, { kind: "none" }>
+  | (Extract<StallNotice, { kind: "topic" }> & { readonly claim: ClaimCapability });
+
+/** Whether two reads of the session's claim name the same claim, as a notice reads it: its
+ *  session, tree, issue and role. */
+function sameClaim(one: ClaimCapability, other: ClaimCapability): boolean {
+  return (
+    one.sessionID === other.sessionID &&
+    one.tree === other.tree &&
+    one.issue === other.issue &&
+    one.role === other.role
+  );
+}
 
 /**
  * The detector's teller: the evidence into the session's transcript, and one notice to the owner
@@ -784,7 +846,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   /** The first publish of a notice, and what it achieved, with the resends a refusal for the send
    * rate asks for. Nothing here throws: the ladder runs either way. */
   const publishNotice = async (
-    notice: StallNotice,
+    notice: NoticeTarget,
     input: { readonly message: string; readonly payload: string; readonly key: string },
     context: Record<string, unknown>
   ): Promise<NoticeSent> => {
@@ -795,13 +857,26 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       });
       return NOTICE_UNTOLD;
     }
-    const claim = deps.claim();
-    const publish = deps.publisher();
-    if (publish === undefined || claim === undefined) {
+    // The publisher first: its first build can run Envoy's token command, and the session's claim
+    // can end or change meanwhile. The notice (its topic, and the message and payload read beside
+    // it) was built from `notice.claim`, so it goes out only while the session still holds that
+    // claim, under that claim's session.
+    const publish = await deps.publisher();
+    if (publish === undefined) {
       deps.log.warn("legion: Envoy is off for this session, so its owner was not told", {
         ...context,
         topic: notice.topic,
       });
+      return NOTICE_UNTOLD;
+    }
+    const claim = deps.claim();
+    if (claim === undefined || !sameClaim(claim, notice.claim)) {
+      deps.log.warn(
+        claim === undefined
+          ? "legion: this session's claim ended before its owner was told"
+          : "legion: this session's claim changed before its owner was told",
+        { ...context, topic: notice.topic }
+      );
       return NOTICE_UNTOLD;
     }
     const send: SendNotice = () =>
@@ -811,7 +886,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         // The listener refuses an object here: the facts travel as a JSON string.
         payload: input.payload,
         idempotencyKey: input.key,
-        sourceSessionID: claim.sessionID,
+        sourceSessionID: notice.claim.sessionID,
       });
     const where = { ...context, topic: notice.topic };
     const first = await attempt(send);
@@ -829,7 +904,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     };
   };
 
-  const noticeFor = async (): Promise<StallNotice> => {
+  const noticeFor = async (): Promise<NoticeTarget> => {
     const session = deps.session();
     const claim = deps.claim();
     // Only a phase worker's notice depends on the daemon's record, so only it pays the read.
@@ -837,8 +912,9 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       session.kind === "phase-worker" && claim !== undefined
         ? await liveArchitect(claim.issue)
         : false;
+    let notice: StallNotice;
     try {
-      return stallNoticeTopic({ session, claim, project: deps.project, liveArchitect: live });
+      notice = stallNoticeTopic({ session, claim, project: deps.project, liveArchitect: live });
     } catch (error) {
       // An issue key of a shape `roleToken` refuses is one owner not told, never a ladder that
       // stops: the evidence is written and the steps run either way.
@@ -847,6 +923,10 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         why: `this session's role topic could not be built: ${messageFor(error)}`,
       };
     }
+    if (notice.kind === "none") return notice;
+    // `stallNoticeTopic` builds a topic only from a claim.
+    if (claim === undefined) return { kind: "none", why: "this session holds no claim yet" };
+    return { ...notice, claim };
   };
 
   return {

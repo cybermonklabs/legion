@@ -1,8 +1,11 @@
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, jest, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -10,10 +13,15 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { processEnded, processRunning } from "@legion/test-fixtures/process-end";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -32,6 +40,12 @@ import {
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
+import { hasErrnoCode } from "../errors";
+import { killGroup } from "../process-group";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
 // What this file is about is which file and which variable a section reads, so each resolution is
@@ -49,16 +63,18 @@ type EnvoyWithToken =
   | (Omit<EnabledEnvoySettings, "credential"> & { readonly token: string | undefined });
 
 /** `dispatchSettings`, with an enabled resolution's credential flattened to its bearer. */
-function dispatchSettings(...args: Parameters<typeof resolveDispatch>): DispatchWithToken {
-  const resolution = resolveDispatch(...args);
+async function dispatchSettings(
+  ...args: Parameters<typeof resolveDispatch>
+): Promise<DispatchWithToken> {
+  const resolution = await resolveDispatch(...args);
   if (!resolution.enabled) return resolution;
   const { credential, ...rest } = resolution;
   return { ...rest, token: credential.secret() };
 }
 
 /** `envoySettings`, the same way. */
-function envoySettings(...args: Parameters<typeof resolveEnvoy>): EnvoyWithToken {
-  const settings = resolveEnvoy(...args);
+async function envoySettings(...args: Parameters<typeof resolveEnvoy>): Promise<EnvoyWithToken> {
+  const settings = await resolveEnvoy(...args);
   if (!settings.enabled) return settings;
   const { credential, ...rest } = settings;
   return { ...rest, token: credential?.secret() };
@@ -266,10 +282,10 @@ function missingNotice(config: EnvoyConfig, off: string): string | null {
 }
 
 describe("readEnvoyConfig", () => {
-  test("a missing file reads as empty, its notice naming it", () => {
+  test("a missing file reads as empty, its notice naming it", async () => {
     const home = tempDir();
     const file = path.join(home, ".config", "legion", "envoy.json");
-    const config = readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() });
+    const config = await readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() });
     expect(config).toEqual({
       kind: "read",
       path: file,
@@ -284,18 +300,18 @@ describe("readEnvoyConfig", () => {
     );
   });
 
-  test("a missing file that is a dangling link names the file it points to", () => {
+  test("a missing file that is a dangling link names the file it points to", async () => {
     const directory = tempDir();
     const target = path.join(directory, "gone", "envoy.json");
     const file = path.join(directory, "envoy.json");
     symlinkSync(target, file);
-    const config = readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() });
+    const config = await readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() });
     expect(missingNotice(config, "Dispatch is off")).toBe(
       `no envoy.json at ${file} (a link to ${target}, which does not exist): Dispatch is off`
     );
   });
 
-  test("a missing neutral file beside the OpenCode-era file reads nothing of it, and its notice names the move", () => {
+  test("a missing neutral file beside the OpenCode-era file reads nothing of it, and its notice names the move", async () => {
     const home = tempDir();
     const marker = path.join(home, "old-token-ran");
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {
@@ -317,25 +333,28 @@ describe("readEnvoyConfig", () => {
       missing: { link: null, oldUserFileNotice: notice },
       warnings: [],
     };
-    const config = readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() });
+    const config = await readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() });
     expect(config).toEqual(unread);
     expect(missingNotice(config, "Dispatch and Envoy are off")).toBe(
       `no envoy.json at ${neutral}: Dispatch and Envoy are off; ${notice}`
     );
-    expect(dispatchSettings({ HOME: home }, config)).toEqual({
+    expect(await dispatchSettings({ HOME: home }, config)).toEqual({
       enabled: false,
       notice: `no envoy.json at ${neutral}: Dispatch is off; ${notice}`,
       error: null,
     });
-    expect(envoySettings({ HOME: home }, config)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings({ HOME: home }, config)).toMatchObject({
+      enabled: false,
+      error: null,
+    });
     // XDG_CONFIG_HOME set to $HOME/.config is the same file, and says the same.
     const sameHome = { HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
-    expect(readEnvoyConfig(neutral, sameHome, { cwd: tempDir() })).toEqual(unread);
+    expect(await readEnvoyConfig(neutral, sameHome, { cwd: tempDir() })).toEqual(unread);
     expect(existsSync(marker)).toBe(false);
 
     // A neutral file that exists is read, and the old one is neither read nor named.
     writeFile(neutral, { dispatch: { enabled: true, token: "new-token" } });
-    expect(readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toEqual({
+    expect(await readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toEqual({
       ...unread,
       dispatch: { enabled: true, token: "new-token" },
       missing: null,
@@ -345,7 +364,7 @@ describe("readEnvoyConfig", () => {
     // XDG_CONFIG_HOME, says nothing of it, and a relative XDG_CONFIG_HOME refuses nothing here.
     const handed = path.join(tempDir(), "envoy.json");
     for (const env of [{ HOME: home }, { HOME: home, XDG_CONFIG_HOME: "relative/config" }]) {
-      expect(readEnvoyConfig(handed, env, { cwd: tempDir() })).toEqual({
+      expect(await readEnvoyConfig(handed, env, { cwd: tempDir() })).toEqual({
         ...unread,
         path: handed,
         missing: { link: null },
@@ -353,11 +372,11 @@ describe("readEnvoyConfig", () => {
     }
   });
 
-  test("an OpenCode-era file that is not valid refuses nothing, since it is not read", () => {
+  test("an OpenCode-era file that is not valid refuses nothing, since it is not read", async () => {
     const home = tempDir();
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), "{not json");
     const neutral = path.join(home, ".config", "legion", "envoy.json");
-    expect(readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
+    expect(await readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
       kind: "read",
       path: neutral,
       missing: {
@@ -367,7 +386,7 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a missing harness file leaves the OpenCode-era file unread and names how to configure each profile", () => {
+  test("a missing harness file leaves the OpenCode-era file unread and names how to configure each profile", async () => {
     const home = tempDir();
     const marker = path.join(home, "old-token-ran");
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {
@@ -384,7 +403,7 @@ describe("readEnvoyConfig", () => {
 
     for (const [harness, profile] of profiles) {
       const chosen = envoyConfigPath(harness, { HOME: home, ...profile });
-      const config = readEnvoyConfig(chosen, { HOME: home, ...profile }, { cwd: tempDir() });
+      const config = await readEnvoyConfig(chosen, { HOME: home, ...profile }, { cwd: tempDir() });
       expect(config).toMatchObject({
         path: chosen,
         dispatch: {},
@@ -398,7 +417,7 @@ describe("readEnvoyConfig", () => {
     }
   });
 
-  test("a relocated neutral file leaves the OpenCode-era file unread and says why", () => {
+  test("a relocated neutral file leaves the OpenCode-era file unread and says why", async () => {
     const home = tempDir();
     const marker = path.join(home, "old-token-ran");
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {
@@ -411,7 +430,7 @@ describe("readEnvoyConfig", () => {
     const configHome = path.join(home, "relocated-config");
     const env = { HOME: home, XDG_CONFIG_HOME: configHome };
     const chosen = envoyConfigPath("omp", env);
-    const config = readEnvoyConfig(chosen, env, { cwd: tempDir() });
+    const config = await readEnvoyConfig(chosen, env, { cwd: tempDir() });
 
     expect(config).toMatchObject({
       path: chosen,
@@ -428,7 +447,7 @@ describe("readEnvoyConfig", () => {
   // An agent box bind-mounts the host's ~/.config/opencode: a `mv` inside it would move the host's
   // file into the box's own throwaway filesystem. The devices decide: the old file's directory's,
   // and that of the nearest ancestor of the new file's directory that exists.
-  test("a move across filesystems names the file to create, and no mv command", () => {
+  test("a move across filesystems names the file to create, and no mv command", async () => {
     const home = tempDir();
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {
       dispatch: dispatchOn,
@@ -441,12 +460,12 @@ describe("readEnvoyConfig", () => {
     const checkout = path.join(cwd, ".envoy", "envoy.json");
     const mounted = new Set([path.dirname(old), path.dirname(oldCheckout)]);
     const asked: string[] = [];
-    const deviceOf = (directory: string) => {
+    const deviceOf = async (directory: string) => {
       asked.push(directory);
       if (!existsSync(directory)) return undefined;
       return mounted.has(directory) ? 2 : 1;
     };
-    const across = readEnvoyConfig(neutral, { HOME: home }, { cwd, deviceOf });
+    const across = await readEnvoyConfig(neutral, { HOME: home }, { cwd, deviceOf });
     expect(across).toMatchObject({
       missing: {
         oldUserFileNotice: `${old} is not read, and is on another filesystem than ${neutral} (a mount): create ${neutral}, and move ${old} on the machine that owns it`,
@@ -461,8 +480,10 @@ describe("readEnvoyConfig", () => {
       expect.arrayContaining([path.join(home, ".config", "legion"), path.join(home, ".config")])
     );
 
-    const sameDevice = (directory: string) => (existsSync(directory) ? 1 : undefined);
-    expect(readEnvoyConfig(neutral, { HOME: home }, { cwd, deviceOf: sameDevice })).toMatchObject({
+    const sameDevice = async (directory: string) => (existsSync(directory) ? 1 : undefined);
+    expect(
+      await readEnvoyConfig(neutral, { HOME: home }, { cwd, deviceOf: sameDevice })
+    ).toMatchObject({
       missing: {
         oldUserFileNotice: `${old} is not read: mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/`,
       },
@@ -478,14 +499,14 @@ describe("readEnvoyConfig", () => {
   const shmDirectory = temporaryDirectories("envoy-config", { root: shm });
   test.skipIf(!existsSync(shm) || statSync(shm).dev === statSync(tmpdir()).dev)(
     "a move across real filesystems names the file to create, and no mv command",
-    () => {
+    async () => {
       const home = tempDir();
       const elsewhere = shmDirectory("elsewhere");
       mkdirSync(path.join(home, ".config"));
       symlinkSync(elsewhere, path.join(home, ".config", "opencode"));
       const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {});
       const neutral = path.join(home, ".config", "legion", "envoy.json");
-      expect(readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
+      expect(await readEnvoyConfig(neutral, { HOME: home }, { cwd: tempDir() })).toMatchObject({
         missing: {
           oldUserFileNotice: `${old} is not read, and is on another filesystem than ${neutral} (a mount): create ${neutral}, and move ${old} on the machine that owns it`,
         },
@@ -493,7 +514,7 @@ describe("readEnvoyConfig", () => {
     }
   );
 
-  test("a harness directory at the default config directory gets the default file's move, reading nothing", () => {
+  test("a harness directory at the default config directory gets the default file's move, reading nothing", async () => {
     const home = tempDir();
     const directory = path.join(home, ".config", "legion");
     const marker = path.join(home, "old-token-ran");
@@ -514,34 +535,36 @@ describe("readEnvoyConfig", () => {
       for (const configHome of [{}, { XDG_CONFIG_HOME: path.join(home, "relocated-config") }]) {
         const env = { HOME: home, ...configHome, ...profile };
         const chosen = envoyConfigPath(harness, env);
-        const config = readEnvoyConfig(chosen, env, { cwd: tempDir() });
+        const config = await readEnvoyConfig(chosen, env, { cwd: tempDir() });
 
         expect(config).toMatchObject({ path: chosen, dispatch: {}, envoy: {} });
         expect(missingNotice(config, "Dispatch and Envoy are off")).toBe(
           `no envoy.json at ${chosen}: Dispatch and Envoy are off; ${old} is not read: mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/`
         );
-        expect(dispatchSettings(env, config)).toMatchObject({ enabled: false, error: null });
+        expect(await dispatchSettings(env, config)).toMatchObject({ enabled: false, error: null });
       }
     }
     expect(existsSync(marker)).toBe(false);
   });
 
-  test("a chosen file that cannot be read is an error, never a missing file; a path through a file is missing", () => {
+  test("a chosen file that cannot be read is an error, never a missing file; a path through a file is missing", async () => {
     const directory = tempDir();
     const isDirectory = path.join(directory, "envoy.json");
     mkdirSync(isDirectory);
-    expect(errorOf(readEnvoyConfig(isDirectory, { HOME: directory }, { cwd: tempDir() }))).toMatch(
-      `${isDirectory}: could not be read`
-    );
+    expect(
+      errorOf(await readEnvoyConfig(isDirectory, { HOME: directory }, { cwd: tempDir() }))
+    ).toMatch(`${isDirectory}: could not be read`);
     const notADirectory = writeFile(path.join(tempDir(), "claude-config"), "a file");
     const throughFile = path.join(notADirectory, "envoy.json");
-    expect(readEnvoyConfig(throughFile, { HOME: directory }, { cwd: tempDir() })).toMatchObject({
+    expect(
+      await readEnvoyConfig(throughFile, { HOME: directory }, { cwd: tempDir() })
+    ).toMatchObject({
       kind: "read",
       missing: { link: null },
     });
   });
 
-  test("reads both sections as written, commands included, and runs none of them", () => {
+  test("reads both sections as written, commands included, and runs none of them", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const written = {
@@ -560,7 +583,7 @@ describe("readEnvoyConfig", () => {
       },
     };
     const file = writeFile(path.join(tempDir(), "envoy.json"), written);
-    expect(readEnvoyConfig(file, commandEnvironment(home), { cwd: tempDir() })).toEqual({
+    expect(await readEnvoyConfig(file, commandEnvironment(home), { cwd: tempDir() })).toEqual({
       kind: "read",
       path: file,
       dispatch: written.dispatch,
@@ -572,24 +595,24 @@ describe("readEnvoyConfig", () => {
     expect(existsSync(runs)).toBe(false);
   });
 
-  test("reads envoy.natsUrls trimmed, and refuses an empty one", () => {
+  test("reads envoy.natsUrls trimmed, and refuses an empty one", async () => {
     const file = writeFile(path.join(tempDir(), "envoy.json"), {
       envoy: {
         natsUrls: [" nats://one.internal.example:4222 ", "nats://two.internal.example:4222\n"],
       },
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() })).toMatchObject({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() })).toMatchObject({
       envoy: { natsUrls: ["nats://one.internal.example:4222", "nats://two.internal.example:4222"] },
     });
     const empty = writeFile(path.join(tempDir(), "envoy.json"), {
       envoy: { natsUrls: ["nats://one.internal.example:4222", "  "] },
     });
-    expect(errorOf(readEnvoyConfig(empty, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
+    expect(errorOf(await readEnvoyConfig(empty, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
       `${empty}: envoy.natsUrls.1: must not be empty`
     );
   });
 
-  test("refuses an address that is not an http or https URL", () => {
+  test("refuses an address that is not an http or https URL", async () => {
     for (const [section, key] of [
       ["dispatch", "serverUrl"],
       ["envoy", "url"],
@@ -598,14 +621,14 @@ describe("readEnvoyConfig", () => {
         const file = writeFile(path.join(tempDir(), "envoy.json"), {
           [section]: { [key]: address },
         });
-        expect(errorOf(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
+        expect(errorOf(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
           `${file}: ${section}.${key}: must be an http or https URL`
         );
       }
     }
   });
 
-  test("keeps a checkout's .envoy/envoy.json beside the chosen file, its dispatch section alone", () => {
+  test("keeps a checkout's .envoy/envoy.json beside the chosen file, its dispatch section alone", async () => {
     const cwd = tempDir();
     const own = {
       dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: USER_TOKEN },
@@ -615,7 +638,7 @@ describe("readEnvoyConfig", () => {
     const checkout = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       dispatch: { enabled: false },
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toEqual({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toEqual({
       kind: "read",
       path: file,
       dispatch: own.dispatch,
@@ -636,7 +659,7 @@ describe("readEnvoyConfig", () => {
       dispatch: { enabled: false },
       envoy: { natsUrl: "nats://checkout.internal.example:4222" },
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
       kind: "read",
       checkout: {
         kind: "valid",
@@ -647,13 +670,13 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a checkout's askgate section is named as not read", () => {
+  test("a checkout's askgate section is named as not read", async () => {
     const cwd = tempDir();
     const file = writeFile(path.join(tempDir(), "envoy.json"), {});
     const checkout = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       askgate: { enabled: false },
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
       checkout: {
         kind: "valid",
         envoyError: null,
@@ -662,13 +685,13 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a checkout's file that cannot be used is the checkout's failure, not the chosen file's", () => {
+  test("a checkout's file that cannot be used is the checkout's failure, not the chosen file's", async () => {
     const cwd = tempDir();
     const file = writeFile(path.join(tempDir(), "envoy.json"), { dispatch: dispatchOn });
     const checkout = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       natsUrls: ["nats://repo.internal.example:4222"],
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toEqual({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toEqual({
       kind: "read",
       path: file,
       dispatch: dispatchOn,
@@ -683,7 +706,7 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a checkout's .opencode/envoy.json is not read, and a warning names the rename", () => {
+  test("a checkout's .opencode/envoy.json is not read, and a warning names the rename", async () => {
     const cwd = tempDir();
     const old = writeFile(path.join(cwd, ".opencode", "envoy.json"), {
       dispatch: { enabled: true, serverUrl: "https://old.internal.example", token: "t" },
@@ -691,7 +714,7 @@ describe("readEnvoyConfig", () => {
       envoy: { enabled: true, natsUrls: ["nats://other.internal.example:4222"] },
     });
     const file = writeFile(path.join(tempDir(), "envoy.json"), {});
-    const config = readEnvoyConfig(file, { HOME: tempDir() }, { cwd });
+    const config = await readEnvoyConfig(file, { HOME: tempDir() }, { cwd });
     expect(config).toEqual({
       kind: "read",
       path: file,
@@ -703,22 +726,22 @@ describe("readEnvoyConfig", () => {
         `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`,
       ],
     });
-    expect(dispatchSettings({}, config)).toMatchObject({ enabled: false, error: null });
-    expect(envoySettings({}, config)).toMatchObject({ enabled: false, error: null });
+    expect(await dispatchSettings({}, config)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings({}, config)).toMatchObject({ enabled: false, error: null });
     // A .envoy/envoy.json beside it is the one read, and the old one is not named.
     const current = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       dispatch: { enabled: false },
     });
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
       checkout: { path: current },
       warnings: [],
     });
   });
 
-  test("a chosen file at a checkout's .opencode/envoy.json is read as the chosen file, and not named", () => {
+  test("a chosen file at a checkout's .opencode/envoy.json is read as the chosen file, and not named", async () => {
     const cwd = tempDir();
     const chosen = writeFile(path.join(cwd, ".opencode", "envoy.json"), { dispatch: dispatchOn });
-    expect(readEnvoyConfig(chosen, { HOME: tempDir() }, { cwd })).toMatchObject({
+    expect(await readEnvoyConfig(chosen, { HOME: tempDir() }, { cwd })).toMatchObject({
       path: chosen,
       dispatch: dispatchOn,
       checkout: null,
@@ -726,7 +749,7 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a chosen file's top-level natsUrls is refused, naming envoy.natsUrls", () => {
+  test("a chosen file's top-level natsUrls is refused, naming envoy.natsUrls", async () => {
     for (const contents of [
       { natsUrls: ["nats://nats.internal.example:4222"] },
       {
@@ -735,21 +758,21 @@ describe("readEnvoyConfig", () => {
       },
     ]) {
       const file = writeFile(path.join(tempDir(), "envoy.json"), contents);
-      expect(errorOf(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
+      expect(errorOf(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
         `${file}: the top-level natsUrls is not read; move it to envoy.natsUrls`
       );
     }
   });
 
-  test("a chosen file that is the checkout's own is read once, as the chosen file", () => {
+  test("a chosen file that is the checkout's own is read once, as the chosen file", async () => {
     const cwd = tempDir();
     const own = writeFile(path.join(cwd, ".envoy", "envoy.json"), { envoy: envoyOn });
-    const config = readEnvoyConfig(own, { HOME: tempDir() }, { cwd });
+    const config = await readEnvoyConfig(own, { HOME: tempDir() }, { cwd });
     expect(config).toMatchObject({ kind: "read", envoy: envoyOn, checkout: null });
-    expect(envoySettings({}, config)).toMatchObject({ enabled: true, token: LISTENER_TOKEN });
+    expect(await envoySettings({}, config)).toMatchObject({ enabled: true, token: LISTENER_TOKEN });
   });
 
-  test("an unknown key in either section is refused naming the key", () => {
+  test("an unknown key in either section is refused naming the key", async () => {
     const home = tempDir();
     const cases: [unknown, string][] = [
       [{ dispatch: { enabled: true, unexpected: true } }, "dispatch.unexpected"],
@@ -757,20 +780,20 @@ describe("readEnvoyConfig", () => {
     ];
     for (const [contents, key] of cases) {
       const file = writeFile(path.join(tempDir(), "envoy.json"), contents);
-      const error = errorOf(readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() }));
+      const error = errorOf(await readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() }));
       expect(error).toContain(file);
       expect(error).toContain(key);
     }
   });
 
   // The parser's own message quotes the token it stopped at, which can be an unquoted secret.
-  test("malformed JSON is refused by its position, quoting none of the file, chosen or checkout", () => {
+  test("malformed JSON is refused by its position, quoting none of the file, chosen or checkout", async () => {
     const cwd = tempDir();
     const chosen = writeFile(
       path.join(tempDir(), "envoy.json"),
       '{\n  "dispatch": {"token": hunter2secret}\n}'
     );
-    expect(errorOf(readEnvoyConfig(chosen, { HOME: tempDir() }, { cwd }))).toBe(
+    expect(errorOf(await readEnvoyConfig(chosen, { HOME: tempDir() }, { cwd }))).toBe(
       `${chosen}: invalid JSON at line 2, column 25`
     );
     const file = writeFile(path.join(tempDir(), "envoy.json"), {});
@@ -778,11 +801,13 @@ describe("readEnvoyConfig", () => {
       path.join(cwd, ".envoy", "envoy.json"),
       '{"dispatch": {"token": SUSEED}}'
     );
-    expect(readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
+    expect(await readEnvoyConfig(file, { HOME: tempDir() }, { cwd })).toMatchObject({
       checkout: { kind: "invalid", error: `${checkout}: invalid JSON at line 1, column 24` },
     });
     expect(
-      errorOf(readEnvoyConfig(writeFile(path.join(tempDir(), "envoy.json"), "{"), {}, { cwd }))
+      errorOf(
+        await readEnvoyConfig(writeFile(path.join(tempDir(), "envoy.json"), "{"), {}, { cwd })
+      )
     ).toMatch(/invalid JSON at line 1, column 2$/);
   });
 });
@@ -796,19 +821,19 @@ const envoyOn = {
 };
 
 describe("each section of envoy.json", () => {
-  test("enabled: false turns that section off and leaves the other", () => {
+  test("enabled: false turns that section off and leaves the other", async () => {
     const env = { HOME: tempDir() };
     const dispatchOff = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { ...dispatchOn, enabled: false },
       envoy: envoyOn,
     });
-    const offDispatch = readEnvoyConfig(dispatchOff, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, offDispatch)).toEqual({
+    const offDispatch = await readEnvoyConfig(dispatchOff, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, offDispatch)).toEqual({
       enabled: false,
       notice: `${dispatchOff} sets dispatch.enabled to false: Dispatch is off`,
       error: null,
     });
-    expect(envoySettings(env, offDispatch)).toMatchObject({
+    expect(await envoySettings(env, offDispatch)).toMatchObject({
       enabled: true,
       token: LISTENER_TOKEN,
     });
@@ -817,26 +842,29 @@ describe("each section of envoy.json", () => {
       dispatch: dispatchOn,
       envoy: { ...envoyOn, enabled: false },
     });
-    const offEnvoy = readEnvoyConfig(envoyOff, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, offEnvoy)).toMatchObject({ enabled: true, token: USER_TOKEN });
-    expect(envoySettings(env, offEnvoy)).toMatchObject({ enabled: false, error: null });
+    const offEnvoy = await readEnvoyConfig(envoyOff, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, offEnvoy)).toMatchObject({
+      enabled: true,
+      token: USER_TOKEN,
+    });
+    expect(await envoySettings(env, offEnvoy)).toMatchObject({ enabled: false, error: null });
   });
 
   // One rule for both sections: enabled: false is off; otherwise the section's fields apply, and
   // it is on when its address resolves, from the file or a variable.
-  test("without enabled, a section is on when its address resolves, and its fields apply", () => {
+  test("without enabled, a section is on when its address resolves, and its fields apply", async () => {
     const env = { HOME: tempDir() };
     const addressed = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { serverUrl: "https://dispatch.example", token: USER_TOKEN },
       envoy: { url: "http://listener.internal.example:9020", token: LISTENER_TOKEN },
     });
-    const fromFile = readEnvoyConfig(addressed, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, fromFile)).toEqual({
+    const fromFile = await readEnvoyConfig(addressed, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, fromFile)).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
     });
-    expect(envoySettings(env, fromFile)).toMatchObject({
+    expect(await envoySettings(env, fromFile)).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: LISTENER_TOKEN,
@@ -848,33 +876,35 @@ describe("each section of envoy.json", () => {
       DISPATCH_URL: "https://dispatch.example",
       ENVOY_URL: "http://listener.internal.example:9020",
     };
-    const launched = readEnvoyConfig(addressed, launcher, { cwd: tempDir() });
-    expect(dispatchSettings(launcher, launched)).toMatchObject({ token: USER_TOKEN });
-    expect(envoySettings(launcher, launched)).toMatchObject({ token: LISTENER_TOKEN });
+    const launched = await readEnvoyConfig(addressed, launcher, { cwd: tempDir() });
+    expect(await dispatchSettings(launcher, launched)).toMatchObject({ token: USER_TOKEN });
+    expect(await envoySettings(launcher, launched)).toMatchObject({ token: LISTENER_TOKEN });
 
     const nats = writeFile(path.join(tempDir(), "envoy.json"), {
       envoy: { natsUrls: ["nats://nats.internal.example:4222"] },
     });
-    expect(envoySettings(env, readEnvoyConfig(nats, env, { cwd: tempDir() }))).toMatchObject({
+    expect(
+      await envoySettings(env, await readEnvoyConfig(nats, env, { cwd: tempDir() }))
+    ).toMatchObject({
       enabled: true,
       url: "http://127.0.0.1:9020",
       inbound: { natsUrls: ["nats://nats.internal.example:4222"] },
     });
   });
 
-  test("a section whose address resolves nowhere is off; enabled: true names the default", () => {
+  test("a section whose address resolves nowhere is off; enabled: true names the default", async () => {
     const env = { HOME: tempDir() };
     const tokensOnly = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { token: USER_TOKEN },
       envoy: { token: LISTENER_TOKEN },
     });
-    const config = readEnvoyConfig(tokensOnly, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toEqual({
+    const config = await readEnvoyConfig(tokensOnly, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, config)).toEqual({
       enabled: false,
       notice: `${tokensOnly} names no Dispatch server, and DISPATCH_URL is not set: Dispatch is off`,
       error: null,
     });
-    expect(envoySettings(env, config)).toEqual({
+    expect(await envoySettings(env, config)).toEqual({
       enabled: false,
       notice: `${tokensOnly} names no Envoy listener or NATS server, and neither ENVOY_URL nor ENVOY_NATS_URL is set: Envoy is off`,
       error: null,
@@ -886,21 +916,21 @@ describe("each section of envoy.json", () => {
       DISPATCH_URL: "http://localhost:8766",
       ENVOY_URL: "http://127.0.0.1:9020",
     };
-    const named = readEnvoyConfig(tokensOnly, defaults, { cwd: tempDir() });
-    expect(dispatchSettings(defaults, named)).toMatchObject({ token: USER_TOKEN });
-    expect(envoySettings(defaults, named)).toMatchObject({ token: LISTENER_TOKEN });
+    const named = await readEnvoyConfig(tokensOnly, defaults, { cwd: tempDir() });
+    expect(await dispatchSettings(defaults, named)).toMatchObject({ token: USER_TOKEN });
+    expect(await envoySettings(defaults, named)).toMatchObject({ token: LISTENER_TOKEN });
 
     const enabled = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { enabled: true, token: USER_TOKEN },
       envoy: { enabled: true, token: LISTENER_TOKEN },
     });
-    const on = readEnvoyConfig(enabled, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, on)).toEqual({
+    const on = await readEnvoyConfig(enabled, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, on)).toEqual({
       enabled: true,
       url: "http://localhost:8766",
       token: USER_TOKEN,
     });
-    expect(envoySettings(env, on)).toMatchObject({
+    expect(await envoySettings(env, on)).toMatchObject({
       enabled: true,
       url: "http://127.0.0.1:9020",
       token: LISTENER_TOKEN,
@@ -909,7 +939,7 @@ describe("each section of envoy.json", () => {
 });
 
 describe("a ! command in envoy.json", () => {
-  test("is its command's trimmed stdout, run when its section is resolved", () => {
+  test("is its command's trimmed stdout, run when its section is resolved", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const dispatchSecret = fixtureSecret("dsp");
@@ -922,12 +952,12 @@ describe("a ! command in envoy.json", () => {
         natsSeed: `!echo SUSEED # ${home}`,
       },
     });
-    const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toMatchObject({
+    const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, config)).toMatchObject({
       enabled: true,
       token: dispatchSecret,
     });
-    expect(envoySettings(env, config)).toMatchObject({
+    expect(await envoySettings(env, config)).toMatchObject({
       enabled: true,
       token: listenerSecret,
       inbound: {
@@ -939,9 +969,76 @@ describe("a ! command in envoy.json", () => {
     });
   });
 
+  /** A real 10 ms interval of this process that answers each command waiting on it: a command
+   * touches `started-<name>` in `directory` and waits for `go-<name>`, which only a tick of this
+   * interval creates. So a command that ends had a tick of this process's event loop while it ran,
+   * however long the machine takes to schedule one; a command whose read holds the loop is still
+   * waiting when its bound ends it. A fake clock would tick when told to, which shows nothing of
+   * the loop. Returns the interval's stop. */
+  function answerWaitingCommands(directory: string): () => void {
+    const ticker = setInterval(() => {
+      for (const entry of readdirSync(directory)) {
+        if (!entry.startsWith("started-")) continue;
+        const go = path.join(directory, `go-${entry.slice("started-".length)}`);
+        if (!existsSync(go)) writeFileSync(go, "");
+      }
+    }, 10);
+    return () => clearInterval(ticker);
+  }
+
+  // A read leaves the process serving its timers while its command runs: waiting for the command
+  // synchronously would hold every timer, delivery and NATS ping of the session for up to 10 s.
+  // Each command here ends only once a tick of this process has answered it, so the proof needs
+  // no wall-clock margin: on a machine loaded enough to stall a free loop for seconds, the read
+  // still ends, and a held loop still never answers.
+  test("runs while the process goes on serving its timers, for every field that names one", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const signals = tempDir();
+    const waiting = (name: string, value: string) =>
+      `!touch ${signals}/started-${name}; while [ ! -e ${signals}/go-${name} ]; do sleep 0.02; done; echo ${value} # ${home}`;
+    const stop = answerWaitingCommands(signals);
+    try {
+      // The control: the same command waited for synchronously holds the loop, so no tick answers
+      // it, and its bound ends it still waiting. Read before the loop runs again.
+      const held = Bun.spawnSync(["/bin/sh", "-c", waiting("control", "x").slice(1)], {
+        timeout: 2_000,
+      });
+      expect(held.exitedDueToTimeout).toBe(true);
+      expect(existsSync(path.join(signals, "go-control"))).toBe(false);
+
+      const dispatchSecret = fixtureSecret("dsp");
+      const listenerSecret = fixtureSecret("listener");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: { ...dispatchOn, token: waiting("dispatch", dispatchSecret) },
+        envoy: {
+          ...envoyOn,
+          token: waiting("listener", listenerSecret),
+          natsSeed: waiting("seed", "SUSEED"),
+        },
+      });
+      const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+      expect(await dispatchSettings(env, config)).toMatchObject({
+        enabled: true,
+        token: dispatchSecret,
+      });
+      // Envoy's two fields: its listener's bearer, then its NATS seed, each answered in its turn.
+      expect(await envoySettings(env, config)).toMatchObject({
+        enabled: true,
+        token: listenerSecret,
+        inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
+      });
+      for (const name of ["dispatch", "listener", "seed"]) {
+        expect(existsSync(path.join(signals, `go-${name}`))).toBe(true);
+      }
+    } finally {
+      stop();
+    }
+  }, 60_000);
+
   // A command relative to a directory, or one a directory configures (a mise or direnv shim), must
   // resolve against the file that names it, never whatever repository the session started in.
-  test("runs in its envoy.json's directory, never the session's", () => {
+  test("runs in its envoy.json's directory, never the session's", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const directory = path.join(home, "config");
@@ -959,15 +1056,15 @@ describe("a ! command in envoy.json", () => {
     const original = process.cwd();
     process.chdir(session);
     try {
-      const config = readEnvoyConfig(file, env, { cwd: session });
-      expect(dispatchSettings(env, config)).toMatchObject({ token: relativeSecret });
-      expect(envoySettings(env, config)).toMatchObject({ token: realpathSync(directory) });
+      const config = await readEnvoyConfig(file, env, { cwd: session });
+      expect(await dispatchSettings(env, config)).toMatchObject({ token: relativeSecret });
+      expect(await envoySettings(env, config)).toMatchObject({ token: realpathSync(directory) });
     } finally {
       process.chdir(original);
     }
   });
 
-  test("keeps its value for the process, and a failure for 60 s, then runs again", () => {
+  test("keeps its value for the process, and a failure for 60 s, then runs again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -979,14 +1076,21 @@ describe("a ! command in envoy.json", () => {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${cachedSecret}` },
       envoy: { ...envoyOn, token: `!echo run >> ${failures}; cat ${late}` },
     });
-    const resolve = () => {
-      const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-      return { dispatch: dispatchSettings(env, config), envoy: envoySettings(env, config) };
+    const resolve = async () => {
+      const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+      return {
+        dispatch: await dispatchSettings(env, config),
+        envoy: await envoySettings(env, config),
+      };
     };
     const start = Date.now();
     try {
+      // The clock holds at the start while the first runs are kept, as the row below holds it: a
+      // run is kept at the time it ends, and a run that takes a second on a loaded machine would
+      // otherwise move the 60 s past the 61 s this row reads at.
+      setSystemTime(new Date(start));
       for (let resolution = 0; resolution < 2; resolution += 1) {
-        expect(resolve()).toMatchObject({
+        expect(await resolve()).toMatchObject({
           dispatch: { token: cachedSecret },
           envoy: { enabled: false },
         });
@@ -994,10 +1098,10 @@ describe("a ! command in envoy.json", () => {
       // The cause goes away, as a keyring unlocked after the session started.
       writeFileSync(late, `${lateSecret}\n`);
       setSystemTime(new Date(start + 59_000));
-      expect(resolve().envoy).toMatchObject({ enabled: false });
+      expect((await resolve()).envoy).toMatchObject({ enabled: false });
       expect(readFileSync(failures, "utf-8")).toBe("run\n");
       setSystemTime(new Date(start + 61_000));
-      expect(resolve()).toMatchObject({
+      expect(await resolve()).toMatchObject({
         dispatch: { token: cachedSecret },
         envoy: { enabled: true, token: lateSecret },
       });
@@ -1010,7 +1114,7 @@ describe("a ! command in envoy.json", () => {
 
   // A failure that ended on its own is kept for 60 s and then retried: whatever caused it (a
   // locked keyring, a file not yet written) may clear without a restart.
-  test("a failure that ended on its own (non-zero exit, empty output, more than one line) is kept 60 s, then runs again", () => {
+  test("a failure that ended on its own (non-zero exit, empty output, more than one line) is kept 60 s, then runs again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const late = path.join(home, "late-token");
@@ -1032,18 +1136,19 @@ describe("a ! command in envoy.json", () => {
         const file = writeFile(path.join(home, `kind-${index}`, "envoy.json"), {
           dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; ${command}` },
         });
-        const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
-        expect(resolve()).toEqual({
+        const resolve = async () =>
+          dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() }));
+        expect(await resolve()).toEqual({
           enabled: false,
           notice: null,
           error: `${file}: dispatch.token's command ${failure}`,
         });
         writeFileSync(late, `${lateSecret}\n`);
         setSystemTime(new Date(start + 59_000));
-        expect(resolve()).toMatchObject({ enabled: false });
+        expect(await resolve()).toMatchObject({ enabled: false });
         expect(readFileSync(runs, "utf-8")).toBe("run\n");
         setSystemTime(new Date(start + 61_000));
-        expect(resolve()).toMatchObject({ enabled: true, token: lateSecret });
+        expect(await resolve()).toMatchObject({ enabled: true, token: lateSecret });
         expect(readFileSync(runs, "utf-8")).toBe("run\nrun\n");
       }
     } finally {
@@ -1051,22 +1156,23 @@ describe("a ! command in envoy.json", () => {
     }
   });
 
-  // Each run of a command that hangs blocks the process for the whole timeout, since it runs
-  // synchronously: retrying it once a minute would freeze the session that often.
-  test("one that ran out of time is kept failed for the life of the process", () => {
+  // Each run of a command that hangs holds every read waiting on it for the whole timeout:
+  // retrying it once a minute would stall the session's reads that often.
+  test("one that ran out of time is kept failed for the life of the process", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; sleep 30` },
     });
-    const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
+    const resolve = async () =>
+      dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() }));
     const start = Date.now();
     try {
-      const first = resolve();
+      const first = await resolve();
       for (const later of [61_000, 24 * 60 * 60_000]) {
         setSystemTime(new Date(start + later));
-        expect(resolve()).toEqual(first);
+        expect(await resolve()).toEqual(first);
       }
       expect(readFileSync(runs, "utf-8")).toBe("run\n");
       expect(first).toEqual({
@@ -1080,7 +1186,8 @@ describe("a ! command in envoy.json", () => {
   }, 45_000);
 
   // Oh My Pi loads each extension instance as a fresh module: a cache held by one module instance
-  // would run every command again in each, blocking the parent's event loop at a subagent's start.
+  // would run every command again in each, holding each subagent's start for as long as the
+  // command runs.
   test("is kept for every copy of the module in the process, by command, file and directory", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
@@ -1100,19 +1207,69 @@ describe("a ! command in envoy.json", () => {
     ];
     expect(copies[0]).not.toBe(copies[1]);
     for (const copy of copies) {
-      expect(copy.fileValue(command, "dispatch.token", first, env)).toBe(sharedToken);
+      expect(await copy.fileValue(command, "dispatch.token", first, env)).toBe(sharedToken);
     }
     expect(readFileSync(runs, "utf-8")).toBe("run\n");
     // Another file is another key, and its command runs in its own directory.
     for (const copy of copies) {
-      expect(copy.fileValue(command, "dispatch.token", second, env)).toBe(sharedToken);
+      expect(await copy.fileValue(command, "dispatch.token", second, env)).toBe(sharedToken);
     }
     expect(readFileSync(runs, "utf-8")).toBe("run\nrun\n");
   });
 
+  // A read waits for its command without holding the process, so another read of the same value
+  // can start while the command runs: it waits for that run rather than running the command again,
+  // and a read that only takes kept outcomes still finds none.
+  test("read again while its command runs, by any copy of the module, waits for that one run", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const runs = path.join(home, "runs");
+    const sharedToken = fixtureSecret("dsp");
+    const command = `!echo run >> ${runs}; echo ${sharedToken}`;
+    const file = writeFile(path.join(home, "envoy.json"), { dispatch: { token: command } });
+    // Two fresh copies of the module, as the host's loader makes them (see the test above).
+    const source = "../envoy-config.ts";
+    const one: typeof EnvoyConfigModule = await import(`${source}?c`);
+    const two: typeof EnvoyConfigModule = await import(`${source}?d`);
+    const reads = [one, two, one].map((copy) =>
+      copy.fileValue(command, "dispatch.token", file, env)
+    );
+    const kept = two
+      .fileValue(command, "dispatch.token", file, env, "kept")
+      .catch((error: unknown) => String(error));
+    expect(await Promise.all(reads)).toEqual([sharedToken, sharedToken, sharedToken]);
+    expect(await kept).toContain(
+      `${file}: dispatch.token's command has not run in this process yet`
+    );
+    expect(readFileSync(runs, "utf-8")).toBe("run\n");
+  });
+
+  // A run that could not even start (here: no temporary directory to keep its output in) keeps no
+  // outcome and leaves no run under way behind it, so the next read runs the command.
+  test("a run that failed to start leaves nothing behind: the next read runs the command", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const runs = path.join(home, "runs");
+    const secret = fixtureSecret("dsp");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${secret}` },
+    });
+    const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+    const restore = captureEnvironment(["TMPDIR"]);
+    process.env.TMPDIR = path.join(home, "no-such-directory");
+    try {
+      expect(await dispatchSettings(env, config)).toMatchObject({ enabled: false });
+    } finally {
+      restore();
+    }
+    expect(existsSync(runs)).toBe(false);
+    expect(await dispatchSettings(env, config)).toMatchObject({ enabled: true, token: secret });
+    expect(readFileSync(runs, "utf-8")).toBe("run\n");
+  });
+
   // The per-request feed of people's answers resolves Dispatch on a deadline a 10 s command would
   // blow, so it takes only an outcome another call already kept.
-  test("read with commands: kept, never runs: it fails saying so until a run keeps a value, then takes it", () => {
+  test("read with commands: kept, never runs: it fails saying so until a run keeps a value, then takes it", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -1120,29 +1277,29 @@ describe("a ! command in envoy.json", () => {
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${keptSecret}` },
     });
-    const resolve = (commands?: "kept") =>
-      dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
+    const resolve = async (commands?: "kept") =>
+      dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
 
-    expect(resolve("kept")).toEqual({
+    expect(await resolve("kept")).toEqual({
       enabled: false,
       notice: null,
       error: `${file}: dispatch.token's command has not run in this process yet, and this read does not run it`,
     });
     expect(existsSync(runs)).toBe(false);
-    expect(resolve()).toMatchObject({ enabled: true, token: keptSecret });
-    expect(resolve("kept")).toMatchObject({ enabled: true, token: keptSecret });
+    expect(await resolve()).toMatchObject({ enabled: true, token: keptSecret });
+    expect(await resolve("kept")).toMatchObject({ enabled: true, token: keptSecret });
     expect(readFileSync(runs, "utf-8")).toBe("run\n");
   });
 
-  test("read with commands: kept, takes a kept failure however old, and never runs it again", () => {
+  test("read with commands: kept, takes a kept failure however old, and never runs it again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; exit 3` },
     });
-    const resolve = (commands?: "kept") =>
-      dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
+    const resolve = async (commands?: "kept") =>
+      dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
     const failed: DispatchConfigResolution = {
       enabled: false,
       notice: null,
@@ -1150,9 +1307,9 @@ describe("a ! command in envoy.json", () => {
     };
     const start = Date.now();
     try {
-      expect(resolve()).toEqual(failed);
+      expect(await resolve()).toEqual(failed);
       setSystemTime(new Date(start + 61_000));
-      expect(resolve("kept")).toEqual(failed);
+      expect(await resolve("kept")).toEqual(failed);
       expect(readFileSync(runs, "utf-8")).toBe("run\n");
     } finally {
       setSystemTime();
@@ -1160,7 +1317,7 @@ describe("a ! command in envoy.json", () => {
   });
 
   // A failing natsSeed command turns off only inbound messages: the seed is for NATS alone.
-  test("that fails or prints nothing turns off only what it is for, naming the field and the file, never its output", () => {
+  test("that fails or prints nothing turns off only what it is for, naming the field and the file, never its output", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const canary = `canary-${path.basename(home)}`;
@@ -1169,22 +1326,22 @@ describe("a ! command in envoy.json", () => {
       dispatch: { ...dispatchOn, token: `!echo ${canary}; exit 3` },
       envoy: envoyOn,
     });
-    const brokenDispatch = readEnvoyConfig(dispatchFails, env, { cwd: tempDir() });
-    const dispatch = dispatchSettings(env, brokenDispatch);
+    const brokenDispatch = await readEnvoyConfig(dispatchFails, env, { cwd: tempDir() });
+    const dispatch = await dispatchSettings(env, brokenDispatch);
     if (dispatch.enabled) throw new Error("dispatch.token's failing command was accepted");
     expect(dispatch.error).toContain(`${dispatchFails}: dispatch.token's command exited with`);
     expect(dispatch.error).not.toContain("canary");
-    expect(envoySettings(env, brokenDispatch)).toMatchObject({ enabled: true });
+    expect(await envoySettings(env, brokenDispatch)).toMatchObject({ enabled: true });
 
     const tokenFails = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: dispatchOn,
       envoy: { ...envoyOn, token: `!printf '  \\n' # ${home}` },
     });
-    const brokenToken = readEnvoyConfig(tokenFails, env, { cwd: tempDir() });
-    const envoy = envoySettings(env, brokenToken);
+    const brokenToken = await readEnvoyConfig(tokenFails, env, { cwd: tempDir() });
+    const envoy = await envoySettings(env, brokenToken);
     if (envoy.enabled) throw new Error("envoy.token's failing command was accepted");
     expect(envoy.error).toContain(`${tokenFails}: envoy.token's command`);
-    expect(dispatchSettings(env, brokenToken)).toEqual({
+    expect(await dispatchSettings(env, brokenToken)).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
@@ -1194,8 +1351,8 @@ describe("a ! command in envoy.json", () => {
       dispatch: dispatchOn,
       envoy: { ...envoyOn, natsSeed: `!echo ${canary} >&2; echo ${canary}; false` },
     });
-    const brokenSeed = readEnvoyConfig(seedFails, env, { cwd: tempDir() });
-    const inboundOff = envoySettings(env, brokenSeed);
+    const brokenSeed = await readEnvoyConfig(seedFails, env, { cwd: tempDir() });
+    const inboundOff = await envoySettings(env, brokenSeed);
     if (!inboundOff.enabled || !("off" in inboundOff.inbound)) {
       throw new Error(`a failing natsSeed turned Envoy off, or was taken`);
     }
@@ -1205,11 +1362,11 @@ describe("a ! command in envoy.json", () => {
     });
     expect(inboundOff.inbound.off).toContain(`${seedFails}: envoy.natsSeed's command exited with`);
     expect(inboundOff.inbound.off).not.toContain("canary");
-    expect(dispatchSettings(env, brokenSeed)).toMatchObject({ enabled: true });
+    expect(await dispatchSettings(env, brokenSeed)).toMatchObject({ enabled: true });
   });
 
   // A multi-line bearer reaches fetch, whose refusal of the header quotes it whole.
-  test("that prints more than one line, or a value with whitespace inside, is refused without echoing it", () => {
+  test("that prints more than one line, or a value with whitespace inside, is refused without echoing it", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     for (const [token, refusal] of [
@@ -1224,7 +1381,10 @@ describe("a ! command in envoy.json", () => {
       const file = writeFile(path.join(tempDir(), "envoy.json"), {
         dispatch: { ...dispatchOn, token },
       });
-      const dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
+      const dispatch = await dispatchSettings(
+        env,
+        await readEnvoyConfig(file, env, { cwd: tempDir() })
+      );
       if (dispatch.enabled) throw new Error(`${JSON.stringify(token)} was accepted`);
       expect(dispatch.error).toContain(`${file}: ${refusal}`);
       expect(dispatch.error).not.toContain("S3CRET");
@@ -1233,131 +1393,105 @@ describe("a ! command in envoy.json", () => {
 
   /** Runs `body` with TMPDIR a scratch directory, where a `!` command keeps its output, and
    * returns what is left in it afterwards. */
-  function inScratchTmp(body: () => void): string[] {
+  async function inScratchTmp(body: () => Promise<void>): Promise<string[]> {
     const scratch = tempDir();
-    const original = process.env.TMPDIR;
+    const restore = captureEnvironment(["TMPDIR"]);
     process.env.TMPDIR = scratch;
     try {
-      body();
+      await body();
     } finally {
-      if (original === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = original;
+      restore();
     }
     return readdirSync(scratch);
   }
 
-  /** The bound of the two rows below that wait for a killed process to end, passed to each. */
-  const KILL_ROW_MS = 20_000;
+  test("that exits 0 is its value at once, and a process it left running is killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const lingeringSecret = fixtureSecret("linger");
+    // The child it leaves sleeps far past the test's timeout, so only the kill ends it in time.
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: {
+        ...dispatchOn,
+        token: `!sleep 600 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+      },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    const left = await inScratchTmp(async () => {
+      dispatch = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
+    });
+    expect(dispatch).toEqual({
+      enabled: true,
+      url: "https://dispatch.example",
+      token: lingeringSecret,
+    });
+    const child = Number(readFileSync(pidFile, "utf-8").trim());
+    expect(child).toBeGreaterThan(0);
+    // Killed as the command exits, so its end is the event: the per-test timeout is the only bound.
+    await processEnded(child);
+    expect(left).toEqual([]);
+  }, 20_000);
 
-  /** Whether the process with this pid still runs: `kill(pid, 0)` answers, and it is no zombie. A
-   * killed orphan is a zombie until the process it was reparented to reaps it, which a loaded host
-   * can put off past any fixed wait, and a zombie runs nothing, so it has ended. Where `/proc`
-   * cannot be read, `kill(pid, 0)` alone answers. */
-  function running(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return false;
-    }
-    let stat: string;
-    try {
-      stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-    } catch {
-      return true;
-    }
-    return stat.charAt(stat.lastIndexOf(")") + 2) !== "Z";
-  }
-
-  /** Whether the process with this pid has ended by `deadline` (a `performance.now()` reading): the
-   * kernel delivers a SIGKILL when it schedules the process, so the wait is on the fact, bounded
-   * only by the row's own bound less 2 s. */
-  function gone(pid: number, deadline: number): boolean {
-    for (; running(pid); Bun.sleepSync(20)) {
-      if (performance.now() > deadline) return false;
-    }
-    return true;
-  }
-
-  test(
-    "that exits 0 is its value at once, and a process it left running is killed",
-    () => {
-      const deadline = performance.now() + KILL_ROW_MS - 2_000;
-      const home = tempDir();
-      const env = commandEnvironment(home);
-      const pidFile = path.join(home, "child.pid");
-      const lingeringSecret = fixtureSecret("linger");
-      const file = writeFile(path.join(home, "envoy.json"), {
-        dispatch: {
-          ...dispatchOn,
-          token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
-        },
-      });
-      const cwd = tempDir();
-      let dispatch: DispatchWithToken | undefined;
-      const left = inScratchTmp(() => {
-        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      });
-      // The value is what says the read did not wait for the process the command left running: a
-      // read that waited would have run into the command's 10 s timeout and answered its error
-      // (the row below), and no bound on the read's own time is needed for that.
-      expect(dispatch).toEqual({
-        enabled: true,
-        url: "https://dispatch.example",
-        token: lingeringSecret,
-      });
-      const child = Number(readFileSync(pidFile, "utf-8").trim());
-      expect(child).toBeGreaterThan(0);
-      expect(gone(child, deadline)).toBe(true);
-      expect(left).toEqual([]);
-    },
-    KILL_ROW_MS
-  );
-
-  test(
-    "still running after 10 s is an error naming the field and the file, and every process it started is killed",
-    () => {
-      const deadline = performance.now() + KILL_ROW_MS - 2_000;
-      const home = tempDir();
-      const env = commandEnvironment(home);
-      const pidFile = path.join(home, "child.pid");
-      const file = writeFile(path.join(home, "envoy.json"), {
-        dispatch: {
-          ...dispatchOn,
-          token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
-        },
-      });
-      const cwd = tempDir();
-      let dispatch: DispatchWithToken | undefined;
-      const left = inScratchTmp(() => {
-        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      });
-      // The error is what says the read ended at the command's 10 s timeout: a read that waited
-      // for the command's own 30 s would answer its value no sooner than the row's bound.
-      expect(dispatch).toEqual({
-        enabled: false,
-        notice: null,
-        error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
-      });
-      expect(gone(Number(readFileSync(pidFile, "utf-8").trim()), deadline)).toBe(true);
-      expect(left).toEqual([]);
-    },
-    KILL_ROW_MS
-  );
+  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    // The command's own `sleep 30` would end it at 30 s, and its child sleeps far past the test's
+    // timeout: only the 10 s limit, and the kill of the group it makes, end either in time.
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: {
+        ...dispatchOn,
+        token: `!echo canary; sleep 600 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+      },
+    });
+    const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+    const childPid = (): number =>
+      Number(existsSync(pidFile) ? readFileSync(pidFile, "utf-8").trim() : "") || 0;
+    let dispatch: DispatchWithToken | undefined;
+    // The limit is a timer, and the fake clock holds it: the command runs in real time, and the
+    // row moves the clock to the limit (`commandTimeoutMs`, the runner's own) once the command is
+    // under way, so no span of the read is measured. The read arms the timer in the same run as
+    // its spawn, so once the command has written its child's pid the timer is set. The error names
+    // the limit the runner read, so with `ENVOY_COMMAND_TIMEOUT_MS` unset a limit other than 10 s
+    // fails the value check.
+    const left = await inScratchTmp(async () => {
+      jest.useFakeTimers();
+      try {
+        const reading = dispatchSettings(env, config);
+        await turnsUntil(() => childPid() > 0, "the command to start its child");
+        jest.advanceTimersByTime(commandTimeoutMs(env));
+        dispatch = await reading;
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+    expect(dispatch).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+    });
+    // Killed with the command's group at the limit: its end is the event, and the per-test timeout
+    // is the only bound.
+    await processEnded(childPid());
+    expect(left).toEqual([]);
+  }, 60_000);
 
   // A test that holds a command on its own gate while it waits on other processes sets the bound
   // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
-  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", () => {
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", async () => {
     const bounds: [string | undefined, number][] = [
       [undefined, 10_000],
       ["300", 300],
       ["1", 1],
       ["2147483647", 2_147_483_647],
-      // Bun 1.4.4's spawnSync wraps a timeout of 2^31 ms or more.
+      // Bun 1.4.4's `setTimeout` cuts a delay of 2^31 ms or more to 1 ms.
       ["2147483648", 10_000],
       ["4294967296", 10_000],
       ["4294967297", 10_000],
       ["99999999999999999999", 10_000],
-      // In Bun, `timeout: 0` is no limit at all.
+      // A 0 ms limit would end every command at once.
       ["0", 10_000],
       ["", 10_000],
       [" ", 10_000],
@@ -1375,7 +1509,7 @@ describe("a ! command in envoy.json", () => {
     ).toEqual(bounds);
 
     const home = tempDir();
-    const read = (bound: string, command: string) => {
+    const read = async (bound: string, command: string) => {
       // A file of its own for each read, since a command's outcome is kept by command and file.
       const file = writeFile(path.join(tempDir(), "envoy.json"), {
         dispatch: { ...dispatchOn, token: `!${command}` },
@@ -1383,10 +1517,10 @@ describe("a ! command in envoy.json", () => {
       const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
       return {
         file,
-        settings: dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() })),
+        settings: await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() })),
       };
     };
-    const short = read("300", `sleep 5 # ${home}`);
+    const short = await read("300", `sleep 5 # ${home}`);
     expect(short.settings).toEqual({
       enabled: false,
       notice: null,
@@ -1396,7 +1530,7 @@ describe("a ! command in envoy.json", () => {
     // as having run out of 10 s, and not before 10 s.
     for (const bound of ["0", ""]) {
       const started = Date.now();
-      const refused = read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
+      const refused = await read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
       const elapsed = Date.now() - started;
       expect(refused.settings).toEqual({
         enabled: false,
@@ -1405,16 +1539,115 @@ describe("a ! command in envoy.json", () => {
       });
       expect(elapsed).toBeGreaterThanOrEqual(10_000);
     }
-    // The longest bound Bun keeps, and the values it would wrap, all let a 0.5 s command finish.
+    // The longest bound the runner keeps, and the values `setTimeout` would cut to 1 ms, all let a
+    // 0.5 s command finish.
     for (const bound of ["2147483647", "2147483648", "4294967296", "4294967297"]) {
-      expect(read(bound, `sleep 0.5; printf ${USER_TOKEN}`).settings).toMatchObject({
+      expect((await read(bound, `sleep 0.5; printf ${USER_TOKEN}`)).settings).toMatchObject({
         enabled: true,
         token: USER_TOKEN,
       });
     }
   }, 45_000);
 
-  test("whose field a variable overrides, or whose section is off, is not run", () => {
+  // A read waits for its command without holding the process, so the process can end while the
+  // command runs, by any path: its own exit, Oh My Pi's handlers for SIGINT, SIGTERM and SIGHUP and
+  // for a fatal error (each ends through `process.reallyExit`, which skips the `exit` event), or a
+  // SIGKILL nothing can handle. On each, the command's group must go with it, as the timeout would
+  // have taken it, and the command's output, here holding the value, must be in no file anyone can
+  // name, before or after.
+  const endings = [
+    { how: "process.exit", end: "release", exit: "process.exit(0);", code: 0 },
+    {
+      how: "SIGINT, handled as Oh My Pi does",
+      end: "SIGINT",
+      exit: 'process.on("SIGINT", () => process.reallyExit(130));',
+      code: 130,
+    },
+    {
+      how: "SIGTERM, handled as Oh My Pi does",
+      end: "SIGTERM",
+      exit: 'process.on("SIGTERM", () => process.reallyExit(143));',
+      code: 143,
+    },
+    {
+      how: "SIGHUP, handled as Oh My Pi does",
+      end: "SIGHUP",
+      exit: 'process.on("SIGHUP", () => process.reallyExit(129));',
+      code: 129,
+    },
+    {
+      how: "a fatal error, handled as Oh My Pi does",
+      end: "release",
+      exit: 'process.on("uncaughtException", () => process.reallyExit(1)); setTimeout(() => { throw new Error("fatal"); });',
+      code: 1,
+    },
+    { how: "SIGKILL", end: "SIGKILL", exit: "", code: null },
+  ] as const;
+  for (const { how, end, exit, code } of endings) {
+    test(`a process ended by ${how} while its command runs takes the command's group with it, and its output is in no file`, async () => {
+      const home = tempDir();
+      const scratch = tempDir();
+      const pidFile = path.join(home, "child.pid");
+      const release = path.join(home, "release");
+      const secret = fixtureSecret("dsp");
+      const file = writeFile(path.join(home, "envoy.json"), {});
+      // The process waits for the release before it ends on its own, so the read is in flight.
+      const reader = `
+import { existsSync } from "node:fs";
+import { fileValue } from ${JSON.stringify(path.resolve(import.meta.dir, "../envoy-config.ts"))};
+fileValue(process.env.COMMAND, "dispatch.token", process.env.FILE, { PATH: process.env.PATH }).catch(() => {});
+${end === "release" ? "" : exit}
+while (!existsSync(process.env.RELEASE)) await Bun.sleep(20);
+${end === "release" ? exit : ""}
+`;
+      const child = Bun.spawn([process.execPath, "-e", reader], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          TMPDIR: scratch,
+          // The child sleeps far past the test's timeout, so only the group's end ends it in time.
+          COMMAND: `!echo ${secret}; sleep 600 & echo $! > ${pidFile}; wait`,
+          FILE: file,
+          RELEASE: release,
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      let pid = 0;
+      try {
+        // A real process: the command writes its child's pid when it has started it, and nothing
+        // else says so. The poll is a pace, not a bound: the row's own 60 s is its only hang guard.
+        while (pid === 0) {
+          if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
+          if (pid === 0) await Bun.sleep(20);
+        }
+        // The control: while the reading process runs, the command's child is there.
+        expect(processRunning(pid)).toBe(true);
+        expect(readdirSync(scratch)).toEqual([]);
+        if (end === "release") writeFileSync(release, "");
+        else child.kill(end);
+        await child.exited;
+        // The way the process ended is the one named: its own handler's code, or the signal.
+        if (code === null) expect(child.signalCode).toBe("SIGKILL");
+        else expect(child.exitCode).toBe(code);
+        // The watch ends the group once the kernel has closed the pipe the process held; it is a
+        // process of its own, so that takes as long as the machine takes to schedule it, and the
+        // per-test timeout is the only bound.
+        await processEnded(pid);
+        expect(readdirSync(scratch)).toEqual([]);
+      } finally {
+        child.kill("SIGKILL");
+        if (pid !== 0) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Gone, as the test expects.
+          }
+        }
+      }
+    }, 60_000);
+  }
+
+  test("whose field a variable overrides, or whose section is off, is not run", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
@@ -1427,9 +1660,11 @@ describe("a ! command in envoy.json", () => {
       },
     });
     const env = { ...commandEnvironment(home), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
-    const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toMatchObject({ token: ENVIRONMENT_DISPATCH_TOKEN });
-    expect(envoySettings(env, config)).toMatchObject({ enabled: false, error: null });
+    const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+    expect(await dispatchSettings(env, config)).toMatchObject({
+      token: ENVIRONMENT_DISPATCH_TOKEN,
+    });
+    expect(await envoySettings(env, config)).toMatchObject({ enabled: false, error: null });
     expect(existsSync(runs)).toBe(false);
   });
 });
@@ -1446,18 +1681,18 @@ describe("a checkout's .envoy/envoy.json", () => {
     return { user, checkout, cwd };
   }
 
-  test("merges its dispatch section over the chosen file, and Envoy is the chosen file's", () => {
+  test("merges its dispatch section over the chosen file, and Envoy is the chosen file's", async () => {
     const env = { HOME: tempDir() };
     const repo = withCheckout({
       dispatch: { serverUrl: "https://repo.internal.example", token: REPO_TOKEN },
     });
-    const repoConfig = readEnvoyConfig(repo.user, env, { cwd: repo.cwd });
-    expect(dispatchSettings(env, repoConfig)).toEqual({
+    const repoConfig = await readEnvoyConfig(repo.user, env, { cwd: repo.cwd });
+    expect(await dispatchSettings(env, repoConfig)).toEqual({
       enabled: true,
       url: "https://repo.internal.example",
       token: REPO_TOKEN,
     });
-    expect(envoySettings(env, repoConfig)).toMatchObject({
+    expect(await envoySettings(env, repoConfig)).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: LISTENER_TOKEN,
@@ -1465,15 +1700,15 @@ describe("a checkout's .envoy/envoy.json", () => {
     });
 
     const off = withCheckout({ dispatch: { enabled: false } });
-    const offConfig = readEnvoyConfig(off.user, env, { cwd: off.cwd });
-    expect(dispatchSettings(env, offConfig)).toMatchObject({ enabled: false, error: null });
-    expect(envoySettings(env, offConfig)).toMatchObject({ enabled: true });
+    const offConfig = await readEnvoyConfig(off.user, env, { cwd: off.cwd });
+    expect(await dispatchSettings(env, offConfig)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings(env, offConfig)).toMatchObject({ enabled: true });
   });
 
   // A cloned repository must not choose where a session's deliveries come from, nor which servers
   // the user's NATS seed signs in to, nor take away the Envoy the session's file and environment
   // configure.
-  test("an envoy section is not read, whatever it holds, runs nothing, and leaves Envoy as configured", () => {
+  test("an envoy section is not read, whatever it holds, runs nothing, and leaves Envoy as configured", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const seedFile = writeFile(path.join(home, "seed"), "SUENVSEED\n");
@@ -1491,14 +1726,14 @@ describe("a checkout's .envoy/envoy.json", () => {
       { enabled: true, natsUrl: "nats://repo.internal.example:4222" },
     ]) {
       const { user, cwd } = withCheckout({ envoy });
-      const config = readEnvoyConfig(user, commandEnvironment(home), { cwd });
-      expect(envoySettings(commandEnvironment(home), config)).toMatchObject({
+      const config = await readEnvoyConfig(user, commandEnvironment(home), { cwd });
+      expect(await envoySettings(commandEnvironment(home), config)).toMatchObject({
         enabled: true,
         url: "http://listener.internal.example:9020",
         token: LISTENER_TOKEN,
         inbound: { natsUrls: ["nats://nats.internal.example:4222"] },
       });
-      expect(envoySettings(pane, readEnvoyConfig(user, pane, { cwd }))).toMatchObject({
+      expect(await envoySettings(pane, await readEnvoyConfig(user, pane, { cwd }))).toMatchObject({
         enabled: true,
         token: ENVIRONMENT_ENVOY_TOKEN,
         inbound: {
@@ -1506,7 +1741,7 @@ describe("a checkout's .envoy/envoy.json", () => {
           natsCredential: { kind: "seed", seed: { value: "SUENVSEED" } },
         },
       });
-      expect(dispatchSettings(pane, config)).toEqual({
+      expect(await dispatchSettings(pane, config)).toEqual({
         enabled: true,
         url: "https://dispatch.example",
         token: USER_TOKEN,
@@ -1517,7 +1752,7 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // Decision 55's rule for a file that cannot be read: a repository cannot turn off what the
   // session's environment configured.
-  test("a file that cannot be used turns Dispatch off while it would be read, and never Envoy", () => {
+  test("a file that cannot be used turns Dispatch off while it would be read, and never Envoy", async () => {
     const tokenFile = writeFile(path.join(tempDir(), "dispatch-token"), `${DAEMON_TOKEN}\n`);
     for (const contents of [
       "{",
@@ -1527,11 +1762,11 @@ describe("a checkout's .envoy/envoy.json", () => {
     ]) {
       const repo = withCheckout(contents);
       const quiet = { HOME: tempDir() };
-      const config = readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd });
-      const dispatch = dispatchSettings(quiet, config);
+      const config = await readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd });
+      const dispatch = await dispatchSettings(quiet, config);
       if (dispatch.enabled) throw new Error(`${JSON.stringify(contents)} left Dispatch on`);
       expect(dispatch.error).toStartWith(`${repo.checkout}: `);
-      expect(envoySettings(quiet, config)).toMatchObject({
+      expect(await envoySettings(quiet, config)).toMatchObject({
         enabled: true,
         token: LISTENER_TOKEN,
       });
@@ -1544,13 +1779,13 @@ describe("a checkout's .envoy/envoy.json", () => {
         ENVOY_NATS_URL: "nats://pane.internal.example:4222",
         ENVOY_TOKEN: ENVIRONMENT_ENVOY_TOKEN,
       };
-      const paneConfig = readEnvoyConfig(repo.user, pane, { cwd: repo.cwd });
-      expect(dispatchSettings(pane, paneConfig)).toEqual({
+      const paneConfig = await readEnvoyConfig(repo.user, pane, { cwd: repo.cwd });
+      expect(await dispatchSettings(pane, paneConfig)).toEqual({
         enabled: true,
         url: "https://daemon.internal.example",
         token: DAEMON_TOKEN,
       });
-      expect(envoySettings(pane, paneConfig)).toMatchObject({
+      expect(await envoySettings(pane, paneConfig)).toMatchObject({
         enabled: true,
         url: "http://pane-listener.internal.example:9020",
         token: ENVIRONMENT_ENVOY_TOKEN,
@@ -1560,7 +1795,7 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // One message for each refusal of a checkout's token. DISPATCH_URL replaces the checkout's server,
   // and its token with it: the chosen file's token is the one paired with DISPATCH_URL.
-  test("an empty or unsendable token beside its server is refused with one message, and not used under DISPATCH_URL", () => {
+  test("an empty or unsendable token beside its server is refused with one message, and not used under DISPATCH_URL", async () => {
     const refusals = [
       ["", (checkout: string) => `dispatch.token in ${checkout} must be a non-empty bearer token`],
       [
@@ -1573,38 +1808,40 @@ describe("a checkout's .envoy/envoy.json", () => {
         dispatch: { serverUrl: "https://repo.internal.example", token },
       });
       const quiet = { HOME: tempDir() };
-      expect(dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))).toEqual(
-        { enabled: false, notice: null, error: refusal(repo.checkout) }
-      );
+      expect(
+        await dispatchSettings(quiet, await readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))
+      ).toEqual({ enabled: false, notice: null, error: refusal(repo.checkout) });
       const named = { HOME: tempDir(), DISPATCH_URL: "https://repo.internal.example" };
-      expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual(
-        {
-          enabled: false,
-          notice: null,
-          error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
-        }
-      );
+      expect(
+        await dispatchSettings(named, await readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+      ).toEqual({
+        enabled: false,
+        notice: null,
+        error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
+      });
     }
   });
 
-  test("a server without its own token is refused", () => {
+  test("a server without its own token is refused", async () => {
     const env = { HOME: tempDir() };
     const server = withCheckout({ dispatch: { serverUrl: "https://collector.attacker.test" } });
-    const serverConfig = readEnvoyConfig(server.user, env, { cwd: server.cwd });
-    expect(dispatchSettings(env, serverConfig)).toEqual({
+    const serverConfig = await readEnvoyConfig(server.user, env, { cwd: server.cwd });
+    expect(await dispatchSettings(env, serverConfig)).toEqual({
       enabled: false,
       notice: null,
       error: `${server.checkout}: dispatch.serverUrl requires dispatch.token in the same file`,
     });
-    expect(envoySettings(env, serverConfig)).toMatchObject({ enabled: true });
+    expect(await envoySettings(env, serverConfig)).toMatchObject({ enabled: true });
   });
 
   // The token belongs to the server its file names: beside the user's server it would make the
   // session act as the repository's author on the user's Dispatch.
-  test("a token without its own server is refused when it would be used", () => {
+  test("a token without its own server is refused when it would be used", async () => {
     const repo = withCheckout({ dispatch: { token: REPO_TOKEN } });
     const quiet = { HOME: tempDir() };
-    expect(dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))).toEqual({
+    expect(
+      await dispatchSettings(quiet, await readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))
+    ).toEqual({
       enabled: false,
       notice: null,
       error: `${repo.checkout}: dispatch.token requires dispatch.serverUrl in the same file`,
@@ -1612,14 +1849,19 @@ describe("a checkout's .envoy/envoy.json", () => {
     // DISPATCH_URL or a token from the environment replaces it, so it is not used, and not
     // refused: under DISPATCH_URL the chosen file's token goes to its own server.
     const named = { HOME: tempDir(), DISPATCH_URL: "https://dispatch.example" };
-    expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual({
+    expect(
+      await dispatchSettings(named, await readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+    ).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
     });
     const environment = { HOME: tempDir(), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
     expect(
-      dispatchSettings(environment, readEnvoyConfig(repo.user, environment, { cwd: repo.cwd }))
+      await dispatchSettings(
+        environment,
+        await readEnvoyConfig(repo.user, environment, { cwd: repo.cwd })
+      )
     ).toEqual({
       enabled: true,
       url: "https://dispatch.example",
@@ -1627,23 +1869,23 @@ describe("a checkout's .envoy/envoy.json", () => {
     });
   });
 
-  test("a server DISPATCH_URL replaces is not refused, and the variables are used", () => {
+  test("a server DISPATCH_URL replaces is not refused, and the variables are used", async () => {
     const server = withCheckout({ dispatch: { serverUrl: "https://collector.attacker.test" } });
     const dispatchEnv = {
       HOME: tempDir(),
       DISPATCH_URL: "https://other.internal.example",
       DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN,
     };
-    const serverConfig = readEnvoyConfig(server.user, dispatchEnv, { cwd: server.cwd });
-    expect(dispatchSettings(dispatchEnv, serverConfig)).toEqual({
+    const serverConfig = await readEnvoyConfig(server.user, dispatchEnv, { cwd: server.cwd });
+    expect(await dispatchSettings(dispatchEnv, serverConfig)).toEqual({
       enabled: true,
       url: "https://other.internal.example",
       token: ENVIRONMENT_DISPATCH_TOKEN,
     });
-    expect(envoySettings(dispatchEnv, serverConfig)).toMatchObject({ enabled: true });
+    expect(await envoySettings(dispatchEnv, serverConfig)).toMatchObject({ enabled: true });
   });
 
-  test("a command in it is refused beside its own server, and never runs", () => {
+  test("a command in it is refused beside its own server, and never runs", async () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
     const env = commandEnvironment(home);
@@ -1652,34 +1894,34 @@ describe("a checkout's .envoy/envoy.json", () => {
       { enabled: true, serverUrl: "https://repo.internal.example", token: `!touch ${ran}; echo x` },
     ]) {
       const repo = withCheckout({ dispatch });
-      const config = readEnvoyConfig(repo.user, env, { cwd: repo.cwd });
+      const config = await readEnvoyConfig(repo.user, env, { cwd: repo.cwd });
       const refusal = {
         enabled: false,
         notice: null,
         error: `${repo.checkout}: dispatch.token is a command, which a checkout's envoy.json cannot run`,
       } as const;
-      expect(dispatchSettings(env, config)).toEqual(refusal);
+      expect(await dispatchSettings(env, config)).toEqual(refusal);
       // DISPATCH_URL replaces the checkout's server and its token: the command is neither used nor
       // refused, and the chosen file's token is paired with DISPATCH_URL instead.
       const named = { ...env, DISPATCH_URL: "https://repo.internal.example" };
-      expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual(
-        {
-          enabled: false,
-          notice: null,
-          error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
-        }
-      );
-      expect(envoySettings(env, config)).toMatchObject({ enabled: true });
+      expect(
+        await dispatchSettings(named, await readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+      ).toEqual({
+        enabled: false,
+        notice: null,
+        error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
+      });
+      expect(await envoySettings(env, config)).toMatchObject({ enabled: true });
     }
     expect(existsSync(ran)).toBe(false);
   });
 
-  test("its dispatch.enabled: false yields to DISPATCH_URL", () => {
+  test("its dispatch.enabled: false yields to DISPATCH_URL", async () => {
     const tokenFile = writeFile(path.join(tempDir(), "dispatch-token"), `${DAEMON_TOKEN}\n`);
     const off = withCheckout({ dispatch: { enabled: false } });
     const quiet = { HOME: tempDir() };
-    const quietConfig = readEnvoyConfig(off.user, quiet, { cwd: off.cwd });
-    expect(dispatchSettings(quiet, quietConfig)).toEqual({
+    const quietConfig = await readEnvoyConfig(off.user, quiet, { cwd: off.cwd });
+    expect(await dispatchSettings(quiet, quietConfig)).toEqual({
       enabled: false,
       notice: `${off.checkout} sets dispatch.enabled to false: Dispatch is off`,
       error: null,
@@ -1690,8 +1932,8 @@ describe("a checkout's .envoy/envoy.json", () => {
       DISPATCH_URL: "https://daemon.internal.example",
       DISPATCH_TOKEN_FILE: tokenFile,
     };
-    const daemonConfig = readEnvoyConfig(off.user, daemon, { cwd: off.cwd });
-    expect(dispatchSettings(daemon, daemonConfig)).toEqual({
+    const daemonConfig = await readEnvoyConfig(off.user, daemon, { cwd: off.cwd });
+    expect(await dispatchSettings(daemon, daemonConfig)).toEqual({
       enabled: true,
       url: "https://daemon.internal.example",
       token: DAEMON_TOKEN,
@@ -1700,25 +1942,25 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // A checkout contributes only its enabled: false, or a server with its own token. Its
   // enabled: true alone would name the default server and draw a variable's token to it.
-  test("its dispatch.enabled: true alone turns nothing on", () => {
+  test("its dispatch.enabled: true alone turns nothing on", async () => {
     const cwd = tempDir();
     writeFile(path.join(cwd, ".envoy", "envoy.json"), { dispatch: { enabled: true } });
     const env = { HOME: tempDir(), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
     const quiet = writeFile(path.join(tempDir(), "envoy.json"), { envoy: envoyOn });
-    expect(dispatchSettings(env, readEnvoyConfig(quiet, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, await readEnvoyConfig(quiet, env, { cwd }))).toEqual({
       enabled: false,
       notice: `${quiet} names no Dispatch server, and DISPATCH_URL is not set: Dispatch is off`,
       error: null,
     });
     const missing = path.join(tempDir(), "envoy.json");
-    expect(dispatchSettings(env, readEnvoyConfig(missing, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, await readEnvoyConfig(missing, env, { cwd }))).toEqual({
       enabled: false,
       notice: `no envoy.json at ${missing}: Dispatch is off`,
       error: null,
     });
     // The chosen file's own enabled: true is what turns it on.
     const own = writeFile(path.join(tempDir(), "envoy.json"), { dispatch: { enabled: true } });
-    expect(dispatchSettings(env, readEnvoyConfig(own, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, await readEnvoyConfig(own, env, { cwd }))).toEqual({
       enabled: true,
       url: "http://localhost:8766",
       token: ENVIRONMENT_DISPATCH_TOKEN,
@@ -1727,67 +1969,219 @@ describe("a checkout's .envoy/envoy.json", () => {
 });
 
 describe("askgateSetting", () => {
-  test("is on with no file, no section, or enabled: true, and off with enabled: false", () => {
+  test("is on with no file, no section, or enabled: true, and off with enabled: false", async () => {
     const dir = tempDir();
-    expect(askgateSetting(path.join(dir, "none.json"))).toEqual({ enabled: true, error: null });
+    expect(await askgateSetting(path.join(dir, "none.json"))).toEqual({
+      enabled: true,
+      error: null,
+    });
     const file = path.join(dir, "envoy.json");
     writeFile(file, { dispatch: { enabled: true } });
-    expect(askgateSetting(file)).toEqual({ enabled: true, error: null });
+    expect(await askgateSetting(file)).toEqual({ enabled: true, error: null });
     writeFile(file, { askgate: { enabled: true } });
-    expect(askgateSetting(file)).toEqual({ enabled: true, error: null });
+    expect(await askgateSetting(file)).toEqual({ enabled: true, error: null });
     writeFile(file, { askgate: { enabled: false } });
-    expect(askgateSetting(file)).toEqual({ enabled: false, error: null });
+    expect(await askgateSetting(file)).toEqual({ enabled: false, error: null });
   });
 
-  test("a section that does not parse leaves it on and names the file and the key", () => {
+  test("a section that does not parse leaves it on and names the file and the key", async () => {
     const file = path.join(tempDir(), "envoy.json");
     writeFile(file, { askgate: { enabled: "no" } });
-    expect(askgateSetting(file)).toEqual({
+    expect(await askgateSetting(file)).toEqual({
       enabled: true,
       error: `${file}: askgate.enabled must be true or false; AskGate stays on`,
     });
     writeFile(file, { askgate: { on: false } });
-    expect(askgateSetting(file)).toEqual({
+    expect(await askgateSetting(file)).toEqual({
       enabled: true,
       error: `${file}: unrecognized askgate key(s): askgate.on; the one askgate key is askgate.enabled, true or false; AskGate stays on`,
     });
     for (const section of [false, null]) {
       writeFile(file, { askgate: section });
-      expect(askgateSetting(file)).toEqual({
+      expect(await askgateSetting(file)).toEqual({
         enabled: true,
         error: `${file}: askgate.enabled must be true or false; AskGate stays on`,
       });
     }
   });
 
-  test("a file that cannot be read or is not JSON leaves it on", () => {
+  test("a file that cannot be read or is not JSON leaves it on", async () => {
     const file = writeFile(path.join(tempDir(), "envoy.json"), "{");
-    expect(askgateSetting(file)).toEqual({
+    expect(await askgateSetting(file)).toEqual({
       enabled: true,
       error: `${file}: invalid JSON at line 1, column 2; askgate.enabled is not read; AskGate stays on`,
     });
     const dir = tempDir();
-    const unreadable = askgateSetting(dir);
+    const unreadable = await askgateSetting(dir);
     expect(unreadable.enabled).toBe(true);
     expect(unreadable.error).toStartWith(`${dir}: could not be read (`);
     expect(unreadable.error).toEndWith("askgate.enabled is not read; AskGate stays on");
   });
 
-  test("the section never changes Dispatch's settings", () => {
+  test("the section never changes Dispatch's settings", async () => {
     const env = { HOME: tempDir() };
     const cwd = tempDir();
     const dispatch = { enabled: true, serverUrl: "https://dispatch.example", token: "t" };
-    const read = (askgate?: unknown) => {
+    const read = async (askgate?: unknown) => {
       const file = writeFile(
         path.join(tempDir(), "envoy.json"),
         askgate === undefined ? { dispatch } : { dispatch, askgate }
       );
-      return dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      return dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
     };
-    const plain = read();
+    const plain = await read();
     expect(plain.enabled).toBe(true);
     for (const askgate of [{ enabled: false }, { enabled: "no" }, { on: false }]) {
-      expect(read(askgate)).toEqual(plain);
+      expect(await read(askgate)).toEqual(plain);
     }
   });
+});
+
+// The settings read reads files beside its commands: envoy.json, a checkout's, the files a
+// `*_FILE` variable names. A read of one waits on the disk, and a synchronous one holds the whole
+// process while it waits: on a loaded disk an open alone has taken over a second. Each file here is
+// a FIFO, whose read waits until something writes it, and two writers race for it: this process's
+// own 10 ms interval, which writes it itself at the first tick a reader has it open, and a writer
+// started beside it that writes other text after `LATE_WRITER_MS`. What the read gets says whether
+// the event loop ran while it waited, however loaded the machine.
+describe("a file the settings read reads", () => {
+  /** When the late writer writes. A read that waits without holding the event loop gets the
+   *  tick's text within one tick of its open: from the race's start to the tick's write took 10 to
+   *  151 ms (median 12 ms) over 165 reads of these four rows, 40 runs at a 1-minute load of 700 to
+   *  1070 on this repository's 288-CPU dev box, 2026-11-21. 5 s is 33 times the slowest, past the
+   *  three times `docs/testing.md` asks; only the control, and a read that holds the loop, wait it
+   *  out. */
+  const LATE_WRITER_MS = 5_000;
+
+  /** A FIFO at `file` that this process's 10 ms interval writes `ticked` into, at the first tick a
+   * reader has it open, and that a writer started now writes `held` into after `LATE_WRITER_MS`: a
+   * read of it gets `ticked` only if this process's event loop ran while the read waited. Returns
+   * the stop. */
+  function raceForFifo(file: string, ticked: unknown, held: unknown): () => void {
+    mkdirSync(path.dirname(file), { recursive: true });
+    expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
+    const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
+    const late = Bun.spawn(
+      [
+        "/bin/sh",
+        "-c",
+        'sleep "$1"; printf %s "$2" > "$3"',
+        "_",
+        `${LATE_WRITER_MS / 1000}`,
+        text(held),
+        file,
+      ],
+      { stdout: "ignore", stderr: "ignore", detached: true }
+    );
+    // A write-only open that does not block is refused (ENXIO) while no reader has the FIFO open,
+    // so each tick tries it again; the first that opens writes the text whole (far below the
+    // pipe's atomic write size), closes, and the ticks stop. The read then gets the text and the
+    // end of the file.
+    const ticker = setInterval(() => {
+      let fd: number;
+      try {
+        fd = openSync(file, constants.O_WRONLY | constants.O_NONBLOCK);
+      } catch (error) {
+        if (hasErrnoCode(error, "ENXIO")) return;
+        clearInterval(ticker);
+        throw error;
+      }
+      clearInterval(ticker);
+      try {
+        writeSync(fd, text(ticked));
+      } finally {
+        closeSync(fd);
+      }
+    }, 10);
+    return () => {
+      clearInterval(ticker);
+      killGroup(late.pid);
+    };
+  }
+
+  test("the control: a synchronous read of the FIFO gets the late writer's text", () => {
+    const file = path.join(tempDir(), "control");
+    const stop = raceForFifo(file, "ticked", "held");
+    try {
+      expect(readFileSync(file, "utf-8")).toBe("held");
+    } finally {
+      stop();
+    }
+  }, 20_000);
+
+  test("envoy.json is read while the process goes on serving its timers", async () => {
+    const file = path.join(tempDir(), "envoy.json");
+    const stop = raceForFifo(
+      file,
+      { dispatch: { serverUrl: "https://ticked.example", token: USER_TOKEN } },
+      { dispatch: { serverUrl: "https://held.example", token: USER_TOKEN } }
+    );
+    try {
+      const config = await readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() });
+      expect(config).toMatchObject({
+        kind: "read",
+        dispatch: { serverUrl: "https://ticked.example" },
+      });
+    } finally {
+      stop();
+    }
+  }, 20_000);
+
+  test("AskGate's switch in envoy.json is read while the process goes on serving its timers", async () => {
+    const file = path.join(tempDir(), "envoy.json");
+    const stop = raceForFifo(file, { askgate: { enabled: false } }, { askgate: { enabled: true } });
+    try {
+      expect(await askgateSetting(file)).toEqual({ enabled: false, error: null });
+    } finally {
+      stop();
+    }
+  }, 20_000);
+
+  test("the files DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE name are read while the process goes on serving its timers", async () => {
+    const home = tempDir();
+    const config = await readEnvoyConfig(
+      writeFile(path.join(home, "envoy.json"), { dispatch: dispatchOn, envoy: envoyOn }),
+      { HOME: home },
+      { cwd: tempDir() }
+    );
+    const dispatchFile = path.join(tempDir(), "dispatch-token");
+    const stopDispatch = raceForFifo(dispatchFile, DAEMON_TOKEN, ENVIRONMENT_DISPATCH_TOKEN);
+    try {
+      expect(
+        await dispatchSettings({ HOME: home, DISPATCH_TOKEN_FILE: dispatchFile }, config)
+      ).toMatchObject({ enabled: true, token: DAEMON_TOKEN });
+    } finally {
+      stopDispatch();
+    }
+    const envoyFile = path.join(tempDir(), "envoy-token");
+    const stopEnvoy = raceForFifo(envoyFile, ENVIRONMENT_ENVOY_TOKEN, LISTENER_TOKEN);
+    try {
+      expect(
+        await envoySettings({ HOME: home, ENVOY_TOKEN_FILE: envoyFile }, config, { nats: false })
+      ).toMatchObject({ enabled: true, token: ENVIRONMENT_ENVOY_TOKEN });
+    } finally {
+      stopEnvoy();
+    }
+  }, 20_000);
+
+  test("the file NATS_NKEY_SEED_FILE names is read while the process goes on serving its timers", async () => {
+    const home = tempDir();
+    const config = await readEnvoyConfig(
+      writeFile(path.join(home, "envoy.json"), { envoy: envoyOn }),
+      { HOME: home },
+      { cwd: tempDir() }
+    );
+    const seedFile = path.join(tempDir(), "seed");
+    const stop = raceForFifo(seedFile, "SUTICKED", "SUHELD");
+    try {
+      expect(
+        await envoySettings({ HOME: home, NATS_NKEY_SEED_FILE: seedFile }, config)
+      ).toMatchObject({
+        enabled: true,
+        inbound: { natsCredential: { kind: "seed", seed: { value: "SUTICKED" } } },
+      });
+    } finally {
+      stop();
+    }
+  }, 20_000);
 });

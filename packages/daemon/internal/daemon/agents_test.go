@@ -161,8 +161,8 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAgentsRig(t)
-			if steps := r.walkOneKey(tc.steps, tc.keyed); oneKeyHolds(r, steps, tc.keyed) != nil {
-				t.Fatal(oneKeyHolds(r, steps, tc.keyed))
+			if err := oneKeyHolds(r, r.walkOneKey(tc.steps, tc.keyed), tc.keyed); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -352,7 +352,7 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // step"), the claim of each backstop, the claim of each resume, whose way back also puts back one
 // open resume per role, and the name of each step's agent, so its plan rows name no agent, as that
 // release wrote them. This release then boots, migrates the key, the columns and the indexes again,
-// the column naming each step for its role (20261123203837), and the issue reaches done with the
+// the column naming each step for its role (20261124213820), and the issue reaches done with the
 // claims `…-implementer` and `…-reviewer` of its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	t.Parallel()

@@ -56,7 +56,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Claim: claim.Token(resume.Claim),
+		wakes = append(wakes, workflow.ReleasedWake{Claim: claim.Token(resume.Claim),
 			ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil

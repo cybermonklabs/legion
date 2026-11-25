@@ -1,4 +1,4 @@
-//go:build linux
+//go:build !race
 
 package docs
 
@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The rig reads the machine's load as the machine's, not as the code's gap (storetest.XidGap):
@@ -26,6 +27,7 @@ import (
 // the gap on the clock past the bound, so a run that loaded nothing cannot pass for one that read
 // the load away.
 func TestXidWindowRigReadsTheMachinesLoadAsTheMachines(t *testing.T) {
+	// Not parallel: its subject is the machine's load, which the package's other tests would add to.
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
 		name  string
@@ -123,7 +125,7 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 	if cpu < 0 {
 		t.Fatalf("this thread may run on no CPU of %v", own)
 	}
-	t.Cleanup(crowded.stop)
+	testcleanup.Add(t, crowded.stop)
 	pinned := make([]time.Duration, 0, xidCrowdingProcesses)
 	for range xidCrowdingProcesses {
 		spinner := exec.Command("sh", "-c", fmt.Sprintf("while kill -0 %d 2>/dev/null; do :; done", os.Getpid()))
@@ -268,9 +270,10 @@ func threadCPU(t *testing.T) time.Duration {
 // any other rig problem, beside a violation too. The decision itself, xidRuntimeWaitProblem, is
 // proven with no clock or load by storetest's TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown
 // and TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this arm's runs that reach the UNKNOWN branch, which log it: envoy-go-docs-finalizers
-// runs the docs package with -v, so its log says which branch ran. A receive on a channel the
-// code waits on for as long is a wait the code asked for (GoWaiting), and breaks D6. Each arm
+// only by this arm's runs that reach the UNKNOWN branch, which log it: envoy-go's step "Test what
+// the race build cannot run at all or at full size" runs this file's tests with -v, so its log
+// says which branch ran. A receive on a channel the code waits on for as long is a wait the code
+// asked for (GoWaiting), and breaks D6. Each arm
 // first holds that the wait happened: its gap, read off the thread's clocks alone, is over the
 // bound, and in the spinner arm the goroutine waited on the runtime past that 5 ms bound too. The
 // one P is set inside the measured operation, since Measure runs its operation with idle Ps beside

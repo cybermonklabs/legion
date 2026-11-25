@@ -41,7 +41,7 @@ A change is therefore expand-then-contract across two releases:
 the expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes, while the migration that drops, renames or narrows ships no earlier than the next release, once no running build reads the old shape.
 No migration is an exception but one:
 a change that cannot be written that way is split into releases that can, so no release stops every server process.
-The exception is `20261123203843_issue_role_holders_by_session`, which drops the key on `(issue_key, role)` of `issue_role_holders` that the release before's role-holder publication names in its `on conflict` (`../../../cmd/dispatch/README.md`, "Database migrations", beside `0117`): while both builds serve, a publication that reaches the release before answers `500`, the Legion daemon, the table's one writer, retries it until a server of the new release takes it, and nothing is lost; the release before's reads of the table answer as they did.
+The exception is `20261124213825_issue_role_holders_by_session`, which drops the key on `(issue_key, role)` of `issue_role_holders` that the release before's role-holder publication names in its `on conflict` (`../../../cmd/dispatch/README.md`, "Database migrations", beside `0117`): while both builds serve, a publication that reaches the release before answers `500`, the Legion daemon, the table's one writer, retries it until a server of the new release takes it, and nothing is lost; the release before's reads of the table answer as they did.
 The same rule holds for everything else the two builds share (request bodies and routes, query values, socket frames, response members, stored documents, NATS stream and consumer settings and subjects, messages, and settings), and the two-build test checks it (`go test -tags twobuild ./cmd/dispatch`).
 **Messages:** envelope and payload members are additive, and every consumer ignores a member it does not know;
 a consumer ignores an event type or `kind` it does not know, and acks it;
@@ -53,8 +53,9 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated: a new version is a new row.
+A new version is a new row, and a row is updated in one case alone: the fill's re-read, after a fill of a lower rules version wrote (`textversions`' `rereadBatch`), writes again a post's row whose cut body that version read from another source than this build reads first, with its body, its `body_from` and its vector.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
+Its `rules` is the lowest rules version that wrote the rows up to the cursor; a batch of a higher version that finds a lower one stored reads again what that version passed over before it writes past the cursor, and only that re-read raises the column.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
 No migration writes a row of either table.
@@ -64,7 +65,8 @@ A version holds at the cut when it started at or before the cut, and no later ve
 So an item has at most one version at a time, and none before its first version started.
 The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
 It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
-Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
+`deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.

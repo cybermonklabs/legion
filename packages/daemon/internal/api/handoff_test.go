@@ -2202,7 +2202,7 @@ func TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry(t *testing.T) {
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"nothing was recorded",
 		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 		"complete it with a handoff of its own, never this completion's record, commit or verdict",

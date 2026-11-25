@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -413,10 +414,10 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/ada/proofs.git/"}]`), Options{})
 	_, released := pr.grant(t)
-	placeholder := placeholderOf(t, released, requests.SlotValue)
+	held := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
 
-	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+placeholder))
+	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+held))
 	// The stand-in serves no git route, and answers it 404: what this row reads is what the
 	// service was sent, which the proxy carried.
 	if answer, body := pr.get(client, "https://"+boundHost+"/ada/proofs.git/info/refs?service=git-upload-pack", "Authorization", credential); answer.StatusCode != http.StatusNotFound {
@@ -432,7 +433,7 @@ func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 		t.Fatalf("the service read Authorization %q; want a Basic credential", sent[0].Header.Get("Authorization"))
 	}
 	user, token, _ := strings.Cut(string(decoded), ":")
-	if user != "x-access-token" || token == "" || token == placeholder {
+	if user != "x-access-token" || token == "" || token == held {
 		t.Fatalf("the service read the credential %q; want x-access-token and the minted token", decoded)
 	}
 	if got := pr.reaches(t, token, profileRepository); got != http.StatusOK {
@@ -443,7 +444,7 @@ func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 	}
 	for name, values := range sent[0].Header {
 		for _, value := range values {
-			if strings.Contains(value, requests.PlaceholderPrefix) {
+			if strings.Contains(value, placeholder.Prefix) {
 				t.Errorf("the service read a placeholder in %s: %q", name, value)
 			}
 		}

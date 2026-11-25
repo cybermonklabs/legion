@@ -46,7 +46,7 @@ func planByOwner(t *testing.T, pool *pgxpool.Pool, key string, place record.Task
 		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: stored.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: stored.Generation, Task: "a", Position: 2, Role: "tester", Type: "testing"},
-		})
+		}, nil)
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, stored.Generation, "a", place, record.TaskRunning),
