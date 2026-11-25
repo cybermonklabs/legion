@@ -533,6 +533,9 @@ func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) 
 	if len(merged) > 0 {
 		starts = append(starts, StartBranch{Branch: issue.DefaultBranch, Holds: merged})
 	}
+	if of.PartOf != "" {
+		starts = append(starts[1:], starts[0])
+	}
 	return starts, nil
 }
 
