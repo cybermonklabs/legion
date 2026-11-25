@@ -2,7 +2,7 @@ package textcheck
 
 // This test reads the slots reading's migration through migrations.WayBack, as the plan
 // ratings' does, so the guide is its one read.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheSlotsReadingWayBackIsOneTextInTheHeaderAndTheGuide (assertIsTheGuidesBlock, way_back_doc_test.go:172, through wayBackBlockOfTheGuide, :188) and TestTheSlotsReadingMigrationsEntryLinksItsWayBack (entryLinkIn of shippedText)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestTheSlotsReadingWayBackIsOneTextInTheHeaderAndTheGuide (`packages/daemon/internal/textcheck/way_back_doc_test.go#assertIsTheGuidesBlock`, through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`) and TestTheSlotsReadingMigrationsEntryLinksItsWayBack (`packages/daemon/internal/textcheck/migration_entry_link_test.go#entryLinkIn` of `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText`)
 
 import "testing"
 
