@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/counttest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -98,59 +100,118 @@ func TestReduceFilterSubjects(t *testing.T) {
 	}
 }
 
-// INFRA-1555. A registration reduces its topics to its consumer's filters (SessionConsumerFilters)
-// inside its own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest
-// registration production had seen, the reduction spent that budget: it went back to the first
-// pair after every subject it dropped, so the renewal's claim read ran out of time on every
-// heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
-// (reduceFilterPairs), so it weighs no pair twice.
+// INFRA-1555. Each consumer call of a registration reduces the filter cmd/listener's sessionFilter
+// makes of its topics to its consumer's filters (SessionConsumerFilters) inside the registration's
+// own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest registration
+// production had seen, the reduction spent that budget: it went back to the first pair after every
+// subject it dropped, so the renewal's claim read ran out of time on every heartbeat and the
+// holder's claim was never renewed. The reduction now goes on from a drop (reduceFilterPairs), so
+// between merges it weighs no pair twice. A merge does start the scan again, by design.
 //
-// This case holds that by the pairs the reduction weighs (reduceFilterSubjects), which are the
-// same on every machine, and not by a clock. cmd/listener's
-// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair counts the same
-// reduction's allocations. Those see a split of both subjects of every pair weighed, the other half
-// of INFRA-1555, and not a scan started again on tokens already split, which allocates nothing:
-// this count sees that scan. The topics are cmd/listener's largestProductionShape
-// (largestRegistrationInProduction), in every form a registration reduces them in: the per-kind
-// topics of one issue that sorts among the others are contained by its `<KEY>.>` and dropped
-// mid-scan, where a scan that went back to the first pair would weigh every pair before them again.
-func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
+// This case holds that by the pairs the reduction weighs (reduceFilters), which are the same on
+// every machine, and not by a clock. Its topics merge nothing, so the reduction makes one pass and
+// weighs at most the n(n-1)/2 pairs of its n subjects, and the case fails as UNKNOWN when a filter
+// is none of the subjects it was handed (a merge) or when no subject was dropped.
+// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair counts the same reduction's
+// allocations. Those see a split of both subjects of every pair weighed, the other half of
+// INFRA-1555, and not a scan started again on tokens already split, which allocates nothing: this
+// count sees that scan.
+//
+// The topics are counttest.LargestRegistration's planned list, the topics the registration route
+// plans from the body cmd/listener's TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim
+// registers, in every form SessionConsumerFilters reduces them in: 1,610 topics in 1,612 forms,
+// reduced to 1,604 filters. A consumer call of that registration reduces one topic fewer, since
+// its filter leaves the role lane out: 1,609 topics in 1,610 forms, reduced to 1,602. The role
+// lane's two forms sort last and overlap no other, so they add two filters and no drop or merge.
+// The per-kind topics of one issue that sorts among the others are contained by its `<KEY>.>` and
+// dropped mid-scan, where a scan that went back to the first pair would weigh every pair before
+// them again.
+func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnceBetweenMerges(t *testing.T) {
 	t.Parallel()
-	topics := largestRegistrationInProduction()
+	_, topics := counttest.LargestRegistration("legion-controller", "ses_largest_holder")
 	forms, _ := sessionConsumerForms(topics, false)
-	filters, weighed := reduceFilterSubjects(forms)
+	reduced, weighed := reduceFilters(forms, nil)
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
 	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
-		t.Fatalf("the forms reduced here give %d filters and a registration's (SessionConsumerFilters) %d: this case is not weighing the list a registration reduces", len(filters), len(want))
+		t.Fatalf("the forms reduced here give %d filters and SessionConsumerFilters %d for the same topics: this case is not weighing the list SessionConsumerFilters reduces", len(filters), len(want))
 	}
-	subjects := len(slices.Compact(slices.Sorted(slices.Values(forms))))
-	if subjects == len(filters) {
-		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
+	subjects := slices.Compact(slices.Sorted(slices.Values(forms)))
+	for _, filter := range filters {
+		if _, handed := slices.BinarySearch(subjects, filter); !handed {
+			t.Fatalf("UNKNOWN: the reduction made the filter %s, none of the %d subjects it was handed, so it merged two of them; a merge starts the scan again by design, so a pass with a merge may weigh more than the pairs there are, and this case cannot tell a scan started again after a drop from one started again after a merge", filter, len(subjects))
+		}
 	}
-	pairs := subjects * (subjects - 1) / 2
-	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the reduction dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	if len(subjects) == len(filters) {
+		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", len(subjects))
+	}
+	pairs := len(subjects) * (len(subjects) - 1) / 2
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the reduction merged none, dropped %d subjects and weighed %d pairs", len(topics), len(subjects), pairs, len(subjects)-len(filters), weighed)
 	if weighed > pairs {
-		t.Fatalf("the reduction of %d subjects weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
-			subjects, weighed, float64(weighed)/float64(pairs), pairs)
+		t.Fatalf("the reduction of %d subjects, which merged none of them, weighed %d pairs, %.1f times the %d pairs there are: between merges it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+			len(subjects), weighed, float64(weighed)/float64(pairs), pairs)
 	}
 }
 
-// largestRegistrationInProduction is cmd/listener's largestProductionShape with the agent subject
-// the registration adds to it: about twice the largest registration production has seen (802
-// topics, 2026-11-16), a holder following 800 Dispatch issues, each as `<KEY>` and `<KEY>.>`, with
-// the per-kind topics of one issue that sorts among the others and that its `<KEY>.>` already
-// holds, and the lane of the role it holds.
-func largestRegistrationInProduction() []string {
-	const issues = 800
-	topics := make([]string, 0, 2*issues+10)
-	for issue := range issues {
-		topic := fmt.Sprintf("notifications.dispatch.issue.K-%d", issue)
-		topics = append(topics, topic, topic+".>")
+// reduceAllocsChildEnv marks the run of the test binary that counts the reduction's allocations
+// alone (TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair, counttest.RunAlone).
+const reduceAllocsChildEnv = "ENVOY_TEST_LARGEST_SHAPE_REDUCE_ALLOCS_CHILD"
+
+// reduceAllocsMeasured is the phrase that
+// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair logs with its measurement,
+// and which the run that starts its run alone counts in that run's output (counttest.RunAlone).
+const reduceAllocsMeasured = "allocations to reduce"
+
+// reduceAllocsPerSubject is how many allocations the reduction of counttest.LargestRegistration's
+// planned topics to their consumer's filters may make for each of them, a ceiling of 4,830 for its
+// 1,610 topics. The reduction makes 3,229 to 3,238 now, in three runs under the race detector, 2.01
+// a topic: the forms of each topic (contracts.TopicForms) and one split of each form into its
+// tokens. So the ceiling leaves it half again as many, and refuses a doubling, such as a second
+// split of each form. The reduction INFRA-1555 replaced split both subjects of every pair it
+// weighed. Put back through an overlay, it made 48,879,575 to 48,879,593 for the same topics in four
+// runs, 30,360 a topic, and this ceiling refused it each time.
+const reduceAllocsPerSubject = 3
+
+// Each consumer call of a registration reduces the filter cmd/listener's sessionFilter makes of its
+// topics to its consumer's filters (SessionConsumerFilters), inside the registration's budget
+// and before the renewal that runs on what is left of it. INFRA-1555 was that reduction spending
+// the budget in production. It split both subjects of every pair it weighed (SubjectContains), and
+// it weighed them all again after each subject it dropped. The fix splits each subject once. This
+// case counts the reduction's allocations over counttest.LargestRegistration's planned topics, the
+// list TestReducingTheLargestRegistrationInProductionWeighsEachPairOnceBetweenMerges reduces, and
+// holds them to reduceAllocsPerSubject a topic: one shape and one ceiling, which the INFRA-1555
+// reduction exceeds 10,120 times over.
+//
+// The verdict is a count and not a clock, so it is not the machine's. A count of allocations does
+// not see work that allocates nothing: a scan of the pre-split tokens started again after each
+// drop, which was the other half of INFRA-1555, is
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnceBetweenMerges's to see, by the
+// pairs it weighs. What the registration hands the server to check is cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim's count. No count sees the
+// listener's topic work outside this reduction.
+//
+// testing.AllocsPerRun counts every allocation of the process while it measures, and this
+// package's other tests leave servers and watchers running that allocate meanwhile. So the case
+// runs the test binary again for this case alone (counttest.RunAlone), and the measurement is that
+// run's; the case fails unless that run reports it. The run that starts it is parallel
+// (t.Parallel): it measures nothing and only waits for it. The run alone is not parallel, because
+// testing.AllocsPerRun refuses to measure in a parallel test.
+func TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair(t *testing.T) {
+	if os.Getenv(reduceAllocsChildEnv) == "" {
+		t.Parallel()
 	}
-	for _, kind := range []string{"message", "issue", "comment", "ask"} {
-		topic := "notifications.dispatch.issue.K-400." + kind
-		topics = append(topics, topic, topic+".>")
+	if !counttest.RunAlone(t, reduceAllocsChildEnv, reduceAllocsMeasured, 1) {
+		return
 	}
-	return append(topics, contracts.RoleTopicPrefix+"legion-controller", contracts.LegacyAgentSubject("ses_largest_holder"))
+	_, topics := counttest.LargestRegistration("legion-controller", "ses_largest_holder")
+	var filters []string
+	allocs := testing.AllocsPerRun(1, func() { filters = SessionConsumerFilters(topics) })
+	t.Logf("%v "+reduceAllocsMeasured+" %d topics to %d filters, %.2f a topic", allocs, len(topics), len(filters), allocs/float64(len(topics)))
+	if bound := float64(reduceAllocsPerSubject * len(topics)); allocs > bound {
+		t.Fatalf("reducing %d topics to their consumer's filters made %v allocations, more than %v (%d a topic): the reduction allocates for more than each topic's forms and one split of each, as INFRA-1555's split of every pair it weighed did", len(topics), allocs, bound, reduceAllocsPerSubject)
+	}
 }
 
 func TestSessionConsumerName(t *testing.T) {
