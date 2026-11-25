@@ -102,13 +102,15 @@ go packages/envoy/internal/dispatch/api ^TestOneEventForEachChangeOfAStateAndNon
 # v-outside-text: no settler and no state event, so the test does not build.
 go packages/envoy/internal/dispatch/api ^TestAnEditOfThePullRequestBodyChangesNoState$ packages/envoy/internal/dispatch/api/results_outside_text_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/envoy/internal/dispatch/api/check_states_ci_test.go
 
-# v-the-daemon-runs-with-the-setting-off: the engine has no TestingLeavesCI and the daemon wires
-# none, so the test does not build.
-go packages/daemon/internal/daemon ^TestTheDaemonWiresTheTestingMoveToReadEveryCheck$ packages/daemon/internal/daemon/check_states_wiring_test.go
+# v-the-daemon-runs-with-the-setting-off: the daemon has no state event (intake.DispatchCheckState)
+# and the engine no TestingLeavesCI, so the test does not build. Its state events are built by the
+# shared package checkstatetest.
+go packages/daemon/internal/daemon ^TestTheDaemonWiresTheTestingMoveToReadEveryCheck$ packages/daemon/internal/daemon/check_states_wiring_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 # v-a-ci-failure-reaches-the-implementer, its live case: no state event of a CI job's failure
 # reaches the implementer, so the daemon logs no message of one and the case fails at its read.
 e2e scripts/e2e/check-states.sh ci-failure-tells scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go
 # v-tester-reads-no-ci: the whole model check, run by tester-ci-check.sh with the rig of the commit
-# it runs at, which has no world tester-reads-no-ci, so its batch names a scenario the rig refuses
-# before a model starts.
+# it runs at. That commit's tester text does not take the restore-tester-ci patch, so its
+# label-checkouts.sh refuses the patch (it does not apply) before the rig starts a service or a
+# model; and its rig has no world tester-reads-no-ci for the batch to run.
 cmd . tester-ci-scenarios packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh packages/pi-legion/scripts/skill-scenarios/label-judgement.sh -- bash packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh
