@@ -18,14 +18,24 @@ import (
 // its failure spent (the daemon's outbox, supervise.RequestRetry.OneAttemptLeft): the half-open
 // trial of a role that keeps failing. The resets a person or the project's controller makes come
 // through other doors, and each gives the role its whole budget: the operator's `legion claims
-// retry`, the operator's retry in a fresh session, and the controller's fresh_session each relaunch
-// the tester of a closed issue, failed with its launch budget spent, at fresh budgets. A check look's
-// one attempt applied to these doors would leave the role a single launch after its reset.
-func TestAnOperatorsRetryAndAFreshSessionGiveAFailedCheckRoleItsWholeBudget(t *testing.T) {
-	doors := append([]freshSessionDoor{{"the operator's retry", supervise.SuspendedByOperator, func(t *testing.T, h *harness, issue string, role claim.Role, _ http.Header) *httptest.ResponseRecorder {
-		t.Helper()
-		return h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(freshSessionToken(t, issue, role))+"/retry", nil)
-	}}}, freshSessionDoors()...)
+// retry`, the operator's retry in a fresh session, the controller's `agents/retry` and the
+// controller's fresh_session each relaunch the tester of a closed issue, failed with its launch
+// budget spent, at fresh budgets. A check look's one attempt applied to these doors would leave the
+// role a single launch after its reset. The controller's retry sends supervise.RequestAskedRetry,
+// which no `OneAttemptLeft` reaches, and this holds it there.
+func TestAResetOfAFailedCheckRoleGivesItsWholeBudgetAtEveryDoor(t *testing.T) {
+	doors := append([]freshSessionDoor{
+		{"the operator's retry", supervise.SuspendedByOperator, func(t *testing.T, h *harness, issue string, role claim.Role, _ http.Header) *httptest.ResponseRecorder {
+			t.Helper()
+			return h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(freshSessionToken(t, issue, role))+"/retry", nil)
+		}},
+		{"the controller's retry", supervise.SuspendedByController, func(t *testing.T, h *harness, issue string, role claim.Role, stated http.Header) *httptest.ResponseRecorder {
+			t.Helper()
+			grant := controllerGrant(t, h)
+			return h.request(http.MethodPost, "/legion/v1/agents/retry",
+				ClaimRequest{GrantID: grant.GrantID, Issue: issue, Role: string(role)}, stated)
+		}},
+	}, freshSessionDoors()...)
 	for _, door := range doors {
 		t.Run(door.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
