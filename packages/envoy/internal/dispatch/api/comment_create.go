@@ -1350,6 +1350,9 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // (graphstore.QueueNodes): every fact of this write, the base attributes it states among them, is
 // appended under that event, which is appended after the row. A comment left out of the store
 // (unprojected) has no node to write. It answers what it stored, which queueCommentCreated takes.
+// The insert claims the head rows kept (graphstore.KeptHeadRows), which the comment's head write
+// after it in the same transaction writes (queueCommentCreated), so the head mark trigger of
+// comments leaves the issue's mark as it is.
 //
 // A suggestion's column holds the suggestion and suggestionKind, the kind its mark recorded
 // (storedSuggestion): the comment route passes the kind commentProjectionKind answered, and the
@@ -1393,7 +1396,8 @@ func queueCommentRow(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, commen
 	nodeKind, nodeAddress := stored.rowNode()
 	if err := queueExec(ledger, `
 		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers, node_kind, node_address, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+		where `+graphstore.KeptHeadRows+`
 	`, comment.ID, comment.IssueKey, comment.ArtifactID, author, comment.Body, anchor, comment.ReplyTo, comment.AskID, comment.Turn,
 		suggestion, comment.RepliesToBlock, comment.Answers, nodeKind, nodeAddress, comment.CreatedAt); err != nil {
 		return commentStoreWrite{}, err

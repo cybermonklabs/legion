@@ -87,10 +87,10 @@
 -- columns of document_blocks a head row reads, an update, since the release before writes all three
 -- and inserts and deletes document_blocks rows in its index pass; the three tables of a comment's
 -- row, its blocks and their texts (comments, comment_blocks, comment_block_texts), whose columns the
--- rows of a comment and of its blocks hold, carry triggers of their own deferred to the end of the
--- write's transaction (issue_head_items_drop). Rolling back past this migration is an image rollback
--- alone: the tables left behind are read by nothing that release runs, and the rollback script
--- drops them with the triggers.
+-- rows of a comment and of its blocks hold, carry triggers of their own (issue_head_items_drop),
+-- which fire inside the statement that writes the row as the three above do. Rolling back past
+-- this migration is an image rollback alone: the tables left behind are read by nothing that
+-- release runs, and the rollback script drops them with the triggers.
 create table issue_head_nodes (
   issue_key text not null,
   node_kind text collate "C" not null,
@@ -259,24 +259,25 @@ create trigger document_blocks_head_marks
 -- of one, that a write of comments, comment_blocks or comment_block_texts writes, for a write the
 -- head rows are not kept for: the comment's own issue, its row's issue_key before and after the
 -- write, which holds the rows of its blocks too, and each issue that holds a row of the comment
--- (issue_head_nodes_node). The four triggers below are deferred to the end of the write's
--- transaction, so the function reads dispatch.head_rows as the transaction left it: a writer of
--- this release writes the head rows of what it writes (graphstore.QueueHeads) in the same
--- transaction, and that statement sets it; a writer of a release before sets nothing, and its
--- writes of a comment's blocks and their texts write no node, no tuple and no document_blocks row,
--- which the three triggers above would see. An update fires them only where it sets a column the head rows read, and the
--- update trigger of comments only where a value the head rows read moves: a reopen, a
--- resolution, the anchor's orphaned or block_id, or the row's node address moves none. Each
--- issue's head fill lock is taken in share mode before its mark is deleted, in the order of the
--- locks' hash, as issue_head_marks_drop takes them and for the same reasons.
+-- (issue_head_nodes_node). It runs for each row of a statement whose transaction has not set
+-- dispatch.head_rows to 'kept' (the WHEN of the four triggers below), inside that statement, as
+-- issue_head_marks_drop runs: every statement of this release that writes one of the three tables
+-- sets it as it runs (graphstore's KeptHeadRows), and its writer writes the head rows of what it
+-- writes (graphstore.QueueHeads) in the same transaction; a writer of a release before sets
+-- nothing, and its writes of a comment's blocks and their texts write no node, no tuple and no
+-- document_blocks row, which the three triggers above would see. None of the four is deferred:
+-- comments is a projection of the node store, and every check of such a table runs inside the
+-- statement that writes its row, where its writer is named (api's
+-- TestNoProjectionRowIsWrittenWithoutTheStore). An update fires them only where it sets a column
+-- the head rows read, and the update trigger of comments only where a value the head rows read
+-- moves: a reopen, a resolution, the anchor's orphaned or block_id, or the row's node address
+-- moves none. Each issue's head fill lock is taken in share mode before its mark is deleted, in the
+-- order of the locks' hash, as issue_head_marks_drop takes them and for the same reasons.
 create function issue_head_items_drop() returns trigger
 language plpgsql as $$
 declare
   held text;
 begin
-  if current_setting('dispatch.head_rows', true) is not distinct from 'kept' then
-    return null;
-  end if;
   if tg_table_name = 'comments' then
     for held in
       select found.issue_key from (
@@ -306,32 +307,31 @@ begin
 end
 $$;
 
-create constraint trigger comments_head_marks
-  after insert or delete on comments
-  deferrable initially deferred
-  for each row execute function issue_head_items_drop();
-
-create constraint trigger comments_head_marks_update
-  after update of issue_key, author, body, created_at, edited_at, deleted_at, deleted_by, reply_to, replies_to_block,
-    ask_id, artifact_id, anchor, written_version on comments
-  deferrable initially deferred
-  for each row
-  when ((old.issue_key, old.author, old.body, old.created_at, old.edited_at, old.deleted_at, old.deleted_by, old.reply_to,
-         old.replies_to_block, old.ask_id, old.artifact_id, old.anchor->>'artifact_id', old.anchor->>'version',
-         old.written_version)
-        is distinct from
-        (new.issue_key, new.author, new.body, new.created_at, new.edited_at, new.deleted_at, new.deleted_by, new.reply_to,
-         new.replies_to_block, new.ask_id, new.artifact_id, new.anchor->>'artifact_id', new.anchor->>'version',
-         new.written_version))
+create trigger comments_head_marks after insert or delete on comments
+  for each row when (current_setting('dispatch.head_rows', true) is distinct from 'kept')
   execute function issue_head_items_drop();
 
-create constraint trigger comment_blocks_head_marks
+create trigger comments_head_marks_update
+  after update of issue_key, author, body, created_at, edited_at, deleted_at, deleted_by, reply_to, replies_to_block,
+    ask_id, artifact_id, anchor, written_version on comments
+  for each row
+  when (current_setting('dispatch.head_rows', true) is distinct from 'kept'
+        and (old.issue_key, old.author, old.body, old.created_at, old.edited_at, old.deleted_at, old.deleted_by, old.reply_to,
+             old.replies_to_block, old.ask_id, old.artifact_id, old.anchor->>'artifact_id', old.anchor->>'version',
+             old.written_version)
+            is distinct from
+            (new.issue_key, new.author, new.body, new.created_at, new.edited_at, new.deleted_at, new.deleted_by, new.reply_to,
+             new.replies_to_block, new.ask_id, new.artifact_id, new.anchor->>'artifact_id', new.anchor->>'version',
+             new.written_version))
+  execute function issue_head_items_drop();
+
+create trigger comment_blocks_head_marks
   after insert or delete or update of comment_id, block_id, node_id, position, excerpt, made_at, changed_revision,
     changed_at on comment_blocks
-  deferrable initially deferred
-  for each row execute function issue_head_items_drop();
+  for each row when (current_setting('dispatch.head_rows', true) is distinct from 'kept')
+  execute function issue_head_items_drop();
 
-create constraint trigger comment_block_texts_head_marks
+create trigger comment_block_texts_head_marks
   after insert or delete or update of comment_id, block_id, revision, text on comment_block_texts
-  deferrable initially deferred
-  for each row execute function issue_head_items_drop();
+  for each row when (current_setting('dispatch.head_rows', true) is distinct from 'kept')
+  execute function issue_head_items_drop();

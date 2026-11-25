@@ -161,14 +161,15 @@ func (w CommentWrite) BaseAttributes() int64 { return w.baseAttributes }
 
 // Queue queues the write on b: its one store write of every node and every tuple
 // (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
-// store write of the nodes: the row's foreign key names the node.
+// store write of the nodes: the row's foreign key names the node. Both claim the head rows kept
+// (graphstore.KeptHeadRows), which the head write queued last writes.
 func (w CommentWrite) Queue(b *store.WriteBatch) {
 	graphstore.QueueWrite(b, w.Nodes, w.Tuples)
 	b.Queue("name the nodes of a comment batch on their rows", `
 		update comments c
 		set node_kind = $3, node_address = p.address
 		from unnest($1::text[], $2::text[]) as p (id, address)
-		where c.id = p.id::uuid
+		where c.id = p.id::uuid and `+graphstore.KeptHeadRows+`
 	`, w.ids, w.ids, graphstore.KindComment)
 	graphstore.QueueHeads(b, graphstore.HeadsOf(w.Nodes, w.Tuples))
 }

@@ -23,13 +23,14 @@ import (
 // A write the head rows are not kept for takes the marks of the issues whose trees hold the node it
 // writes away, in its own transaction: the trigger of graph_tuples, graph_nodes and document_blocks
 // (issue_head_marks_drop) does, for every row a statement inserts, deletes or updates (on
-// document_blocks only the columns the head rows read) unless the transaction has set
-// headRowsSetting, which every statement of this build that writes one of those tables sets as it
-// runs (KeptHeadRows), and so do the deferred triggers of the three conversation tables
-// (issue_head_items_drop), at the end of a transaction that has not set it by then, which the head
-// write sets (headMovedSQL). A build that keeps no head rows - the release before, during a roll or
-// after a rollback - sets no such thing, so the head read walks the tuples of every issue such a
-// build wrote, until the backfill fills the issue again (graphcensus' backfillIssueHeadNodes).
+// document_blocks only the columns the head rows read), and so do the triggers of the three
+// conversation tables (issue_head_items_drop), for every row a statement inserts, deletes or
+// updates in a column the head rows read, each inside the statement that writes the row, unless the
+// transaction has set headRowsSetting by then, which every statement of this build that writes one
+// of those six tables sets as it runs (KeptHeadRows). A build that keeps no head rows - the release
+// before, during a roll or after a rollback - sets no such thing, so the head read walks the tuples
+// of every issue such a build wrote, until the backfill fills the issue again (graphcensus'
+// backfillIssueHeadNodes).
 
 // headRowsSetting is the transaction's run-time setting that says its writes of graph_tuples,
 // graph_nodes and document_blocks, and of the conversation tables, are a build's that keeps the head
@@ -48,7 +49,10 @@ const (
 // graph_nodes carries it in the WHERE of the rows it writes, and so does every statement of this
 // build that inserts or deletes document_blocks rows or updates a column of them the head rows read
 // (refs' queueRows), whose writer writes the head rows of the blocks it wrote last in its write phase,
-// and the head write in the WHERE of the nodes it names, of which it always names one.
+// every statement of this build that writes a comment's row, its blocks' rows or their texts, whose
+// writer writes their head rows after it in the same transaction
+// (TestEveryWriterOfACommentWritesItsHeadRows), and the head write in the WHERE of the nodes it
+// names, of which it always names one.
 const KeptHeadRows = `(select set_config('` + headRowsSetting + `', '` + headRowsKept + `', true)) is not null`
 
 // NodeKey is one node of the store, by its kind and its id.
@@ -403,7 +407,8 @@ func prefixed(prefix, columns string) string {
 // kinds and ids: each of them, and under each that follows its parent (headFixedSQL), every node a
 // part_of into it asserts, down through those that follow theirs, so a node whose issue moved with
 // its parent is read again with it. Its first row sets headRowsSetting (KeptHeadRows) for the rest
-// of the transaction, which the deferred triggers of the conversation tables read as it commits.
+// of the transaction, as every statement of this build that writes a table with a head mark trigger
+// sets it.
 var headMovedSQL = `
 	with recursive head_named (kind, id, depth) as (
 		select named.kind, named.id, 0 from unnest($1::text[], $2::text[]) named (kind, id) where ` + KeptHeadRows + `

@@ -1686,7 +1686,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 		b.Queue("", `
 			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			where `+graphstore.KeptHeadRows+`
 			returning `+commentColumns+`
 		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
 			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {

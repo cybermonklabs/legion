@@ -310,7 +310,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	if err := queueExec(ledger, `
 		update comments
 		set body = $2, edited_at = $3
-		where id = $1
+		where id = $1 and `+graphstore.KeptHeadRows+`
 	`, comment.ID, input.Body, editedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -727,7 +727,7 @@ func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, co
 		}
 	}
 	if err := queueExec(ledger, `
-		update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
+		update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1 and `+graphstore.KeptHeadRows+`
 	`, id); err != nil {
 		return err
 	}

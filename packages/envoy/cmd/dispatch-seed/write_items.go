@@ -328,10 +328,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		parameters += fmt.Sprintf(", $%d", next)
 		next++
 	}
-	// The address of the comment's own node, which the batch writes before its first row.
+	// The address of the comment's own node, which the batch writes before its first row. The insert
+	// claims the head rows kept (graphstore.KeptHeadRows), which the batch writes last.
 	columns += ", node_kind, node_address"
 	parameters += fmt.Sprintf(", $%d, $%d", next, next+1)
-	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
+	insert := "insert into comments (" + columns + ") select " + parameters + " where " + graphstore.KeptHeadRows
 	author, err := json.Marshal(seedAuthor)
 	if err != nil {
 		return fmt.Errorf("encode the comments' author: %w", err)

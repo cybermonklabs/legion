@@ -383,7 +383,7 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueWrite(b, item.node.nodes, item.node.tuples)
 		if item.kind == graphstore.KindComment {
-			b.Queue("", `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
+			b.Queue("", `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null and `+graphstore.KeptHeadRows,
 				item.id, graphstore.KindComment)
 		}
 		graphstore.QueueHeads(b, graphstore.HeadsOf(item.node.nodes, item.node.tuples))

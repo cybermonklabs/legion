@@ -205,9 +205,9 @@ type reviewedTrigger struct {
 // 20261123180100_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
 // insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows. On
 // document_blocks it runs for an insert, a delete and an update of the columns a head row reads. The
-// same migration gives comments, comment_blocks and comment_block_texts deferred constraint
-// triggers (function issue_head_items_drop), which a bounded write of one of them fires at its
-// commit; comments holds triggers of its own that are not reviewed here, so it stays refused.
+// same migration gives comments, comment_blocks and comment_block_texts triggers of the same form
+// (function issue_head_items_drop), which a bounded write of one of them fires for each row it
+// writes; comments holds triggers of its own that are not reviewed here, so it stays refused.
 var reviewedTriggers = []reviewedTrigger{
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
 		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
@@ -225,18 +225,19 @@ var reviewedTriggers = []reviewedTrigger{
 		"artifact_id, block_id, type, text_sha256 or changed_version, one probe of issue_head_nodes_node (node_kind, node_address) for the " +
 		"block's node (node_id), before and after an update, then, for each issue those probes and the node's address name, the issue's " +
 		"head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes nothing else"},
-	{table: "comments", trigger: "comments_head_marks", bounded: "deferred to the commit, for each row inserted or deleted, " +
-		"where the transaction has not set dispatch.head_rows to kept: one probe of issue_head_nodes_node (node_kind, node_address) " +
-		"for the comment's node, then, for each issue that probe and the row's issue_key name, the issue's head fill advisory lock " +
-		"in share mode and a delete of issue_head_marks by its primary key; it reads and writes nothing else"},
-	{table: "comments", trigger: "comments_head_marks_update", bounded: "deferred to the commit, for each row an update moves a " +
-		"value the head rows read of (its when clause), as comments_head_marks does"},
-	{table: "comment_blocks", trigger: "comment_blocks_head_marks", bounded: "deferred to the commit, for each row, where the " +
-		"transaction has not set dispatch.head_rows to kept: one probe of comments by its primary key for the block's comment, then " +
-		"its issue's head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes " +
+	{table: "comments", trigger: "comments_head_marks", bounded: "for each row inserted or deleted (the deleted row on a delete), " +
+		"where the transaction has not set dispatch.head_rows to kept (its when clause): one probe of issue_head_nodes_node " +
+		"(node_kind, node_address) for the comment's node, then, for each issue that probe and the row's issue_key name, the " +
+		"issue's head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes " +
 		"nothing else"},
-	{table: "comment_block_texts", trigger: "comment_block_texts_head_marks", bounded: "deferred to the commit, for each row, as " +
-		"comment_blocks_head_marks does"},
+	{table: "comments", trigger: "comments_head_marks_update", bounded: "for each row an update moves a value the head rows " +
+		"read of, where the transaction has not set dispatch.head_rows to kept (its when clause), as comments_head_marks does"},
+	{table: "comment_blocks", trigger: "comment_blocks_head_marks", bounded: "for each row inserted, deleted or updated in a " +
+		"column the head rows read, where the transaction has not set dispatch.head_rows to kept (its when clause): one probe " +
+		"of comments by its primary key for the block's comment, then its issue's head fill advisory lock in share mode and a " +
+		"delete of issue_head_marks by its primary key; it reads and writes nothing else"},
+	{table: "comment_block_texts", trigger: "comment_block_texts_head_marks", bounded: "for each row inserted, deleted or " +
+		"updated in a column the head rows read, as comment_blocks_head_marks does"},
 }
 
 // ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,
