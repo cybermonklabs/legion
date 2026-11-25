@@ -323,7 +323,7 @@ func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
 	}
 	for _, want := range append([]string{
 		"Dispatch's own `dispatch` command", "as your own session, s-planner", "with that session's access",
-		`{"args":["read","INFRA-1"]}`, `{"args":["comment","--issue","INFRA-1","--body-file","-"],"stdin":`,
+		`{"args":["read","INFRA-1"]}`,
 		"Every other command is refused", "the loop's mark, which the tool adds",
 	}, slices.Concat(dispatchtool.ReadCommands, dispatchtool.WriteCommands)...) {
 		if !strings.Contains(dispatch.Description, want) {

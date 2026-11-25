@@ -112,32 +112,47 @@ type argsProperty struct {
 
 // dispatchDescription is what the model reads of the dispatch tool for req: Dispatch's own
 // `dispatch` command, which the daemon runs as the agent's own session with that session's access;
-// how a call is made, with one read and one comment whose body is the call's stdin; the commands it
-// runs (dispatchtool.ReadCommands and WriteCommands), and that every other command, and an option
-// handing it a file of the daemon's host, is refused; and the loop's mark it adds to what it posts.
+// how a call is made, with one worked example, a read; the commands it runs
+// (dispatchtool.ReadCommands and WriteCommands), and that every other command, and an option
+// handing it a file of the daemon's host, is refused; when a write is for, how its text is given,
+// and the loop's mark it adds to what it posts; that it refuses a write aimed where the daemon
+// posts the reply itself, in the words of that refusal (dispatchtool's placeRefusal); and that
+// Dispatch's output can carry advice for a running agent, which the stopped agent takes no action
+// on: the CLI has no switch that leaves it out (packages/envoy-client's renderAdvice).
+//
+// It gives no write call ready to run. Proof run 45683361567 showed a model the one comment the
+// description then gave, its stdin "Your comment.", and the model's first call was that comment,
+// run as a probe with the stdin "placeholder", which posted.
 func dispatchDescription(req Request) string {
 	read, _ := json.Marshal(dispatchInput{Args: []string{"read", req.Agent.Issue}})
-	comment, _ := json.Marshal(dispatchInput{Args: []string{"comment", "--issue", req.Agent.Issue, "--body-file", "-"}, Stdin: "Your comment."})
 	return "Run Dispatch's own `dispatch` command, the one your pane runs. The daemon runs it as your own session, " +
-		req.Agent.Session + ", with that session's access, so Dispatch answers each call as it answers you when you run. " +
+		req.Agent.Session + ", with that session's access. Dispatch answers each call as it answers you when you run. " +
+		"Give dispatch's arguments without the leading dispatch. " +
+		"The `read` command shows an issue with its documents, comments, asks and messages, including those written since you stopped. " +
+		"For example: " + string(read) + ".\n\n" +
+		"The tool runs these reads: " + strings.Join(dispatchtool.ReadCommands, ", ") + ". " +
+		"It runs these writes: " + strings.Join(dispatchtool.WriteCommands, ", ") + ". " +
+		"Every other command is refused with the reason, for example a status write, a claim, an ask or a document edit. " +
+		"An option that hands dispatch a file of the daemon's host is refused too: a `--<field>-file` or `--<field>-json-file` " +
+		"whose value is not `-`, or `--image`.\n\n" +
+		"Use a write only if the message explicitly asks you to post other content somewhere else, or to resolve a comment. " +
+		"Give a write's text as the value of `--body`, or give it as the call's stdin with `--body-file -`. " +
+		"An option `--<field>-file -` reads the call's stdin. " +
+		"Every comment, message and agent's message that the tool posts carries the loop's mark, which the tool adds.\n\n" +
 		"The daemon posts your reply where the message reached you. " +
-		"Never use `comment`, `message`, or `send-to-agent` to post your answer or a copy of it. " +
-		"Use these commands only if the message explicitly asks you to post somewhere else. " +
-		"Give dispatch's arguments without the leading dispatch, and as stdin the text an option `--<field>-file -` reads. " +
-		"Read an issue with its documents, comments, asks and messages, those written since you stopped included: " +
-		"for example " + string(read) + ". Post a comment with its body on stdin: " + string(comment) + ". " +
-		"It runs these commands: the reads " + strings.Join(dispatchtool.ReadCommands, ", ") + "; and the writes " +
-		strings.Join(dispatchtool.WriteCommands, ", ") + ". Every other command is refused with the reason, a status " +
-		"write, a claim, an ask and a document edit among them, and so is an option that hands it a file of the " +
-		"daemon's host (a --<field>-file or --<field>-json-file whose value is not -, or --image). Every comment, " +
-		"message and agent's message it posts carries the loop's mark, which the tool adds. " +
-		"`dispatch <command> --help` prints a command's options."
+		"Never use `comment`, `message` or `send-to-agent` to post your answer or a copy of it. " +
+		"The tool refuses a write aimed where the daemon posts your reply to this question itself. " +
+		"That place is the same comment thread, the same ask, the Dispatch message that you reply to, or the Envoy session that asked. " +
+		"Such a write would be a second reply there. Put what you would post there in your reply: the daemon posts it there.\n\n" +
+		"Dispatch's output can carry advice written for an agent that is running, for example to close an ask or to move an issue's status. " +
+		"You can do neither now. Take no action on that advice.\n\n" +
+		"`dispatch <command> --help` prints a command's options. Use it only before a command that the message asks for."
 }
 
-// dispatchInput is the dispatch tool's input, as the description's examples are written.
+// dispatchInput is the dispatch tool's input as the description's example, a read, is written:
+// its arguments, and no stdin.
 type dispatchInput struct {
-	Args  []string `json:"args"`
-	Stdin string   `json:"stdin,omitempty"`
+	Args []string `json:"args"`
 }
 
 // dispatchSchema is the JSON schema of the dispatch tool's input: dispatch's arguments as an array

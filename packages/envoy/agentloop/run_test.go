@@ -1109,6 +1109,73 @@ func TestOnlyTheLastCallCarriesTheLastCallSentence(t *testing.T) {
 	}
 }
 
+// Every call of a run before its last allowed call offers the run's tools with the protocol's own
+// auto tool choice, which leaves the model to call a tool or to answer, and never a forced one
+// (Anthropic's any or tool, OpenAI's required or a named function), which would have it call a
+// tool on a call it could answer on. Each carries Request.Final at the protocol's path
+// (finalSchemaPath), so a reply on any call is held to the schema as it is generated, and none
+// carries Request.LastCall. Each case is a run of three allowed calls on a protocol the Legion
+// daemon calls, whose model calls the tool on its first call and answers on its second, so
+// neither is the last allowed call; the last call's own request, no tool and the sentence, is
+// TestOnlyTheLastCallCarriesTheLastCallSentence's.
+func TestEveryCallBeforeTheLastLeavesTheToolChoiceToTheModelAndCarriesTheFinalSchema(t *testing.T) {
+	t.Parallel()
+	var final any
+	if err := json.Unmarshal([]byte(finalSchema), &final); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		kind    Kind
+		replies []reply
+		// auto is the tool choice as the protocol writes its own auto.
+		auto any
+	}{
+		{kind: AnthropicMessages, auto: map[string]any{"type": "auto"}, replies: []reply{
+			anthropicStream("tool_use", anthropicUsage{Input: 10, Output: 5}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+			anthropicStream("end_turn", anthropicUsage{Input: 20, Output: 5}, anthropicText(finalAnswer)),
+		}},
+		{kind: OpenAIResponses, auto: "auto", replies: []reply{
+			openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
+			openaiStream(openaiUsage{Input: 120, Output: 5}, "", openaiMessage("msg_2", finalAnswer)),
+		}},
+	} {
+		t.Run(string(c.kind), func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, c.kind, 3)
+			f.req.Final, f.req.LastCall = json.RawMessage(finalSchema), lastCallSentence
+			result, err := Run(context.Background(), f.req)
+			if err != nil || result.Fault != "" || string(result.Value) != finalAnswer || len(result.Steps) != 2 {
+				t.Fatalf("result %+v, %v; want the answer on the second of three allowed calls", result, err)
+			}
+			got := s.requests()
+			if len(got) != 2 {
+				t.Fatalf("%d model calls, want 2", len(got))
+			}
+			for i, r := range got {
+				body := r.decoded(t)
+				if tools, _ := body["tools"].([]any); len(tools) != 1 {
+					t.Errorf("call %d offers the tools %v, want the run's one tool", i+1, body["tools"])
+				}
+				if choice := body["tool_choice"]; !reflect.DeepEqual(choice, c.auto) {
+					t.Errorf("call %d's tool_choice %v, want %v: the model's own choice, never a forced tool", i+1, choice, c.auto)
+				}
+				var schema any = body
+				for _, key := range finalSchemaPath(c.kind) {
+					object, _ := schema.(map[string]any)
+					schema = object[key]
+				}
+				if !reflect.DeepEqual(schema, final) {
+					t.Errorf("call %d carries %v at %v, want the run's Final schema %s", i+1, schema, finalSchemaPath(c.kind), finalSchema)
+				}
+				if bytes.Contains(r.body, []byte(lastCallSentence)) {
+					t.Errorf("call %d, not the last allowed call, carries the last-call sentence", i+1)
+				}
+			}
+		})
+	}
+}
+
 // A run whose model call does not answer within the run's time is a time fault.
 func TestARunPastItsTimeBoundIsAFault(t *testing.T) {
 	t.Parallel()

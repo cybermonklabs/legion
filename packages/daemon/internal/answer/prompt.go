@@ -12,15 +12,24 @@ import (
 )
 
 // systemPrompt is the short system prompt the agent's resumed conversation runs under: who it is
-// and that it answers while it is not running, its tools (the list of those its request offers,
-// gh named, and the sentence on where gh runs and what every call names that the gh tool's
-// description and its refusals carry too: ghtool.Usage.Checkout; dispatch, where the request
-// offers it, named with the session it runs as; and web_search, where the request offers it, with
-// the sources its reply names), the Legion footer and the loop's mark the tools put on what they
-// post, the bounds of each tool's calls, and, while the project is paused as the run starts
-// (Request.Paused), that its tools run their reads and refuse every write; then the work it
-// declines, and the reply form.
-// It also says where the daemon posts the reply and when the agent can use a tool to write.
+// and that it answers while it is not running; when it replies and when it calls a tool; where the
+// daemon posts the reply, and that the agent posts no copy of it; its tools (the list of those its
+// request offers, gh named, and the sentence on where gh runs and what every call names that the
+// gh tool's description and its refusals carry too: ghtool.Usage.Checkout; dispatch, where the
+// request offers it, named with the session it runs as, and when the agent can use it to write;
+// and web_search, where the request offers it, with the sources its reply names), the Legion
+// footer and the loop's mark the tools put on what they post, the bounds of each tool's calls and
+// of the model calls, and, while the project is paused as the run starts (Request.Paused), that its
+// tools run their reads and refuse every write; then the work it declines, and the reply form.
+//
+// It has the model reply as soon as it can answer, on whichever call that is, and make a tool call
+// only for what the reply needs and the conversation does not hold: never one to try a tool, to
+// wait or to pass a turn, and `--help` only before a command the message asks for. The bounds are
+// limits, and the last call, which offers no tool (lastCall), is the latest the reply can come on,
+// not the place it belongs. On proof run 45683361567, under a prompt saying the last call "must be
+// your reply", of the Claude answers with no fault 6 ran to the 8-call bound and 2 to 7, each
+// replying on or near its last call after calls that did nothing: a refused command, whoami,
+// --help, and one file read seven times.
 func systemPrompt(req Request) string {
 	offered := req.offeredTools()
 	names := make([]string, len(offered))
@@ -29,7 +38,12 @@ func systemPrompt(req Request) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the agent whose conversation follows: the %s of issue %s (session %s, phase %s).", req.Agent.Role, req.Agent.Issue, req.Agent.Session, req.Agent.Phase)
-	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself. Your conversation is your first source: answer from it what it holds, and use your tools only for what it does not hold.\n\n")
+	b.WriteString(" You are not running now. Legion resumed your conversation for one message to you. Answer it as yourself.\n\n")
+	b.WriteString("Your conversation is your first source. Answer from it what it holds. " +
+		"Reply as soon as you can answer. You can reply on any model call. " +
+		"Make a tool call only to get something that your reply needs and your conversation does not hold. " +
+		"Never make a tool call to try a tool, to wait or to pass a turn. " +
+		"Use `--help` only before a command that the message asks for.\n\n")
 	b.WriteString("The daemon posts your reply where the message reached you:\n" +
 		"- In the same comment thread.\n" +
 		"- On the same ask.\n" +
@@ -37,22 +51,22 @@ func systemPrompt(req Request) string {
 		"- To the Envoy session that asked.\n\n" +
 		"Never post your answer or a copy of it with any tool, including `gh`.\n\n")
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
-	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
-	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
+	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh. Its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
+	b.WriteString("Every comment or review that you post with it carries your Legion footer, which the tool adds. Do not write a footer.\n\n")
 	if req.Dispatch != nil {
 		fmt.Fprintf(&b, "The `dispatch` tool is Dispatch's own command line, run as your own session, %s. "+
-			"Read any issue with it. Its description lists the commands it runs, and it refuses every other. "+
-			"Every comment or message you post with it carries the loop's mark, which the tool adds. "+
-			"The daemon posts your reply where the message reached you. "+
-			"Never use `comment`, `message`, or `send-to-agent` to post your answer or a copy of it. "+
+			"Use it to read any issue. Its description lists the commands it runs, and it refuses every other command. "+
+			"Every comment or message that you post with it carries the loop's mark, which the tool adds. "+
+			"Never use `comment`, `message` or `send-to-agent` to post your answer or a copy of it. "+
 			"Use a `dispatch` write only if the message explicitly asks you to:\n"+
 			"- Post other content somewhere else, such as on another issue, in another thread, or to another agent.\n"+
 			"- Resolve a comment.\n\n", req.Agent.Session)
 	}
 	if req.WebSearch != nil {
-		b.WriteString("The `web_search` tool runs one web search for you: use it only for facts your conversation and your other tools do not hold, and name in your reply the address of each source you use. ")
+		b.WriteString("The `web_search` tool runs one web search for you. Use it only for facts that your conversation and your other tools do not hold. " +
+			"If you use it, name in your reply the address of each source you use.\n\n")
 	}
-	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
+	b.WriteString("The other tools that your conversation used are not available now: reading and editing files, running commands, and your Legion and Envoy tools. Do not call them. ")
 	bounds := []string{fmt.Sprintf("at most %d gh calls", req.Bounds.GHCalls)}
 	if req.Dispatch != nil {
 		bounds = append(bounds, fmt.Sprintf("at most %d dispatch calls, counted apart from its gh calls", req.Bounds.GHCalls))
@@ -64,7 +78,8 @@ func systemPrompt(req Request) string {
 	if len(bounds) > 1 {
 		and = ", and "
 	}
-	fmt.Fprintf(&b, "This answer may make %s%s%d model calls; your last model call offers no tool and must be your reply.\n\n", strings.Join(bounds, ", "), and, req.Bounds.ModelCalls)
+	fmt.Fprintf(&b, "This answer may make %s%s%d model calls. These are limits, not targets. "+
+		"Your last model call offers no tool. If you reach it, reply on it.\n\n", strings.Join(bounds, ", "), and, req.Bounds.ModelCalls)
 	if req.paused() {
 		writes := "a gh comment, review, merge or other write"
 		if req.Dispatch != nil {
@@ -84,12 +99,14 @@ func systemPrompt(req Request) string {
 }
 
 // lastCall is the message the answer's last model call carries (agentloop.Request.LastCall).
-// That call offers no tool, which the system prompt says once, far above; a model not told so on
-// the call itself has spent it on one more tool call it could not make, or on a reply with nothing
-// in it. It also names the reply form's needs rule (parseReply), since that call's reply is never
-// asked for again: a not_answered or needs_work reply naming no need there is malformed, and the
-// asker hears nothing of what is needed. The message is the loop's own instruction, as the system
-// prompt is, and the append holds no trace of it (Reply.Append).
+// That call offers no tool, which the system prompt says once, far above, as the limit a reply
+// comes on at the latest, the model replying on whichever call it can answer on; this message is
+// the one that tells the model to reply now. A model not told so on the call itself has spent it
+// on one more tool call it could not make, or on a reply with nothing in it. It also names the
+// reply form's needs rule (parseReply), since that call's reply is never asked for again: a
+// not_answered or needs_work reply naming no need there is malformed, and the asker hears nothing
+// of what is needed. The message is the loop's own instruction, as the system prompt is, and the
+// append holds no trace of it (Reply.Append).
 const lastCall = "This is your last model call, and it offers no tool. Reply now, in the reply form, from what you already know. " +
 	"A not_answered or needs_work reply must say in needs what you need, and needs is never empty for them."
 
