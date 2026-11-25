@@ -566,45 +566,49 @@ test.each([
   ["a reader who may not write it", false],
   ["a person who may write it", true],
 ] as const)("a description the server cannot read as markdown is drawn from its tree for %s, read-only, with the line that says why, and nothing parses it or is written from it", async (_reader, canWrite) => {
-  // On the fake clock, so the stand-in's zero-delay timers, and any the engine sets, run in
-  // `flushTasks` and wait no real time: a body sent a task late still shows in the reads below.
-  await onFakeClock(async () => {
-    const worker = installFakeParseWorker();
-    const { parsed, restore } = countPageParses();
-    try {
-      const { editor, imports, onSave, scope, view } = described(
-        NESTED,
-        canWrite,
-        NESTED_TREE,
-        false
-      );
-      // The editor builds the tree it is given with no parser of its own: its markdown taken in
-      // instead is the editor's parse.
-      const { box, handle } = await editor();
-      expect(box).toHaveAttribute("contenteditable", "false");
-      expect(box).toHaveAttribute("aria-readonly", "true");
-      expect(box.textContent).toBe(NESTED);
-      expect(box.querySelector("em, strong")).toBeNull();
-      const why = scope.getByText(NOT_MARKDOWN);
-      expect(box).toHaveAttribute("aria-describedby", why.id);
+  const worker = installFakeParseWorker();
+  const { parsed, restore } = countPageParses();
+  try {
+    const { editor, imports, onSave, scope, view } = described(
+      NESTED,
+      canWrite,
+      NESTED_TREE,
+      false
+    );
+    // The editor builds the tree it is given with no parser of its own: its markdown taken in
+    // instead is the editor's parse. It is drawn on the real clock, as every other row of this
+    // file draws it: the cold lane holds a lazily loaded module for a second of real time
+    // (`hold-lazy-loads.ts`, a child `sleep`), and a `findBy*` on a fake clock spends its wait on
+    // fake time, so it gives up before the module arrives (seed 1454903779 of the cold lane).
+    const { box, handle } = await editor();
+    expect(box).toHaveAttribute("contenteditable", "false");
+    expect(box).toHaveAttribute("aria-readonly", "true");
+    expect(box.textContent).toBe(NESTED);
+    expect(box.querySelector("em, strong")).toBeNull();
+    const why = scope.getByText(NOT_MARKDOWN);
+    expect(box).toHaveAttribute("aria-describedby", why.id);
+    // On the fake clock from here, so the stand-in's zero-delay timers, and any the engine sets,
+    // run in `flushTasks` and wait no real time: a body sent a task late still shows in the reads
+    // below.
+    await onFakeClock(async () => {
       await act(() => flushTasks());
       expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
       expect(parsed).toEqual([]);
       expect(imports).toEqual([]);
       // Nothing is written from that reading. A read-only editor takes no focus (ProseMirror
-      // focuses an editable view alone), so no blur reaches it; what can is a change that reaches
-      // its document once the typing rests, the page going, and the editor closing.
+      // focuses an editable view alone), so no blur reaches it; what can is a change that
+      // reaches its document once the typing rests, the page going, and the editor closing.
       writeAtEnd(handle, " x");
       await jump(SAVE_AFTER_MS);
-      act(() => {
-        window.dispatchEvent(new Event("pagehide"));
-      });
-      view.unmount();
-      expect(onSave).not.toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
+    });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    view.unmount();
+    expect(onSave).not.toHaveBeenCalled();
+  } finally {
+    restore();
+  }
 });
 
 test("another person's text the server cannot read as markdown arrives in a writer's editor from its tree, read-only from then on, and nothing parses it or is written from it", async () => {
