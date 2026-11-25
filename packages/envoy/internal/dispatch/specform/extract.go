@@ -603,47 +603,70 @@ func codeSpan(code string) string {
 // shows them (Held.Shown): each span of code in code font as its characters alone, as inline
 // writes them beside the words that codeSpan writes. A span is a run of backticks, its code, and
 // the next run of as many, and a space at each end of the code is part of the run when the code
-// is more than spaces; a run that no such run closes is text.
+// is more than spaces; a run that no such run closes is text. It reads the runs of words once, and
+// the run that closes each once (closingRuns), so its work is in proportion to words, also where
+// many runs are closed by none.
 func withoutCodeFont(words string) string {
+	runs := backtickRuns(words)
+	if len(runs) == 0 {
+		return words
+	}
+	closes := closingRuns(runs)
 	var out strings.Builder
-	for at := 0; at < len(words); {
-		if words[at] != '`' {
-			next := strings.IndexByte(words[at:], '`')
-			if next < 0 {
-				next = len(words) - at
-			}
-			out.WriteString(words[at : at+next])
-			at += next
-			continue
-		}
-		fence := backticksAt(words, at)
-		closing := -1
-		for search := at + fence; search < len(words); {
-			next := strings.IndexByte(words[search:], '`')
-			if next < 0 {
-				break
-			}
-			search += next
-			if run := backticksAt(words, search); run == fence {
-				closing = search
-				break
-			} else {
-				search += run
-			}
-		}
+	out.Grow(len(words))
+	at := 0
+	for index := 0; index < len(runs); index++ {
+		closing := closes[index]
 		if closing < 0 {
-			out.WriteString(words[at : at+fence])
-			at += fence
 			continue
 		}
-		code := words[at+fence : closing]
+		open, end := runs[index], runs[closing]
+		out.WriteString(words[at:open.start])
+		code := words[open.start+open.length : end.start]
 		if len(code) > 1 && code[0] == ' ' && code[len(code)-1] == ' ' && strings.Trim(code, " ") != "" {
 			code = code[1 : len(code)-1]
 		}
 		out.WriteString(code)
-		at = closing + fence
+		at, index = end.start+end.length, closing
 	}
+	out.WriteString(words[at:])
 	return out.String()
+}
+
+// backtickRun is one run of backticks of a text: where it starts and how many backticks it holds.
+type backtickRun struct {
+	start, length int
+}
+
+// backtickRuns is each run of backticks of words, in order, each as long as it runs.
+func backtickRuns(words string) []backtickRun {
+	var runs []backtickRun
+	for at := 0; at < len(words); {
+		next := strings.IndexByte(words[at:], '`')
+		if next < 0 {
+			break
+		}
+		at += next
+		length := backticksAt(words, at)
+		runs = append(runs, backtickRun{start: at, length: length})
+		at += length
+	}
+	return runs
+}
+
+// closingRuns is, for each run of runs, the index of the next run after it of as many backticks,
+// the run that closes it where it opens a span, or -1 where no run after it has as many.
+func closingRuns(runs []backtickRun) []int {
+	closes := make([]int, len(runs))
+	next := map[int]int{}
+	for index := len(runs) - 1; index >= 0; index-- {
+		closes[index] = -1
+		if later, ok := next[runs[index].length]; ok {
+			closes[index] = later
+		}
+		next[runs[index].length] = index
+	}
+	return closes
 }
 
 // backticksAt is how many backticks words holds in a row from at.
