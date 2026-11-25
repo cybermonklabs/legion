@@ -4,6 +4,9 @@
 # loopback OpenAI-shaped stand-in. The profile walks from strong-model to weak-model with
 # retry.fallbackRevertPolicy: never and retry.rateLimitWalksChain: true.
 #
+# A content-filter refusal must move the same session to the next model until the plugin's
+# cooldown ends, so this proof measures both switches in a long turn.
+#
 # The two content-filter panes differ in whether text streamed before the refusal. One lets
 # the host walk its chain; the other requires the plugin to walk it. Both stay off the strong
 # model between minutes five and ten, and return after the ten-minute plugin cooldown.

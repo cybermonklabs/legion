@@ -314,8 +314,8 @@ function rateLimitedFinal(): Answer {
 }
 
 /**
- * The answer every turn after the refusal gets: another minute's `sleep` until the pane has been
- * driven for its whole span, then text, which lets the run settle.
+ * The answer every turn after the refusal gets: a `sleep` for that pane's request interval until
+ * the pane has been driven for its whole span, then text, which lets the run settle.
  *
  * A pane that fell back and has not been given its model again keeps asking past the span, for as
  * long as a return is still allowed to take. The host picks a request's model before it runs the
@@ -455,7 +455,8 @@ async function keepEvidence(
   for (const log of await readdir(logs).catch(() => [])) {
     await cp(path.join(logs, log), path.join(evidence, `${label}-${log}`)).catch(() => undefined);
   }
-  let fellBack = false;
+  let firstFallbackAt = Number.POSITIVE_INFINITY;
+  const strongChanges: number[] = [];
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith(".jsonl")
   );
@@ -465,21 +466,26 @@ async function keepEvidence(
     for (const line of (await readFile(full, "utf8")).split("\n").filter(Boolean)) {
       const entry: unknown = JSON.parse(line);
       if (typeof entry !== "object" || entry === null) continue;
-      if ("type" in entry && entry.type === "model_change" && "model" in entry) {
-        if (entry.model === WEAK) fellBack = true;
-        if (
-          fellBack &&
-          entry.model === STRONG &&
-          pane.restoredAt === undefined &&
-          "timestamp" in entry &&
-          typeof entry.timestamp === "string"
-        ) {
-          const at = Date.parse(entry.timestamp);
-          if (Number.isFinite(at)) pane.restoredAt = at;
+      if (
+        "type" in entry &&
+        entry.type === "model_change" &&
+        "model" in entry &&
+        "timestamp" in entry &&
+        typeof entry.timestamp === "string"
+      ) {
+        const at = Date.parse(entry.timestamp);
+        if (Number.isFinite(at)) {
+          if (entry.model === WEAK) firstFallbackAt = Math.min(firstFallbackAt, at);
+          if (entry.model === STRONG) strongChanges.push(at);
         }
       }
       if (!("customType" in entry) || entry.customType !== LEGION_FALLBACK_ENTRY) continue;
       if ("data" in entry) pane.states.push(entry.data as FallbackCooldownState);
+    }
+  }
+  for (const at of strongChanges) {
+    if (at >= firstFallbackAt && (pane.restoredAt === undefined || at < pane.restoredAt)) {
+      pane.restoredAt = at;
     }
   }
 }
