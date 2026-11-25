@@ -461,7 +461,9 @@ func (d mentionDeliveries) resolvedAlonePastItsLease(sessionID string) bool {
 // copy (fallbackKeys, creditCopyOf), and is left out where a mention delivered the comment to it
 // or the comment never named it. The copy carries the event's own key: the edit's destinations
 // read no mention of the comment (eventDestinations). What the comment's mentions did is read
-// from the store, never from the edit's payload, which names none (newCreditFilter).
+// from the store, never from the edit's payload, which names none (newCreditFilter). The
+// comment's delete follows the comment's copy by this same rule (creditFilter.edit): what is
+// said below of the edit holds for the delete too.
 //
 // It waits (creditWaits) while that is still to be decided: while a mention bound for that
 // session is being sent (mentionSending, for that attempt's lease) or is past that lease
@@ -1444,14 +1446,19 @@ func (c mentionComment) dropCreditRow(destination string) (dropped bool, err err
 // destination unsettled and due at once, where the pass settled it having published nothing
 // (mentionDeliveries.reopensCreditRowOf): the pass that follows decides it again by the attempts
 // as they stand then (decideFallbackCopy). A row the pass published, an unsettled one, and one
-// deleted since the batch read it are left as they are. It runs inside the statement gate, as
-// holdFallbackCopy does.
+// deleted since the batch read it are left as they are. So is every row of a deleted comment: the
+// delete settles each unsettled copy of the comment with nothing published, since the text the
+// copy carries is withdrawn, and fails each attempt still pending in the same write (deleteComment
+// in internal/dispatch/api), so the receipt of such an attempt, pinned to the row's session, must
+// not publish that text after the delete. It runs inside the statement gate, as holdFallbackCopy
+// does.
 func (c mentionComment) reopenCreditRow(destination string) error {
 	if err := c.deps.lanes.statement(func() error {
 		_, err := c.deps.Store.Pool.Exec(c.ctx, `
-		update comment_fallback_copies set settled_at = null, next_attempt_at = null
-		where comment_id = $1 and destination = $2 and target is not null and not published
-		  and settled_at is not null
+		update comment_fallback_copies f set settled_at = null, next_attempt_at = null
+		where f.comment_id = $1 and f.destination = $2 and f.target is not null and not f.published
+		  and f.settled_at is not null
+		  and not exists (select 1 from comments c where c.id = f.comment_id and c.deleted_at is not null)
 	`, c.id, destination)
 		return err
 	}); err != nil {
@@ -1703,8 +1710,9 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // and is then decided by that session's own attempts, settling with nothing sent where none of
 // them failed, until the receipt of a later attempt pinned to it that failed reopens it
 // (reopenOnReceipt); where it publishes the comment's copy, it sends that session right after
-// it every edit of the comment the outbox published without reaching it, so the session never
-// keeps the comment's first words (creditRowEdits). A row whose
+// it every edit of the comment, and its delete, that the outbox published without reaching it,
+// so the session never keeps the comment's first words, nor a comment that was deleted
+// (creditRowEdits). A row whose
 // destination is a role topic is not published there - the stream captures no role subject - but
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
@@ -1962,9 +1970,9 @@ const (
 // fallbackSend is the copy a pass publishes for one row: the envelope, whose dedupe key is the
 // failed mention's own, and the forward that carries it when the row's destination is a role
 // topic, nil for every other destination (fallbackRoleForward, decideFallbackCopy). edits are
-// the copies of the comment's edits a credit's row sends right after it (creditRowEdits), none
-// for every other row. heldBy is the earlier event a row that waits for one waits behind, and
-// nil for every other decision.
+// the copies of the comment's edits and of its delete a credit's row sends right after it
+// (creditRowEdits), none for every other row. heldBy is the earlier event a row that waits for
+// one waits behind, and nil for every other decision.
 type fallbackSend struct {
 	item    contracts.Envelope
 	forward *roleForward
@@ -2093,13 +2101,14 @@ func publishInOrder(ctx context.Context, sender bus.Sender, items []contracts.En
 // (destinations.creditRowGivesWay).
 //
 // The settle that publishes a credit's row sends that session, right after the comment's copy,
-// every edit of the comment the outbox decided before then without reaching it
-// (creditRowEdits): an edit read past unnamedForwardBound while the row was unsettled left that
-// session out (mentionDeliveries.editCreditCopyOf), and the session now gets the comment by the
-// failed-mention rule, so it gets the comment's latest words with it and never keeps the first
-// ones. Nothing waits on those edits: an edit is published as its batch decided it, and no row of
-// it holds any event back, the session getting an edit only where its row sends the comment. A
-// row that settles with nothing sent sends no edit either.
+// every edit of the comment, and its delete, that the outbox decided before then without
+// reaching it (creditRowEdits): an edit or a delete read past unnamedForwardBound while the row
+// was unsettled left that session out (mentionDeliveries.editCreditCopyOf), and the session now
+// gets the comment by the failed-mention rule, so it gets the comment's latest words with it,
+// or its delete, and never keeps the first ones. Nothing waits on those copies: an edit or a
+// delete is published as its batch decided it, and no row of it holds any event back, the
+// session getting one only where its row sends the comment. A row that settles with nothing sent
+// sends no edit and no delete either.
 func decideFallbackCopy(
 	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
 ) (fallbackDecision, fallbackSend, error) {
@@ -2210,19 +2219,20 @@ func decideFallbackCopy(
 	return fallbackPublishes, send, nil
 }
 
-// creditRowEdits is the copies of the comment's edits the settle of a credit's row sends to its
-// destination, the own topic of sessionID, right after the comment's copy (decideFallbackCopy):
-// every comment.edited event of the comment that the outbox has published - its batch decided
-// every copy of it - and that reached that topic by no route, in the order the owner wrote them,
-// each its own envelope under its own dedupe key, which the edit's own copy to that session would
-// carry too, so a host that took the edit already drops it. An edit still unpublished is its own
-// batch's to decide: that batch reads the session's failed mention by then and gives it the
-// edit's copy itself (mentionDeliveries.editCreditCopyOf). An edit that notifies no one, and one
-// the session made itself, are left out, as every route that reaches a session leaves them out
+// creditRowEdits is the copies of the comment's edits, and of its delete, the settle of a
+// credit's row sends to its destination, the own topic of sessionID, right after the comment's
+// copy (decideFallbackCopy): every comment.edited and comment.deleted event of the comment that
+// the outbox has published - its batch decided every copy of it - and that reached that topic by
+// no route, in the order the owner wrote them, each its own envelope under its own dedupe key,
+// which the event's own copy to that session would carry too, so a host that took it already
+// drops it. An edit or a delete still unpublished is its own batch's to decide: that batch reads
+// the session's failed mention by then and gives it that event's copy itself
+// (mentionDeliveries.editCreditCopyOf). An edit or a delete that notifies no one, and one the
+// session made itself, are left out, as every route that reaches a session leaves them out
 // (takesPrimaryAuthors, recipientFilter). A credit's row is always of a comment on an issue - the
 // credits filter leaves a session out only where the claimant route or the thread rule takes the
-// event, and both read an issue (takesClaimantRoute, takesThreadRule) - so the edits are read by
-// that issue's events after the comment's, through their (issue_key, seq) key.
+// event, and both read an issue (takesClaimantRoute, takesThreadRule) - so those events are read
+// by that issue's events after the comment's, through their (issue_key, seq) key.
 func creditRowEdits(ctx context.Context, deps Deps, held fallbackCopy, sessionID string) ([]contracts.Envelope, error) {
 	rows, err := deps.Store.Pool.Query(ctx, `
 		select `+fallbackEventColumns+`
@@ -2230,7 +2240,7 @@ func creditRowEdits(ctx context.Context, deps Deps, held fallbackCopy, sessionID
 		join events e on e.issue_key = c.issue_key and e.seq > c.seq
 		left join issues i on i.key = e.issue_key
 		left join artifacts ar on ar.id = e.artifact_id
-		where c.id = $1 and e.type = 'comment.edited' and e.notify and lower(e.payload ->> 'id') = $2
+		where c.id = $1 and e.type in ('comment.edited', 'comment.deleted') and e.notify and lower(e.payload ->> 'id') = $2
 		  and e.published_at is not null and not ($3 = any(e.published_destinations))
 		order by e.seq
 	`, held.eventID, canonicalID(held.commentID), held.destination)

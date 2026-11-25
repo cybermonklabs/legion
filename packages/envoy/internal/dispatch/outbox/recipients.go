@@ -521,20 +521,23 @@ func registryUnanswered(err error) bool {
 // attempt be pinned to that session and fail - the first attempt, or a Retry, whose failed
 // receipt reopens the row the pass settled meanwhile (creditHeldAsARow,
 // mentionDeliveries.creditCopyOf, reopenOnReceipt).
-// The comment's edit follows the comment's copy: it reaches such a session where that session's
-// mention failed, and waits while that mention, or the comment's copy that follows it, is still
-// to be decided, within that same bound and holding nothing of the owner's later events; past
-// the bound it reaches the session that got, or is owed, the comment's copy by the failed-mention
-// rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session whose copy of the
-// comment is a credit's row gets the edit from that row, sent right after the comment should the
-// row publish it (creditRowEdits). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
+// The comment's edit, and its delete, follow the comment's copy: each reaches such a session where
+// that session's mention failed, and waits while that mention, or the comment's copy that follows
+// it, is still to be decided, within that same bound and holding nothing of the owner's later
+// events; past the bound each reaches the session that got, or is owed, the comment's copy by the
+// failed-mention rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session
+// whose copy of the comment is a credit's row gets the edit and the delete from that row, sent
+// right after the comment should the row publish it (creditRowEdits). addPrimaryDocumentAuthors
+// and addAuthorRoutes both ask it.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
-	// destination build holds for a new comment (eventDestinations), and for an edit the reading
-	// of the comment it edits, which only this filter reads (edit).
+	// destination build holds for a new comment (eventDestinations), and for an edit or a delete
+	// the reading of the comment it changes, which only this filter reads (edit).
 	mentions mentionDeliveries
-	edit     bool
+	// edit is whether the event is the comment's edit or its delete, which both follow the
+	// comment's copy (mentionDeliveries.editCreditCopyOf).
+	edit bool
 }
 
 // creditCopy is what the credits filter makes of the copy of one session that only a document
@@ -566,15 +569,17 @@ const (
 
 // newCreditFilter reads the rule for event, once for a route that asks it, and reads the one thing
 // that decides a session and is not in the destination build already: what the comment's mentions
-// did. A new comment's are the reading the build holds (eventDestinations), and an edit's are the
-// reading of the comment it edits (lookup.mentionDeliveries), which this filter alone reads and
-// which keys none of the edit's copies. Either reading is the store's - the comment's attempts,
-// and the comment_mentions rows they are opened under - and the edit's is never its payload's:
-// the API reads the edited comment back without its mentions (editComment, loadComment in
-// internal/dispatch/api), so an edit's payload names none whatever the comment names. So the
-// edit's reading is asked of every edit with a comment id, and a comment no attempt was recorded
-// for answers the empty reading, which names nobody. It is asked wherever the thread rule may
-// apply, whether or not it does: the batch's first pass runs before the registry is read
+// did. A new comment's are the reading the build holds (eventDestinations), and an edit's or a
+// delete's are the reading of the comment it changes (lookup.mentionDeliveries), which this filter
+// alone reads and which keys none of that event's copies. Either reading is the store's - the
+// comment's attempts, and the comment_mentions rows they are opened under - and an edit's or a
+// delete's is never its payload's: the API reads the edited comment back without its mentions
+// (editComment, loadComment in internal/dispatch/api), so an edit's payload names none whatever
+// the comment names, and the destination build reads a payload's mentions for a new comment
+// alone. The filter reads every edit it can limit, and a delete only where the thread rule can
+// apply. A comment with no attempts answers the empty reading, which names nobody. A delete
+// fails every pending attempt in the delete's own write (deleteComment in internal/dispatch/api),
+// so the reading includes those failures. The first pass can run before the registry is read
 // (threadHearing.hear), and it must register every id the second pass reads (wanted). A read that
 // failed ends the event's destinations, as every other lookup does.
 //
@@ -586,10 +591,11 @@ func newCreditFilter(event model.Event, routing routing, look lookup, d *destina
 		leavesOut: takesClaimantRoute(event, routing.claimant) || routing.threadHeard,
 		mentions:  d.mentions,
 	}
-	if !filter.leavesOut && !takesThreadRule(event, routing) {
-		return filter, nil
-	}
-	if event.Type != "comment.edited" {
+	if event.Type == "comment.deleted" {
+		if !takesThreadRule(event, routing) {
+			return filter, nil
+		}
+	} else if event.Type != "comment.edited" || (!filter.leavesOut && !takesThreadRule(event, routing)) {
 		return filter, nil
 	}
 	if commentID := payloadString(event.Payload, "id"); commentID != "" {

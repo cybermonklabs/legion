@@ -814,7 +814,10 @@ func TestAnAskerThatStoppedFollowingDoesNotCount(t *testing.T) {
 // primary document credits, and C's mention fails. C still gets the copy that the author route
 // sends, under the key of the failed mention, so a host the send reached before it failed drops
 // it (dispatch://INFRA-1368's R2; creditFilter, addPrimaryDocumentAuthors). A, which only the
-// document credits, does not, and B does.
+// document credits, does not, and B does. The person's delete of the reply follows the reply
+// (dispatch://INFRA-3686's R6): it reads the reply's mentions from the store, as an edit does
+// (newCreditFilter, mentionDeliveries.editCreditCopyOf), so C and B get it and A does not, and
+// C's copy of it carries the delete's own key, since no mention sent the delete.
 func TestAReplyThatNamesACreditedSessionWhoseMentionFailedStillReachesIt(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -824,15 +827,152 @@ func TestAReplyThatNamesACreditedSessionWhoseMentionFailedStillReachesIt(t *test
 	reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
 	seedMentionDelivery(t, database, reply, issue.c.ID, "failed")
 	created := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: reply, ReplyTo: &root}, issue.c.ID)
+	deleted := appendCommentEvent(t, database, broker, "comment.deleted", issue.person, model.Comment{ID: reply, ReplyTo: &root})
 	items := checkSessionRecipientsReading(t, database, registry, []recipientCheck{
 		{event: created, want: []string{issue.c.ID, issue.b.ID}},
+		{event: deleted, want: []string{issue.c.ID, issue.b.ID}},
 	})
-	wantKey := contracts.AgentSendDedupeKey(issue.c.ID, model.CommentMentionIdempotencyKey(reply, "session:"+issue.c.ID, "steer"))
+	wantKeys := map[string]string{
+		fmt.Sprint(created.ID): contracts.AgentSendDedupeKey(issue.c.ID, model.CommentMentionIdempotencyKey(reply, "session:"+issue.c.ID, "steer")),
+		fmt.Sprint(deleted.ID): fmt.Sprintf("dispatch-%d", deleted.ID),
+	}
 	for _, item := range items {
-		if item.Topic == contracts.LegacyAgentSubject(issue.c.ID) && item.DedupeKey != wantKey {
-			t.Fatalf("the copy to %s is keyed %q, want the failed mention's key %q", issue.c.ID, item.DedupeKey, wantKey)
+		if item.Topic == contracts.LegacyAgentSubject(issue.c.ID) && item.DedupeKey != wantKeys[item.SourceEventID] {
+			t.Fatalf("the copy of event %s to %s is keyed %q, want %q", item.SourceEventID, issue.c.ID, item.DedupeKey, wantKeys[item.SourceEventID])
 		}
 	}
+}
+
+// A person's delete of a reply withdraws its text: the delete fails each attempt of the reply's
+// mentions still pending, appending each one's receipt, and settles every fallback copy of the
+// reply not yet settled with nothing published (deleteComment in internal/dispatch/api). The
+// person's reply in B's thread (B live) names @role:R, whose claim the outbox cannot read, and its
+// sender holds the attempt past unnamedForwardBound, so A's copy of the reply is a credit's row
+// (creditHeldAsARow). Where the sender has pinned the attempt to A when the person deletes the
+// reply, the receipt of that attempt, which the delete failed, reopens no row
+// (mentionComment.reopenCreditRow): A's row stays settled with nothing published, and A never
+// gets the withdrawn text. Where the reply stands, a person's failed Retry pinned to A still
+// reopens the row the pass settled with nothing sent once the first attempt failed with no
+// session, and the row gives A the reply (reopenOnReceipt).
+func TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		steps func(w *replyOrder)
+		// reopened is whether A's row publishes the reply, which then reaches A once.
+		reopened bool
+	}{
+		{
+			name:     "a failed Retry of the standing reply",
+			steps:    func(w *replyOrder) { w.do("read"); w.do("fail"); w.do("read"); w.do("retry A") },
+			reopened: true,
+		},
+		{
+			name:  "the delete of the reply while its attempt pinned to A is being sent",
+			steps: func(w *replyOrder) { w.do("read"); w.do("pin A"); deleteReplyAsTheAPIDoes(w) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := creditRowReply(t)
+			tc.steps(w)
+			w.settle()
+			wantCopies := 0
+			if tc.reopened {
+				wantCopies = 1
+			}
+			row := readHeldCopy(t, w.database, w.reply, contracts.LegacyAgentSubject(w.issue.a.ID))
+			if got := copiesOf(w.publisher.all(), w.created, w.issue.a.ID); len(got) != wantCopies || !row.settled || row.published != tc.reopened {
+				t.Fatalf("A got %d copies of the reply, and its credit row is settled %v and published %v; want %d copies, the row settled and published %v",
+					len(got), row.settled, row.published, wantCopies, tc.reopened)
+			}
+		})
+	}
+}
+
+// creditRowReply is the world of TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes:
+// the person's reply in B's thread on T-1, B live, names @role:R, whose claim the outbox cannot
+// read, and its one attempt names no session yet and is held by a live sender past
+// unnamedForwardBound, so the first read holds A's and C's copies of the reply as credits' rows.
+func creditRowReply(t *testing.T) *replyOrder {
+	t.Helper()
+	database := storetest.Open(t)
+	issue := seedThreadRuleIssue(t, database)
+	w := &replyOrder{
+		t: t, ctx: context.Background(), database: database, broker: events.NewBroker(), issue: issue,
+		publisher: &recordingPublisher{},
+		sessions:  map[string]string{"A": issue.a.ID},
+		obliged:   map[string]bool{},
+	}
+	w.root = seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	w.reply = seedThreadComment(t, database, "T-1", "", issue.person, &w.root)
+	seedDelivery(t, database, w.reply, replyOrderTarget, "", "pending")
+	agedUnnamedAttempts(t, database, w.reply, unnamedForwardBound+30*time.Second)
+	w.created = appendEvent(t, database, w.broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: issue.person,
+		Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: w.reply, IssueKey: new("T-1"), Author: issue.person, ReplyTo: &w.root,
+			Mentions: []model.Mention{{Target: replyOrderTarget, Delivery: "steer"}},
+		}},
+	})
+	w.deps = Deps{
+		Store: database, Publisher: w.publisher, Broker: events.NewBroker(),
+		Registry:   newFakeRegistry(map[string]registryAnswer{issue.b.ID: {state: envoy.StateLive}}),
+		RoleClaims: unreadableRoleClaims{}, Sessions: heldRoles{},
+	}
+	w.instance = holding(t, w.deps).instance
+	return w
+}
+
+// deleteReplyAsTheAPIDoes deletes w's reply as deleteComment in internal/dispatch/api writes the
+// delete: every attempt of its mentions still pending fails, with its comment.delivery receipt,
+// every fallback copy of the reply not yet settled is settled with nothing published, the reply's
+// body is cleared and marked deleted, and its comment.deleted event follows.
+func deleteReplyAsTheAPIDoes(w *replyOrder) {
+	t := w.t
+	rows, err := w.database.Pool.Query(w.ctx, `
+		update comment_deliveries set state = 'failed', error = $2, claimed_at = now()
+		where comment_id = $1 and state = 'pending'
+		returning target, attempt, session_id
+	`, w.reply, contracts.DeletedPostDeliveryError)
+	if err != nil {
+		t.Fatalf("fail the reply's pending attempts: %v", err)
+	}
+	var failed []model.CommentDeliveryEventPayload
+	for rows.Next() {
+		receipt := model.CommentDeliveryEventPayload{CommentID: w.reply, Delivery: "steer", State: "failed", Error: contracts.DeletedPostDeliveryError}
+		if err := rows.Scan(&receipt.Target, &receipt.Attempt, &receipt.SessionID); err != nil {
+			t.Fatalf("read a failed attempt of the reply: %v", err)
+		}
+		failed = append(failed, receipt)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("fail the reply's pending attempts: %v", err)
+	}
+	for _, receipt := range failed {
+		appendEvent(t, w.database, w.broker, model.Event{IssueKey: new("T-1"), Type: "comment.delivery", Actor: w.issue.person, Payload: receipt})
+	}
+	if _, err := w.database.Pool.Exec(w.ctx, `
+		update comment_fallback_copies set settled_at = now(), published = false
+		where comment_id = $1 and settled_at is null
+	`, w.reply); err != nil {
+		t.Fatalf("settle the reply's fallback copies: %v", err)
+	}
+	deletedBy, err := json.Marshal(w.issue.person)
+	if err != nil {
+		t.Fatalf("encode the delete's actor: %v", err)
+	}
+	var deletedAt time.Time
+	if err := w.database.Pool.QueryRow(w.ctx, `
+		update comments set body = '', deleted_at = now(), deleted_by = $2 where id = $1 returning deleted_at
+	`, w.reply, deletedBy).Scan(&deletedAt); err != nil {
+		t.Fatalf("delete the reply: %v", err)
+	}
+	appendEvent(t, w.database, w.broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.deleted", Actor: w.issue.person,
+		Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: w.reply, IssueKey: new("T-1"), Author: w.issue.person, ReplyTo: &w.root,
+			DeletedAt: &deletedAt, DeletedBy: &w.issue.person,
+		}},
+	})
 }
 
 // breakDocumentCredits makes every version of the document artifactID names list its authors as a

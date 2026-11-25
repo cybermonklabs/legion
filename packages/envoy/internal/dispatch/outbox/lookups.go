@@ -179,9 +179,9 @@ func (l *lookups) mentionDeliveries(commentID string) (mentionDeliveries, error)
 
 // readings is what the batch read of each comment's mentions, in no order: what the holders of
 // the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). A
-// comment only an edit asked for is among them: the edit asks its credits filter whether a
-// mention of the comment may yet name such a session, and the unpinned attempts answer that by
-// the holder their role resolves to (creditFilter, mentionDeliveries.editCreditCopyOf).
+// comment only an edit or a delete asked for is among them: that event asks its credits filter
+// whether a mention of the comment may yet name such a session, and the unpinned attempts answer
+// that by the holder their role resolves to (creditFilter, mentionDeliveries.editCreditCopyOf).
 func (l *lookups) readings() []mentionDeliveries {
 	readings := make([]mentionDeliveries, 0, len(l.mentions))
 	for _, deliveries := range l.mentions {
@@ -573,18 +573,19 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Three events ask for a
-// comment: a comment.created that names a mentioned session, which takes the whole reading, both
+// destinations fallback rows own (mentionDeliveries), in two statements. Four event types ask for
+// a comment: a comment.created that names a mentioned session, which takes the whole reading, both
 // the destinations it adds and the routes a mention's target suppresses (eventDestinations), a
-// comment.edited whose credits filter may leave a session a document credits alone out, which
-// asks it which of those sessions the comment's mentions name or may yet name (creditFilter,
-// mentionDeliveries.editCreditCopyOf) and adds none of its keys to the edit's copies: an edit's
-// payload names no mention of the comment, so the edit asks for every comment it edits there,
-// and a comment.delivery receipt of an attempt that failed pinned to a session, which asks it
-// whether that session's credit's row is one to reopen (reopenOnReceipt,
-// mentionDeliveries.reopensCreditRowOf) and adds nothing to its own copies. Every other event,
-// resolutions and reopenings included, asks for no comment and suppresses nothing. A comment no
-// attempt was recorded for answers empty sets, so it suppresses nothing either.
+// comment.edited or a comment.deleted whose credits filter may leave a session a document credits
+// alone out, which asks it which of those sessions the comment's mentions name or may yet name
+// (creditFilter, mentionDeliveries.editCreditCopyOf) and adds none of its keys to that event's
+// copies: an edit's or a delete's payload is not read for the comment's mentions, so each asks
+// for every comment it changes there, and a comment.delivery receipt of an attempt that failed
+// pinned to a session, which asks it whether that session's credit's row is one to reopen
+// (reopenOnReceipt, mentionDeliveries.reopensCreditRowOf) and adds nothing to its own copies.
+// Every other event, resolutions and reopenings included, asks for no comment and suppresses
+// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
+// either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in
