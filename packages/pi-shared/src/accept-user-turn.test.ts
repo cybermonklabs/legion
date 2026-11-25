@@ -57,7 +57,7 @@ function personSends(
 function host(
   input: {
     readonly accept?: (id: string, attempt: number) => unknown;
-    readonly dispatch?: () => DispatchClient | undefined;
+    readonly dispatch?: () => Promise<DispatchClient | undefined>;
     readonly handledAlready?: readonly string[];
   } = {}
 ) {
@@ -71,7 +71,7 @@ function host(
     actorId: SESSION,
     dispatch:
       input.dispatch ??
-      (() =>
+      (async () =>
         ({
           acceptMessageDelivery: async (id: string, attempt: number) => {
             order.push(`accept:${id}#${attempt}`);
@@ -227,7 +227,7 @@ test("a person's message on an issue is never recorded or accepted, and keeps it
 // Dispatch not being configured is no refusal: there is nothing to accept with. The attempt is
 // recorded all the same, since this session has handled it as a card.
 test("a session with no Dispatch records the attempt and keeps the card without a word", async () => {
-  const session = host({ dispatch: () => undefined });
+  const session = host({ dispatch: async () => undefined });
   const accepted = await acceptUserTurn({
     rendered: renderInbound(personSends("Ship it?"), SESSION, DIRECT),
     ...session,
