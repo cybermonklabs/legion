@@ -322,7 +322,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: ask on it through POST /api/v1/issues/{key}/asks. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -408,7 +408,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
+    /** @description Comment on a document or one of its quotes. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: comment on it through POST /api/v1/issues/{key}/comments. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -476,7 +476,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS. A retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; an issue's decisions document once it is retired is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. */
+    /** @description Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS, whether or not it is retired. A retired document whose history does not load, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; it is 409 DECISIONS_ARE_NODES instead where it is an issue's decisions document: a decision is a `decision` block in the spec. */
     post: operations["postApiV1ArtifactsByIdRebuild"];
     delete?: never;
     options?: never;
@@ -1489,7 +1489,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, an edit of a retired document 409 DOCUMENT_RETIRED, and one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/edits answers them. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, and one of the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1523,7 +1523,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. */
+    /** @description Name the current version of an issue document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, and the issue's decisions document once it is retired 409 DECISIONS_ARE_NODES, as POST /api/v1/artifacts/{id}/versions answers them. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
@@ -2747,7 +2747,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, and an edit of a retired document, which only its slug finds, 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/edits answers them. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -2798,7 +2798,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Name the current version of a project document, by slug or unambiguous filename. A retired document is 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/versions answers it. */
+    /** @description Name the current version of a project document, by slug or unambiguous filename. A retired document, which only its slug finds, is 409 DOCUMENT_RETIRED, as POST /api/v1/artifacts/{id}/versions answers it. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugVersions"];
     delete?: never;
     options?: never;
