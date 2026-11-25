@@ -232,36 +232,45 @@
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
-# tools on PATH, the history, the clones, the environment variables, and a git or a grep that
+# tools on PATH, the history, the clones, the environment variables, a git or a grep that
 # reads a Perl-compatible regular expression where the mode reads a token an author wrote by
-# one (whole_token), each with what provides it. One step, prerequisites, checks every line
-# of the mode before its first live read and its first assertion, and one that is missing
-# ends the mode exit 2, naming it and, at the end of the line, what provides it. --help
-# prints the same table after this header, from the same function, so the list a reader reads
-# is the list the mode checks. --self-test needs its own lines and every line of --replay,
-# --shape, --citations, --landed and --published, since it runs each of them, but for
-# --replay's omp and IOC_OMP_MODELS: each fixture run it makes is given the stub omp and its
-# models.yml in place of the caller's (FIXTURE_OMP_STUB, FIXTURE_OMP_MODELS), so it reads
-# neither (SELF_TEST_STUBBED). check.test.sh checks the lines of --self-test alone before its
-# first case, since each run a case makes checks its own mode's. Before any of them, every
-# run checks the tools its ending is written with ("The run's own scratch and record" above),
-# which --help prints first. GNU timeout is the one line read before the mode starts, since
-# the mode itself runs under it (run_mode): a run with no timeout on PATH ends exit 2 there,
-# of the kind prerequisite, every assertion the mode declares unrun, naming timeout and what
-# provides it by the mode's own line of the table, never the 127 of a program that is not
-# there.
+# one (whole_token), and an omp whose --help starts a line with each flag the session of the
+# row i-skills-run passes, each with what provides it. One step, prerequisites, checks every
+# line of the mode before its first live read and its first assertion, and one that is
+# missing ends the mode exit 2, naming it and, at the end of the line, what provides it.
+# --help prints the same table after this header, from the same function, so the list a
+# reader reads is the list the mode checks. --self-test needs its own lines and every line
+# of --replay, --shape, --citations, --landed and --published, since it runs each of them,
+# but for --replay's omp, the flags its --help prints and IOC_OMP_MODELS: each fixture run it
+# makes is given the stub omp and its models.yml in place of the caller's (FIXTURE_OMP_STUB,
+# FIXTURE_OMP_MODELS), so it reads none of them (SELF_TEST_STUBBED). check.test.sh checks
+# the lines of --self-test alone before its first case, since each run a case makes checks
+# its own mode's. Before any of them, every run checks the tools its ending is written with
+# ("The run's own scratch and record" above), which --help prints first. GNU timeout is the
+# one line read before the mode starts, since the mode itself runs under it (run_mode): a run
+# with no timeout on PATH ends exit 2 there, of the kind prerequisite, every assertion the
+# mode declares unrun, naming timeout and what provides it by the mode's own line of the
+# table, never the 127 of a program that is not there.
 #
 # The row i-skills-run makes the one model session --replay spends on:
 # evidence/accord-skills-run.sh installs the two ACCORD skills into a new omp HOME and runs
 # one headless omp session on them, capped by the --max-cost its row's command passes, a flag
 # omp --help prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a
-# model, omp, and tar, three lines of the prerequisite table for --replay; the credential in
-# that file reaches no file of this tree and no line the gate prints. --self-test and
-# check.test.sh run the row under tests/omp-stub/omp, a stub that plays the session on canned
-# replies (FIXTURE_OMP_STUB), with the models.yml beside it, which names no provider, as
-# IOC_OMP_MODELS (FIXTURE_OMP_MODELS), and no run of theirs reaches a model, so --self-test
-# needs tar alone of the three (SELF_TEST_STUBBED). A session whose gateway gave no answer is
-# a read of a source that did not answer, by the live-read rule above, and never a FAIL.
+# model, omp, an omp whose --help prints every flag the session passes, and tar, four lines
+# of the prerequisite table for --replay; the credential in that file reaches no file of this
+# tree and no line the gate prints. The flags are read by the script itself (its
+# --omp-flags), which holds their one list, before any row runs, so an omp that lacks one
+# ends --replay cannot run, of the kind prerequisite, and never fails the row. --self-test
+# and check.test.sh run the row under tests/omp-stub/omp, a stub that plays the session on
+# canned replies (FIXTURE_OMP_STUB), with the models.yml beside it, which names no provider,
+# as IOC_OMP_MODELS (FIXTURE_OMP_MODELS), and no run of theirs reaches a model, so --self-test
+# needs tar alone of the four (SELF_TEST_STUBBED). A session whose gateway gave no answer is
+# a read of a source that did not answer, by the live-read rule above, and never a FAIL; so is
+# a session omp ended before the answer that ends it, at the script's own bound, timeout's 124
+# or, once the bound has passed, its KILL's 137, at omp's --max-time or, after the model
+# answered, on any other end but an answer of the model's own or omp's --max-cost; and one any
+# other signal ended, whatever the model answered, is a child a signal ended, of the kind
+# environment, by the status the script records for omp (run_recorded).
 #
 # --landed runs the committed proof of each landed step, the command sources.json commits
 # for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
@@ -363,17 +372,17 @@
 # A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
 # command (IOC_HISTORY_REF, IOC_CACHE, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the five
 # program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, IOC_GITHUB_HEADER_AGE,
-# IOC_CHILD_BOUND, UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes
-# on; --self-test, and a shell that sources this script as check.test.sh does, unset the
-# caller's values of them first, so a fixture reads one only from a case. --published over
-# the fixture reads the fixture's own Dispatch and not the caller's: fixture_published sets
-# DISPATCH_URL and DISPATCH_TOKEN_FILE on that one run to its address and its token and puts
-# its stub curl first on PATH, which answers the four reads the mode makes from the files of
-# the fixture's dispatch/ (fixture_build, fixture_delivery). fixture_run prints the
-# directory of each run it makes, which holds the run's text and its ending record (above),
-# and check.test.sh reads each case by that record. A run the self-test
-# makes that cannot run, over the fixture or of check.test.sh or --admitted, stops the
-# self-test there, naming the run and its reason, and ends it by the precedence above; it
+# IOC_CHILD_BOUND, IOC_ACCORD_BOUND, UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which
+# fixture_run passes on; --self-test, and a shell that sources this script as check.test.sh
+# does, unset the caller's values of them first, so a fixture reads one only from a case.
+# --published over the fixture reads the fixture's own Dispatch and not the caller's:
+# fixture_published sets DISPATCH_URL and DISPATCH_TOKEN_FILE on that one run to its address
+# and its token and puts its stub curl first on PATH, which answers the four reads the mode
+# makes from the files of the fixture's dispatch/ (fixture_build, fixture_delivery).
+# fixture_run prints the directory of each run it makes, which holds the run's text and its
+# ending record (above), and check.test.sh reads each case by that record. A run the
+# self-test makes that cannot run, over the fixture or of check.test.sh or --admitted, stops
+# the self-test there, naming the run and its reason, and ends it by the precedence above; it
 # is never counted as an assertion that failed.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
@@ -684,7 +693,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
 # fixture reads one only from a case that sets it on its own command.
 FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
-FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE IOC_CHILD_BOUND UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE IOC_CHILD_BOUND IOC_ACCORD_BOUND UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
 # The deployment repository a fixture's run is given as IOC_DEPLOYMENT_REPO, a placeholder
 # and never the caller's value: the fixture reads no deployment repository, and this tree
 # names the real one nowhere. A case of check.test.sh sets FIXTURE_DEPLOYMENT_REPO on its
@@ -987,8 +996,8 @@ usage() {
 # mode | kind | name | what needs it | what provides it. The one table of what each mode
 # needs before it judges anything: prerequisites reads it before the mode's first live
 # read and first assertion, and --help prints it, so the two cannot drift. --self-test
-# needs its lines and those of the five modes it runs, but the two its fixture's stub stands
-# for (prerequisite_rows, SELF_TEST_STUBBED). The last column is what a reader runs to
+# needs its lines and those of the five modes it runs, but the three its fixture's stub
+# stands for (prerequisite_rows, SELF_TEST_STUBBED). The last column is what a reader runs to
 # provide it, and may hold a |. How each kind is checked:
 #   tool       the program is on PATH
 #   variable   the variable is set, one whose name ends _FILE names a readable file, one
@@ -1007,6 +1016,12 @@ usage() {
 #              program built without PCRE does not, so such a machine is never read as a
 #              deliverable whose tokens no file holds; a program not on PATH is left to its
 #              tool line
+#   flags      the program, omp, starts a line of its --help with each flag the session of
+#              the row i-skills-run passes, as evidence/accord-skills-run.sh --omp-flags reads
+#              it, which holds the one list of those flags and the one rule a flag is read by;
+#              the script is the one under EVIDENCE, which a fixture's tree holds too, copied
+#              by fixture_build. A program not on PATH is left to its tool line, and a tree
+#              without the script to the row, whose read of it then fails
 REPOSITORY_FORM='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
 prerequisite_table() {
     cat <<'TABLE'
@@ -1018,6 +1033,7 @@ replay|tool|uv|builds env.sh's python environments and runs the recorded uv comm
 replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 replay|tool|omp|runs the one headless model session of the row i-skills-run, in a new HOME, capped by the --max-cost its command passes, a flag omp --help prints|the omp coding agent, with its print mode, on PATH
+replay|flags|omp|the session of the row i-skills-run passes --max-cost, --max-time, -p and the other flags evidence/accord-skills-run.sh lists, each a flag only where a line of omp --help starts with it, which that script's --omp-flags reads before any row runs, so an omp that lacks one never fails the row|an omp whose --help prints a line for each of those flags, as omp 18.18.6 does, first on PATH
 replay|tool|tar|unpacks the two ACCORD skills that evidence/accord-skills-run.sh installs into the new HOME of that session|apt-get install tar
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
@@ -1064,12 +1080,13 @@ TABLE
 # SELF_TEST_STUBBED; the lines of --replay, as kind:name, that --self-test leaves out. Each
 # fixture run it makes is given the stub omp of tests/omp-stub first on PATH
 # (FIXTURE_OMP_STUB) and the models.yml beside it as IOC_OMP_MODELS (FIXTURE_OMP_MODELS), so
-# the stub stands for both and no run of the self-test reads the caller's omp or models file.
+# the stub stands for both, its --help printing every flag the session passes, and no run of
+# the self-test reads the caller's omp or models file.
 # Without the list, as the tester's note of round 52 found, --self-test ended cannot run,
 # exit 2, on a machine with no omp or no IOC_OMP_MODELS, which none of its runs reads.
-# --replay keeps both lines, and --self-test keeps tar, which the script unpacks the skills
-# with under the stub too.
-SELF_TEST_STUBBED=" tool:omp variable:IOC_OMP_MODELS "
+# --replay keeps the three lines, and --self-test keeps tar, which the script unpacks the
+# skills with under the stub too.
+SELF_TEST_STUBBED=" tool:omp flags:omp variable:IOC_OMP_MODELS "
 
 # prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
 # mode, as kind|name|what needs it|what provides it, each kind and name once; for
@@ -1119,6 +1136,11 @@ prerequisite_missing() {
     clone)
         mkdir -p "$CLONES" 2>/dev/null && return 1
         printf '%s names %s, which this run cannot make' "$name" "$CLONES"
+        ;;
+    flags)
+        command -v "$name" >/dev/null 2>&1 && [ -r "$EVIDENCE/evidence/accord-skills-run.sh" ] || return 1
+        value="$(sh "$EVIDENCE/evidence/accord-skills-run.sh" --omp-flags 2>&1)" && return 1
+        printf "evidence/accord-skills-run.sh --omp-flags, which reads %s --help for each flag the session of the row i-skills-run passes, printed '%s'" "$name" "${value%%$'\n'*}"
         ;;
     pcre)
         command -v "$name" >/dev/null 2>&1 || return 1
@@ -1189,9 +1211,9 @@ prerequisites_report() {
     printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
     printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
     printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
-    printf -- "--citations, --landed and --published, which it runs, but --replay's omp and\n"
-    printf "IOC_OMP_MODELS, for which its fixture's stub omp and models.yml stand. --coverage and\n"
-    printf -- '--help need nothing.\n'
+    printf -- "--citations, --landed and --published, which it runs, but --replay's omp, the\n"
+    printf "flags of its --help and IOC_OMP_MODELS, for which its fixture's stub omp and\n"
+    printf 'models.yml stand. --coverage and --help need nothing.\n'
     printf '\nevery mode, before anything else (ENDING_TOOLS)\n'
     printf '  %-9s %-20s %s\n' tool "${ENDING_TOOLS// /, }" "make the run's own scratch and write and read its ending record"
     printf '  %-9s %-20s provided by: %s\n' '' '' "$ENDING_TOOLS_FROM"
@@ -2754,6 +2776,9 @@ run_recorded() {
     # ended by its own status 125, so xargs's function recording 125, at a status the row did
     # not declare, ends the mode the same way, naming the row and saying so; every other
     # status of xargs, 123 for a program that exited 1 to 125 among them, keeps its meaning.
+    # A script the row runs that records a program of its own a signal ended, in the four
+    # fields above, ends the mode the same way, as evidence/accord-skills-run.sh records, with
+    # omp's own status, the omp a signal ended before the script's bound.
     # git exits GIT_USAGE, 129, on a usage error, which is no signal: a git's 129 is read as
     # git's own exit, the row then failing on it as on any other status (failed_read), and
     # so is the script's own 129 when it reached its exit with a git's 129 last, which
@@ -3159,9 +3184,17 @@ github_headers_fresh() {
 #     429, HTTP 5xx, credential refused and no answer, and never omp's own message, which can
 #     name the gateway's address. HTTP 429 is a rate limit, credential refused is the
 #     reader's credential, HTTP 5xx is a server error, and no answer is no answer; each ends
-#     the mode cannot run, of the kind source, naming the row and the model gateway. Any
-#     other line of the script's, as its exit 1 for a protocol that did not lock, is the
-#     deliverable's, and a row that declares that status reads the answer in its output.
+#     the mode cannot run, of the kind source, naming the row and the model gateway. A
+#     session omp ended before the answer that ends it is no answer too: "no answer, omp
+#     ended at the script's 1500 s bound after K answers", timeout's 124 or, once the bound
+#     has passed, its KILL's 137, "no answer, omp ended its session at --max-time after K
+#     answers" or "no answer, omp ended with status N (<stopReason>) after K answers"; one
+#     any other signal ended, whatever K is, the script records with omp's own status above
+#     128, which run_recorded reads as that signal before this function is reached. Any
+#     other line of the script's, as its exit 1 for a protocol that did not lock, which it
+#     prints only for a session that ended on an answer of the model's own or at omp's
+#     --max-cost, is the deliverable's, and a row that declares that status reads the answer
+#     in its output.
 #
 # The read again is one request, made only on a failure, and its body, its headers and
 # curl's stderr go into the run's scratch. Nothing of it is printed but the status, the
@@ -8513,9 +8546,12 @@ fixture_build() {
     # env.sh, whose functions the fixture's modes read: --citations clones a repository by
     # its rule, and --replay exports the fixture's tool caches by its table (prepare_env).
     cp "$EVIDENCE/env.sh" "$evidence/env.sh"
-    # The hashed locks, which a planted install may read, and ioc-venv.in, which is none.
+    # The hashed locks, which a planted install may read, ioc-venv.in, which is none, and the
+    # script of the row i-skills-run, whose --omp-flags --replay's prerequisites run over the
+    # fixture too (prerequisite_table's line flags|omp), on the stub omp a fixture's run is
+    # given.
     cp "$EVIDENCE/evidence/ioc-venv.lock" "$EVIDENCE/evidence/ioc-venv.in" "$EVIDENCE/evidence/tm-constraints.txt" \
-        "$EVIDENCE/evidence/build-constraints.txt" "$evidence/evidence/"
+        "$EVIDENCE/evidence/build-constraints.txt" "$EVIDENCE/evidence/accord-skills-run.sh" "$evidence/evidence/"
 
     cat >"$dir/repo/packages/daemon/internal/api/handoff.go" <<'GO'
 package api

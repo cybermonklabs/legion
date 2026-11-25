@@ -17,9 +17,10 @@
 # check.sh's run_ending, and --self-test reads it by that record.
 # It needs what check.sh --self-test needs, which `check.sh --help` prints: the lines of
 # --self-test and of the five modes it runs over its fixture, --replay, --shape, --citations,
-# --landed and --published, but not --replay's omp and IOC_OMP_MODELS, for which the stub omp
-# of tests/omp-stub and the models.yml beside it stand (check.sh's SELF_TEST_STUBBED). A case
-# that needs uv or go prints SKIP when that tool is missing.
+# --landed and --published, but not --replay's omp, the flags of its --help and
+# IOC_OMP_MODELS, for which the stub omp of tests/omp-stub and the models.yml beside it stand
+# (check.sh's SELF_TEST_STUBBED). A case that needs uv or go prints SKIP when that tool is
+# missing.
 
 set -u
 
@@ -325,7 +326,7 @@ dir_copy() {
     mkdir -p "$copy/evidence"
     cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$copy/"
     cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
-        "$HERE/evidence/build-constraints.txt" "$copy/evidence/"
+        "$HERE/evidence/build-constraints.txt" "$HERE/evidence/accord-skills-run.sh" "$copy/evidence/"
     mkdir -p "$copy/tests" && cp -r "$HERE/tests/omp-stub" "$copy/tests/"
     cp "$2" "$copy/check.test.sh"
     printf '%s' "$copy"
@@ -7244,8 +7245,8 @@ done
 # assertion it leaves of the kind prerequisite and none failed, its last line naming the
 # variable and what provides it. Case 228 is the honest form.
 #
-# Cases 225 to 230 and 246 run the row on the stub (check.sh's FIXTURE_OMP_STUB), never on a
-# model. The stub reads its mode from a file beside itself, so each case copies it
+# Cases 225 to 230, 246 and 249 to 251 run the row on the stub (check.sh's FIXTURE_OMP_STUB),
+# never on a model. The stub reads its mode from a file beside itself, so each case copies it
 # (accord_stub) and writes the mode. The script reads a clone of cognition-protocols at the
 # commit sources.json pins, which is made once here, under the cases' scratch, by env.sh's
 # rule; where it cannot be made, each case that needs it could not run, of the kind source.
@@ -7895,6 +7896,128 @@ one_failure_result "a landed step of this pull request whose own commit the defa
     '^1 of 2 assertions failed: published-tree$' \
     "^FAIL published-tree: the landed step 'An execution record under the gen_ai\\. names' of this pull request commits $side_commit, which the default branch's history at $fixture_head does not hold, and 2 commits of that history's first parents end their subject '\\(#$pull_request\\)', where one is the squash of this pull request, so the step's sentences are not read\$" \
     "$(fixture_published "$dir")"
+
+# 249. A session omp ended before the answer that ends it is no verdict on the deliverable,
+# and never the row's FAIL (the review's finding of round 18, thread PRRT_kwDORFy7ds68HugW). A
+# signal that ends omp, as the pod's memory guard ends one with SIGKILL, the script's own
+# bound of 1500 s, at which timeout exits 124, or 137 once the bound has passed, when its KILL
+# ends an omp that did not end on its TERM, omp's own --max-time, which omp 18.18.6 ends with
+# status 0, nothing on stderr and a last answer still asking for a tool (measured on
+# 2026-11-25), and an error no gateway cause names, on which omp exits 1, each cut the session
+# short of that answer. The script now ends 3 on each, "result: model not reached (no answer,
+# omp ended ... after K answers)", reads the bound and a signal first, whatever K is, and
+# records a signal before the bound with omp's own status, which run_recorded reads as that
+# signal; it prints "not locked" only for a session that ended on an answer of its own, omp's
+# status 0 after a stopReason stop, or at its --max-cost, omp's status 3. The case plants the
+# row and runs --replay with the stub in its killed, bound, slow-kill, max-time and errored
+# modes, each of which runs the CONVENE round, three answers, and then ends as its name says;
+# slow-kill ignores TERM, sleeps 2 s and ends itself with SIGKILL, and runs with the script's
+# bound at 1 s (IOC_ACCORD_BOUND, which fixture_run passes on as one of FIXTURE_INPUTS, set
+# for that form alone), so it ends as timeout's KILL ends an omp past the bound. Each run must
+# end exit 2, with no FAIL line and no assertion failed, its last line naming the row; for
+# killed, the program omp and signal 9 (SIGKILL), every assertion it leaves of the kind
+# environment, and for the other four, the model gateway and the line the script printed, of
+# the kind source. At 4a96bfa0 the script printed "result: not locked" and exited 1, the
+# status the row declares, on each, so each run failed replay-command alone, exit 1, "1 of 18
+# assertions failed: replay-command", its FAIL line ending "its output does not meet
+# {"one_of":["locked"]}: not locked", after "Killed", the line sh printed for the omp the
+# signal ended, in the killed and slow-kill forms; that script read no IOC_ACCORD_BOUND, so
+# its slow-kill session ran under the bound of 1500 s and its 137 was a signal's.
+gateway_silent="check.sh cannot run --replay now: the model gateway gave no answer that judges i-skills-run's read of its model through omp, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 11' exited 3 and printed 'result: model not reached (no answer, omp ended"
+for stop in killed bound slow-kill max-time errored; do
+    kind=source match=-qxF bound=""
+    case "$stop" in
+    killed) kind=environment match=-qE stopped="^check\\.sh cannot run --replay: the program 'omp -p --mode json --max-cost 11' the row i-skills-run ran was ended by signal 9 \\(SIGKILL\\), and the row ran [0-9]+ s\$" ;;
+    bound) stopped="$gateway_silent at the script's 1500 s bound after 3 answers)'" ;;
+    slow-kill) stopped="$gateway_silent at the script's 1 s bound after 3 answers)'" bound=1 ;;
+    max-time) stopped="$gateway_silent its session at --max-time after 4 answers)'" ;;
+    errored) stopped="$gateway_silent with status 1 (error) after 3 answers)'" ;;
+    esac
+    stop_case="a session the stub's $stop mode ends after the model answered cannot run --replay, exit 2, of the kind $kind, naming the row i-skills-run, and fails no assertion"
+    accord_unrun "$stop_case" && continue
+    dir="$(accord_plant "accord-stop-$stop")" || exit 1
+    out="$([ -z "$bound" ] || export IOC_ACCORD_BOUND="$bound"
+        FIXTURE_OMP_STUB="$(accord_stub "$stop")" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && ! grep -q '^FAIL' "$out/text" &&
+        printf '%s\n' "$RUN_LINE" | grep "$match" -- "$stopped" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = "$kind" ]; then
+        case_passed "$stop_case"
+    else
+        case_failed "$stop_case" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
+done
+
+# 250. An omp whose --help prints no line for a flag the session passes is a missing
+# prerequisite of --replay, never the row's FAIL (the review's finding of round 18, thread
+# PRRT_kwDORFy7ds68Hugc). The script read the help inside the row and ended 2, "cannot run: omp
+# --help prints no <flag> flag", a status the row does not declare, so --replay failed the row
+# as a read inside it. The prerequisite table now holds the line flags|omp, which runs the
+# script's own --omp-flags, over the one list of the flags the script holds, before any row
+# runs. The case plants the row and runs --replay with, as its omp, a copy of the stub whose
+# help prints no --max-time line, in the mode no-max-time, which no branch of the stub names,
+# so its session would play the default, locked: it must end exit 2, every assertion it
+# leaves of the kind prerequisite and none failed, with no FAIL line, its last line naming
+# --max-time and what provides it. At 4a96bfa0 the table held no such line, so the row ran
+# its script, which read the help and ended 2, and the run failed replay-command alone, exit
+# 1: "i-skills-run ran its command and a read inside it failed: 'sh
+# .../evidence/accord-skills-run.sh --max-cost 11 ' exited 2, so its output is no reading of
+# what the row claims".
+flags_case="--replay over an omp whose --help prints no --max-time line cannot run, exit 2, of the kind prerequisite, naming the flag and what provides it, and fails no assertion"
+stub="$(accord_stub no-max-time)" && sed -i '/"--max-time=<value>"/d' "$stub/omp" && help="$("$stub/omp" --help)" &&
+    printf '%s\n' "$help" | grep -q -- '--max-cost=' && ! printf '%s\n' "$help" | grep -q -- '--max-time' || {
+    printf 'FAIL a stub omp whose --help prints no --max-time line could not be planted\n'
+    exit 1
+}
+dir="$(accord_plant accord-no-max-time)" || exit 1
+out="$(FIXTURE_OMP_STUB="$stub" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+ending_read "$out"
+if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && ! grep -q '^FAIL' "$out/text" &&
+    printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay: evidence/accord-skills-run.sh --omp-flags, which reads omp --help for each flag the session of the row i-skills-run passes, printed 'omp --help prints no --max-time flag'; provided by: an omp whose --help prints a line for each of those flags, as omp 18.18.6 does, first on PATH" &&
+    [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = prerequisite ]; then
+    case_passed "$flags_case"
+else
+    case_failed "$flags_case" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+fi
+
+# 251. Each specialist answers through a subagent of its own (the review's finding of round
+# 18, thread PRRT_kwDORFy7ds68Hugh). The claim names two specialist subagents, and the
+# script's exit 0 asked for a subagent that read accord-receiver, which one subagent met, so a
+# session that gave both specialists' messages to one subagent, or wrote one specialist's
+# replies itself with the issued check line copied in, printed "result: locked". The script
+# now asks, in each phase the state recorded replies for, that each specialist that replied
+# can be given a subagent of its own, none shared, that read accord-receiver and whose output
+# carries the check the state issued to that specialist for that phase. The case plants the
+# row and runs --replay with the stub in its one-subagent mode, where one subagent a round is
+# given both specialists' messages and writes both replies, and in its self-replied mode,
+# where payments' subagent reads accord-receiver and returns its reply without the delivery
+# line and the orchestrator hands the initiator payments' reply with the issued check line
+# copied in, a check telemetry's subagent returned too in every phase but frame_1, where
+# payments' check is its own. In both, every phase has one such subagent for two specialists:
+# each run must fail replay-command alone, naming the row, the predicate and "locked, fewer
+# distinct accord-receiver subagents than specialists in" each of the five phases, "(1 of
+# 2)"; the FAIL line ends with a space, which stands for the newline of the one line the row
+# printed. The stub's subagent results carry the task each subagent was given, as omp's do,
+# and the task holds the delivery line: a gate that read the whole result entry for a check
+# rather than its output would find payments' check in payments' own subagent and print
+# "locked" over the self-replied form, as the script with its output read replaced by the
+# entry's JSON did over that form's events on 2026-11-25 ("phases with a distinct
+# accord-receiver subagent per specialist: 5 of 5"); over the one-subagent form it printed the
+# same five "(1 of 2)", since one subagent cannot be two specialists' own wherever the check
+# is read. At 4a96bfa0 the script printed "result: locked" over both, exit 0, and each run
+# passed, "all 18 assertions passed", exit 0.
+for shape in one-subagent self-replied; do
+    case "$shape" in
+    one-subagent) planted='one subagent answers for both specialists' ;;
+    self-replied) planted='the orchestrator writes the replies of the specialist payments' ;;
+    esac
+    own_case="a session in which $planted (the stub's $shape mode) fails replay-command alone, naming the row i-skills-run, the predicate and what the run printed"
+    accord_unrun "$own_case" && continue
+    dir="$(accord_plant "accord-$shape")" || exit 1
+    out="$(FIXTURE_OMP_STUB="$(accord_stub "$shape")" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
+    one_failure_result "$own_case" replay-command '^1 of 18 assertions failed: replay-command$' \
+        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 11 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: locked, fewer distinct accord-receiver subagents than specialists in convene \\(1 of 2\\), frame_0 \\(1 of 2\\), frame_1 \\(1 of 2\\), ground \\(1 of 2\\), verify \\(1 of 2\\) \$" "$out"
+done
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
