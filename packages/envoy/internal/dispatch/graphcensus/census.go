@@ -569,8 +569,9 @@ func readNames(ctx context.Context, tx pgx.Tx, kind, names string) ([]string, er
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select, but for the savepoint the
-// growth pass reads the store's type nodes in (installStoreBlockSchema).
+// transaction is read only, and every statement it runs is a select, but for the `set local jit =
+// off` it opens with and the savepoint the growth pass reads the store's type nodes in
+// (installStoreBlockSchema).
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
