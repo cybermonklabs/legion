@@ -118,7 +118,16 @@ def refused(root, spelling):
     return ""
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused}
+def legs_held(text):
+    import yaml
+    try:
+        reads.hold_daemon_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
 
 
 def field():
@@ -5580,12 +5589,12 @@ for spelling in ./pkg pkg/ "$root/pkg"; do
 done
 
 # A run of any mode may change no file of the tree it checks but those its mode writes, and fails
-# naming each other file it changed. The go commands of go_build_tags.py run under the
-# machine's own GOPROXY and module cache, so in a workspace one can record a checksum the
-# committed go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
-# repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
-# Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
-# engine has listed the repository's files and before its first go list; writing on `go list`
+# naming each other file it changed. A go command that fetches a module records its checksum in
+# the go.work.sum of its workspace, as go_build_tags.py's go list did under the machine's own
+# GOPROXY before it ran with GOPROXY=off, which the cases plant: a go first on PATH that appends
+# the line this repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the
+# real go. Writing on every command, it writes at the engine's `go env GOROOT`, which comes after
+# the engine has listed the repository's files and before its first go list; writing on `go list`
 # alone, it writes only at go_build_tags.py's go list, which a table can run as it is imported.
 # The controls that a clean run and a write of a push workflow's paths alone still pass are the
 # green and push-paths-extra cases above, and the ones below that change nothing.
@@ -5785,6 +5794,29 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says the reading was empty rather than passing over it" \
   "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
+
+# ci_job_reads.py's hold on .github/go-legs.yaml's entry for packages/daemon: go_legs.py, in each
+# leg, sees only its own job's legs, so a package filed under a job key no matrix job runs would be
+# in the file once, pass every leg, and run in no job. The import refuses that entry, and with it
+# the changes job's filters. Each case hands the hold an entry and reads what it answered.
+legs_held() { ask legs_held "$1"; }
+real_legs=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/daemon"]))')
+echo "case: the repository's go-legs.yaml entry for the daemon is held"
+check "passes" "$(is "$(legs_held "$real_legs")" held)"
+
+echo "case: a go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-typo"] = {"1": [e["daemon-go"]["2"].pop()]}; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere: a package under daemon-go-typo runs in no job")"
+
+echo "case: a go-legs.yaml entry with no race legs"
+norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$norace")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the missing key and the race set it lost" \
+  "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH

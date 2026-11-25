@@ -2143,8 +2143,10 @@ where one filter had to cover both: a change to a shell script, to packages/clau
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
 
-It runs as two jobs of .github/workflows/ci-job-daemon-go.yaml at the same time: the race step
-in one, the rest in the other (ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own).
+It runs in legs of .github/workflows/ci-job-daemon-go.yaml, all at the same time: the race
+step's legs and the plain step's, each over the packages .github/go-legs.yaml lists for it, and
+two jobs, daemon-go and daemon-go-race, that pass only when their kind's legs passed and keep the
+check-run names the two steps' jobs had (ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs).
 
 ## Why the three plugin pack tests are a job of their own
 
@@ -2677,9 +2679,9 @@ and it fails for the same cause; a fall-open from the Bun install or the TypeScr
 this job does not run, leaves it green, and the lint job's readers are what turn the run red. go
 list runs with GOPROXY=off over an empty module cache, so the job needs Go but downloads no module
 and restores no cache. The tag sets of the darwin vet steps come from
-.github/scripts/go_build_tags.py, whose go list runs under the job's own GOPROXY and downloads the
-go.mod files it needs. Where that writes a checksum a committed go.work.sum lacks, the check fails
-naming the file, as it fails on any file a run changes except those its mode writes: each workflow
+.github/scripts/go_build_tags.py, whose go list runs with GOPROXY=off too, over the job's own
+module cache. A run fails naming each file of the tree it changes, a checksum a go command writes
+into a committed go.work.sum among them, but those its mode writes: each workflow
 ci_job_reads.py's PUSH_WORKFLOWS names for `write`, and the filters and the .inputs file beside
 them for `generate`. It also holds every workflow file to 64,000 bytes and to what GitHub's own
 parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
