@@ -362,7 +362,7 @@ func newCredentialRig(t *testing.T) *credentialRig {
 	}
 	_, pem := githubapptest.Key(t)
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -379,7 +379,7 @@ func newCredentialRig(t *testing.T) *credentialRig {
 		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
