@@ -222,10 +222,18 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // artifacts answers none, the read of a document's token finds no document, an upload answers the
 // slug Dispatch files the name under, which for a message's document is its name
 // (record.MessageArtifact) and for close-wait.md its slug, and a read of a plan document at a
-// version finds none, since no executor of the outbox reads one. It also takes every role-holder
-// publication and keeps none. Every fake of the client that no test drives through a message's
-// document, close-wait.md or a role-holder publication embeds it.
+// version finds none, since no executor of the outbox reads one. The results read answers an issue
+// with no Verification document, so no check. It also takes every role-holder publication and
+// keeps none. Every fake of the client that no test drives through a message's document,
+// close-wait.md, the results read or a role-holder publication embeds it.
 type noArtifacts struct{}
+
+func (noArtifacts) IssueResults(_ context.Context, key string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
+func (noArtifacts) IssueResultsAt(_ context.Context, key, _ string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {

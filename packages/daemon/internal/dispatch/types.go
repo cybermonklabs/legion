@@ -15,6 +15,11 @@ import (
 type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
+	// IssueResults is Dispatch's computed state of each check of the issue's Verification
+	// document (GET /api/v1/issues/{key}/results, with no query), and IssueResultsAt the same
+	// states with each check compared with commit alone (?at=<commit>).
+	IssueResults(ctx context.Context, key string) (IssueResults, error)
+	IssueResultsAt(ctx context.Context, key, commit string) (IssueResults, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
 	// SetStatusAt is SetStatus on the issue's sequence as the caller read it, so a change Dispatch
 	// recorded since that read is refused rather than overwritten: the daemon's own queued writes

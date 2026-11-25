@@ -116,13 +116,45 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 	return issues, nil
 }
 
-// GetIssue reads GET /api/v1/issues/{key}.
+// GetIssue reads GET /api/v1/issues/{key}, its direct children among it.
 func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 	var response issueResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key), nil, &response); err != nil {
 		return Issue{}, err
 	}
 	return response.issue(), nil
+}
+
+// IssueResults reads GET /api/v1/issues/{key}/results, with no query: Dispatch's computed state of
+// each check of the issue's Verification document, at what Dispatch compares each check with.
+func (c *HTTPClient) IssueResults(ctx context.Context, key string) (IssueResults, error) {
+	return c.issueResults(ctx, key, "")
+}
+
+// IssueResultsAt reads GET /api/v1/issues/{key}/results?at=<commit>: the same states, each check
+// compared with the one commit alone. The close reads it at the newest merge's final head, for a
+// before_merge check that has no subject there.
+func (c *HTTPClient) IssueResultsAt(ctx context.Context, key, commit string) (IssueResults, error) {
+	if commit == "" {
+		return IssueResults{}, fmt.Errorf("read the results of %s at a commit: no commit is named", key)
+	}
+	return c.issueResults(ctx, key, commit)
+}
+
+// issueResults is the results read of key, at commit where one is named.
+func (c *HTTPClient) issueResults(ctx context.Context, key, commit string) (IssueResults, error) {
+	path := "/api/v1/issues/" + url.PathEscape(key) + "/results"
+	if commit != "" {
+		path += "?" + url.Values{"at": {commit}}.Encode()
+	}
+	var response IssueResults
+	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return IssueResults{}, err
+	}
+	if response.Issue != key {
+		return IssueResults{}, fmt.Errorf("read the results of %s: Dispatch answered the results of %q", key, response.Issue)
+	}
+	return response, nil
 }
 
 // WebhookAppInstalled reads GET /api/v1/github/app-installation/{owner}/{repo}: whether
@@ -903,6 +935,7 @@ type issueResponse struct {
 	ResolvedRepo      *string        `json:"resolved_repo"`
 	BlockedBy         []string       `json:"blocked_by"`
 	Claim             *claimResponse `json:"claim"`
+	Children          []IssueChild   `json:"children"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -923,6 +956,7 @@ func (r issueResponse) issue() Issue {
 		BlockedBy:         r.BlockedBy,
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
+		Children:          r.Children,
 	}
 }
 

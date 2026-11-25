@@ -989,6 +989,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.CloseRead:
+		return r.closeRead(ctx, row, value)
 	case record.CloseWaitPublish:
 		return r.closeWaitPublish(ctx, row, value)
 	default:
