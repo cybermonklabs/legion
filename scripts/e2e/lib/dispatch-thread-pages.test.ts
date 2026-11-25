@@ -1,6 +1,5 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   Actor,
@@ -13,6 +12,7 @@ import type {
   ReplyBlockWithTrees,
 } from "@legion/contracts";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Server } from "bun";
 
 // The rows wait on processes and local servers, which a loaded machine slows. Their bound is a
@@ -21,18 +21,14 @@ setDefaultTimeout(HANG_GUARD_MS);
 
 const check = join(import.meta.dir, "dispatch-thread-pages.ts");
 const servers: Server<undefined>[] = [];
-const scratchDirectories: string[] = [];
+const scratch = temporaryDirectories("dispatch-thread-pages-test");
 
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
-  for (const directory of scratchDirectories.splice(0))
-    rmSync(directory, { force: true, recursive: true });
 });
 
 function tokenFile(): string {
-  const directory = mkdtempSync(join(tmpdir(), "dispatch-thread-pages-test-"));
-  scratchDirectories.push(directory);
-  const file = join(directory, "token");
+  const file = join(scratch(), "token");
   writeFileSync(file, "agent-token\n");
   return file;
 }
@@ -183,9 +179,10 @@ function fixture(): Fixture {
     created_at: at(5),
     id: uuid("c", 15),
   });
-  // A reply a build before ask_id wrote: its ask's thread holds it, but it is no entry of the ask.
+  // A reply a build before ask_id wrote: its ask's thread holds it, but it is no entry of the ask,
+  // so ada's reply here counts for no ask in Mine's choice of login.
   const oldAskReply = comment({
-    author: agent,
+    author: ada,
     created_at: at(40),
     id: uuid("c", 16),
     reply_to: uuid("c", 15),
@@ -366,6 +363,9 @@ interface StandInOptions {
   readonly slowAgents?: { issue: string; from: number };
   /** A reply's read-back holds no quote, as a build that drops the fields answers. */
   readonly quoteDropped?: boolean;
+  /** The comment page read with `before` at this thread counts one thread more in `remaining`
+   *  than follows it. */
+  readonly overcountAfter?: string;
 }
 
 function occurrences(text: string, word: string): number {
@@ -392,14 +392,14 @@ function standIn(options: StandInOptions): StandIn {
   let agentsReads = 0;
   const refusal = (status: number, code: string) =>
     Response.json({ code, error: code.toLowerCase() }, { status });
-  const page = (rows: [string, string, object][], before: string | null) => {
+  const page = (rows: [string, string, object][], before: string | null, overcount = 0) => {
     const start = before === null ? 0 : rows.findIndex(([id]) => id === before.split(",")[1]) + 1;
     const threads = rows.slice(start, start + PAGE_SIZE);
     const remaining = rows.length - start - threads.length;
     const last = threads.at(-1);
     return {
       before: remaining > 0 && last !== undefined ? `${last[1]},${last[0]}` : null,
-      remaining,
+      remaining: remaining + overcount,
       threads: threads.map(([, lastActivity, row]) => ({ ...row, last_activity_at: lastActivity })),
       ...(options.extraMember === true ? { total: rows.length } : {}),
     };
@@ -508,8 +508,8 @@ function standIn(options: StandInOptions): StandIn {
       const paged = url.searchParams.get("order") === "activity" && options.bareList !== true;
       const before = url.searchParams.get("before");
       if (route === "comments") {
-        commentListReads += paged ? 0 : 1;
         if (!paged) {
+          commentListReads += 1;
           const lacks = commentListReads === 1 ? options.firstCommentListLacks : undefined;
           return Response.json(data.comments.filter((each) => each.id !== lacks));
         }
@@ -522,7 +522,12 @@ function standIn(options: StandInOptions): StandIn {
             options.rowDiffers === true && root !== undefined ? { ...root, body: "changed" } : root;
           return [thread, lastActivity, { comment: shown, replies }];
         });
-        return Response.json(page(rows, before));
+        const overcount =
+          options.overcountAfter !== undefined &&
+          before?.endsWith(`,${options.overcountAfter}`) === true
+            ? 1
+            : 0;
+        return Response.json(page(rows, before, overcount));
       }
       if (route === "messages") {
         if (!paged) return Response.json(data.messages);
@@ -642,8 +647,9 @@ test("the probe passes on a Dispatch whose pages hold the threads and rows its l
     timed("All", comments),
     timed("All", messagesIn),
     timed("All", asks),
-    // bob wrote three comments of the issue and ada two; ada two messages and bob one.
-    timed("Mine", `${comments}&author=bob`),
+    // ada and bob each wrote three comments of the list, and ada is the smaller login; ada wrote
+    // two messages and bob one; bob holds three of the asks' entries and ada two.
+    timed("Mine", `${comments}&author=ada`),
     timed("Mine", `${messagesIn}&author=ada`),
     timed("Mine", `${asks}&author=bob`),
     timed("Agents", messagesNone),
@@ -662,17 +668,99 @@ test("the probe passes on a Dispatch whose pages hold the threads and rows its l
     { ok: true },
   ]);
   expect(code).toBe(0);
-  const position = encodeURIComponent(`${at(13)},${uuid("c", 1)}`);
-  expect(dispatch.requests).toContainEqual({
-    path: `/api/v1/issues/${ISSUE}/${comments}&before=${position}`,
-    trees: null,
+  const read = (query: string, trees: string | null) => ({
+    path: `/api/v1/issues/${ISSUE}/${query}`,
+    trees,
   });
-  // R7 weighs and times the pages read with display trees.
-  const pageReads = dispatch.requests.filter((request) => request.path.includes("order=activity"));
-  expect(pageReads.filter((request) => request.path.includes("author=")).length).toBe(3 * 35);
-  for (const request of pageReads.filter((request) => request.path.includes("author="))) {
-    expect(request.trees).toBe("1");
-  }
+  const lists = (trees: string | null) =>
+    ["comments", "messages", "asks?thread=1"].map((query) => read(query, trees));
+  const after = (query: string, lastActivity: string, id: string) =>
+    `${query}&before=${encodeURIComponent(`${lastActivity},${id}`)}`;
+  const walked = [
+    comments,
+    after(comments, at(13), uuid("c", 1)),
+    after(comments, at(7), uuid("c", 6)),
+    messagesIn,
+    after(messagesIn, at(10), uuid("e", 11)),
+    messagesNone,
+    asks,
+    after(asks, "2026-11-20T10:00:25.999999Z", uuid("a", 3)),
+    after(asks, at(10), uuid("a", 1)),
+  ];
+  const timedPages = [
+    comments,
+    messagesIn,
+    asks,
+    `${comments}&author=ada`,
+    `${messagesIn}&author=ada`,
+    `${asks}&author=bob`,
+    messagesNone,
+  ];
+  const scratchPath = `/api/v1/issues/${SCRATCH}`;
+  expect(dispatch.requests).toEqual([
+    // The walk reads its lists and its 9 pages with no display trees.
+    ...lists(null),
+    ...walked.map((query) => read(query, null)),
+    ...lists(null),
+    // The weigh reads its lists, All's 3 first pages and the issue's other first-load reads with
+    // them, as R7 weighs the pages.
+    ...lists("1"),
+    ...[comments, messagesIn, asks].map((query) => read(query, "1")),
+    ...lists("1"),
+    { path: `/api/v1/issues/${ISSUE}`, trees: "1" },
+    read("events?order=desc&limit=200", "1"),
+    // Mine's logins, from each route's list, then the 7 reads of R7, 35 each, with display trees.
+    ...lists(null),
+    ...timedPages.flatMap((query) => Array.from({ length: 35 }, () => read(query, "1"))),
+    // The quote step's comment, reply, message and reply, then the two read-backs.
+    { path: `${scratchPath}/comments`, trees: null },
+    { path: `${scratchPath}/comments`, trees: null },
+    { path: `${scratchPath}/messages`, trees: null },
+    { path: `${scratchPath}/messages`, trees: null },
+    { path: expect.stringMatching(/^\/api\/v1\/comments\/[0-9a-f-]{36}$/), trees: null },
+    {
+      path: expect.stringMatching(/^\/api\/v1\/issues\/ACME-1\/messages\/[0-9a-f-]{36}$/),
+      trees: null,
+    },
+  ]);
+});
+
+test("a comment page that leaves out the thread the lists cannot read R4 for passes the walk", async () => {
+  // The only reply of thread c6 answers a block of a post since deleted, so the list shows no
+  // quote of it: the page may hold the thread, as the stored quote puts it on text, or not.
+  const data = fixture();
+  const pages = {
+    ...data.pages,
+    comments: data.pages.comments.filter(([id]) => id !== uuid("c", 6)),
+  };
+  const dispatch = standIn({ issues: { [ISSUE]: { ...data, pages } } });
+  const { code, lines } = await run(...flagsFor(dispatch));
+  expect(lines[0]).toEqual({
+    either_way: 1,
+    issue: ISSUE,
+    page: comments,
+    pages: 3,
+    step: "walk",
+    threads: 5,
+    tries: 1,
+  });
+  expect(lines.at(-1)).toEqual({ ok: true });
+  expect(code).toBe(0);
+});
+
+test("a page whose remaining is not the count of the threads after it fails the walk", async () => {
+  const dispatch = standIn({ issues: { [ISSUE]: fixture() }, overcountAfter: uuid("c", 1) });
+  const { code, lines } = await run(...flagsFor(dispatch));
+  const position = encodeURIComponent(`${at(13)},${uuid("c", 1)}`);
+  expect(lines).toEqual([
+    {
+      ok: false,
+      read: `GET /api/v1/issues/${ISSUE}/${comments}&before=${position}`,
+      step: "walk",
+      why: expect.stringContaining("remaining 3, where the walk reads 2 threads after it"),
+    },
+  ]);
+  expect(code).toBe(1);
 });
 
 test("a build that answers the bare list to order=activity fails the walk, naming that read", async () => {

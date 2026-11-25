@@ -9,12 +9,12 @@
 //     --time-messages <KEY> --time-asks <KEY> [--session <id>]
 //
 // It names no issue of its own: every key comes from a flag, since this repository is public. It
-// prints one JSON line per step, then {"ok":true} and exits 0; a step that fails prints
+// prints one JSON line per read it judges, then {"ok":true} and exits 0; a step that fails prints
 // {"ok":false,"step":"<step>","read":"<method and path>","why":"<why>"} and exits 1, and a usage
 // error exits 2. --issue names a scratch issue: the check leaves a comment and a message there,
 // each with a reply, written as the bearer's session (--session, thread-pages-check-<uuid> by
 // default).
-import { parseArgs } from "node:util";
+import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import type {
   CommentWithTrees,
   CreateCommentInput,
@@ -23,6 +23,7 @@ import type {
   MessageRead,
   MessageWithTrees,
 } from "@legion/contracts";
+import { issueProject } from "../../../packages/contracts/src/subject-project";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-thread-pages.ts --url <dispatch> --bearer-file <file> --issue <scratch KEY> --walk <KEY> [--walk <KEY>...] --weigh <KEY> [--weigh <KEY>...] --time-comments <KEY> --time-messages <KEY> --time-asks <KEY> [--session <id>]";
@@ -42,16 +43,21 @@ const TREES_HEADER = "Dispatch-Trees";
 const FIRST_BLOCK = "b1";
 /** The word the quote step's block holds twice; no uuid and no time spells it. */
 const QUOTED_WORD = "quokka";
-const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[0-9]+$/;
-const SINGLE_FLAGS = [
-  "bearer-file",
-  "issue",
-  "session",
-  "time-asks",
-  "time-comments",
-  "time-messages",
-  "url",
-] as const;
+/** The flags: --walk and --weigh may each be given more than once, every other flag once. */
+const OPTIONS = {
+  "bearer-file": { type: "string" },
+  issue: { type: "string" },
+  session: { type: "string" },
+  "time-asks": { type: "string" },
+  "time-comments": { type: "string" },
+  "time-messages": { type: "string" },
+  url: { type: "string" },
+  walk: { multiple: true, type: "string" },
+  weigh: { multiple: true, type: "string" },
+} as const satisfies ParseArgsOptionsConfig;
+const SINGLE_FLAGS = Object.entries(OPTIONS)
+  .filter(([, option]) => !("multiple" in option))
+  .map(([flag]) => flag);
 
 type Step = "walk" | "weigh" | "time" | "quote";
 type ListKind = "comments" | "messages" | "asks";
@@ -85,6 +91,12 @@ interface Probe {
   readonly options: Options;
   step: Step;
   lastRead: string;
+}
+
+/** What a read sends beside its path: a body to POST, and whether it asks for display trees. */
+interface SendInit {
+  readonly body?: object;
+  readonly trees?: boolean;
 }
 
 /** One answer read whole: the method and path it answered, its bytes and its JSON. */
@@ -139,6 +151,7 @@ interface PageThread {
 interface Page {
   readonly before: string | null;
   readonly members: string[];
+  readonly remaining: number;
   readonly threads: PageThread[];
 }
 
@@ -166,7 +179,7 @@ function issuePath(issue: string, rest: string): string {
 
 function issueKey(value: string | undefined, flag: string): string {
   if (value === undefined || value === "") throw new UsageError(`--${flag} is required`);
-  if (!ISSUE_KEY.test(value)) {
+  if (issueProject(value) === undefined) {
     throw new UsageError(`--${flag} names an issue key, <PROJECT>-<number>, not ${value}`);
   }
   return value;
@@ -182,17 +195,7 @@ function parsedArgs(argv: readonly string[]) {
     return parseArgs({
       args: [...argv],
       allowPositionals: false,
-      options: {
-        "bearer-file": { type: "string" },
-        issue: { type: "string" },
-        session: { type: "string" },
-        "time-asks": { type: "string" },
-        "time-comments": { type: "string" },
-        "time-messages": { type: "string" },
-        url: { type: "string" },
-        walk: { multiple: true, type: "string" },
-        weigh: { multiple: true, type: "string" },
-      },
+      options: OPTIONS,
       strict: true,
       tokens: true,
     });
@@ -255,12 +258,16 @@ function refusalOf(body: unknown): string {
   return `${code}${error}`;
 }
 
+function headersOf(probe: Probe, init: SendInit): Record<string, string> {
+  return {
+    Authorization: `Bearer ${probe.options.bearer}`,
+    ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+    ...(init.trees === true ? { [TREES_HEADER]: "1" } : {}),
+  };
+}
+
 /** Sends a GET, or a POST of `body`, and reads its whole answer, which must be a JSON 200 or 201. */
-async function send(
-  probe: Probe,
-  path: string,
-  init: { readonly body?: object; readonly trees?: boolean } = {}
-): Promise<Answer> {
+async function send(probe: Probe, path: string, init: SendInit = {}): Promise<Answer> {
   const method = init.body === undefined ? "GET" : "POST";
   const read = `${method} ${path}`;
   probe.lastRead = read;
@@ -269,11 +276,7 @@ async function send(
   try {
     const response = await fetch(new URL(path, probe.options.url), {
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      headers: {
-        Authorization: `Bearer ${probe.options.bearer}`,
-        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(init.trees === true ? { [TREES_HEADER]: "1" } : {}),
-      },
+      headers: headersOf(probe, init),
       method,
     });
     status = response.status;
@@ -400,29 +403,27 @@ function messageEntries(row: MessageRead): MessageWithTrees[] {
   return [row.message, ...(row.replies ?? [])];
 }
 
-/** R5's Legion daemon of the issue: `legion-daemon:` and the issue's project key. */
-function daemonOf(issue: string): string {
-  return `legion-daemon:${issue.slice(0, issue.lastIndexOf("-"))}`;
-}
-
 /** R5: a thread whose root the issue's daemon wrote is on neither page; any other thread is on
  *  `person=in` where a person wrote an entry or its root has no target, and on `person=none`
  *  otherwise. */
-function messagePerson(row: MessageRead, issue: string): "in" | "none" | "neither" {
+function messagePerson(row: MessageRead, daemon: string): "in" | "none" | "neither" {
   const root = row.message;
-  if (root.author.kind === "session" && root.author.id === daemonOf(issue)) return "neither";
+  if (root.author.kind === "session" && root.author.id === daemon) return "neither";
   return root.target === null || messageEntries(row).some((entry) => entry.author.kind === "user")
     ? "in"
     : "none";
 }
 
-/** R2's last activity of an ask: the ask, each comment whose ask_id names it, and the answer and
- *  the resolution it holds now. */
+/** R2's comments of an ask's thread: those whose ask_id names the ask. A reply an older build hung
+ *  under one of them by reply_to alone is in the thread's replies, but no entry of the ask. */
+function askComments(row: IssueAskRow): CommentWithTrees[] {
+  return (row.thread?.replies ?? []).filter((reply) => reply.ask_id === row.id);
+}
+
+/** R2's last activity of an ask: the ask, its comments, and the answer and the resolution it holds
+ *  now. */
 function askActivity(row: IssueAskRow): string {
-  const times = [row.created_at];
-  for (const reply of row.thread?.replies ?? []) {
-    if (reply.ask_id === row.id) times.push(reply.created_at);
-  }
+  const times = [row.created_at, ...askComments(row).map((reply) => reply.created_at)];
   const answered = row.answer?.at;
   if (answered !== undefined) times.push(answered);
   const resolved = row.resolution?.at;
@@ -452,15 +453,19 @@ function messagePage(person: "in" | "none"): PageRead {
     list: "messages",
     page: `messages?order=activity&person=${person}`,
     rows: (lists) => new Map(listOf(lists, "messages").map((row) => [row.message.id, row])),
-    select: (lists, issue) =>
-      listOf(lists, "messages")
-        .filter((row) => messagePerson(row, issue) === person)
+    select: (lists, issue) => {
+      // R5's Legion daemon: `legion-daemon:` and the issue's project key, which optionsFrom
+      // checked every key has.
+      const daemon = `legion-daemon:${issueProject(issue)}`;
+      return listOf(lists, "messages")
+        .filter((row) => messagePerson(row, daemon) === person)
         .map((row) => ({
           at: newest(messageEntries(row).map((entry) => entry.created_at)),
           either: false,
           id: row.message.id,
         }))
-        .sort(byActivity),
+        .sort(byActivity);
+    },
   };
 }
 
@@ -491,12 +496,13 @@ function pageOf(answer: Answer, page: PageRead): Page {
       "answered the bare list, a JSON array, where order=activity answers the page {threads, before, remaining}: this build does not serve the thread pages"
     );
   }
-  const before = isObject(body) && typeof body.before === "string" ? body.before : null;
+  const fields: Record<string, unknown> = isObject(body) ? body : {};
+  const { before, remaining, threads: rows } = fields;
   if (
     !isObject(body) ||
-    !Array.isArray(body.threads) ||
-    (body.before !== null && before === null) ||
-    typeof body.remaining !== "number"
+    !Array.isArray(rows) ||
+    (before !== null && typeof before !== "string") ||
+    typeof remaining !== "number"
   ) {
     throw new StepFailed(
       read,
@@ -504,40 +510,42 @@ function pageOf(answer: Answer, page: PageRead): Page {
     );
   }
   const threads: PageThread[] = [];
-  for (const [index, row] of body.threads.entries()) {
+  for (const [index, row] of rows.entries()) {
     const id = isObject(row) ? page.idOf(row) : undefined;
     if (!isObject(row) || typeof id !== "string" || typeof row.last_activity_at !== "string") {
       throw new StepFailed(read, `row ${index + 1} names no thread id and last_activity_at`);
     }
     threads.push({ at: row.last_activity_at, id, row });
   }
-  return { before, members: Object.keys(body).sort(), threads };
+  return { before, members: Object.keys(body).sort(), remaining, threads };
 }
 
 /** One read of an issue judged against the issue's list of its route. */
-interface Bracket<Result, Line> {
+interface Bracket<Result, View, Line> {
   readonly page: PageRead;
   readonly read: () => Promise<Result>;
-  /** What of the list the read is judged on: two reads of the list agree where this is equal. */
-  readonly view: (lists: Lists, result: Result) => unknown;
-  /** The step's line for the read; throws StepFailed where the read differs from the list. */
-  readonly judge: (lists: Lists, result: Result) => Line;
+  /** What of the lists the read is judged on: two reads of the lists agree where this is equal. */
+  readonly view: (lists: Lists, result: Result) => View;
+  /** The step's line for the read, judged on the view of the lists read after it; throws
+   *  StepFailed where the read differs from that view. */
+  readonly judge: (view: View, result: Result) => Line;
 }
 
-/** Reads the lists the pending reads are judged on, then each read, then the lists again, up to
- *  TRIES times. A read is judged in the first try whose two reads of its list agree, so a write
- *  between them is never read as the page's fault; the step fails where no try agrees. */
-async function bracketed<Result, Line>(
+/** Reads the lists the reads are judged on, then each read, then the lists again, up to TRIES
+ *  times; the lists read after one try's reads are the lists read before the next try's. A read is
+ *  judged in the first try whose two reads of its list agree, so a write between them is never
+ *  read as the page's fault; the step fails where no try agrees. */
+async function bracketed<Result, View, Line>(
   probe: Probe,
   issue: string,
   trees: boolean,
-  brackets: readonly Bracket<Result, Line>[]
+  brackets: readonly Bracket<Result, View, Line>[]
 ): Promise<(Line & { tries: number })[]> {
   const lines: (Line & { tries: number })[] = [];
   let pending = brackets.map((_, index) => index);
+  let kinds = [...new Set(brackets.map((bracket) => bracket.page.list))];
+  let before = await readLists(probe, issue, kinds, trees);
   for (let tries = 1; tries <= TRIES && pending.length > 0; tries += 1) {
-    const kinds = [...new Set(pending.map((index) => brackets[index].page.list))];
-    const before = await readLists(probe, issue, kinds, trees);
     const results: Result[] = [];
     for (const index of pending) results.push(await brackets[index].read());
     const after = await readLists(probe, issue, kinds, trees);
@@ -545,13 +553,16 @@ async function bracketed<Result, Line>(
     for (const [position, index] of pending.entries()) {
       const bracket = brackets[index];
       const result = results[position];
-      if (!Bun.deepEquals(bracket.view(before, result), bracket.view(after, result))) {
+      const view = bracket.view(after, result);
+      if (Bun.deepEquals(bracket.view(before, result), view)) {
+        lines[index] = { ...bracket.judge(view, result), tries };
+      } else {
         next.push(index);
-        continue;
       }
-      lines[index] = { ...bracket.judge(after, result), tries };
     }
     pending = next;
+    kinds = [...new Set(pending.map((index) => brackets[index].page.list))];
+    before = after;
   }
   const [unjudged] = pending;
   if (unjudged !== undefined) {
@@ -565,7 +576,9 @@ async function bracketed<Result, Line>(
 }
 
 interface WalkedPage {
+  readonly before: string | null;
   readonly read: string;
+  readonly remaining: number;
   readonly threads: { readonly at: string; readonly id: string }[];
 }
 
@@ -579,7 +592,12 @@ async function walkPages(probe: Probe, issue: string, page: PageRead): Promise<W
       before === null ? page.page : `${page.page}&before=${encodeURIComponent(before)}`;
     const answer = await send(probe, issuePath(issue, query));
     const read = pageOf(answer, page);
-    pages.push({ read: answer.read, threads: read.threads.map(({ at, id }) => ({ at, id })) });
+    pages.push({
+      before: read.before,
+      read: answer.read,
+      remaining: read.remaining,
+      threads: read.threads.map(({ at, id }) => ({ at, id })),
+    });
     before = read.before;
     if (before !== null) {
       if (positions.has(before)) {
@@ -592,7 +610,9 @@ async function walkPages(probe: Probe, issue: string, page: PageRead): Promise<W
 }
 
 /** The walk holds exactly the threads the lists select, in their order, each with its last
- *  activity; a comment thread R4 cannot be read for is in its place where the walk holds it. */
+ *  activity; a comment thread R4 cannot be read for is in its place where the walk holds it. Each
+ *  page's `remaining` is the number of threads the walk reads after it, 0 exactly where its
+ *  `before` is null (R1). */
 function judgeWalk(selected: readonly Selected[], pages: readonly WalkedPage[]) {
   const threads = pages.flatMap((page, index) =>
     page.threads.map((thread) => ({ ...thread, page: index }))
@@ -621,6 +641,22 @@ function judgeWalk(selected: readonly Selected[], pages: readonly WalkedPage[]) 
     }
     throw new StepFailed(read, why);
   }
+  let after = threads.length;
+  for (const page of pages) {
+    after -= page.threads.length;
+    if (page.remaining !== after) {
+      throw new StepFailed(
+        page.read,
+        `the page answers remaining ${page.remaining}, where the walk reads ${after} threads after it`
+      );
+    }
+    if ((page.remaining === 0) !== (page.before === null)) {
+      throw new StepFailed(
+        page.read,
+        `the page answers remaining ${page.remaining} and before ${page.before}, where remaining is 0 exactly where before is null`
+      );
+    }
+  }
   return { pages: pages.length, threads: threads.length };
 }
 
@@ -630,15 +666,13 @@ async function walk(probe: Probe, issue: string): Promise<void> {
     issue,
     false,
     WALKED_PAGES.map(
-      (page): Bracket<WalkedPage[], Record<string, number>> => ({
-        judge: (lists, pages) => {
-          const selected = page.select(lists, issue);
-          const either = selected.filter((thread) => thread.either).length;
-          return {
-            ...judgeWalk(selected, pages),
-            ...(page === COMMENTS_PERSON_IN ? { either_way: either } : {}),
-          };
-        },
+      (page): Bracket<WalkedPage[], Selected[], Record<string, number>> => ({
+        judge: (selected, pages) => ({
+          ...judgeWalk(selected, pages),
+          ...(page.list === "comments"
+            ? { either_way: selected.filter((thread) => thread.either).length }
+            : {}),
+        }),
         page,
         read: () => walkPages(probe, issue, page),
         view: (lists) => page.select(lists, issue),
@@ -674,24 +708,23 @@ interface Weighed {
 }
 
 /** The page holds `threads`, `before` and `remaining` and no other member, and each row is the
- *  row R2 builds for its thread from the lists, but for `last_activity_at`. */
-function judgeWeigh(page: PageRead, lists: Lists, { answer, page: read }: Weighed) {
+ *  row R2 builds for its thread from the lists, `built` (null for a thread in no list), but for
+ *  `last_activity_at`. */
+function judgeWeigh(built: readonly unknown[], { answer, page: read }: Weighed) {
   if (read.members.join(",") !== "before,remaining,threads") {
     throw new StepFailed(
       answer.read,
       `the page holds the members ${read.members.join(", ")}, where it holds threads, before and remaining and no other`
     );
   }
-  const rows = page.rows(lists);
   for (const [index, thread] of read.threads.entries()) {
-    const built = rows.get(thread.id);
-    if (built === undefined) {
+    if (built[index] === null) {
       throw new StepFailed(answer.read, `row ${index + 1}, thread ${thread.id}, is in no list`);
     }
     const row = Object.fromEntries(
       Object.entries(thread.row).filter(([member]) => member !== "last_activity_at")
     );
-    const difference = firstDifference(row, built, "");
+    const difference = firstDifference(row, built[index], "");
     if (difference !== undefined) {
       throw new StepFailed(
         answer.read,
@@ -708,8 +741,8 @@ async function weigh(probe: Probe, issue: string): Promise<void> {
     issue,
     true,
     ALL_PAGES.map(
-      (page): Bracket<Weighed, { bytes: number; threads: number }> => ({
-        judge: (lists, weighed) => judgeWeigh(page, lists, weighed),
+      (page): Bracket<Weighed, unknown[], { bytes: number; threads: number }> => ({
+        judge: judgeWeigh,
         page,
         read: async () => {
           const answer = await send(probe, issuePath(issue, page.page), { trees: true });
@@ -744,7 +777,8 @@ async function weigh(probe: Probe, issue: string): Promise<void> {
   });
 }
 
-/** The logins of the people who wrote on the issue's list of `kind`, an entry each. */
+/** The logins of the people who wrote on the issue's list of `kind`, an entry each; an ask's
+ *  entries are R2's. */
 function peopleOf(lists: Lists, kind: ListKind): string[] {
   const logins: string[] = [];
   const person = (actor: { id: string; kind: string } | undefined) => {
@@ -759,7 +793,7 @@ function peopleOf(lists: Lists, kind: ListKind): string[] {
   if (kind === "asks") {
     for (const row of listOf(lists, kind)) {
       person(row.author);
-      for (const reply of row.thread?.replies ?? []) person(reply.author);
+      for (const reply of askComments(row)) person(reply.author);
       if (row.answer?.user !== undefined) logins.push(row.answer.user);
       person(row.resolution?.actor);
     }
@@ -768,7 +802,8 @@ function peopleOf(lists: Lists, kind: ListKind): string[] {
 }
 
 /** Mine's `author`: the person with the most entries on the issue's list of `kind`, or, where no
- *  person wrote there, on its other two lists; the smaller login at a tie. */
+ *  person wrote on that one, on the first of its other lists, in the order comments, messages,
+ *  asks, that a person wrote on; the smaller login at a tie. */
 async function personOf(probe: Probe, issue: string, kind: ListKind): Promise<string> {
   const kinds = [
     kind,
@@ -806,7 +841,7 @@ async function timeToFirstByte(probe: Probe, path: string): Promise<number> {
   try {
     const start = performance.now();
     const response = await fetch(new URL(path, probe.options.url), {
-      headers: { Authorization: `Bearer ${probe.options.bearer}`, [TREES_HEADER]: "1" },
+      headers: headersOf(probe, { trees: true }),
     });
     elapsed = performance.now() - start;
     status = response.status;
@@ -826,37 +861,22 @@ function nearestRank(samples: readonly number[], percent: number): number {
 
 async function time(probe: Probe): Promise<void> {
   const { timeAsks, timeComments, timeMessages } = probe.options;
-  const mine = async (issue: string, page: PageRead) =>
-    `${page.page}&author=${encodeURIComponent(await personOf(probe, issue, page.list))}`;
-  const reads = [
-    { issue: timeComments, page: COMMENTS_PERSON_IN, query: COMMENTS_PERSON_IN.page, view: "All" },
-    { issue: timeMessages, page: MESSAGES_PERSON_IN, query: MESSAGES_PERSON_IN.page, view: "All" },
-    { issue: timeAsks, page: ASKS_THREADS, query: ASKS_THREADS.page, view: "All" },
-    {
-      issue: timeComments,
-      page: COMMENTS_PERSON_IN,
-      query: await mine(timeComments, COMMENTS_PERSON_IN),
-      view: "Mine",
-    },
-    {
-      issue: timeMessages,
-      page: MESSAGES_PERSON_IN,
-      query: await mine(timeMessages, MESSAGES_PERSON_IN),
-      view: "Mine",
-    },
-    {
-      issue: timeAsks,
-      page: ASKS_THREADS,
-      query: await mine(timeAsks, ASKS_THREADS),
-      view: "Mine",
-    },
-    {
-      issue: timeMessages,
-      page: MESSAGES_PERSON_NONE,
-      query: MESSAGES_PERSON_NONE.page,
-      view: "Agents",
-    },
+  const views = [
+    { issue: timeComments, page: COMMENTS_PERSON_IN },
+    { issue: timeMessages, page: MESSAGES_PERSON_IN },
+    { issue: timeAsks, page: ASKS_THREADS },
   ];
+  const reads = views.map(({ issue, page }) => ({ issue, page, query: page.page, view: "All" }));
+  for (const { issue, page } of views) {
+    const author = encodeURIComponent(await personOf(probe, issue, page.list));
+    reads.push({ issue, page, query: `${page.page}&author=${author}`, view: "Mine" });
+  }
+  reads.push({
+    issue: timeMessages,
+    page: MESSAGES_PERSON_NONE,
+    query: MESSAGES_PERSON_NONE.page,
+    view: "Agents",
+  });
   let slow: { read: string; p90: number } | undefined;
   for (const { issue, page, query, view } of reads) {
     const path = issuePath(issue, query);
@@ -867,9 +887,10 @@ async function time(probe: Probe): Promise<void> {
     for (let read = 0; read < TIMED_READS; read += 1) {
       samples.push(await timeToFirstByte(probe, path));
     }
-    const p90 = Math.round(nearestRank(samples, 90) * 10) / 10;
+    const raw = nearestRank(samples, 90);
+    const p90 = Math.round(raw * 10) / 10;
     write({ step: "time", view, issue, page: query, p90_ms: p90, bound_ms: BOUND_MS });
-    if (p90 > BOUND_MS && slow === undefined) slow = { p90, read: `GET ${path}` };
+    if (raw > BOUND_MS && slow === undefined) slow = { p90, read: `GET ${path}` };
   }
   if (slow !== undefined) {
     throw new StepFailed(
