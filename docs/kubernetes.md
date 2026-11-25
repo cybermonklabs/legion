@@ -2689,7 +2689,7 @@ The outbox and the plan rows are shared by every project's daemon on the databas
 #### Rolling back the release that counts each step's models
 
 This release names, on the end of each step record, the model the step's role was set to (`set_model`) and each model that answered (`answers`).
-Its migration `20261124012813_launch_model_totals.up.sql` adds the table `claim_launches` and the column `step_starts.start_totals`.
+Its migration `20261125171320_launch_model_totals.up.sql` adds the table `claim_launches` and the column `step_starts.start_totals`.
 The table holds each launch of a claim, with the newest read of its totals that a step used and its final totals.
 The column holds what each step's start read of its agent.
 
@@ -2708,10 +2708,10 @@ Run it in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, before the 
 update outbox set payload = payload - 'set_model' - 'answers' where kind = 'step_record';
 alter table step_starts drop column start_totals;
 drop table claim_launches;
-delete from schema_version where version = 20261124012813;
+delete from schema_version where version = 20261125171320;
 ```
 
-The header of `20261124012813_launch_model_totals.up.sql` carries this same block.
+The header of `20261125171320_launch_model_totals.up.sql` carries this same block.
 The `update` takes the two keys off each queued step record, so the end of that step lands with no counts.
 The `alter` and the `drop` take the column and the table.
 The `delete` makes the roll forward's `Migrate` apply the migration again, which adds them back empty.
@@ -3543,7 +3543,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 `20261124143026_issue_release_teardown.up.sql`, of #5372's release, carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave the new columns to their defaults, which the new index of `pod_releases` does not hold.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
-A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models) first, which deletes the row of 20261124012813.
+A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models) first, which deletes the row of 20261125171320.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3626,11 +3626,11 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
-20261124012813_launch_model_totals adds the table `claim_launches` and the column `step_starts.start_totals`, and touches none of the six, so the block holds over it.
-A rollback past it first runs the way back of [its own section](#rolling-back-the-release-that-counts-each-steps-models), which drops both and deletes its version row.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
+20261125171320_launch_model_totals adds the table `claim_launches` and the column `step_starts.start_totals`, and touches none of the six, so the block holds over it.
+A rollback past it first runs the way back of [its own section](#rolling-back-the-release-that-counts-each-steps-models), which drops both and deletes its version row.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

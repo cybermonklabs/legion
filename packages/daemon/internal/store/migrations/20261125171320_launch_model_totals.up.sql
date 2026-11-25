@@ -1,4 +1,4 @@
--- 20261124012813_launch_model_totals.up.sql -- what the daemon keeps to count the calls of each
+-- 20261125171320_launch_model_totals.up.sql -- what the daemon keeps to count the calls of each
 -- step's agent by model: each launch of a claim, the reads a step used, and each launch's final
 -- totals.
 --
@@ -27,7 +27,7 @@
 -- update outbox set payload = payload - 'set_model' - 'answers' where kind = 'step_record';
 -- alter table step_starts drop column start_totals;
 -- drop table claim_launches;
--- delete from schema_version where version = 20261124012813;
+-- delete from schema_version where version = 20261125171320;
 create table claim_launches (
   claim text not null,
   generation bigint not null check (generation > 0),

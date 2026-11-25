@@ -63,7 +63,7 @@ const StepRecordsRollForward = 20261117064152
 // 20261120042902_claim_agent_resume_generation.up.sql, of 20261120144241_intake_failures.up.sql,
 // of 20261121170714_dispatch_issue_applied_seq.up.sql, of
 // 20261123050533_idle_release_keeps_no_workspace.up.sql, of 20261123224717_members_owed.up.sql,
-// of 20261124012813_launch_model_totals.up.sql and of StepRecordsRollForward carry one. The
+// of 20261125171320_launch_model_totals.up.sql and of StepRecordsRollForward carry one. The
 // header of
 // 20261120055717_dispatch_issue_value_sequences.up.sql carries another, one statement that
 // docs/kubernetes.md gives too: internal/store's

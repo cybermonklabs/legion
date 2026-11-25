@@ -18,7 +18,7 @@ import (
 
 // launchTotalsVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const launchTotalsVersion = 20261124012813
+const launchTotalsVersion = 20261125171320
 
 // launchTotalsRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -80,7 +80,7 @@ func storedStepStart(t *testing.T, store *Store, place record.StepPlace) record.
 	return start
 }
 
-// 20261124012813 adds the table claim_launches and the column step_starts.start_totals. Every row
+// 20261125171320 adds the table claim_launches and the column step_starts.start_totals. Every row
 // the release before wrote still reads after it: a step's start as the record reads it, with no
 // start totals, and a step_record row as the outbox decodes it, with no set model and no answers.
 // The rows are written with SQL that names the columns and keys of the release before.
@@ -107,8 +107,8 @@ func TestTheLaunchTotalsMigrationLeavesEveryRowReadable(t *testing.T) {
 		t.Fatalf("migrate through the launch totals: %v", err)
 	}
 
-	if applied := rowsAsText(t, store, `select version::text from schema_version where version = 20261124012813`); len(applied) != 1 {
-		t.Fatalf("schema_version records %v of 20261124012813, want the migration applied", applied)
+	if applied := rowsAsText(t, store, `select version::text from schema_version where version = 20261125171320`); len(applied) != 1 {
+		t.Fatalf("schema_version records %v of 20261125171320, want the migration applied", applied)
 	}
 	if got := rowsAsText(t, store, `select row(issue, starts, start_totals is null)::text from step_starts`); !slices.Equal(got, []string{"(LEGION-208,2,t)"}) {
 		t.Fatalf("the starts after the migration (issue, starts, no start totals) = %v, want the start of the release before with none", got)
@@ -194,7 +194,7 @@ func TestTheLaunchTotalsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	var launches, startTotals, version bool
 	if err := store.Pool().QueryRow(ctx, `select to_regclass('claim_launches') is not null,
 		exists (select 1 from information_schema.columns where table_name = 'step_starts' and column_name = 'start_totals'),
-		exists (select 1 from schema_version where version = 20261124012813)`).Scan(&launches, &startTotals, &version); err != nil {
+		exists (select 1 from schema_version where version = 20261125171320)`).Scan(&launches, &startTotals, &version); err != nil {
 		t.Fatalf("read the schema after the way back: %v", err)
 	}
 	if launches || startTotals || version {
