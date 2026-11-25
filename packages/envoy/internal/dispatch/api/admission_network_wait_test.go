@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -303,7 +304,7 @@ func newIAPWaitRigOn(t *testing.T, clock func() time.Time, fetchTimeout time.Dur
 // assertion is the header of a request IAP passed for a.person@example.com, signed by key.
 func (r *iapWaitRig) assertion(t *testing.T, key *oidctest.Key) http.Header {
 	t.Helper()
-	return iapSocketKeys{keys: r.issuer, signing: key}.assertion(t, time.Now().Add(9*time.Minute))
+	return iapSocketKeys{keys: r.issuer, signing: key, clock: clock.Real()}.assertion(t, time.Now().Add(9*time.Minute))
 }
 
 // boundaryClock is a key cache's clock (oidc.Keys.Now) that reads at, a fixed time, everywhere but
