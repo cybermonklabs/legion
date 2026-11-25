@@ -538,10 +538,11 @@ func stopAFollower(t *testing.T, cluster *testnats.Cluster) int {
 // member's /jsz names that member; every member must be running.
 func metaLeader(t *testing.T, cluster *testnats.Cluster) int {
 	t.Helper()
+	ctx := testwait.Context(t)
 	named := testwait.UntilPolling(t, 50*time.Millisecond, "every member's /jsz to name one JetStream meta leader", func() ([]string, bool) {
 		named := make([]string, len(cluster.Servers))
 		for i, server := range cluster.Servers {
-			leader, err := jszMetaLeader(server)
+			leader, err := jszMetaLeader(ctx, server)
 			if err != nil {
 				named[i] = err.Error()
 				return named, false
@@ -554,9 +555,15 @@ func metaLeader(t *testing.T, cluster *testnats.Cluster) int {
 }
 
 // jszMetaLeader is the server_name of the JetStream meta leader server's /jsz names, "" while it
-// knows none.
-func jszMetaLeader(server *testnats.Server) (string, error) {
-	response, err := http.Get(server.MonitorURL() + "/jsz")
+// knows none. The read ends with ctx, the shared wait's (testwait.Context), so a monitor that never
+// answers fails the row by name at the wait's give-up rather than holding it past the binary's
+// deadline: the read runs inside a wait's own question, which the wait cannot cut short.
+func jszMetaLeader(ctx context.Context, server *testnats.Server) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.MonitorURL()+"/jsz", nil)
+	if err != nil {
+		return "", fmt.Errorf("read /jsz: %w", err)
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("read /jsz: %w", err)
 	}
