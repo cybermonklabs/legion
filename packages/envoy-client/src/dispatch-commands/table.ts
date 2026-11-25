@@ -39,7 +39,12 @@ import {
 } from "./issues";
 import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
-import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
+import {
+  architectureSyncCommand,
+  projectCommand,
+  projectsCommand,
+  projectUpdateCommand,
+} from "./projects";
 import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
 import { routeCommand } from "./route-tools";
@@ -92,6 +97,7 @@ export const dispatchCommands: Record<HandWrittenToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_project_update: acting(projectUpdateCommand),
   dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),

@@ -17,11 +17,11 @@ import (
 // TestTheBarsModelIsNotOfferedDispatchAPI: dispatch_api, a generic read of any route by its path,
 // is a tool of Dispatch the bar does not offer its model (going.UnofferedTools). find_tools answers
 // it for neither its name nor a need in its words, and answers from exactly the tools it would
-// answer from were dispatch_api no tool of Dispatch, so every answer of it is that answer and the
-// list leaves out that tool alone. call_tool and propose_plan refuse it by name with its reason
-// before any call, and the bar reads the call as the model's slip of a step the command bar does
-// not offer, which Dispatch has: a name no tool has stays a step Dispatch does not have, of the
-// same kind.
+// answer from were no tool going.UnofferedTools names a tool of Dispatch, so every answer of it is
+// that answer and the list leaves out those tools alone. call_tool and propose_plan refuse it by
+// name with its reason before any call, and the bar reads the call as the model's slip of a step
+// the command bar does not offer, which Dispatch has: a name no tool has stays a step Dispatch
+// does not have, of the same kind.
 func TestTheBarsModelIsNotOfferedDispatchAPI(t *testing.T) {
 	const api = "dispatch_api"
 	reason := going.UnofferedTools[api]
@@ -42,7 +42,10 @@ func TestTheBarsModelIsNotOfferedDispatchAPI(t *testing.T) {
 		}
 	}
 
-	absent := findablesOf(slices.DeleteFunc(slices.Clone(contracts.DispatchTools), func(tool contracts.DispatchTool) bool { return tool.Name == api }))
+	absent := findablesOf(slices.DeleteFunc(slices.Clone(contracts.DispatchTools), func(tool contracts.DispatchTool) bool {
+		_, unoffered := going.UnofferedTools[tool.Name]
+		return unoffered
+	}))
 	sameTool := func(a, b findable) bool {
 		return a.name == b.name && a.description == b.description && bytes.Equal(a.schema, b.schema) && a.text == b.text
 	}
@@ -54,7 +57,7 @@ func TestTheBarsModelIsNotOfferedDispatchAPI(t *testing.T) {
 			}
 			return out
 		}
-		t.Errorf("find_tools answers from %v, want the tools it would answer from were %s no tool of Dispatch: %v", names(found), api, names(absent))
+		t.Errorf("find_tools answers from %v, want the tools it would answer from were no tool going.UnofferedTools names a tool of Dispatch: %v", names(found), names(absent))
 	}
 
 	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {

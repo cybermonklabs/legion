@@ -15,6 +15,7 @@ import (
 // was, so a boot never overrides a drain made before the upgrade; the start its phase or its tree's
 // re-admission writes later resumes it, as on main.
 func TestTheBootStartsNoClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := t.Context()
 	project, err := claim.ProjectToken("LEGION")

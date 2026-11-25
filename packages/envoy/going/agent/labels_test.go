@@ -301,14 +301,14 @@ func labelProblems(name string, label contracts.ToolLabel, schema json.RawMessag
 	return problems
 }
 
-// TestEveryToolARunCallsHasALabel: every tool find_tools can answer - each tool of Dispatch, the
-// comments read of dispatch_read, the reads the server makes by going's names, the reads outside
-// Dispatch and draw_block - and the run's outer tools and review_plan carry a label the bar can
-// fill: one whose {name}s are their tool's arguments, each with words for its absence where a call
-// may leave it out.
+// TestEveryToolARunCallsHasALabel: every tool find_tools can answer - each tool of Dispatch the bar
+// offers (all but going.UnofferedTools), the comments read of dispatch_read, the reads the server
+// makes by going's names, the reads outside Dispatch and draw_block - and the run's outer tools and
+// review_plan carry a label the bar can fill: one whose {name}s are their tool's arguments, each
+// with words for its absence where a call may leave it out.
 func TestEveryToolARunCallsHasALabel(t *testing.T) {
 	findable := findableTools()
-	if len(findable) < len(contracts.DispatchTools)+len(going.ReadSpecs())+len(outsideReads)+1 {
+	if len(findable) < len(contracts.DispatchTools)-len(going.UnofferedTools)+len(going.ReadSpecs())+len(outsideReads)+1 {
 		t.Fatalf("find_tools answers %d tools, fewer than it is given", len(findable))
 	}
 	for _, tool := range findable {

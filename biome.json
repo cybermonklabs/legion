@@ -19,6 +19,7 @@
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
+      "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!.legion"

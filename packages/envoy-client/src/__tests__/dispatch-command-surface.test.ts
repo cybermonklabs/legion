@@ -26,6 +26,7 @@ import {
   planReviewBody,
   plansBody,
   prioritiesBody,
+  projectBody,
   reviewBody,
   SESSION,
   stepsBody,
@@ -275,6 +276,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
+    if (rest === "proven-sessions") return response(projectBody(method === "PUT"));
   }
   // A route a route-bound spec calls that no answer above reaches: the generic command prints
   // whatever JSON its route answers, so the answer names the route it reached.

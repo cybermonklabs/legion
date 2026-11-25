@@ -985,6 +985,9 @@ const (
 	goingExcludedTestHook   = "a test hook, which a deployment serves only with its test hooks on"
 	goingExcludedBar        = "the command bar's own route"
 	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
+	// dispatch_project_update's two routes (going.UnofferedTools says why the bar offers no tool
+	// of them).
+	goingExcludedProvenSessions = "a project's proven-sessions check, which the bar never turns on or off"
 	// The status change writes several issues, each in a transaction of its own, so no landing of
 	// one request records it and no Undo walks it back. The bar never calls it: a plan that sets
 	// an option of dispatch_issue_update is written out as one update row for each issue the
@@ -1037,6 +1040,8 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
+	"PUT /api/v1/projects/{key}/proven-sessions":                    goingExcludedProvenSessions,
+	"DELETE /api/v1/projects/{key}/proven-sessions":                 goingExcludedProvenSessions,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

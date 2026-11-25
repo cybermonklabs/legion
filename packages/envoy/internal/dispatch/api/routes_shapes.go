@@ -662,6 +662,13 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
+	// Both answer the project as GET /api/v1/projects lists it (project_proven_sessions.go). A
+	// bearer names its session in the PUT's actor; the DELETE reads its person off the
+	// credential and takes no body.
+	"PUT /api/v1/projects/{key}/proven-sessions": {
+		Status: http.StatusOK, Response: model.Project{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"DELETE /api/v1/projects/{key}/proven-sessions": {Status: http.StatusOK, Response: model.Project{}},
 	"PUT /api/v1/projects/{key}/default-repository": {
 		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
 	},

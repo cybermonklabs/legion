@@ -489,6 +489,12 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			return
 		}
 	}
+	// Read before the transaction opens (specWriterOf), for the check of the accept and the
+	// reject below; the resolve writes no document text and reads nothing for it.
+	var writer specWriter
+	if action != "resolve" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -585,6 +591,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			projectionKind = kind
 		}
 		if comment.Anchor != nil {
+			// The check of who writes an issue's spec or Verification document, on the document
+			// the suggestion is anchored in, before the document call. The accept and the reject
+			// need the person scope at the route's gate, so the check passes them at once.
+			if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, comment.Anchor.ArtifactID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 			var markErr error
 			if action == "accept" {
 				markErr = s.deps.Docs.AcceptSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, comment.Suggestion.ReplaceWith, actor)
