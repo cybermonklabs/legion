@@ -26,9 +26,14 @@
 -- as the other readers do. The two answer alike only where the database is UTF8 and its
 -- collation folds each ASCII letter as "C" does, so attribution_database_refusal() answers the
 -- line that names the encoding or the collation of any other database, and null for this one;
--- the DO block raises that line, so a refused database stores nothing of this migration. Each
--- start of Dispatch calls the same function. The census file beside this one holds the same
--- test, so a refused database stops the deploy before the serving release stops.
+-- attribution_database_refuse() raises that line, so a refused database stores nothing of this
+-- migration, and is dropped once it has run. It is a function the migration selects and drops,
+-- not a DO block: a DO block takes the table-size exemption and the bounded-write admission from
+-- every later migration pending in the same deploy (pgmigrate's takesLaterExemptions), and a
+-- store of the releases that ran the graph backfill holds this migration pending before the type
+-- migrations after it, whose writes of graph_nodes need that admission. Each start of Dispatch
+-- calls attribution_database_refusal(). The census file beside this one holds the same test, so
+-- a refused database stops the deploy before the serving release stops.
 --
 -- The write of a row's issue alone is no longer a write of a fact. From this release on, the
 -- issue of a pull request is the answer of one statement over its stored facts, and a pass of the
@@ -91,16 +96,22 @@ begin
 end
 $guard$;
 
-do $guard$
+create function attribution_database_refuse() returns void
+language plpgsql
+set search_path from current
+as $guard$
 declare
-  refusal text;
+  refusal text := attribution_database_refusal();
 begin
-  execute pg_catalog.format('select %I.attribution_database_refusal()', pg_catalog.current_schema()) into refusal;
   if refusal is not null then
     raise exception '%', refusal;
   end if;
 end
 $guard$;
+
+select attribution_database_refuse();
+
+drop function attribution_database_refuse();
 
 alter table pull_request_heads
   add column attribution_refused_at timestamptz,

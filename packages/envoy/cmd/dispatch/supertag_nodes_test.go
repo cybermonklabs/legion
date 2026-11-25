@@ -74,12 +74,17 @@ const backfillVersion = 20261121060636
 // a store meets after its backfill, and requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges
 // it as it judges the type migrations numbered above backfillVersion. A version a later release
 // holds is listed here too, as 20261110224508_post_corrections is, which legion-envoy-v34.22.0
-// first holds: a v34.11.x store meets it after its backfill all the same.
+// first holds: a v34.11.x store meets it after its backfill all the same. So are the migrations of
+// the pull request that records GitHub's pull request heads without delivery settings
+// (cybermonklabs/legion#4209), from 20261116163242 to 20261120171308, which no release holds yet;
+// none writes a row of graph_nodes.
 var unreleasedVersionsBelowTheBackfill = []int{
 	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
-	20261116085957, 20261116232217, 20261118161237, 20261118181230, 20261119020700, 20261119020800,
-	20261119020900, 20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130,
-	20261120204136, 20261121043859,
+	20261116085957, 20261116163242, 20261116163445, 20261116182209, 20261116232217, 20261117111040,
+	20261117114124, 20261117122117, 20261117172917, 20261118161237, 20261118164016, 20261118181230,
+	20261118215934, 20261119020700, 20261119020800, 20261119020900, 20261119021000, 20261119172039,
+	20261119173616, 20261120020130, 20261120023712, 20261120035910, 20261120131444, 20261120150130,
+	20261120171308, 20261120204136, 20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them

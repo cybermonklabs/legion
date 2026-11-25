@@ -45,9 +45,10 @@
 --                        row, it sets the four key columns from the row's own new texts and
 --                        `reading` to the identity of the reading that runs now. A writer cannot
 --                        store keys; the trigger overwrites any it sends. It is plpgsql, which
---                        looks a name up when it first runs in a session, so it names the schema
---                        of each function it calls and keeps the search path of this migration
---                        (set search_path from current).
+--                        looks a name up when it runs, so it keeps the search path of this
+--                        migration (set search_path from current), and a session whose search
+--                        path names another schema first calls this schema's functions all the
+--                        same.
 --   attribution_reading()
 --                        the identity of the reading: the md5 of the body of attribution_keys as
 --                        the catalog stores it (prosqlbody), with every place in its source text
@@ -58,8 +59,10 @@
 --                        trigger function, and the major version
 --                        of Postgres. No session setting, locale, collation version or minor
 --                        version enters it; a major version can change the engine of the
---                        patterns, and pg_upgrade creates the function again. It is sql with an
---                        SQL-standard body, so it binds to the two functions when it is created.
+--                        patterns, and pg_upgrade creates the function again. It is sql with a
+--                        body in a string, and keeps the search path of this migration as the
+--                        trigger function does, so it finds the two functions of this schema
+--                        whatever the session's search path names.
 --
 -- A reader takes the stored keys of a row only where its `reading` is attribution_reading(), and
 -- computes the keys from the row's texts where it is not. So a change of the reading is one
@@ -74,11 +77,15 @@
 -- no keys, this one included: one update of every row would hold each row's lock for as long as
 -- the whole statement runs.
 --
--- The functions are created in the schema of the migration. The trigger function and the
--- identity name that schema, which they can only name once it is known, so the DO block writes
--- them with format('%I', current_schema()); the identity comes after the trigger function, to
--- which it binds. The create trigger statement stands outside the block, so the census reads the
--- table it names.
+-- The functions are created in the schema of the migration, and the two that call another
+-- function of it keep the migration's search path rather than name the schema, which a statement
+-- can only name once it is known. Writing the schema in with format('%I', current_schema()) would
+-- take a DO block, and a DO block, or a body the census parses that names pg_catalog.pg_proc, takes
+-- the table-size exemption and the bounded-write admission from every later migration pending in
+-- the same deploy (pgmigrate's takesLaterExemptions): a store of the releases that ran the graph
+-- backfill holds this migration pending before the type migrations after it, whose writes of
+-- graph_nodes need that admission. So every statement here is one the census reads, and none of
+-- them takes a later migration's exemption.
 --
 -- No stored row can fail a statement here: each statement writes the catalog alone. The trigger
 -- runs on later writes only, and a row stored before it, with the defaults of 20261117111040,
@@ -105,39 +112,32 @@ select
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.array_to_string(array(select u.m from pg_catalog.unnest(coalesce(messages, '{}')) with ordinality u(m, i) order by u.i desc), E'\n') collate "C", '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t);
 end;
 
-do $reading$
-begin
-  execute pg_catalog.format($function$
-create function %1$I.pull_request_texts_keys() returns trigger
+create function pull_request_texts_keys() returns trigger
 language plpgsql
 set search_path from current
 as $body$
 begin
   select k.title_keys, k.cited_issues, k.branch_keys, k.commit_keys
     into new.title_keys, new.cited_issues, new.branch_keys, new.commit_keys
-    from %1$I.attribution_keys(new.repo, new.head_ref, new.title, new.body, new.commit_messages) k;
-  new.reading := %1$I.attribution_reading();
+    from attribution_keys(new.repo, new.head_ref, new.title, new.body, new.commit_messages) k;
+  new.reading := attribution_reading();
   return new;
 end
-$body$$function$, pg_catalog.current_schema());
-  execute pg_catalog.format($function$
-create function %1$I.attribution_reading() returns text
+$body$;
+
+create function attribution_reading() returns text
 language sql stable parallel safe
-set search_path = pg_catalog
-begin atomic
+set search_path from current
+as $identity$
   select pg_catalog.md5(pg_catalog.regexp_replace(p.prosqlbody::text,
       '[[:space:]]:(location|stmt_location|stmt_len) -?[0-9]+', '', 'g')
     || ' ' || p.proisstrict::text || ' ' || coalesce(p.proconfig::text, '')
     || ' ' || t.prosrc || ' ' || coalesce(t.proconfig::text, '')
     || ' ' || (pg_catalog.current_setting('server_version_num')::integer / 10000)::text)
   from pg_catalog.pg_proc p, pg_catalog.pg_proc t
-  where p.oid = %2$L::pg_catalog.regprocedure and t.oid = %3$L::pg_catalog.regprocedure;
-end$function$,
-    pg_catalog.current_schema(),
-    pg_catalog.format('%I.attribution_keys(text,text,text,text,text[])', pg_catalog.current_schema()),
-    pg_catalog.format('%I.pull_request_texts_keys()', pg_catalog.current_schema()));
-end
-$reading$;
+  where p.oid = 'attribution_keys(text,text,text,text,text[])'::pg_catalog.regprocedure
+    and t.oid = 'pull_request_texts_keys()'::pg_catalog.regprocedure
+$identity$;
 
 create trigger pull_request_texts_keys before insert or update on pull_request_texts
   for each row execute function pull_request_texts_keys();
