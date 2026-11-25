@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -10,23 +10,25 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { countEngineParses, displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import type { Artifact, CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import { issueDetails } from "../decisions-filter/decisions-fixtures";
+import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import { DocumentStage, DocumentStages } from "../document-stage";
 import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
+import { KEY_REPORTS } from "../page-structure";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
@@ -46,9 +48,11 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
+import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
 import { treeContext } from "../tree-drafts";
+import type { OnEditing } from "../useNodeEditing";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -65,7 +69,9 @@ import {
   node,
   OTHER_COMMIT,
   result,
+  SPEC_SLUG,
   statementNode,
+  VERIFICATION_SLUG,
   verificationView,
 } from "./verification-fixtures";
 
@@ -94,14 +100,69 @@ beforeAll(async () => {
  *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
  *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
  *  (`published`), which is what it publishes for the issue's statements where a case gives
- *  nothing else (`publishedStatements`). */
+ *  nothing else (`publishedStatements`), and the page's side of editing a row in place
+ *  (`editing`), where a case reads it. */
 interface DrawOptions {
+  readonly editing?: EditingPage;
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
   readonly staged?: boolean;
   readonly whole?: TreeNode;
+}
+
+/** The issue's documents by slug, as `artifactsBySlug` gives them to the body: the spec and the
+ *  Verification document, which the statements and the checks of the fixtures are blocks of
+ *  (`SPEC_SLUG`, `VERIFICATION_SLUG`), under the ids the fixtures' checks name. */
+const ARTIFACTS: ReadonlyMap<string, Artifact> = new Map([
+  [SPEC_SLUG, artifact("artifact-spec", SPEC_SLUG, true)],
+  [VERIFICATION_SLUG, artifact("artifact-verification", VERIFICATION_SLUG)],
+]);
+
+/** The page's side of editing a row in place (`IssuePresetPanels.tsx`'s `useOutlineEditing`): a
+ *  spy for the body's `onEditing`, which notes each document a row asks for, and hands the
+ *  call on (`held`) to `EditorStand`, so the document asked for is drawn on its stage as a plain
+ *  element standing in for its editor. */
+interface EditingPage {
+  readonly asked: Mock<OnEditing>;
+  readonly held: { set?: OnEditing };
+}
+
+function editingPage(): EditingPage {
+  const held: EditingPage["held"] = {};
+  return {
+    asked: mock<OnEditing>((artifactId, onEditor) => held.set?.(artifactId, onEditor)),
+    held,
+  };
+}
+
+/** What a body is given as its `onEditing` where a case reads none: it asks the page for
+ *  nothing. */
+const NO_EDITING: OnEditing = () => {};
+
+/** Each document the page was asked for, in order, of the calls `page` noted: the asks that end
+ *  an editing (`undefined`) left out. */
+function askedDocuments(page: EditingPage): string[] {
+  return page.asked.mock.calls.flatMap(([artifactId]) =>
+    artifactId === undefined ? [] : [artifactId]
+  );
+}
+
+/** The page's one editor of the document a row is being edited in, as `IssuePresetPanels` draws
+ *  it for the row to take onto its stage: a plain editable element (`data-editor-stand`) in the
+ *  box the page draws an editor in, on the stage of the document `held.set` was last given, and
+ *  nothing while none is. */
+function EditorStand({ held }: { held: EditingPage["held"] }): ReactNode {
+  const [edited, setEdited] = useState<string | undefined>(undefined);
+  held.set = (artifactId) => setEdited(artifactId);
+  return edited === undefined ? null : (
+    <DocumentStage artifactId={edited}>
+      <EditorBox>
+        <div contentEditable data-editor-stand="" suppressContentEditableWarning />
+      </EditorBox>
+    </DocumentStage>
+  );
 }
 
 /** Every statement `root` holds, at any depth, that has an address. */
@@ -142,12 +203,15 @@ function testClient(): QueryClient {
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
  *  `staged` inside `ViewStage` around that, as the page's stage draws the slot; under the names
  *  store, with `published` published to it and handed to the body, as the slot hands it, and no
- *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. A case
- *  that draws the body again with other reads passes it to `rerender` with the same `client`. */
+ *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed, and
+ *  where the page's side of editing is given (`editing`) the stand-in for its editor beside it.
+ *  A case that draws the body again with other reads passes it to `rerender` with the same
+ *  `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
+    editing,
     named = [],
     published: givenPublished,
     query = "",
@@ -167,9 +231,12 @@ function bodyOf(
     <NoTooltips>
       <Publisher published={published} />
       <VerificationFilterBody
+        artifacts={ARTIFACTS}
         checks={checks}
         context={view.context}
+        isClosed={false}
         namesLine={NO_FAILED_READS}
+        onEditing={editing?.asked ?? NO_EDITING}
         published={published}
         reads={reads}
         view={view.root}
@@ -180,7 +247,12 @@ function bodyOf(
   return (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
+        <MemoryRouter>
+          <DocumentStages>
+            {staged ? <ViewStage>{slot}</ViewStage> : slot}
+            {editing === undefined ? null : <EditorStand held={editing.held} />}
+          </DocumentStages>
+        </MemoryRouter>
       </ReferenceNamesProvider>
     </QueryClientProvider>
   );
@@ -708,23 +780,32 @@ test("a statement that a child's check covers draws one line of the checks drawn
 
 // A command renders as code with a copy control and `when` reads as words, and a check draws all
 // four of its attributes and a result what it recorded. The body opens where the reader's focus
-// reaches the check and closes when the focus leaves it; a press keeps it open once the focus has
-// gone, and a press on an open one closes it. The check's row says whether it is open, and its
-// words, a tab stop with no role, take the press by a pointer, Enter or Space, as its latest
-// result's cell takes a pointer's.
+// reaches the check and closes when the focus leaves it; the check's Facts control keeps it open
+// once the focus has gone, and a press on that control while it is open closes it. The check's
+// row and its control say whether it is open. The words, a tab stop with no role, take Enter by
+// asking for the check's editor, which Space does not, and the latest result's cell takes a
+// pointer's press by giving its row the focus, and keeps no press.
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
+  const page = editingPage();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
   const seeded = check({
     block_id: "c-one",
     pass_stands: { answer: "yes" },
     results: [result({ id: "result-one", screenshots: [shot] })],
   });
-  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(seeded)])], [seeded]);
+  const view = drawBody(
+    [statementNode("r1", "The page draws it.", [checkNode(seeded)])],
+    [seeded],
+    {
+      editing: page,
+    }
+  );
   try {
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    const card = view.container.querySelector("[data-verification-check]");
+    const card = view.container.querySelector<HTMLElement>("[data-verification-check]");
     const words = view.container.querySelector<HTMLElement>("[data-verification-check-words]");
+    const facts = view.container.querySelector<HTMLElement>("[data-verification-facts]");
     expect(words).not.toBeNull();
     expect([
       words?.tabIndex,
@@ -751,39 +832,267 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     act(() => words?.blur());
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
     expect(card?.getAttribute("aria-expanded")).toBe("false");
-    // The reader pressed it open, so it stays open with the focus elsewhere.
-    await user.click(words as Element);
-    act(() => words?.blur());
+    // The control is a button of the check's words' cell, a tab stop, which says the facts are
+    // shut.
+    expect([facts?.tagName, facts?.tabIndex, facts?.textContent]).toEqual([
+      "BUTTON",
+      0,
+      VERIFICATION_WORDS.facts,
+    ]);
+    expect(facts?.closest("[data-verification-check-words]")).toBeNull();
+    expect(facts?.parentElement).toBe(words?.parentElement);
+    expect(facts?.getAttribute("aria-expanded")).toBe("false");
+    // The reader kept it open with the control, so it stays open with the focus elsewhere.
+    await user.click(facts as Element);
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
-    // And a press on an open one closes it, which is what the control says it does.
-    await user.click(words as Element);
+    expect([card?.getAttribute("aria-expanded"), facts?.getAttribute("aria-expanded")]).toEqual([
+      "true",
+      "true",
+    ]);
+    // And a press on the control of an open one closes it, which is what it says it does.
+    await user.click(facts as Element);
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect([card?.getAttribute("aria-expanded"), facts?.getAttribute("aria-expanded")]).toEqual([
+      "false",
+      "false",
+    ]);
 
-    // Enter and Space on the words are the same press, the focus on them, and Space scrolls
-    // nothing: each key's own default is held back.
-    expect(document.activeElement).toBe(words);
+    // Enter on the words asks for the check's editor, and Space on them does nothing: neither
+    // opens the facts the control shut, and only Enter's own default is held back.
+    act(() => words?.focus());
     const { held, stop } = holdKeys();
     try {
       await user.keyboard("{Enter}");
-      expect(card?.getAttribute("aria-expanded")).toBe("true");
-      expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
-      await user.keyboard(" ");
+      expect(askedDocuments(page)).toEqual(["artifact-verification"]);
       expect(card?.getAttribute("aria-expanded")).toBe("false");
-      expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+      await user.keyboard(" ");
+      expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+      expect(card?.getAttribute("aria-expanded")).toBe("false");
     } finally {
       stop();
     }
-    expect(held).toEqual(["Enter", " "]);
+    expect(held).toEqual(["Enter"]);
 
-    // A pointer's press on the latest result's cell opens the facts, and they stay open once
-    // the focus that press brought has gone.
+    // A pointer's press on the latest result's cell puts the focus in the row and keeps no
+    // press: the facts it drew go with the focus.
     act(() => words?.blur());
     expect(card?.getAttribute("aria-expanded")).toBe("false");
     await user.click(view.container.querySelector("[data-verification-result]") as Element);
-    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(card);
     expect(card?.getAttribute("aria-expanded")).toBe("true");
-    expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Enter on a statement's row, and a pointer's press on a check's words, put the caret in that
+// node's text, in the document the text is written in: the statement in the spec, the check in
+// the Verification document. The page is asked for that document's editor, and the row draws it
+// on its stage in place of its words while it is the row edited. A press on the words of a check
+// is no press of its facts: they are drawn while the focus is in the row, and shut once it leaves.
+test("Enter on a statement and a press on a check's words edit each in its document's room", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const view = drawBody([served], [one], { editing: page });
+  try {
+    const statement = view.container.querySelector<HTMLElement>("[data-verification-card]");
+    const row = view.container.querySelector<HTMLElement>("[data-verification-check]");
+    const checkKey = `${served.id} ${checkNode(one).id}`;
+    expect([statement?.dataset.rowKey, row?.dataset.rowKey]).toEqual([served.id, checkKey]);
+    /** The key of the row each editor stands in, as the page's stages hold them. */
+    const stood = () =>
+      [...view.container.querySelectorAll("[data-editor-stand]")].map((stand) =>
+        stand.closest("[data-row-key]")?.getAttribute("data-row-key")
+      );
+    expect(stood()).toEqual([]);
+
+    act(() => statement?.focus());
+    await user.keyboard("{Enter}");
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+    expect(stood()).toEqual([served.id]);
+    // The editor stands where the statement's words stood.
+    expect(statement?.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
+    expect(statement?.querySelector("[data-node-words]")?.textContent).not.toContain(served.text);
+
+    const words = row?.querySelector("[data-verification-check-words]");
+    await user.click(words as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-verification"]);
+    expect(stood()).toEqual([checkKey]);
+    // The statement's words are back, and the check's are the editor's place.
+    expect(statement?.querySelector("[data-node-words]")?.textContent).toBe(served.text);
+    expect(row?.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
+
+    // The press kept no facts: they were drawn while the caret was in the check, and are shut
+    // once the focus has left it.
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(row?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A check's facts are kept drawn or shut by two acts alone: its own Facts control, which opens
+// them where they are shut and shuts them where they are open, and `o`, which keeps them drawn
+// once the focus leaves and lets them go the second time. The row and the control say the same.
+// A press on the check's words asks for its editor and keeps or shuts nothing.
+test("a check's facts open and shut from its Facts control and from o, and a press on its words keeps none", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const two = passing("c-two");
+  const view = drawBody(
+    [
+      statementNode("r1", "The page draws it.", [checkNode(one), checkNode(two)]),
+      statementNode("r2", "Nothing serves this one.", []),
+    ],
+    [one, two],
+    { editing: page }
+  );
+  try {
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[data-verification-check]")];
+    const controls = rows.map((row) => row.querySelector<HTMLElement>("[data-verification-facts]"));
+    const wordsOf = rows.map((row) => row.querySelector("[data-verification-check-words]"));
+    /** Whether each check's facts are drawn, as its row says and as its control says. */
+    const drawn = () => rows.map((row) => row.getAttribute("aria-expanded"));
+    const said = () => controls.map((control) => control?.getAttribute("aria-expanded"));
+
+    // The focus on a check's row draws its facts.
+    act(() => rows[0]?.focus());
+    expect(drawn()).toEqual(["true", "false"]);
+    expect(said()).toEqual(["true", "false"]);
+    // Its control shuts them while the focus stays in the row...
+    await user.click(controls[0] as Element);
+    expect(rows[0]?.contains(document.activeElement)).toBe(true);
+    expect(drawn()).toEqual(["false", "false"]);
+    expect(said()).toEqual(["false", "false"]);
+    // ...and opens them again, so they stay drawn once the focus moves to another row.
+    await user.click(controls[0] as Element);
+    expect(drawn()).toEqual(["true", "false"]);
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(rows[1]);
+    expect(drawn()).toEqual(["true", "true"]);
+    expect(said()).toEqual(["true", "true"]);
+    // `o` on a row keeps its facts drawn once the focus leaves, and a second `o` lets them go.
+    await user.keyboard("oj");
+    expect(drawn()).toEqual(["true", "true"]);
+    await user.keyboard("ko");
+    await user.keyboard("j");
+    expect(drawn()).toEqual(["true", "false"]);
+    expect(said()).toEqual(["true", "false"]);
+    // On the keyboard the control acts on what is drawn now: Enter on it shuts the facts the
+    // focus on it holds open, and Space opens them again, which keeps them once the focus leaves.
+    act(() => controls[1]?.focus());
+    expect(drawn()).toEqual(["true", "true"]);
+    await user.keyboard("{Enter}");
+    expect(drawn()).toEqual(["true", "false"]);
+    await user.keyboard(" ");
+    expect(drawn()).toEqual(["true", "true"]);
+    await user.keyboard("j");
+    expect(drawn()).toEqual(["true", "true"]);
+    await user.keyboard("ko");
+    await user.keyboard("j");
+    expect(drawn()).toEqual(["true", "false"]);
+    // A press on the second check's words, which were shut, and then a press on the first
+    // check's, which were kept, ask for the editor of the check pressed last, and leave the
+    // first check's facts kept and the second's shut once the focus is on no check.
+    await user.click(wordsOf[1] as Element);
+    await user.click(wordsOf[0] as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+    expect(view.container.querySelector("[data-editor-stand]")?.closest("[data-row-key]")).toBe(
+      rows[0]
+    );
+    await user.keyboard("{Home}");
+    expect(drawn()).toEqual(["true", "false"]);
+    expect(said()).toEqual(["true", "false"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Enter on a row whose node holds no text to put a caret in says why at the end of that row, in
+// the outline's words for it, until the focus moves to another row or leaves the view. A press on
+// the words of such a row only gives it the focus: it asks for no editor and says nothing.
+test("Enter on a row whose node holds no text says why at that row, and a press on its words says nothing", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const met = passing("c-one");
+  // A statement written in no document of the issue, and a comment an address named.
+  const away = { ...statementNode("r9", "Written in no document.", []), id: "notes-md#b-r9" };
+  const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const view = drawBody(
+    [statementNode("r1", "The page draws it.", [checkNode(met)]), away, named],
+    [met],
+    {
+      editing: page,
+      named: [named.id],
+    }
+  );
+  try {
+    /** Each line of a report, with the row it stands in. */
+    const reports = () =>
+      [...view.container.querySelectorAll("[data-row-report]")].map((line) => [
+        line.closest("[data-node-row]")?.getAttribute("data-node-id"),
+        line.getAttribute("role"),
+        line.textContent,
+      ]);
+    const awayRow = view.container.querySelector<HTMLElement>(`[data-node-id="${away.id}"]`);
+    await user.click(awayRow?.querySelector("[data-node-words]") as Element);
+    expect(document.activeElement).toBe(awayRow);
+    expect(reports()).toEqual([]);
+    expect(askedDocuments(page)).toEqual([]);
+
+    await user.keyboard("{Enter}");
+    expect(reports()).toEqual([[away.id, "status", KEY_REPORTS.no_text]]);
+    expect(askedDocuments(page)).toEqual([]);
+    // Going on to another row goes on from what was reported, and Enter there reports its own.
+    await user.keyboard("j");
+    expect(reports()).toEqual([]);
+    await user.keyboard("{Enter}");
+    expect(reports()).toEqual([[named.id, "status", KEY_REPORTS.no_text]]);
+    // The focus leaving the view lets go of it.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(reports()).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Escape in a row's editor gives the row back the focus and its words, and ends the editing. A
+// key typed into that editor moves no row of the tree: the row holds back each key that could
+// edit until its hold on the editor is on (`useNodeEditing.ts`), which no stand-in for the
+// editor is handed, and the tree's own handler passes over any key typed into editable text.
+test("Escape in a row's editor gives the row back its focus, and a key typed in the editor moves no row", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const view = drawBody([served], [one], { editing: page });
+  try {
+    const statement = view.container.querySelector<HTMLElement>("[data-verification-card]");
+    act(() => statement?.focus());
+    await user.keyboard("{Enter}");
+    const editor = view.container.querySelector<HTMLElement>("[data-editor-stand]");
+    expect(editor).not.toBeNull();
+    act(() => editor?.focus());
+    expect(document.activeElement).toBe(editor);
+
+    await user.keyboard("j{ArrowDown}");
+    expect(document.activeElement).toBe(editor);
+
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(statement);
+    expect(page.asked.mock.calls.at(-1)?.[0]).toBeUndefined();
+    expect(view.container.querySelectorAll("[data-editor-stand]")).toHaveLength(0);
+    expect(statement?.querySelector("[data-node-words]")?.textContent).toBe(served.text);
   } finally {
     view.unmount();
   }
@@ -1439,8 +1748,12 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     expect(served?.getAttribute("aria-expanded")).toBe("true");
     expect(rows[3]?.querySelectorAll('[role="group"]')).toHaveLength(0);
     expect(rows[3]?.hasAttribute("aria-expanded")).toBe(false);
-    // The outline's own mark is no mark of this view's rows.
-    expect(view.container.querySelectorAll("[data-row-key]")).toHaveLength(0);
+    // Each block row carries its row's id as its key, which the editing finds the row it edits
+    // by; the issue's own row holds no text and carries none.
+    expect(rows.map((row) => row.getAttribute("data-row-key"))).toEqual([
+      null,
+      ...rows.slice(1).map((row) => row.getAttribute("data-verification-row")),
+    ]);
   } finally {
     view.unmount();
   }
@@ -2088,8 +2401,8 @@ test("an agent that recorded a result is named by its role's word", async () => 
     });
     // With every check's facts open too, nothing of the title is drawn: not the issue it names,
     // nor the middle dot that set that issue apart from the role.
-    for (const words of view.container.querySelectorAll("[data-verification-check-words]")) {
-      await user.click(words);
+    for (const facts of view.container.querySelectorAll("[data-verification-facts]")) {
+      await user.click(facts);
     }
     expect(
       [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
@@ -2379,8 +2692,8 @@ test("a check under two statements names the other by its words with no mark of 
 
 /** Lays every element out `height` px tall until the answer is called, as
  *  `NodeRow.drawn.test.tsx` lays a row out: no DOM of a unit test lays anything out, and a
- *  statement's cut reads the words' own boxes (`CutWords`, through `NodeRow.tsx`'s
- *  `measureClamp`). */
+ *  words' cut, which a statement is drawn without, reads their own boxes (`CutWords`, through
+ *  `NodeRow.tsx`'s `measureClamp`). */
 function layOut(height: number): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
@@ -2397,15 +2710,16 @@ function layOut(height: number): () => void {
   };
 }
 
-// The keyboard reaches each control of the view by Tab: each chip, the "more" control of a cut
-// statement, each check's words, each link in a check's words, each link in the words of a node
-// an address named, the line of earlier results and, in the opened facts, the copy control of a
+// The keyboard reaches each control of the view by Tab: each chip, each check's words, each
+// check's Facts control, each link in a check's words, each link in the words of a node an
+// address named, the line of earlier results and, in the opened facts, the copy control of a
 // command. This reads that each of them holds tab index 0, so none is out of the tab order; the
 // order Tab takes them in is read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks
-// it. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`, so none of them takes
-// its controls out of the tab order. In document order the issue's row comes before the chip
-// All, so the Tab after `t k` reaches the first chip. The page measures only the words of rows
-// near the viewport, so the rows' words are brought near and measured before the cut is read.
+// it. The view passes `tabStops` to `NodeFacts` and `RowText`, so neither takes its controls out
+// of the tab order. In document order the issue's row comes before the chip All, so the Tab after
+// `t k` reaches the first chip. A statement is drawn whole and so draws no "more" control, which
+// a long one is laid out and measured to show: the page measures only the words of rows near the
+// viewport, so the rows' words are brought near and measured before they are read.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const summary = readsCore2();
@@ -2422,8 +2736,8 @@ test("each control of the view is a tab stop", async () => {
   // and the tree's keys reach no link inside a row.
   const noted = "See [the notes](https://example.com/notes) first.";
   const named = node({ id: "comment-1", text: noted, tree: displayTree(noted), type: "comment" });
-  // Sixty words over 400 lines of 24 px: six lines are drawn and 59 words are held back, more
-  // than the twenty a cut must hide, so the statement is cut and draws its "more" control.
+  // Sixty words over 400 lines of 24 px, which a cut would draw six lines of with a "more"
+  // control for the rest; the view draws them whole.
   const long = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
   const restore = layOut(9600);
   const near = installIntersectionObserver();
@@ -2448,19 +2762,22 @@ test("each control of the view is a tab stop", async () => {
 
       const chips = [...view.container.querySelectorAll<HTMLElement>("[data-verification-chip]")];
       expect(chips).toHaveLength(4);
-      const more = view.container.querySelector<HTMLElement>(
-        "[data-verification-card] [data-node-more]"
-      );
-      expect(more?.textContent?.startsWith(CONTROL_LABELS.read_more)).toBe(true);
+      // A statement is drawn whole however long it is, so no control reads more of it.
+      expect(view.container.querySelectorAll("[data-node-more]")).toHaveLength(0);
+      expect(
+        view.container.querySelector("[data-verification-card] [data-node-words]")?.textContent
+      ).toBe(long);
       const words = [
         ...view.container.querySelectorAll<HTMLElement>("[data-verification-check-words]"),
       ];
       expect(words).toHaveLength(2);
+      const facts = [...view.container.querySelectorAll<HTMLElement>("[data-verification-facts]")];
+      expect(facts).toHaveLength(2);
 
-      // The reader presses the first check's facts open, so they stay drawn wherever the focus
-      // goes next.
-      await user.click(words[0] as Element);
-      act(() => words[0]?.blur());
+      // The reader keeps the first check's facts open by its control, so they stay drawn
+      // wherever the focus goes next.
+      await user.click(facts[0] as Element);
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
       expect(
         [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
           row.getAttribute("aria-expanded")
@@ -2499,7 +2816,7 @@ test("each control of the view is a tab stop", async () => {
           `chip ${chip.getAttribute("data-verification-chip")}`,
           chip,
         ]),
-        ["more", more],
+        ...facts.map((one, at): [string, HTMLElement] => [`facts of check ${at + 1}`, one]),
         ...words.map((one, at): [string, HTMLElement] => [`words of check ${at + 1}`, one]),
         ...links.map((link): [string, HTMLElement] => [`link ${link.getAttribute("href")}`, link]),
         ...otherLinks.map((link): [string, HTMLElement] => [
@@ -2524,18 +2841,23 @@ test("each control of the view is a tab stop", async () => {
 
 // The view's tree answers the outline's keys by a handler of its own. `j`, `k`, the arrows, Home
 // and End move the focus from the row it is on, or from the row that holds the control it is on,
-// and the tab stop moves with it; Enter on a row presses its checks' facts, `o` keeps them drawn,
-// and a pointer opens them from a check's latest result, from its words and from its statement's
-// words. The tree holds back each key it acts on and no other, and a key that goes on with a
+// and the tab stop moves with it; Enter on a statement's row or a check's asks for the editor of
+// the document its node is written in, `o` keeps the facts of the checks it reaches drawn, and a
+// check's own Facts control opens and shuts them. A pointer's press on a statement's words or a
+// check's words asks for the editor too, and one on a check's latest result only gives its row
+// the focus. The tree holds back each key it acts on and no other, and a key that goes on with a
 // chord the reader began is the page's keymap's, so `t k` from inside the view reaches it.
-test("the view's tree answers the outline's keys, and a check's facts open from its words, its result and its statement", async () => {
+test("the view's tree answers the outline's keys, Enter and a press on a row's words ask for its editor, and a check's facts open from Facts and o", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
   const two = passing("c-two");
   const loose = passing("c-loose");
   const served = statementNode("r1", "The page draws it.", [checkNode(one), checkNode(two)]);
   const unserved = statementNode("r2", "Nothing serves this one.", []);
-  const view = drawBody([served, unserved, checkNode(loose)], [one, two, loose]);
+  const page = editingPage();
+  const view = drawBody([served, unserved, checkNode(loose)], [one, two, loose], {
+    editing: page,
+  });
   // Each key the view held back, in the order pressed.
   const { held, stop } = holdKeys();
   try {
@@ -2616,14 +2938,15 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     ]);
     held.length = 0;
 
-    // On a check's row the focus drew its facts; Enter shuts them and a second Enter opens them,
-    // which keeps them drawn once the focus moves on.
+    // On a check's row the focus drew its facts; its Facts control shuts them and, pressed again,
+    // opens them, which keeps them drawn once the focus moves on.
     await user.keyboard("k");
     expect(standing().focus).toBe("c-one");
     expect(opened()).toEqual(["true", "false", "false"]);
-    await user.keyboard("{Enter}");
+    const facts = rows[2]?.querySelector("[data-verification-facts]") as Element;
+    await user.click(facts);
     expect(opened()).toEqual(["false", "false", "false"]);
-    await user.keyboard("{Enter}");
+    await user.click(facts);
     expect(opened()).toEqual(["true", "false", "false"]);
     await user.keyboard("j");
     expect(standing().focus).toBe("c-two");
@@ -2636,22 +2959,23 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     expect(opened()).toEqual(["true", "true", "false"]);
     await user.keyboard("j");
     expect(opened()).toEqual(["true", "false", "false"]);
-    // Enter on a statement's row opens the facts of each of its checks, and where all of them
-    // are drawn a second Enter shuts them.
+    // Enter on a statement's row asks for the spec's editor, and on a check's row for the
+    // Verification document's; neither presses the facts of any check.
     await user.keyboard("{Home}j");
     expect(standing().focus).toBe("r1");
     await user.keyboard("{Enter}");
-    expect(opened()).toEqual(["true", "true", "false"]);
-    await user.keyboard("{Enter}");
-    expect(opened()).toEqual(["false", "false", "false"]);
-    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    // Enter and `o` on the issue's row press nothing, and are not held back.
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+    expect(opened()).toEqual(["true", "false", "false"]);
+    await user.keyboard("j{Enter}");
+    expect(standing().focus).toBe("c-one");
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-verification"]);
+    expect(opened()).toEqual(["true", "false", "false"]);
+    // Enter and `o` on the issue's row press nothing, ask for nothing, and are not held back.
     await user.keyboard("{Home}{Enter}o");
-    expect(opened()).toEqual(["false", "false", "false"]);
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-verification"]);
+    expect(opened()).toEqual(["true", "false", "false"]);
     expect(held).toEqual([
       "k",
-      "Enter",
-      "Enter",
       "j",
       "o",
       "j",
@@ -2661,24 +2985,27 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
       "Home",
       "j",
       "Enter",
+      "j",
       "Enter",
       "Home",
     ]);
 
-    // A pointer's press on the statement's words does what Enter on its row does.
+    // A pointer's press on the statement's words asks for the spec's editor, and one on a
+    // check's words for the Verification document's. A press on a check's latest result asks for
+    // none. No press keeps or shuts any facts: once the focus is on the issue's row again, only
+    // the facts kept by the Facts control stand open.
+    page.asked.mockClear();
     const words = rows[1]?.querySelector("[data-node-words]");
     expect(words?.textContent).toBe(served.text);
     await user.click(words as Element);
-    expect(opened()).toEqual(["true", "true", "false"]);
-    await user.click(words as Element);
-    expect(opened()).toEqual(["false", "false", "false"]);
-    // And a press on a check's latest result or on its words opens its facts, which stay drawn
-    // once the focus has gone.
-    await user.click(rows[2]?.querySelector("[data-verification-result]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
     await user.click(rows[3]?.querySelector("[data-verification-check-words]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-verification"]);
+    await user.click(rows[2]?.querySelector("[data-verification-result]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-verification"]);
     await user.keyboard("{Home}");
     expect(standing().focus).toBe("issue");
-    expect(opened()).toEqual(["true", "true", "false"]);
+    expect(opened()).toEqual(["true", "false", "false"]);
 
     // The page's keymap listens on `window`, as `KeymapProvider` binds it. While a chord the
     // reader began is pending, no key is the tree's: `j` moves nothing, and `k` goes on with
@@ -2724,7 +3051,8 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
 // others. The ids are the tree's rows in reading order, the issue's first and each check under a
 // statement by that placement of it; and a key that moves onto a check that serves no statement,
 // or onto a node an address named, gives the tab stop to that row's own element, where Enter
-// presses that check and no other.
+// asks for that check's editor and no other row's. Each block row carries its id as the key the
+// editing finds it by.
 test("each row of the view's tree carries its own id, and a key gives the tab stop to the row it moves onto", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -2732,7 +3060,9 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
   const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
   const unserved = statementNode("r2", "Nothing serves this one.", []);
   const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const page = editingPage();
   const view = drawBody([served, unserved, checkNode(loose), named], [one, loose], {
+    editing: page,
     named: [named.id],
   });
   try {
@@ -2744,6 +3074,12 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
       unserved.id,
       checkNode(loose).id,
       named.id,
+    ]);
+    // Each block row carries its row's id as its key, which the editing finds the row it edits
+    // by; the issue's row holds no text and carries none.
+    expect(rows.map((row) => row.getAttribute("data-row-key"))).toEqual([
+      null,
+      ...rows.slice(1).map((row) => row.getAttribute("data-verification-row")),
     ]);
     expect(view.container.querySelectorAll('[role="treeitem"]')).toHaveLength(rows.length);
     // The loose check's own element, and the named node's.
@@ -2766,14 +3102,16 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
     expect(standing()).toEqual({ focus: "comment", stops: ["comment"] });
     await user.keyboard("k");
     expect(standing()).toEqual({ focus: "c-loose", stops: ["c-loose"] });
-    // On the loose check's row the focus drew its facts; Enter shuts them, on that row alone.
+    // On the loose check's row the focus drew its facts; Enter asks for that check's editor, in
+    // the Verification document, and presses nothing.
     const opened = () =>
       [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
         row.getAttribute("aria-expanded")
       );
     expect(opened()).toEqual(["false", "true"]);
     await user.keyboard("{Enter}");
-    expect(opened()).toEqual(["false", "false"]);
+    expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+    expect(opened()).toEqual(["false", "true"]);
   } finally {
     view.unmount();
   }

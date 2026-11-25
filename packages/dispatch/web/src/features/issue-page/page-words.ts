@@ -400,6 +400,9 @@ export const VERIFICATION_WORDS = freeze({
    *  view draws with it, which serve it from an issue under this one. */
   elsewhere_many: "more checks elsewhere",
   elsewhere_one: "more check elsewhere",
+  /** A check's own control, which opens its facts where they are shut and shuts them where they
+   *  are open, and keeps them so once the focus leaves the check. */
+  facts: "Facts",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
