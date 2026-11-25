@@ -220,9 +220,10 @@ check "naming the row" \
   "$(contains "$out" '^::error file=.github/log-guard-unread.tsv,line=2::row 2 names .scripts/made.sh. in .github/workflows/app.yaml, and no script name there now goes unread')"
 
 # The two ways review 6054247075 found a script go unread: env handed an expansion of many words
-# before the shell that runs it (airlock-check.test.sh's `env "${unset_inputs[@]}" … bash x.sh`),
-# and a literal path a script names from a directory above its own after `cd "$(dirname "$0")/.."`
-# (up-dispatch.sh's `. scripts/compose-refusal.sh`). Each script is read, and its client named.
+# before the shell that runs it (`env "${unset_inputs[@]}" … bash x.sh`, as the airlock check's
+# test runs it), and a literal path a script names from a directory above its own after
+# `cd "$(dirname "$0")/.."` (`. scripts/compose-refusal.sh`, as the deploy script for Dispatch
+# names it). Each script is read, and its client named.
 echo "case: a script behind env and an expansion, and one named from above the script's own directory"
 root=$(fixture env-and-parent "$(printf '%s\n' 'inputs=(-u A)' 'env "${inputs[@]}" PATH=/bin "$@" bash scripts/deep/run.sh')")
 mkdir -p "$root/scripts/deep" "$root/scripts/lib"
