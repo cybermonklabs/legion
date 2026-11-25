@@ -434,11 +434,10 @@ const LANDING_PATH = "/api/v1/landing";
 
 /** Whether `read` is the landing read that carries `page`'s own data.
  *
- *  A page's own data is whatever answers what that page shows, whichever route answered it. It
- *  used to be one per-resource read the page gated on; the landing carries those same rows now,
- *  so a landing asked for this page is that page's own data as much as the read it stands in
- *  for. Each `ownData` below accepts either, so this row measures the waves before a page can
- *  draw whether its rows came from the one route or from the many.
+ *  A page's own data is whatever answers what that page shows, whichever route answers it: the
+ *  landing route (`?page=`) or the per-resource read it stands in for. Each `ownData` below
+ *  accepts either, so this row measures the waves before a page can draw whether its rows come
+ *  from the one route or from the many.
  */
 function landingFor(read: Read, page: "issue" | "board" | "inbox" | "document"): boolean {
   return read.pathname === LANDING_PATH && new URLSearchParams(read.search).get("page") === page;

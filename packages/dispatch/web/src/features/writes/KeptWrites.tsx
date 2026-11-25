@@ -4,6 +4,28 @@ import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../.
 import { keptRecords, keptWrites } from "./shown-writes";
 import { useNotTakenUp, useWriteSelection, useWrites } from "./write-store";
 
+/** Where focus goes when a Discard takes its button off the page: the next Discard button in the
+ *  list (else the one before it), and once none is left, the next control after the list or the
+ *  sign-in page's link before it (`SignInPage` in `app.tsx`), so a keyboard reader does not land
+ *  on the page body. */
+function nextControlAfterDiscard(button: HTMLButtonElement): HTMLElement | null {
+  const section = button.closest("section");
+  if (section === null) return null;
+  const buttons = [...section.querySelectorAll<HTMLButtonElement>("button")];
+  const index = buttons.indexOf(button);
+  const sibling = buttons[index + 1] ?? buttons[index - 1];
+  if (sibling !== undefined) return sibling;
+  const scope = section.parentElement?.closest("main") ?? section.parentElement;
+  if (scope === null) return null;
+  const controls = [
+    ...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled])"),
+  ].filter((control) => !section.contains(control));
+  const after = controls.find(
+    (control) => (section.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+  );
+  return after ?? controls.at(-1) ?? null;
+}
+
 /**
  * What a lapsed session keeps, on the sign-in page: the person's writes by name, under the login
  * whose sign-in takes them up again (`Writes.signedIn`), so they see what waits for them; one
@@ -43,9 +65,18 @@ export function KeptWrites(): ReactNode {
                       </span>
                       <button
                         className={secondaryButtonCompact}
-                        onClick={() =>
-                          "id" in write ? writes.discard(write.id) : writes.discardKept(write.key)
-                        }
+                        onClick={(event) => {
+                          const button = event.currentTarget;
+                          const next =
+                            document.activeElement === button
+                              ? nextControlAfterDiscard(button)
+                              : null;
+                          const dropped =
+                            "id" in write
+                              ? writes.discard(write.id)
+                              : writes.discardKept(write.key);
+                          if (dropped) next?.focus({ preventScroll: true });
+                        }}
                         type="button"
                       >
                         Discard

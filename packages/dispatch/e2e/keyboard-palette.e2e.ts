@@ -685,11 +685,10 @@ test("a row whose control has gone since the palette opened does nothing", async
 // The bar's chunk failing while the browser is offline leaves the bar to open on a later press.
 // Its open asks for the chunk under `importWhenOnline`, and again on every open while it is not
 // in, and Escape in the box that holds the keys meanwhile calls that open off
-// (`web/src/features/shell/asked-surface.tsx`). Before, the open's one request failed offline and
-// was swallowed, the bar stayed open with nothing drawn, and each later `$mod+k` set it open again
-// and asked for nothing until a reload. The bar's prefetch is held on the wire until the page is
-// offline and then fails as a download the outage cut, and every request for the chunk fails
-// while the page is offline.
+// (`web/src/features/shell/asked-surface.tsx`). Otherwise a swallowed offline failure would leave
+// the bar open with nothing drawn, and each later `$mod+k` would ask for nothing until a reload.
+// The bar's prefetch is held on the wire until the page is offline and then fails as a download
+// the outage cut, and every request for the chunk fails while the page is offline.
 //
 // Chromium takes a context offline, and back, in two halves that the row cannot order: the page's
 // own reading of the network (`navigator.onLine`, and its `offline` and `online` events) and the

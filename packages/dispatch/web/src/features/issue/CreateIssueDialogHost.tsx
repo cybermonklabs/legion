@@ -20,7 +20,7 @@ import { useContentDrawn } from "../shell/content-drawn";
  * as it did from the entry, and the keys typed straight after `c` reach its title and not the
  * page - on an issue page a digit would write the issue's priority, and `e` would put the rest
  * into the issue's own title. So the chunk is started as soon as the page's content has drawn
- * (`features/shell/content-drawn.ts`), as the pending-writes host starts its three
+ * (`features/shell/content-drawn.ts`), as the pending-writes host starts its two
  * (`features/writes/write-hosts.tsx`): the shell mounts this host before the route's chunk and
  * reads are in, and a start at that mount would share the landing's network with them. Nobody is
  * waiting on it yet, which is what `prefetchChunk` tells the chunk-failure recovery

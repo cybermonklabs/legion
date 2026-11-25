@@ -209,7 +209,7 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
   });
   // Each document this page fetched for an address of this issue: the first and the reload the
   // failed chunk asks for, which is of the Artifacts tab's address, since that is the tab the
-  // reader is on by then. The `load` event is not that count any more - the entry starts the
+  // reader is on by then. The `load` event cannot serve as that count: the entry starts the
   // landed page's document chunks as the document parses (`web/src/app.tsx`,
   // `preloadRouteChunk`), and a chunk held on the wire, as this row holds one, holds the load
   // event with it, so the first load would be reported only once the row had let the chunk go.

@@ -50,9 +50,10 @@ function caretAt(node: Node, offset: number): void {
   fireEvent(document, new Event("selectionchange"));
 }
 
-// A failed layer asks for its chunk again for a hover that would open a card, and for no other
+// A failed layer asks for its chunk again for a hover over a marked reference, and for no other
 // pointer: the card opens none for a touch, a held button, a move inside the same reference, or
-// a reference on the issue page, so no one waits on a download that one would start.
+// a reference on the issue page, so none of those asks. A reference whose address the card cannot
+// parse still asks, since only the card's chunk parses it, and the reader did point at a reference.
 test("a pointer over a reference asks for a card, and a touch, a held button, a move inside it or a reference that opens no card on hover does not", () => {
   const ask = mock(() => undefined);
   const view = drawPage(ask);

@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
@@ -8,6 +9,7 @@ import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, api } from "../../api/client";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
+import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 
 // The store's take-up of what a reload kept waits for every kind of write, a chunk of its own
@@ -228,6 +230,95 @@ test("the sign-in page's kept list shows a write the reload kept as refused as n
     expect(kept.querySelector(`[data-kept-write="${refused}"]`)).toBeNull();
     expect(kept).toHaveTextContent("CORE-2 set to todo");
     expect(window.sessionStorage.getItem(`dispatch.write:${out}`)).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+// `KeptWrites` draws kept records that the store has not taken up beside the store's own rows, so
+// `KeptWritesHost`'s boundary reset covers both: once a faulty record leaves, the list draws the
+// remaining kept records again without waiting for a store row to change.
+test("the sign-in page's kept list draws again after a render throw once its kept records change", async () => {
+  const bad = keyMinted(Date.now());
+  const good = keyMinted(Date.now() + 1);
+  keepWrite(window.sessionStorage, bad, {
+    label: "CORE-1 set to done",
+    state: { refusal: { kind: "stopped" }, status: "refused" },
+  });
+  keepWrite(window.sessionStorage, good, { label: "CORE-2 set to todo" });
+  const client = new QueryClient();
+  const writes = writesOf(client);
+  const readReal = writes.notTakenUp;
+  const mapped = new WeakMap<readonly KeptWrite[], readonly KeptWrite[]>();
+  const spy = spyOn(writes, "notTakenUp").mockImplementation(() => {
+    const real = readReal();
+    const cached = mapped.get(real);
+    if (cached !== undefined) return cached;
+    const next = real.map((record) =>
+      record.key === bad ? { ...record, label: (<Fault />) as unknown as string } : record
+    );
+    mapped.set(real, next);
+    return next;
+  });
+  const logged = quietConsoleError();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeptWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    const alert = await screen.findByRole("alert", {
+      name: "Could not show the changes this page kept.",
+    });
+    expect(alert).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
+    expect(logged).toHaveBeenCalled();
+
+    act(() => {
+      expect(writes.discardKept(bad)).toBe(true);
+    });
+    const kept = await screen.findByRole("region", { name: "Kept changes" });
+    expect(kept).toHaveTextContent("CORE-2 set to todo");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    spy.mockRestore();
+    logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// Discarding the last row of the sign-in page's kept list removes the list from the page, so
+// focus moves to the sign-in page's link instead of dropping to the page body.
+test("Discard on the last row of the sign-in page's kept list moves focus to the sign-in link", async () => {
+  const user = userEvent.setup();
+  const refused = keyMinted(Date.now());
+  keepWrite(window.sessionStorage, refused, {
+    label: "CORE-1 set to done",
+    state: { refusal: { kind: "stopped" }, status: "refused" },
+  });
+  const client = new QueryClient();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <main>
+        <section>
+          <a href="/auth/start">Sign in with Google</a>
+          <KeptWritesHost />
+        </section>
+      </main>
+    </QueryClientProvider>
+  );
+  try {
+    const signIn = screen.getByRole("link", { name: "Sign in with Google" });
+    const kept = screen.getByRole("region", { name: "Kept changes" });
+    const discard = within(kept).getByRole("button", { name: "Discard" });
+    act(() => discard.focus());
+    expect(discard).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
+    expect(
+      signIn,
+      "Discard on the last row left focus on the body instead of the sign-in link"
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }

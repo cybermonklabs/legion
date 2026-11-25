@@ -799,11 +799,11 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   });
 
   // Tab and Shift+Tab stay in the box that holds the keys, as they stay in an open dialog
-  // (`Placeholder` in `web/src/features/shell/asked-surface.tsx`). Before, Shift+Tab put the focus
-  // on the page, the box's blur called the open off, and the next digit wrote the issue's
-  // priority; Tab from the box, the shell's last control, took the focus out of the document, so
-  // the open stood while the reader's keys went elsewhere. The box is found by the text it shows,
-  // so each row reads the keys' claim before the box's name.
+  // (`Placeholder` in `web/src/features/shell/asked-surface.tsx`). Letting Shift+Tab leave the box
+  // would focus the page, blur the box to cancel the open, and let the next digit write the
+  // issue's priority. Letting Tab leave the box, the shell's last control, would take focus out of
+  // the document so the open stays while the reader's keys go elsewhere. The box is found by the
+  // text it shows, so each row reads the keys' claim before the box's name.
   for (const key of ["Shift+Tab", "Tab"]) {
     test(`c, ${key} and 1 while the create dialog's chunk is on its way write no priority, and the dialog opens with 1 in its title`, async ({
       browser,
@@ -845,8 +845,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   }
 
   // The focus goes back to the control the open was pressed from as the chunk lands, and the page
-  // does not scroll to it: a reader who scrolled while the box was up stays where they scrolled
-  // to. Before, the landing scrolled the page back to that control.
+  // does not scroll to it (`preventScroll`): a reader who scrolled while the box was up stays
+  // where they scrolled to.
   test("a create dialog whose chunk lands after the reader scrolled leaves the page where they scrolled it", async ({
     browser,
   }) => {
@@ -885,8 +885,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   });
 
   // A dialog that closes gives the focus back to the control it was opened from, and the page
-  // does not scroll to it: a reader who scrolled while the dialog was up stays where they
-  // scrolled to (`useDialog`). Before, the close scrolled the page back to that control.
+  // does not scroll to it (`useDialog`, `preventScroll`): a reader who scrolled while the dialog
+  // was up stays where they scrolled to.
   test("a create dialog closed after the reader scrolled leaves the page where they scrolled it", async ({
     browser,
   }) => {
@@ -925,9 +925,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
 
   // A dialog whose chunk lands after the reader has moved on opens nothing: neither on a page they
   // went back to, whose address moved under the box that held the open, nor over a field they went
-  // on to after calling the open off. The late chunk takes no focus from where they are. Before,
-  // the dialog opened whenever its download ended - minutes later, after an outage - and took the
-  // focus.
+  // on to after calling the open off. The late chunk takes no focus from where they are, even when
+  // its download ends minutes later after an outage.
   //
   // The row goes back twice, because the two moves call the open off in two ways. Back from an
   // issue tab to the same issue's page, the shell leaves the focus where it is - it moves the focus

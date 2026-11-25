@@ -225,9 +225,11 @@ interface Held {
  *   document, cancel nothing, and let the surface open later while the reader's keys went
  *   elsewhere.
  * - Escape calls the open off, and goes no further, so a dialog the box sits over is not closed
- *   with it. An Escape that ends an input method's composition only ends it, as it does in the
- *   open surface (`keymap.ts` and `app.tsx` skip such a key too), and what the reader typed stays.
- *   Safari sends that Escape with `isComposing` false, and `inputMethodKey` knows it too.
+ *   with it. An Escape that ends an input method's composition only ends it, and what the reader
+ *   typed stays. `inputMethodKey` catches both `isComposing` and Safari's unmarked keyCode 229
+ *   Escape, as Details' Escape rule (`escapeClosesDrawer` in `useDialog.ts`) does. An open
+ *   surface's own Escape runs through `useDialog` and `keymap.ts`, which skips `isComposing`
+ *   alone and not keyCode 229.
  * - Enter does nothing: the box is in no form. That is the safe choice: in the surface an Enter
  *   can submit, and a submit the reader made before they saw the surface is one they did not see.
  * - Every other key types into the box, and the surface takes what it holds as `typed`.

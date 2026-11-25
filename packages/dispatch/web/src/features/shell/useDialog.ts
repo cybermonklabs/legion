@@ -8,7 +8,13 @@ import {
 } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
-import { DIALOG_SCOPE, isEditableTarget, useKeymap, useKeymapScope } from "./keymap";
+import {
+  DIALOG_SCOPE,
+  inputMethodKey,
+  isEditableTarget,
+  useKeymap,
+  useKeymapScope,
+} from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
@@ -132,7 +138,7 @@ export function dialogOpen(): boolean {
  * and not drawn yet (`AppShell`, `app.tsx`), which calls the open off. Both listeners read this
  * one rule, so an Escape that leaves a drawn Details open calls no waiting open off. It passes by:
  * - an Escape already handled;
- * - one that ends an input method's composition, which is the input method's;
+ * - one that ends an input method's composition (`inputMethodKey`), which is the input method's;
  * - one in a field, inside the drawer or beside it, which keeps its own Escape to leave the field
  *   or close its picker: an editable element, a select, a textarea, and every input but the
  *   button family, a checkbox and a radio. A range, a colour and a file input are fields here,
@@ -145,7 +151,7 @@ export function dialogOpen(): boolean {
  *   text).
  */
 export function escapeClosesDrawer(event: KeyboardEvent): boolean {
-  if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
+  if (event.key !== "Escape" || event.defaultPrevented || inputMethodKey(event)) return false;
   const { target } = event;
   const field =
     target instanceof HTMLElement &&

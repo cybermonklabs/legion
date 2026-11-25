@@ -6,7 +6,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { KeymapProvider } from "./KeymapProvider";
 import { useKeymap } from "./keymap";
-import { useDialog } from "./useDialog";
+import { escapeClosesDrawer, useDialog } from "./useDialog";
 
 function Dialog({
   label,
@@ -845,5 +845,32 @@ test("a dialog opened inside another in one commit gives the focus back into the
   } finally {
     frames.restore();
     view.unmount();
+  }
+});
+// An Escape that ends an input method's composition does not close Details: Chromium marks that
+// key `isComposing`, and Safari sends it after compositionend with `isComposing` false and
+// keyCode 229 (WebKit bug 165004). A plain Escape on the page still closes Details.
+test.each([
+  ["isComposing", { isComposing: true }],
+  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+] as const)("escapeClosesDrawer ignores an Escape that ends a composition, marked by %s", (_mark, marked) => {
+  const seen: boolean[] = [];
+  const onKeyDown = (event: KeyboardEvent) => {
+    seen.push(escapeClosesDrawer(event));
+  };
+  document.addEventListener("keydown", onKeyDown);
+  try {
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...marked, key: "Escape" })
+    );
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+    );
+    expect(seen, "the composition Escape closed Details or the plain Escape did not").toEqual([
+      false,
+      true,
+    ]);
+  } finally {
+    document.removeEventListener("keydown", onKeyDown);
   }
 });

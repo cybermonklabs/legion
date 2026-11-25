@@ -13,6 +13,7 @@ import { useContentDrawn } from "../shell/content-drawn";
 import { ErrorView } from "../shell/ErrorBoundary";
 import { KeptWrites } from "./KeptWrites";
 import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
+import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
 
 /**
@@ -119,13 +120,17 @@ function prefetchWriteKinds(): void {
   prefetchChunk(() => writeKinds().then(kindsRegistered));
 }
 
-/** What a list's boundary draws afresh on (`ChunkBoundary`'s `reset`): which writes it shows, and
- *  where each stands. A change of either may be the reader's way to the list's controls - a write
- *  pressed or gone, one refused with Retry and Discard, one late with Stop trying - while an
- *  upload's progress, which changes a row at every percent, changes neither: a boundary whose
- *  chunk keeps failing would otherwise ask for it again at every percent of an upload. */
-function shownWritesKey(rows: readonly Write[]): string {
-  return rows.map((row) => `${row.id}:${row.status}`).join(",");
+/** What a list's boundary draws afresh on (`ChunkBoundary`'s `reset`): which writes it shows
+ *  (both the store's rows and any kept records not yet taken up), and where each stands. A change
+ *  of either may be the reader's way to the list's controls - a write pressed or gone, one
+ *  refused with Retry and Discard, one late with Stop trying - while an upload's progress, which
+ *  changes a row at every percent, changes neither: a boundary whose chunk keeps failing would
+ *  otherwise ask for it again at every percent of an upload. */
+function shownWritesKey(rows: readonly Write[], records: readonly KeptWrite[] = []): string {
+  const storeRows = rows.map((row) => `${row.id}:${row.status}`).join(",");
+  if (records.length === 0) return storeRows;
+  const kept = records.map((record) => `${record.key}:${record.state.status}`).join(",");
+  return `${storeRows}|${kept}`;
 }
 
 /** The pending-writes indicator, for the shell's status corner. */
@@ -208,10 +213,12 @@ export function KeptWritesHost(): ReactNode {
       window.removeEventListener("online", prefetchWriteKinds);
     };
   }, []);
-  // A list whose render threw keeps its alert in its place until a change of the store's writes
-  // it shows, or of where one stands, draws it again, so a fault that one write's row brings ends
-  // with that row.
-  const reset = useMemo(() => shownWritesKey(rows), [rows]);
+  // A list whose render threw keeps its alert in its place until a change of the writes it shows
+  // - the store's rows or the kept records it has not taken up - or of where one stands draws it
+  // again, so a fault that one write's row brings ends with that row. The alert goes with the
+  // last write as well: once neither `rows` nor `records` holds anything, this host draws
+  // nothing and unmounts the boundary.
+  const reset = useMemo(() => shownWritesKey(rows, records), [rows, records]);
   return rows.length === 0 && records.length === 0 ? null : (
     <ChunkBoundary
       fallback={<CouldNotShow className="mt-6" list="the changes this page kept" />}

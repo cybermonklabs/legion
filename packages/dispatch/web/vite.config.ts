@@ -213,7 +213,7 @@ export default defineConfig({
     // split the shell: the Inbox and its peek, the ask card, the search bar, the Create issue
     // dialog, the shortcut sheet, the reference-preview layer, the event-refresh map, the headless
     // Markdown engine the shell warms at boot, the new issue page's frame shell, the pending-writes
-    // indicator, the kept writes and the kinds of write are each a chunk of their own now, and
+    // indicator and the kinds of write are each a chunk of their own now, and
     // `@legion/contracts`' subpaths keep that package's reference table and zod's schema modules
     // out of a page that reads neither - in the editor's chunks too, which import that package
     // by subpath alone (`packages/proof-editor/src/block-pointers.ts`).

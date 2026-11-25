@@ -35,8 +35,8 @@ import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import {
   fetchedChunk,
-  holdAssetUntilReleased,
   PENDING_WRITES_CHUNK,
+  pageAssetPath,
   recordTabReloads,
   shellLoads,
   tabReloads,
@@ -1706,17 +1706,19 @@ test("a session that lapses while the kinds of write never arrive lists the writ
   await keptThroughALapse(browser, "never arrive");
 });
 
-/** What becomes of the kinds of write in `keptOnAPageThatLoadsSignedOut`: held on the wire for
- *  good, or failed online. */
-type KindsOnASignedOutLoad = "held" | "fail";
+/** What becomes of every script but the entry in `keptOnAPageThatLoadsSignedOut`: held on the
+ *  wire for good, or failed online. */
+type OtherScriptsOnASignedOutLoad = "held" | "fail";
 
 /**
  * A page that loads signed out, as a tab does that reloads after its session lapsed: the store
  * takes up nothing until someone signs in (`Writes.resume`, `web/src/app.tsx`), so the sign-in
  * page lists every write the reload kept from its own record, by its label, under its login. The
  * list is in the entry, with no chunk of its own (`web/src/features/writes/write-hosts.tsx`), so
- * no download can hold it back or keep it away. The one chunk the sign-in page asks for is every
- * kind of write, for a take-up that has not begun (`KeptWritesHost`), and it fares as `kinds`
+ * no download can hold it back or keep it away. Beside the issue route's chunk that the reload
+ * preloads at boot (`preloadRouteChunk`), the sign-in page itself asks for the kinds of write for
+ * a take-up that has not begun (`KeptWritesHost`). Here the `/assets/*.js` route lets only the
+ * entry script that `index.html` names through, and every other script fares as `otherScripts`
  * says: held on the wire for good, or failed online with the tab's three recovery reloads spent,
  * so no reload follows. A record kept as refused reads "Not saved" and offers Discard, which drops
  * it from the tab with no kind of write in (`Writes.discardKept`). Alice's change of one issue's
@@ -1725,7 +1727,7 @@ type KindsOnASignedOutLoad = "held" | "fail";
  */
 async function keptOnAPageThatLoadsSignedOut(
   browser: Browser,
-  kinds: KindsOnASignedOutLoad
+  otherScripts: OtherScriptsOnASignedOutLoad
 ): Promise<void> {
   await createProject({ key: "KW", name: "Keyed writes" });
   const outIssue = await createIssue({ project: "KW", title: "Kept out for a signed-out load" });
@@ -1744,24 +1746,36 @@ async function keptOnAPageThatLoadsSignedOut(
     await expect.poll(() => keptWrites(page)).toBe(2);
     const spent = await recordTabReloads(page, [3, 2, 1]);
 
-    // No document asks for the kinds again once they are in, so the next request for them is the
-    // reloaded page's.
-    let kindsAsked: Promise<unknown>;
-    if (kinds === "held") {
-      kindsAsked = (await holdAssetUntilReleased(page, WRITE_KINDS_CHUNK)).url;
-    } else {
-      await page.route(WRITE_KINDS_CHUNK, (route) => route.abort());
-      kindsAsked = page.waitForEvent("requestfailed", (request) =>
-        WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
-      );
-    }
+    const entry = await pageAssetPath(
+      /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
+      "module script",
+      baseUrl
+    );
+    expect(entry, "index.html did not name an entry script under /assets/").toMatch(
+      /^\/assets\/[^/]+\.js$/u
+    );
+    let entryServed = 0;
+    const kindsAsked = Promise.withResolvers<string>();
+    // Let only the entry script through; every other script (the preloaded issue route chunk,
+    // the kinds of write, and any chunk the kept list might depend on) is held or fails online.
+    await page.route("**/assets/*.js", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === entry) {
+        entryServed += 1;
+        return route.continue();
+      }
+      if (WRITE_KINDS_CHUNK.test(path)) kindsAsked.resolve(path);
+      return otherScripts === "fail" ? route.abort() : undefined;
+    });
     // The browser drops alice's session cookie, so Dispatch names no one to the reloaded page's
     // first read (`readLanding`, `web/src/api/queries.ts`), as it names no one once a session has
-    // lapsed.
+    // lapsed. `domcontentloaded` rather than `load`: holding the preloaded route chunk on the wire
+    // holds the `load` event with it.
     await alice.clearCookies();
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
-    await kindsAsked;
+    await kindsAsked.promise;
+    expect(entryServed, "the /assets/*.js route did not serve the entry script").toBeGreaterThan(0);
     const kept = page.getByRole("region", { name: "Kept changes" });
     await expect(kept, "the sign-in page lists nothing the reload kept").toBeVisible();
     await expect(kept).toContainText("Kept until you sign in again as alice:");
@@ -1780,7 +1794,7 @@ async function keptOnAPageThatLoadsSignedOut(
     await expect.poll(() => keptWrites(page), "Discard left the refusal in the tab").toBe(1);
     await expect(out).toHaveCount(1);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
-    expect(await tabReloads(page), "the kinds' download reloaded the page").toEqual(spent);
+    expect(await tabReloads(page), "a blocked script download reloaded the page").toEqual(spent);
   } finally {
     await alice.close();
   }
@@ -1788,21 +1802,22 @@ async function keptOnAPageThatLoadsSignedOut(
 
 // The sign-in page's list is the reader's one warning, before they sign in as someone else, of
 // the writes that sign-in drops, so on a page that loads signed out it draws from the entry
-// alone: a download held on the wire - here the kinds of write, the one chunk the sign-in page
-// asks for - holds back none of it, a refusal's Discard included.
+// alone: holding every script except the entry - including the preloaded issue route chunk and the
+// kinds of write that `KeptWritesHost` asks for - holds back none of it, a refusal's Discard
+// included.
 // SLOW(>=2s): the kept writes are only observable across a real reload, so the row pays three
 // issue page loads and the browser's own "leave this page?" prompt between them.
-test("a page that loads signed out while the kinds of write are held on the wire lists every write the reload kept on the sign-in page, a refused one as not saved with the Discard that drops it", async ({
+test("a page that loads signed out while every script but the entry is held on the wire lists every write the reload kept on the sign-in page, a refused one as not saved with the Discard that drops it", async ({
   browser,
 }) => {
   await keptOnAPageThatLoadsSignedOut(browser, "held");
 });
 
-// The same, with that download failing online and no reload to follow: the list draws all the
-// same, since no chunk of its own can fail.
+// The same, with every script except the entry failing online and no reload to follow: the list
+// draws all the same, since it has no chunk of its own to fail.
 // SLOW(>=2s): the kept writes are only observable across a real reload, so the row pays three
 // issue page loads and the browser's own "leave this page?" prompt between them.
-test("a page that loads signed out while the kinds of write fail to download online lists every write the reload kept on the sign-in page, a refused one as not saved with the Discard that drops it", async ({
+test("a page that loads signed out while every script but the entry fails to download online lists every write the reload kept on the sign-in page, a refused one as not saved with the Discard that drops it", async ({
   browser,
 }) => {
   await keptOnAPageThatLoadsSignedOut(browser, "fail");

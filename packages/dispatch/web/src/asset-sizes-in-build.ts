@@ -46,8 +46,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * (2026-11-21), built with a 40-character build id as CI builds it, it is 497,539 bytes, 2,461
  * under. The third, the merge of `4b22ece4` (2026-11-23, the default branch's dialog focus, #4985),
  * wrote 500,672, and `01fc0e41` the same day answered it with the two moves `web/vite.config.ts`'s
- * build comment names. It refused a change of this branch too: `4afe19c7` (2026-11-24), the
- * loading box and the alert of the surfaces a key opens, wrote 500,530, and `4e9171bc` the same
+ * build comment names. It refused the loading box and the alert of the surfaces a key opens too
+ * (`4afe19c7`, 2026-11-24, 500,530 bytes), and `4e9171bc` the same
  * day answered it by taking `features/refs/AgentName.tsx` out of the entry (497,401 bytes); at
  * `540b1fe2` the entry was 497,933 bytes, the two lists' alert for a render error
  * (`features/writes/write-hosts.tsx`) takes it to 498,553, and the sign-in page's list of kept

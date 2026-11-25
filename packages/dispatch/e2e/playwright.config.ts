@@ -779,13 +779,13 @@ export default defineConfig({
       snapshots: true,
       sources: true,
     },
-    // A picture of the page when a row fails, which the trace above no longer carries as a
-    // screencast frame. Each time a context closes during a row, Playwright 1.64.1 takes a
-    // temporary picture of every page still open in it, and keeps those pictures only when the
-    // row failed (`captureTemporary` and `persistTemporary`, node_modules/.bun/playwright@1.64.1/
-    // node_modules/playwright/lib/index.js:585-600); a failed row's pages still open when its
-    // function ends are pictured then. So a passing row still pays one picture for each page open
-    // at each context's close, and keeps none of them.
+    // A picture of the page when a row fails, because the trace above sets screenshots to false
+    // and carries no screencast frame. Each time a context closes during a row, Playwright 1.64.1
+    // takes a temporary picture of every page still open in it, and keeps those pictures only
+    // when the row failed (`captureTemporary` and `persistTemporary`,
+    // node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:585-600); a failed
+    // row's pages still open when its function ends are pictured then. So a passing row still
+    // pays one picture for each page open at each context's close, and keeps none of them.
     screenshot: "only-on-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and

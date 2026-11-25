@@ -479,9 +479,9 @@ test("a part the landing leaves out is read from its own route", async () => {
 });
 
 test("a landing a server cannot answer leaves every read where it was", async () => {
-  // The 404 of a Dispatch older than the route, which a rolling deploy puts in front of a
-  // browser, and a server that failed some other way: both leave the page reading as it read
-  // before this change.
+  // The 404 of a Dispatch older than the landing route, which a rolling deploy puts in front of a
+  // browser, and a server that failed some other way: both leave the page falling back to its
+  // per-resource routes.
   for (const failure of [
     new ApiError(404, { code: "NOT_FOUND", error: "no such route" }),
     new ApiError(500, { error: "boom" }),

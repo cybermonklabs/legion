@@ -27,7 +27,7 @@ export function IssuePage(): ReactNode {
   const outline = useIssuePageChoice()[0] === "outline";
   // A landing on an issue's Spec, Verification or Plan, or on an artifact its address names,
   // holds the shell's extras - the margin, the reference preview, the event map, the Create issue
-  // dialog's chunk and the pending-writes host's three chunks - until its live document draws
+  // dialog's chunk and the pending-writes host's two chunks - until its live document draws
   // (`app.tsx`, `preloadRouteChunk` and `issueDrawsDocument`), and today's page ends that hold
   // when its document draws or its reads say it draws none. The new page draws no live document,
   // so it ends the hold here; else the reader's extras would wait for `HOLD_LIMIT_MS` or their

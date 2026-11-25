@@ -3,13 +3,13 @@
  * hosts of `InboxHost.tsx` import dynamically, so the two of them share one download instead of
  * each starting its own.
  *
- * Why the Inbox is not in the entry any more. The entry is what every page of the dashboard
- * parses before it draws anything, and no cache spares a new browser context that parse, so each
- * of the browser suite's rows pays it as well as each person opening a page. The Inbox's graph
- * was the largest part of it no page but the Inbox itself draws: the card list, the ask cards,
- * the thread bodies and the Markdown surfaces under them. A reader on an issue, a board or a
- * document parsed all of it to be shown none of it. What the entry cost before the split and
- * costs now is measured in one place, the `build` comment of `web/vite.config.ts`.
+ * Why the Inbox stays out of the entry. The entry is what every page of the dashboard parses
+ * before it draws anything, and no cache spares a new browser context that parse, so each of the
+ * browser suite's rows pays it as well as each person opening a page. The Inbox's graph holds the
+ * card list, the ask cards, the thread bodies and the Markdown surfaces under them, none of which
+ * an issue, a board or a document draws. Keeping it in its own chunk spares every other route from
+ * parsing it. The entry's measured sizes live in one place, the `build` comment of
+ * `web/vite.config.ts`.
  *
  * What a reader loses by its being late, and when it is fetched. Where the Inbox is the page,
  * the list is what the reader came for, so the download starts with the navigation rather than

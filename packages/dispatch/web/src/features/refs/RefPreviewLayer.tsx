@@ -70,14 +70,18 @@ function caretLink(): HTMLElement | null {
 }
 
 /** What the boundary draws in place of a layer that has failed: nothing, and listeners that call
- *  `ask` when the reader asks for a card. Each one asks as the card's own listener opens a card
- *  (`attachTriggers` in `RefPreview.tsx`), so a move that opens no card asks for nothing:
+ *  `ask` when the reader asks for a card. Each one matches the card's own listener
+ *  (`attachTriggers` in `RefPreview.tsx`) on the gesture and surface:
  *  - a pointer that comes over a reference, but not a touch, not with a button down, and not on
  *    a surface that opens no card on hover;
  *  - a focus on a reference that `:focus-visible` says the keyboard made;
  *  - the caret entering a link of an editable document on a surface that opens no card on hover.
  *    A caret that moves inside the link asks for nothing, so the link the caret is in when this
- *    mounts asks only once the caret leaves it and comes back. */
+ *    mounts asks only once the caret leaves it and comes back.
+ *  A marked reference whose address the card cannot parse (`routeOf` in `RefPreview.tsx`) still
+ *  asks and can spend a recovery reload without opening a card: telling those apart needs the
+ *  reference parser in `features/refs/routes.ts`, which stays out of the entry, so only the
+ *  card's chunk can tell, and the reader did point at a reference. */
 export function CardAsked({ ask }: { ask: () => void }): null {
   useEffect(() => {
     const listening = new AbortController();
