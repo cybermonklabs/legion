@@ -9,12 +9,8 @@ body: |-
   for every other credential: `named` or `public` for a job's token, which writes as its service,
   and `person` for a person's own token and for a machine's, which is refused every write.
 
-  `JOB_PROJECT_SCOPES` lists the project scopes under which a broker token that names a service and
-  no person writes as that service, `PROJECT_SCOPE_NAMED` and `PROJECT_SCOPE_PUBLIC`, and
-  `scripts/gen-go.ts` writes it into envoy's Go contracts as `JobProjectScopes`, which Dispatch's
-  rule for those writes reads; `dispatch whoami` reads that rule's decision from
-  `sign_in_required`. `dispatch_whoami` says that a `public` token names no one project, so it may
-  write wherever a token that names no project may.
+  `dispatch_whoami` says that a `public` token names no one project, so it may write wherever a
+  token that names no project may.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens

@@ -2554,7 +2554,10 @@ func TestLoadRefusesAJobEntryItCannotServe(t *testing.T) {
 
 // TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName: one identity has one answer, so
 // the start is refused when a job setting and a setting of the same kind that names a person, or
-// the read accounts, both list it. The refusal names both settings and the identity. Each setting
+// the read accounts, both list it, and when BROKER_EXCHANGE_JOB_ACCOUNTS and a
+// BROKER_EXCHANGE_ACCOUNTS entry naming neither a person nor a project (<account>==), whose token
+// writes as the account, both list one account. The refusal names both settings and the
+// identity, and where a row gives one, the reason a job's token cannot share it. Each setting
 // alone loads, so the refusal is the pair's.
 func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T) {
 	for _, row := range []struct {
@@ -2563,6 +2566,8 @@ func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T)
 		other, value  string
 		job, jobValue string
 		identity      string
+		// says, when set, is the reason the refusal must give.
+		says string
 	}{
 		{
 			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS",
@@ -2570,6 +2575,14 @@ func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T)
 			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "=EXAMPLE=ada@example.com",
 			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
 			identity: jobAccount,
+		},
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS naming neither a person nor a project",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "==",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
+			identity: jobAccount,
+			says:     "one account mints one kind of token, and only a job's names the account as its service and carries projects",
 		},
 		{
 			name:  "a pod's account in BROKER_EXCHANGE_READ_ACCOUNTS",
@@ -2612,6 +2625,9 @@ func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T)
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("Load(%s, %s): refusal %q does not name %s", row.other, row.job, err, want)
 				}
+			}
+			if row.says != "" && !strings.Contains(err.Error(), row.says) {
+				t.Errorf("Load(%s, %s): refusal %q does not say %s", row.other, row.job, err, row.says)
 			}
 		})
 	}

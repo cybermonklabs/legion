@@ -1883,12 +1883,12 @@ func exchangeListingRefusal(cfg *Config) error {
 		return nil
 	}
 	for _, entry := range cfg.ExchangeReadAccounts {
-		if err := list("BROKER_EXCHANGE_READ_ACCOUNTS", account, entry.Account, "one account mints one kind of token, a read-only one or one that writes as its person"); err != nil {
+		if err := list("BROKER_EXCHANGE_READ_ACCOUNTS", account, entry.Account, "one account mints one kind of token, a read-only one or one that writes as its person or as the account"); err != nil {
 			return err
 		}
 	}
 	for _, entry := range cfg.ExchangeJobAccounts {
-		if err := list("BROKER_EXCHANGE_JOB_ACCOUNTS", account, entry.Account, "one account mints one kind of token, and a job's names the account as its service and no person"); err != nil {
+		if err := list("BROKER_EXCHANGE_JOB_ACCOUNTS", account, entry.Account, "one account mints one kind of token, and only a job's names the account as its service and carries projects"); err != nil {
 			return err
 		}
 	}

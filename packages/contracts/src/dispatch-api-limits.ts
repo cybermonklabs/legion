@@ -266,27 +266,6 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
-/** The project scope of a broker-issued token an operator's or a job's entry mapped, and of an
- *  exchange account entry's token naming no person and no project. A job's names one project,
- *  which the token writes alone. */
-export const PROJECT_SCOPE_NAMED = "named";
-
-/** The project scope of a job's broker-issued token whose entry names `public`. Dispatch holds
- *  such a token to no one project: it writes wherever a token that names no project may, and its
- *  entry's list of private projects limits none of its writes. */
-export const PROJECT_SCOPE_PUBLIC = "public";
-
-/**
- * The project scopes under which a broker-issued token that names a service and no person writes
- * as that service: a job's two, and under `named` also an exchange account entry's token naming
- * no person and no project, whose service is that account. Dispatch takes the writes of such a
- * token under one of these as that service's, and refuses every other such token every write with
- * `DISPATCH_SIGN_IN_REQUIRED`, a project scope the broker answers later among them until this list
- * names it. Generated into Go as `contracts.JobProjectScopes`, which the server's rule reads; a
- * client reads that rule's decision from whoami's `sign_in_required` rather than from this list.
- */
-export const JOB_PROJECT_SCOPES: readonly string[] = [PROJECT_SCOPE_NAMED, PROJECT_SCOPE_PUBLIC];
-
 /**
  * The code of the `403` for a request by a read-only token to a route outside Dispatch's read
  * class. Every token that holds `read` is read-only: one the secrets broker minted from a read

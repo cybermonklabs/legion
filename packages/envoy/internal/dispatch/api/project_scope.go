@@ -463,8 +463,8 @@ func addressesOneSession(route apiRoute) bool {
 // A token naming no person that writes under one of the named scopes has its writes recorded
 // under its service (model.Actor.Service), so it reaches the handler as a credential naming a
 // person does, and it is held to the routes its lack of OAuth scope leaves it (gateRouteScopes).
-// The test is on the project scope the broker answered, one of contracts.JobProjectScopes and
-// nothing else, so a scope this check does not know is refused as a machine's is.
+// The test is on the project scope the broker answered, one of writingServiceScopes and nothing
+// else, so a scope this check does not know is refused as a machine's is.
 //
 // A read-only token may name a service and no person too, an account entry's narrowed to
 // reading among them, but it is no such caller: it may only read, and signing a person in is no
@@ -511,15 +511,23 @@ func (s *server) signInRequired(r *http.Request) (string, bool) {
 	return *actor.Service, true
 }
 
+// writingServiceScopes holds the project scopes under which a broker-issued token that names a
+// service and no person writes as that service: `named`, which a job's token naming its one
+// project and an exchange account entry's naming no person and no project (whose service is that
+// account) carry, and `public`, a job's. Dispatch refuses every other such token every write with
+// SIGN_IN_REQUIRED, a project scope the broker answers later among them, until this list names
+// it.
+var writingServiceScopes = []string{ciphertoken.ProjectScopeNamed, ciphertoken.ProjectScopePublic}
+
 // writesAsItsService answers whether a broker-issued credential carries one of the project
 // scopes under which a token naming a service and no person writes as that service,
-// contracts.JobProjectScopes: `named`, a job's token naming its one project or an exchange
-// account entry's naming no person and no project, whose service is that account, and `public`,
-// a job's. whoami answers the decision built on it as sign_in_required (signInRequired), which
-// `dispatch whoami` reads. A nil credential, an empty scope and every other word answer false,
-// `person` among them, a machine's nobody signed in on.
+// writingServiceScopes: `named`, a job's token naming its one project or an exchange account
+// entry's naming no person and no project, whose service is that account, and `public`, a job's.
+// whoami answers the decision built on it as sign_in_required (signInRequired), which `dispatch
+// whoami` reads. A nil credential, an empty scope and every other word answer false, `person`
+// among them, a machine's nobody signed in on.
 func writesAsItsService(credential *model.Credential) bool {
-	return credential != nil && slices.Contains(contracts.JobProjectScopes, credential.ProjectScope)
+	return credential != nil && slices.Contains(writingServiceScopes, credential.ProjectScope)
 }
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses

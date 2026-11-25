@@ -355,12 +355,13 @@ type Introspection struct {
 	// for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
-	// project, or none for an account entry that names a person and no project, and always one
-	// for a job's token; for a ProjectScopePerson token, the 0 to MaxProjects projects its trade
-	// asked for, each one its person could see then, and none for a token that names a service;
-	// for a ProjectScopePublic token, the 0 to MaxProjects private projects its job entry lists,
-	// the whole list whatever the trade named; for a ProjectScopeNone token, none. Sorted, each
-	// once; absent for none.
+	// project, or none for an account entry that names a person and no project or for one that
+	// names neither a person nor a project (<account>== of BROKER_EXCHANGE_ACCOUNTS), whose token
+	// acts as the account, and always one for a job's token; for a ProjectScopePerson token, the 0
+	// to MaxProjects projects its trade asked for, each one its person could see then, and none for
+	// a token that names a service; for a ProjectScopePublic token, the 0 to MaxProjects private
+	// projects its job entry lists, the whole list whatever the trade named; for a
+	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and

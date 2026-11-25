@@ -510,10 +510,12 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// (cutOf); shapeOf has already refused a cut on a token that is not narrowed to reading.
 	shape := shapeOf(answer)
 	named := oauthwire.BaseProjectScope(answer.ProjectScope) == ProjectScopeNamed
-	// jobScope is a job's token's project scope, unnarrowed: the only scopes under which a
-	// service and no person may name projects. For a token naming no person, shapeOf has already
-	// refused every scope word and every cut under either, so a narrowed word never comes here as
-	// one.
+	// jobScope is whether the answer's project scope is a job's token's, compared as the word the
+	// broker answered rather than its base word (oauthwire.BaseProjectScope): a service and no
+	// person may name projects only under named or public unnarrowed, since the broker narrows no
+	// job's token (oauth's decide refuses a job's read trade). A narrowed token naming no person
+	// and carrying projects, read-named among them, is no token the broker mints, and reading it
+	// as its base word would take it for a job's.
 	jobScope := answer.ProjectScope == ProjectScopeNamed || answer.ProjectScope == ProjectScopePublic
 	cut, cutErr := cutOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
