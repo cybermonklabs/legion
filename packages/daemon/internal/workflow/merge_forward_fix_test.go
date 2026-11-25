@@ -196,6 +196,7 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 		if queued != 2 {
 			t.Fatalf("merge-forward messages %+v, want the ask to the implementer and the hold to the reviewer", mergeForwardMessages(t, r.pool))
 		}
+		implementerStarts := len(r.startsOf(claim.RoleImplementer))
 		r.fails(fixHead, "k-ci")
 		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 		if reads := r.jobReads(); len(reads) != 1 {
@@ -229,8 +230,8 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 		if got := len(mergeForwardMessages(t, r.pool)); got != queued {
 			t.Fatalf("merge-forward messages %+v, want only the %d queued before the fix took the ask", mergeForwardMessages(t, r.pool), queued)
 		}
-		if starts, fixStarts := r.startsOf(claim.RoleImplementer), r.fixStarts(); len(starts) != 1 || len(fixStarts) != 1 {
-			t.Fatalf("implementer starts %+v and fix starts %+v, want its first step's and fix 1's alone: no second writer of the branch", starts, fixStarts)
+		if starts, fixStarts := r.startsOf(claim.RoleImplementer), r.fixStarts(); len(starts) != implementerStarts || len(fixStarts) != 1 {
+			t.Fatalf("implementer starts %+v and fix starts %+v, want no start of the implementer beside fix 1's: no second writer of the branch", starts, fixStarts)
 		}
 	})
 
@@ -320,7 +321,9 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 			if tc.before != nil {
 				tc.before(r)
 			}
-			testerStarts := len(r.startsOf(claim.RoleTester))
+			// A pending start of a phase takes the place of the one before it, so the start the way
+			// makes is read by the tester's entry it raises.
+			entry := roleRowOf(t, r.pool, r.engine, "LEGION-208", claim.RoleTester).Entry
 
 			result := r.testerCompletesAt(fixHead, "test-at-x")
 			if tc.refused {
@@ -337,9 +340,14 @@ func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 				end.EndCommit == nil || *end.EndCommit != fixHead {
 				t.Fatalf("the tester's run end = %+v, want it passed at %s with its report test-at-x", end, fixHead)
 			}
-			starts := r.startsOf(claim.RoleTester)
-			if len(starts) != testerStarts+1 || starts[len(starts)-1].MoveTo != headTwo {
-				t.Fatalf("tester starts %+v, want one more, moving its working copy to %s", starts, headTwo)
+			var rerun []record.SuperviseRequest
+			for _, start := range r.startsOf(claim.RoleTester) {
+				if start.Entry > entry {
+					rerun = append(rerun, start)
+				}
+			}
+			if len(rerun) != 1 || rerun[0].Entry != entry+1 || rerun[0].MoveTo != headTwo {
+				t.Fatalf("tester starts after entry %d: %+v, want one, at entry %d, moving its working copy to %s", entry, rerun, entry+1, headTwo)
 			}
 			if counts := r.counts(); counts.Pass != 1 {
 				t.Fatalf("the task counts %+v, want one return", counts)
