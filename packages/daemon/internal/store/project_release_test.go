@@ -125,7 +125,9 @@ func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
 // the roles it had stopped. The queued workspace check of a left pod's close, which writes no mark,
 // is finished too. Another project's idle release and close check are none of this release's,
 // though a claim of this project names that project's issue (the operator's spawn of it): only that
-// project's daemon runs the issue's rows (claim.KeyOfProject).
+// project's daemon runs the issue's rows (claim.KeyOfProject). A release of this project on another
+// project's issue, marked before #4115 refused a row keyed so, is taken over whole, its workspace
+// check with it, though that check's key is not the project's.
 //
 // The stop set: every claim of the project stored in a state whose process is up or coming up,
 // launching through idle, the controller's and the one on another project's issue among them, with
@@ -180,6 +182,13 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	// The release of LEGION-210's pod, which no role can use: its teardown alone.
 	unowned := queueReleaseRow(t, st, "LEGION-210", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
 	markIdleRelease(t, st, "legion", "LEGION-210", releaseKindUnowned, unowned, unowned)
+	// An idle release of OTHER-2 under this project's token (the operator's spawn of another
+	// project's issue), written before #4115, since which insertOutboxRow refuses a row keyed by
+	// another project's issue: its workspace check and its teardown. The check's key is not the
+	// project's, so only the delete of the mark's own rows finishes it.
+	otherCheck := queueReleaseRow(t, st, "OTHER-2", "issue_bundle", `{"tree":"OTHER-2","generation":3,"treeGeneration":1,"role":"architect"}`)
+	otherTeardown := queueReleaseRow(t, st, "OTHER-2", "issue_release", `{"tree":"OTHER-2","generation":3,"treeGeneration":1}`)
+	markIdleRelease(t, st, "legion", "OTHER-2", releaseKindIdle, otherCheck, otherTeardown)
 	// Another project's idle release.
 	otherRow := queueReleaseRow(t, st, "OTHER-1", "issue_release", `{"tree":"OTHER-1","generation":1,"treeGeneration":1}`)
 	markIdleRelease(t, st, "other", "OTHER-1", releaseKindUnowned, otherRow, otherRow)
@@ -209,10 +218,12 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 	})
 
 	t.Run("the take-over of the idle releases in flight", func(t *testing.T) {
-		// The release of the pod no role can use (LEGION-210) suspended no role, so it names none.
+		// The release of the pod no role can use (LEGION-210) suspended no role, and OTHER-2's,
+		// whose check is still queued, has stopped none yet, so neither names one.
 		wantTaken := []TakenOverIdleRelease{
 			{Issue: "LEGION-209", Suspended: []claim.Role{claim.RoleReviewer}},
 			{Issue: "LEGION-210"},
+			{Issue: "OTHER-2"},
 		}
 		if len(takenOver) != len(wantTaken) {
 			t.Fatalf("taken over %+v, want %+v", takenOver, wantTaken)
@@ -239,8 +250,8 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 			t.Fatalf("marks after the take-over = %v, want the other project's alone", marks)
 		}
 		if got, wantIDs := outboxIDs(t, st), []int64{notice, start, otherRow, otherClose}; !slices.Equal(got, wantIDs) {
-			t.Fatalf("outbox rows after the take-over = %v, want the notice %d, the later start %d and the other project's rows %d and %d (the release's rows %d, %d, %d, %d and %d and the close check %d gone)",
-				got, notice, start, otherRow, otherClose, check, stopReviewer, stopTester, teardown, unowned, closeCheck)
+			t.Fatalf("outbox rows after the take-over = %v, want the notice %d, the later start %d and the other project's rows %d and %d (the release's rows %d, %d, %d, %d and %d, OTHER-2's check %d and teardown %d and the close check %d gone)",
+				got, notice, start, otherRow, otherClose, check, stopReviewer, stopTester, teardown, unowned, otherCheck, otherTeardown, closeCheck)
 		}
 		var by string
 		if err := st.Pool().QueryRow(ctx, `select suspended_by from claims where token = $1`, string(released)).Scan(&by); err != nil || by != "released" {

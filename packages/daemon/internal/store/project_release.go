@@ -311,13 +311,20 @@ func runningProjectReleaseTx(ctx context.Context, tx pgx.Tx, project string) (Pr
 // an operator, so the check would read a pod the release took away, decline the close because no
 // role runs to read through, and hold the issue under a streak that no idle pass ends, since no
 // pass visits an issue with no Sandbox. The first idle pass after the next boot decides again each
-// such pod that still stands. A check is of the project when its key is (claim.KeyOfProject): the
-// key's part before its first `-`, lowercased, is project, the claim token's spelling, which
-// claim.ProjectToken lowercases one to one from every key a Dispatch project has. A claim of the
-// project does not make a check the project's: the operator's spawn of another project's issue
-// makes such a claim, and that project's daemon, which may share this database, runs every row the
-// issue's key names, its own idle release's workspace check among them, whose delete here would
-// leave that release's teardown to delete the pod with its workspace unread.
+// such pod that still stands.
+//
+// Two of its deletes overlap on the workspace checks (issue_bundle). The last statement finishes
+// every queued check whose key is of the project (claim.KeyOfProject, project being the claim
+// token's spelling), a marked release's and an unmarked close's alike. A claim of the project does
+// not make a check the project's: the operator's spawn of another project's issue makes such a
+// claim, and that project's daemon, which may share this database, runs every row the issue's key
+// names, its own idle release's workspace check among them, whose delete here would leave that
+// release's teardown to delete the pod with its workspace unread. The delete of each mark's own
+// rows keeps issue_bundle among its kinds only for a mark written before #4115 that names another
+// project's issue, the operator's spawn of it: that mark's check is keyed by that issue, not by a
+// key of the project, so the last statement leaves it and only the mark's delete finishes it.
+// Since #4115, insertOutboxRow refuses a row keyed by another project's issue, so no mark written
+// later has such a check.
 func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]TakenOverIdleRelease, error) {
 	rows, err := tx.Query(ctx, `with taken as (delete from issue_releases where project = $1
 		returning issue, first_row, last_row, suspended, kind)
@@ -346,7 +353,9 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 	for _, taken := range marks {
 		// The kinds and the op are the release's own rows and nothing else (daemon's
 		// idleReleaseRows, unownedReleaseRows), so a row of the issue another transaction numbered
-		// inside the range — a delivery, a start — is left to run.
+		// inside the range — a delivery, a start — is left to run. The check (issue_bundle) of a
+		// mark whose issue is the project's is the last statement's too; the kind is here for a
+		// mark from before #4115 on another project's issue, whose check that statement leaves.
 		if _, err := tx.Exec(ctx, `delete from outbox where issue = $1 and id between $2 and $3
 			and (kind in ('issue_bundle', 'issue_release') or (kind = 'supervise' and payload->>'op' = 'release'))`,
 			taken.issue, taken.mark.first, taken.mark.last); err != nil {
