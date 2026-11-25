@@ -40,13 +40,15 @@ type roleForReader struct {
 
 // roleForReaders is every non-test reader of phase.RoleFor and of workflow.RoleFor in the daemon,
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
-// value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
+// value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Five of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for: noticeFor
 // writes the notice of the move out of admitted with no role (R2), Engine.leftItsPhase records no
 // worker's completion while the issue stands at admitted, the completion route's entryFence answers
-// a completion at admitted as one of a phase its role does not work, and the stalled-tree notice's
+// a completion at admitted as one of a phase its role does not work, the stalled-tree notice's
 // reason tells an issue at admitted as standing in a phase no role works, the words it wrote before
-// RoleFor named the architect there. Every other site reaches its answer through a guard that
+// RoleFor named the architect there, and the first boot's list of the members it brings back
+// (record's membersBack) leaves out a member at admitted, whose first phase is the admission line's
+// to start. Every other site reaches its answer through a guard that
 // starts, resumes or reports no architect as a phase worker, or names the role an admitted root's
 // entry numbers are of, or names the architect in the notice of a task its owner stopped in the
 // architect's phase, where the stop ends no process (Engine.taskStopped, at admitted as at
@@ -66,13 +68,16 @@ type roleForReader struct {
 // child's failed architect again and the accepting step's run (ReturnFromChildren, through start
 // and startStandingStep in internal/workflow's effects.go), and the stop holds accepting with no
 // role told (StopForChildren), since the architect's notice tells it. The release of a hold reads
-// the held phase's role three times (retryPhase), for the entry that phase stands on and for the
-// restart, or, for a return to work, for the start at a new entry every return's worker is given,
-// and a held phase is never admitted; so do the return of a held issue (ReturnToWork) and the
-// carried run of a held root (StartCarriedRun), each naming the role whose claim it leaves for the
-// hold's retry. The owner of the phase a return or a carried run resumes (runOwner) is read past a
-// guard that answers no owner for admitted, as for every phase no worker owns. The owner walk reads
-// no role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// the held phase's role twice (retryPhase), for the restart or, for a return to work, for the
+// start at a new entry every return's worker is given, and a held phase is never admitted; so do
+// the return of a held issue (ReturnToWork) and the carried run of a held root (StartCarriedRun),
+// each naming the role whose claim it leaves for the hold's retry. The entry the phase's role
+// stands on is read for R9's exemption of a move out of retro or merging (samePhaseExempt) only
+// past record.OpenChildHolds, by the stop and by the guard on a start of the phase the issue
+// stands in, so it reads accepting's architect at most and never admitted's. The owner of the
+// phase a return or a carried run resumes (runOwner) is read past a guard that answers no owner
+// for admitted, as for every phase no worker owns. The owner walk reads no role: where it starts is
+// its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -85,11 +90,13 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}:                                       {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                           {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                            {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
+	{file: "internal/record/members_back.go", fn: "membersBack"}:                      {calls: 1, test: "TestEachMemberBackNamesHowItsTreeLeft"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:           {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/awaiting_children.go", fn: "heldCause"}:                 {calls: 1, test: "TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.StopForChildren"}:    {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 1, test: "TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.samePhaseExempt"}:    {calls: 1, test: "TestParentWaitsHoldsEveryPhaseStart"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:             {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                     {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootHeldFromItsPhaseStartsNoWorkerAndTellsItsArchitectTheHold"},
@@ -98,7 +105,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:                   {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:                  {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:                  {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
-	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 3, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 2, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                      {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                    {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},

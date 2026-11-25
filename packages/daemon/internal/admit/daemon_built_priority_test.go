@@ -13,8 +13,8 @@ import (
 
 func TestAHeldSummaryTakesANewerEventsPriorityAndKeepsItsOwnAgainstAnOlderOne(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		seq int64
+		name           string
+		seq            int64
 		priority, want record.Priority
 	}{
 		{"newer P0", 7, record.P0, record.P0},

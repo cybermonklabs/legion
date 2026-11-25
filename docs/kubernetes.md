@@ -3412,7 +3412,8 @@ It reads only columns that the store of `legion-v22.16.2` holds, and `issues.mem
 Where the store holds no `issues.members_owed`, it reads the state that the column's migration marks (`20261123224717_members_owed.up.sql`).
 So it gives the same answer before and after the store's migration to this release.
 An operator who holds the DSN on a machine of their own can run this release's `legion` there instead, with a copy of the project's `legion.yaml` and `LEGION_POSTGRES_DSN` set.
-Read the pod's output with `kubectl -n legion logs <pod>`. For example:
+Read the pod's output with `kubectl -n legion logs <pod>`.
+For example:
 
 ```text
 CAPTURE: the first boot on this release brings back 1 member, each in the phase it stands in:
@@ -4010,8 +4011,8 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, which main's re-admission (#5303) sets on the roots whose members it has still to bring back, which this release writes nowhere and reads only in its first boot's conversion and in `legion members-back`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
-20261124060500_issue_priority adds `issues.priority`, null on existing rows. It changes none of the six rollback cases above. An earlier daemon ignores the column and leaves it intact on updates.
-20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, all null on existing rows. It changes none of the six rollback cases above. The earlier release leaves the four columns in place. No way-back SQL is required.
+20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
+20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.

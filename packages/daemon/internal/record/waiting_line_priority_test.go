@@ -41,7 +41,7 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 	first := withPriority(linePartIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "A"), P2)
 	issues := []Issue{treeRoot, child, returned, first}
 	facts := LineFacts{
-		Chains: chainsOf(issues, copyOf(issues...)),
+		Chains:     chainsOf(issues, copyOf(issues...)),
 		Gates:      map[string]TreeGate{"LEGION-10": openGate("LEGION-10", opened), "LEGION-20": openGate("LEGION-20", opened)},
 		Owed:       map[string]OwedStart{"LEGION-20": {Issue: "LEGION-20", ID: 42, CreatedAt: owedAt}},
 		ChildWaits: map[string]ChildWait{"LEGION-10": {Parent: "LEGION-10", Open: []OpenChild{{Key: "LEGION-11", Status: "todo", Released: true}}}},
@@ -90,8 +90,8 @@ func TestTheWaitingLinePlacesAnIssueWithNoPriorityAtItsTopIssuesBand(t *testing.
 		linePartIssue("LEGION-60", "LEGION-60", "todo", phase.Admitted, "A"),
 	}
 	facts := LineFacts{
-		Chains:     chainsOf(issues, copyOf(issues...)),
-		Gates: map[string]TreeGate{"LEGION-40": openGate("LEGION-40", opened), "LEGION-42": openGate("LEGION-42", opened)},
+		Chains: chainsOf(issues, copyOf(issues...)),
+		Gates:  map[string]TreeGate{"LEGION-40": openGate("LEGION-40", opened), "LEGION-42": openGate("LEGION-42", opened)},
 	}
 	slots := []Slot{{Issue: "LEGION-40", Index: 0, AdmittedAt: opened}, {Issue: "LEGION-42", Index: 1, AdmittedAt: opened}}
 
