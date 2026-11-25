@@ -3612,6 +3612,44 @@ package api
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
 // 257: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
@@ -3629,7 +3667,7 @@ package api
 // step does nothing; the reader passes over a field of an identity it does not know, so a field a
 // later release adds turns no step off. No shape of `GET /legion/v1/state` or of a request moves,
 // and this change adds no store migration; its records in contract-shapes.json and
-// request-shapes.json are 250's, written again at 257 by `-update`.
+// request-shapes.json are 256's, written again at 257 by `-update`.
 // (This entry moved from 230 to 247 at the forward merge of 2026-11-24 that brought in acade985,
 // where main carried 232, dispatch://INFRA-4508's entry above, and from 247 to 257 on 2026-11-24,
 // because open pull request #5384 declares 247 too. The architect of INFRA-3118 gave this change
@@ -3647,7 +3685,12 @@ package api
 // 139 open heads, of 488 open, that change this file or whose file list is cut short, made between
 // 17:52:33Z and 17:54:35Z, found 257 declared by this change alone (251 by #5307, 252 by #4540, 254
 // by #4432, 255 by #5164, 256 by #5349, 261 by #5332, 262 by #5204, 265 by #5285; #5399 declares no
-// constant), so this entry kept 257. This entry stood at 200, 202, 209, 212, 221, 225, 230 and 247
-// before. Read the base's own number and every open pull request again at the next merge rather
-// than from this line.)
+// constant), so this entry kept 257. The forward merge of 2026-11-25 that brought in 0acfba02
+// brought main's 256 (#5349's entry above), and a reading of the 143 open heads, of 485 open, that
+// change this file or whose file list is cut short, made on 2026-11-25 after 03:39Z, found no other
+// open pull request declaring 257 (268 by #5384, 270 by #4065, 271 by #4173, #4182 and #4193, 272
+// by #4049, 273 by #4432, 274 by #3993, 275 by #4392, 276 by #4592, 277 by #4771, 278 by #4596, 280
+// by #5307, 281 by #4540, 283 by #5463, and nothing from 258 to 267), so this entry kept 257. This
+// entry stood at 200, 202, 209, 212, 221, 225, 230 and 247 before. Read the base's own number and
+// every open pull request again at the next merge rather than from this line.)
 const DaemonAPIVersion = 257
