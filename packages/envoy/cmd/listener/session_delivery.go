@@ -267,7 +267,7 @@ type sessionDelivery struct {
 	deleteMu   sync.Mutex
 	deletes    inflight
 	deletesOff bool
-	// grantMu guards the refusal episode below.
+	// grantMu guards the refusal episode below, and grantProbe's first build (grantTurn).
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
@@ -277,9 +277,12 @@ type sessionDelivery struct {
 	noGrantUntil  time.Time
 	noGrantLogged bool
 	grantedAt     time.Time
-	// grantProbeMu holds one probe of the grant at a time (holdsConsumerGrant), so callers that ask
-	// together, a sweep and the handovers of claims granted at once, send one read between them.
-	grantProbeMu sync.Mutex
+	// grantProbe is the one slot a caller of holdsConsumerGrant holds from before its read of
+	// grantKnown through its probe, so one probe of the grant runs at a time and callers that ask
+	// together, a sweep and the handovers of claims granted at once, send one read between them. A
+	// caller that waits for the slot leaves when its own context ends. grantTurn builds it on first
+	// use, so a delivery built without it has one too.
+	grantProbe chan struct{}
 }
 
 // admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
@@ -1033,6 +1036,17 @@ func (m *sessionDelivery) grantKnown() (holds, known bool) {
 	return false, false
 }
 
+// grantTurn is grantProbe, built under grantMu on the first call, so every sessionDelivery,
+// whichever way it was built, hands its callers the same one slot.
+func (m *sessionDelivery) grantTurn() chan struct{} {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	if m.grantProbe == nil {
+		m.grantProbe = make(chan struct{}, 1)
+	}
+	return m.grantProbe
+}
+
 // holdsConsumerGrant reports whether this listener's NATS user may make the session consumers'
 // calls, which a takeover pass needs and Dispatch's user and every host's hold none of
 // (listenerDeliveryHandlerConfig.consumerGrant). It answers from grantKnown while an answer stands,
@@ -1040,15 +1054,24 @@ func (m *sessionDelivery) grantKnown() (holds, known bool) {
 // asks the server with one read of a consumer no session has (bus.SessionConsumers.
 // ProbeConsumerCalls): a refusal starts an episode as any consumer call's does, so Dispatch's
 // listener is refused that read once per episode, and an answer counts as a call that succeeded. A
-// read that did not answer is no, and the caller's next pass asks again. Callers hold
-// grantProbeMu from entry, so those that ask together take the one probe's answer. A delivery with
-// no consumer connection manages no session consumer, and answers no.
+// read that did not answer is no, and the caller's next pass asks again. One probe runs at a time:
+// a caller takes grantProbe's one slot (grantTurn) before it reads grantKnown and holds it through
+// its probe, so a caller that gets the slot after a probe that drew an answer takes that answer
+// with no read of its own, and callers that ask together take the one probe's answer. A caller
+// whose context ends while it waits for the slot answers no, as a probe that did not answer does,
+// and the probe it waited behind runs on under the context of the caller that sent it. A delivery
+// with no consumer connection manages no session consumer, and answers no.
 func (m *sessionDelivery) holdsConsumerGrant(ctx context.Context) bool {
 	if m == nil || m.consumers == nil {
 		return false
 	}
-	m.grantProbeMu.Lock()
-	defer m.grantProbeMu.Unlock()
+	turn := m.grantTurn()
+	select {
+	case turn <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	defer func() { <-turn }()
 	if holds, known := m.grantKnown(); known {
 		return holds
 	}
