@@ -428,16 +428,28 @@ func tokensContain(patternTokens, subjectTokens []string) bool {
 // (reduceFilterPairs). SessionConsumerReduction makes the same reduction, through the same body
 // (reduceFilters), and says which subjects fed each filter.
 func ReduceFilterSubjects(subjects []string) []string {
+	filters, _ := reduceFilterSubjects(subjects)
+	return filters
+}
+
+// reduceFilterSubjects is ReduceFilterSubjects beside the number of pairs of subjects it weighed,
+// which is the reduction's work counted the same way on every machine. It is unexported and read
+// only by TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce, which holds that number
+// to the pairs of its subjects. A clock would read the machine the test ran on as much as the
+// reduction, and a count of allocations misses a scan that weighs pairs again on tokens already
+// split, which allocates nothing; the reduction runs inside a registration, so this count is the
+// one place that scan can be read.
+func reduceFilterSubjects(subjects []string) ([]string, int) {
 	// An empty list reduces to itself, given back nil or empty as it came.
 	if len(subjects) == 0 {
-		return slices.Clone(subjects)
+		return slices.Clone(subjects), 0
 	}
-	reduced := reduceFilters(subjects, nil)
+	reduced, weighed := reduceFilters(subjects, nil)
 	filters := make([]string, len(reduced))
 	for index, filter := range reduced {
 		filters[index] = filter.subject
 	}
-	return filters
+	return filters, weighed
 }
 
 // reduceFilters is the reduction ReduceFilterSubjects makes of subjects, which are not empty, with
@@ -447,8 +459,8 @@ func ReduceFilterSubjects(subjects []string) []string {
 // subject another contains is dropped with its provenance, since nothing of it went into the
 // filter that contains it, and two equal subjects are kept once with the provenance of both
 // (compactFilters). With a nil fedBy every fed stays nil, and the reduction allocates nothing for
-// it.
-func reduceFilters(subjects []string, fedBy []int) []filterSubject {
+// it. It reports beside the filters how many pairs of subjects it weighed (reduceFilterSubjects).
+func reduceFilters(subjects []string, fedBy []int) ([]filterSubject, int) {
 	reduced := make([]filterSubject, 0, len(subjects))
 	for index, subject := range subjects {
 		filter := filterSubject{subject: subject, tokens: strings.Split(subject, ".")}
@@ -457,12 +469,15 @@ func reduceFilters(subjects []string, fedBy []int) []filterSubject {
 		}
 		reduced = append(reduced, filter)
 	}
+	weighed := 0
 	for merged := true; merged; {
 		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
 		reduced = compactFilters(reduced)
-		reduced, merged = reduceFilterPairs(reduced)
+		var pairs int
+		reduced, merged, pairs = reduceFilterPairs(reduced)
+		weighed += pairs
 	}
-	return reduced
+	return reduced, weighed
 }
 
 // filterSubject is one subject ReduceFilterSubjects weighs, with its tokens and, where its caller
@@ -494,7 +509,8 @@ func compactFilters(subjects []filterSubject) []filterSubject {
 // reduceFilterPairs weighs the pairs of subjects, which are sorted and each held once, in order:
 // it drops each subject another contains, and at the first pair that overlaps without either
 // containing the other it merges that pair, with the provenance of both, and reports true, or
-// reports false when it reaches the last pair with no merge. It changes subjects in place.
+// reports false when it reaches the last pair with no merge. It changes subjects in place, and
+// reports beside them how many pairs it weighed (reduceFilterSubjects).
 //
 // A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
 // that contains another overlaps it, so such a pair is neither a drop nor a merge.
@@ -506,10 +522,12 @@ func compactFilters(subjects []filterSubject) []filterSubject {
 // the subject that follows when the first went. A merge does restart it, from a sorted list: the
 // merged subject is new, so every subject must be weighed against it, and it takes its own place
 // in the order.
-func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
+func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool, int) {
+	weighed := 0
 	for i := 0; i < len(subjects); i++ {
 		for j := i + 1; j < len(subjects); {
 			a, b := subjects[i], subjects[j]
+			weighed++
 			switch {
 			case !tokensOverlap(a.tokens, b.tokens):
 				j++
@@ -526,11 +544,11 @@ func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
 				}
 				subjects = slices.Delete(subjects, j, j+1)
 				subjects = slices.Delete(subjects, i, i+1)
-				return append(subjects, merged), true
+				return append(subjects, merged), true, weighed
 			}
 		}
 	}
-	return subjects, false
+	return subjects, false, weighed
 }
 
 // commonTokenPrefix is the tokens a and b begin with alike, up to the first that differs or is `>`,

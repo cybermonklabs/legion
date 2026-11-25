@@ -210,16 +210,20 @@ func largestProductionShape(role string) []string {
 // What the clock guarded here is topic work that spends the budget. Reducing the topics to the
 // consumer's filters did that in production (INFRA-1555): every registration was answered 200,
 // its renewal's claim read ran out of time, and the claim was never renewed while its holder kept
-// registering. Two counts hold that work now, and neither is the machine's. One is
-// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair, on the listener's own
-// reduction. The other is here: the consumer configurations this registration hands the server,
-// and the filter subjects in them, held to largestShapeServerFilterCeiling. Those are the only
-// inputs the listener gives the server's check of a consumer's filters (checkConsumerCfg), which
-// under the race detector is the largest cost that grows with the topics (1.32 s of 4.32 s of a
-// CPU profile over five of these registrations, against 0.22 s for the reduction). So the
-// ceiling bounds what the listener asks the server to check, and says nothing about how the
-// server checks it. Neither count sees the server's own algorithm or the size of the KV records
-// the registration writes.
+// registering. Three counts hold that work now, and none is the machine's. Two are on the
+// listener's own reduction, one for each half of INFRA-1555:
+// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair holds its allocations, which
+// see a split of both subjects of every pair, and internal/bus's
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce holds the pairs it weighs, which
+// see a scan started again after each drop. The third is here: the consumer configurations this
+// registration hands the server, and the filter subjects in them, held to
+// largestShapeServerFilterCeiling. Those are the only inputs the listener gives the server's
+// check of a consumer's filters (checkConsumerCfg), which under the race detector is the largest
+// cost that grows with the topics (1.32 s of 4.32 s of a CPU profile over five of these
+// registrations, against 0.22 s for the reduction). So the ceiling bounds what the listener asks
+// the server to check, and says nothing about how the server checks it. No count sees the
+// server's own algorithm, the size of the KV records the registration writes, or the listener's
+// topic work outside the reduction.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	t.Parallel()
 	const role = "legion-controller"
@@ -375,12 +379,13 @@ const reduceAllocsPerSubject = 3
 // allocations over largestProductionShape and holds them to reduceAllocsPerSubject a topic: one
 // shape and one ceiling, which the INFRA-1555 reduction exceeds 10,120 times over.
 //
-// The verdict is a count and not a clock, so it is not the machine's. A count does not see work
-// that allocates nothing. It does not see a scan of the pre-split tokens started again after each
-// drop, which was the other half of INFRA-1555, or topic work outside this reduction.
-// TestReduceFilterSubjects (internal/bus) holds the result of the scan that goes on after a drop,
-// not its cost. What the registration hands the server to check is
-// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim's count.
+// The verdict is a count and not a clock, so it is not the machine's. A count of allocations does
+// not see work that allocates nothing: a scan of the pre-split tokens started again after each
+// drop, which was the other half of INFRA-1555, is internal/bus's
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce's to see, by the pairs it
+// weighs. What the registration hands the server to check is
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim's count. No count sees the
+// listener's topic work outside this reduction.
 //
 // testing.AllocsPerRun counts every allocation of the process while it measures, and this
 // package's other tests leave servers and watchers running that allocate meanwhile. So the case
