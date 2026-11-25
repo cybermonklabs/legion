@@ -1,0 +1,5918 @@
+{
+  "deleted": {
+    "dry_run": {
+      "body": {
+        "count": 4
+      },
+      "request": {
+        "if_match": null,
+        "login": "<person>",
+        "method": "DELETE",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>?dry_run=true"
+      },
+      "status": 200
+    },
+    "refused": {
+      "ANSWERED_ASK_KEPT": {
+        "body": {
+          "code": "ANSWERED_ASK_KEPT",
+          "error": "the :::ask block dispatch://<issue>/spec#b-q1, \"Which edits does the graph take?\", is a person's decision, and an agent cannot take it out: a person deletes what holds it, or an agent acting under a token that holds the person scope, and even then the delete leaves the block in its document"
+        },
+        "request": {
+          "body": {
+            "actor": {
+              "id": "<architect>",
+              "kind": "session"
+            }
+          },
+          "if_match": null,
+          "login": "<architect>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<question-block>?dry_run=true"
+        },
+        "status": 409
+      },
+      "CONTAINER_WOULD_EMPTY": {
+        "body": {
+          "code": "CONTAINER_WOULD_EMPTY",
+          "error": "the delete of dispatch://<issue>/artifact/tree#b-<list-paragraph> would leave the list item <list-item> with no block of its own: the move takes the block that a list item \"<list-item>\" holds as its own first paragraph out of it, which would leave it no first paragraph of its own; nothing was deleted, and the list item itself is deleted whole or kept"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<list-paragraph>?dry_run=true"
+        },
+        "status": 409
+      },
+      "DELETE_COUNT_MOVED": {
+        "body": {
+          "code": "DELETE_COUNT_MOVED",
+          "count": 5,
+          "error": "the delete of dispatch://<issue>/spec#b-s3 takes 5 nodes a read of the tree returns now, and expected_count names 4: what stands under it has changed since the count was read, so nothing was deleted; read the count again (dry_run=true) and confirm it"
+        },
+        "request": {
+          "if_match": "\"<seq:statement-3@3>\"",
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>?expected_count=4"
+        },
+        "status": 409
+      },
+      "DELETE_INPUT": {
+        "body": {
+          "code": "DELETE_INPUT",
+          "error": "a delete names the count it confirms in expected_count: read it first with dry_run=true, then send it, so the delete takes that count or nothing"
+        },
+        "request": {
+          "if_match": "\"<seq:statement-3@3>\"",
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+        },
+        "status": 400
+      },
+      "DOCUMENT_WRITER_NOT_ARCHITECT": {
+        "body": {
+          "code": "DOCUMENT_WRITER_NOT_ARCHITECT",
+          "error": "Session <worker> cannot write the check dispatch://<issue>/artifact/verification-md#b-c2 of <issue>. Legion runs <issue>. Only a person or an architect of <issue> or of an issue above it can write the check dispatch://<issue>/artifact/verification-md#b-c2 of <issue>. Session <worker> is the implementer of <issue>. Dispatch records these architects on <issue> and above it: session <architect> on <issue>. Propose the change with a suggestion or a comment."
+        },
+        "request": {
+          "body": {
+            "actor": {
+              "id": "<worker>",
+              "kind": "session"
+            }
+          },
+          "if_match": null,
+          "login": "<worker>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-2>?dry_run=true"
+        },
+        "status": 403
+      },
+      "NODE_GONE": {
+        "body": {
+          "code": "NODE_GONE",
+          "error": "the block <statement-3> is gone: no write writes on it"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>?dry_run=true"
+        },
+        "status": 409
+      },
+      "NODE_HOLDS_RESULT check": {
+        "body": {
+          "code": "NODE_HOLDS_RESULT",
+          "error": "the delete of dispatch://<issue>/artifact/verification-md#b-c1 would take the result result/<result>, and a result is retracted, never deleted (POST /api/v1/results/{id}/retract): retract it first, or delete what stands under dispatch://<issue>/artifact/verification-md#b-c1 alone; nothing was deleted"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<check-shared>?dry_run=true"
+        },
+        "status": 409
+      },
+      "NODE_HOLDS_RESULT statement": {
+        "body": {
+          "code": "NODE_HOLDS_RESULT",
+          "error": "the delete of dispatch://<issue>/spec#b-s1 would take the result result/<result>, and a result is retracted, never deleted (POST /api/v1/results/{id}/retract): retract it first, or delete what stands under dispatch://<issue>/spec#b-s1 alone; nothing was deleted"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-1>?dry_run=true"
+        },
+        "status": 409
+      },
+      "NODE_NOT_DELETABLE": {
+        "body": {
+          "code": "NODE_NOT_DELETABLE",
+          "error": "the comment dispatch://<issue>/comment/<comment-on-statement-3> is not deleted through this route: a comment and a message are another writer's words, which their author edits or deletes, so it has a route of its own"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/comment/<comment-on-statement-3>?dry_run=true"
+        },
+        "status": 400
+      },
+      "NODE_NOT_DELETABLE question": {
+        "body": {
+          "code": "NODE_NOT_DELETABLE",
+          "error": "the ask dispatch://<issue>/spec#b-q1 is not deleted through this route: an ask keeps its block, its state and its answer, and closes through the ask's own routes, so it has a route of its own"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<question-block>?dry_run=true"
+        },
+        "status": 400
+      },
+      "NOT_FOUND": {
+        "body": {
+          "code": "NOT_FOUND",
+          "error": "no node \"<done-statement>\" under <issue>"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<done-statement>?dry_run=true"
+        },
+        "status": 404
+      },
+      "PARENT_CONTENDED": {
+        "body": {
+          "code": "PARENT_CONTENDED",
+          "error": "the delete of dispatch://<issue>/artifact/tree#b-<prose-under-criterion> met a node under an issue it had not locked at each of 2 attempts while this request waited for its locks, so nothing was deleted: read the count again and confirm it"
+        },
+        "request": {
+          "if_match": "\"<seq:prose-under-criterion>\"",
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<prose-under-criterion>?expected_count=1"
+        },
+        "status": 409
+      },
+      "PRECONDITION_FAILED": {
+        "body": {
+          "code": "PRECONDITION_FAILED",
+          "error": "the requirement dispatch://<issue>/spec#b-s3 stands at placement_seq <seq:statement-3@3>, which no If-Match tag names: its parent has changed since it was read, so nothing was deleted; read the tree and delete it again"
+        },
+        "request": {
+          "if_match": "\"<seq:statement-3>\"",
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>?expected_count=4"
+        },
+        "status": 412
+      },
+      "PRECONDITION_REQUIRED": {
+        "body": {
+          "code": "PRECONDITION_REQUIRED",
+          "error": "a delete states the placement it read: send If-Match with the placement_seq of dispatch://<issue>/spec#b-s3 as a quoted entity tag, as the tree read answers it"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>?expected_count=4"
+        },
+        "status": 428
+      },
+      "STATE_NOT_PERMITTED": {
+        "body": {
+          "code": "STATE_NOT_PERMITTED",
+          "error": "this credential may not move the finding dispatch://lens/<lens>#b-<finding> to gone: a person alone takes a lens, a finding, a risk or a constraint to gone, with everything that stands under it, and its author marks it overtaken instead"
+        },
+        "request": {
+          "body": {
+            "actor": {
+              "id": "<architect>",
+              "kind": "session"
+            }
+          },
+          "if_match": null,
+          "login": "<architect>",
+          "method": "DELETE",
+          "path": "/api/v1/issues/<issue>/nodes/<statement-3>?dry_run=true"
+        },
+        "status": 403
+      }
+    },
+    "taken": {
+      "body": {
+        "count": 5
+      },
+      "request": {
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "DELETE",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>?expected_count=5"
+      },
+      "status": 200
+    }
+  },
+  "moved": {
+    "indent": {
+      "body": {
+        "after": null,
+        "parent": "<statement-2>",
+        "placement_seq": "<seq:statement-3@2>"
+      },
+      "request": {
+        "body": {
+          "after": null,
+          "parent": "<statement-2>"
+        },
+        "if_match": "\"<seq:statement-3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 200
+    },
+    "move_down": {
+      "body": {
+        "after": "<statement-2>",
+        "parent": "<criterion>",
+        "placement_seq": "<seq:statement-3@3>"
+      },
+      "request": {
+        "body": {
+          "after": "<statement-2>",
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 200
+    },
+    "move_up": {
+      "body": {
+        "after": "<statement-1>",
+        "parent": "<criterion>",
+        "placement_seq": "<seq:statement-3@3>"
+      },
+      "request": {
+        "body": {
+          "after": "<statement-1>",
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 200
+    },
+    "outdent": {
+      "body": {
+        "after": "<statement-2>",
+        "parent": "<criterion>",
+        "placement_seq": "<seq:statement-3@3>"
+      },
+      "request": {
+        "body": {
+          "after": "<statement-2>",
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-3@2>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 200
+    }
+  },
+  "owed": {
+    "indexed": {
+      "body": {
+        "comments_before": null,
+        "converted": true,
+        "cursor": null,
+        "document_nodes": [
+          {
+            "artifact_id": "<owed-spec>",
+            "block_count": 3,
+            "slug": "spec"
+          }
+        ],
+        "documents": null,
+        "issue": "<owed-issue>",
+        "nodes": [
+          {
+            "attributes": {
+              "project": "GOWED",
+              "state": "live",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "converted": true,
+            "documents": null,
+            "id": "<owed-issue>",
+            "kind": "issue",
+            "made_at": "<time>",
+            "parent": null,
+            "placement_seq": null,
+            "rank": null,
+            "role": "tree",
+            "state": "live",
+            "supertag": "issue",
+            "text": "The tree artifact owes its index",
+            "tree": "<owed-tree>",
+            "view_of": null,
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "authored",
+              "project": "GOWED",
+              "state": "live",
+              "text_rank": "1U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "ok1",
+            "document": {
+              "artifact_id": "<owed-spec>",
+              "position": 0,
+              "slug": "spec"
+            },
+            "id": "<owed-criterion>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The tree artifact owes its index",
+              "id": "<owed-issue>",
+              "kind": "issue",
+              "supertag": "issue"
+            },
+            "placement_seq": "<seq:owed-criterion>",
+            "rank": "<rank:1>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "criterion",
+            "text": ":::criterion{#ok1}\nThe owed issue's criterion.\n:::",
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "text",
+              "project": "GOWED",
+              "state": "live",
+              "text_rank": "2F",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "<owed-paragraph>",
+            "id": "<owed-paragraph>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The tree artifact owes its index",
+              "id": "<owed-issue>",
+              "kind": "issue",
+              "supertag": "issue"
+            },
+            "placement_seq": "<seq:owed-paragraph>",
+            "rank": "<rank:2>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "block",
+            "text": "A paragraph the page writes into the tree artifact.",
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "authored",
+              "project": "GOWED",
+              "state": "live",
+              "text_rank": "2U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "or2",
+            "checks": 0,
+            "id": "<owed-requirement>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The tree artifact owes its index",
+              "id": "<owed-issue>",
+              "kind": "issue",
+              "supertag": "issue"
+            },
+            "placement_seq": "<seq:owed-requirement>",
+            "rank": "<rank:3>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "requirement",
+            "text": ":::requirement{#or2}\nThe requirement or2.\n:::",
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "text",
+              "project": "GOWED",
+              "state": "live",
+              "text_rank": "2U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "<owed-requirement/paragraph>",
+            "id": "<owed-requirement/paragraph>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The requirement or2.",
+              "id": "<owed-requirement>",
+              "kind": "block",
+              "supertag": "requirement"
+            },
+            "placement_seq": "<seq:owed-requirement/paragraph>",
+            "rank": "<rank:3>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "block",
+            "text": "The requirement or2.",
+            "visibility": "project"
+          }
+        ],
+        "tree": "<owed-tree>",
+        "tuples": [
+          {
+            "from": {
+              "id": "<owed-criterion>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-issue>",
+              "kind": "issue"
+            }
+          },
+          {
+            "from": {
+              "id": "<owed-paragraph>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-issue>",
+              "kind": "issue"
+            }
+          },
+          {
+            "from": {
+              "id": "<owed-requirement>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-issue>",
+              "kind": "issue"
+            }
+          },
+          {
+            "from": {
+              "id": "<owed-requirement/paragraph>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-requirement>",
+              "kind": "block"
+            }
+          },
+          {
+            "from": {
+              "id": "<owed-requirement/paragraph>",
+              "kind": "block"
+            },
+            "kind": "text_parent",
+            "to": {
+              "id": "<owed-requirement>",
+              "kind": "block"
+            }
+          }
+        ],
+        "version": null,
+        "view": "",
+        "view_of": null
+      },
+      "request": {
+        "if_match": null,
+        "login": "<person>",
+        "method": "GET",
+        "path": "/api/v1/issues/<owed-issue>/tree"
+      },
+      "status": 200
+    },
+    "owed": {
+      "body": {
+        "comments_before": null,
+        "converted": true,
+        "cursor": null,
+        "document_nodes": [
+          {
+            "artifact_id": "<owed-spec>",
+            "block_count": 3,
+            "slug": "spec"
+          }
+        ],
+        "documents": null,
+        "issue": "<owed-issue>",
+        "nodes": [
+          {
+            "attributes": {
+              "project": "GOWED",
+              "state": "live",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "converted": true,
+            "documents": null,
+            "id": "<owed-issue>",
+            "kind": "issue",
+            "made_at": "<time>",
+            "parent": null,
+            "placement_seq": null,
+            "rank": null,
+            "role": "tree",
+            "state": "live",
+            "supertag": "issue",
+            "text": "The tree artifact owes its index",
+            "tree": "<owed-tree>",
+            "view_of": null,
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "authored",
+              "project": "GOWED",
+              "state": "live",
+              "text_rank": "1U",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "ok1",
+            "document": {
+              "artifact_id": "<owed-spec>",
+              "position": 0,
+              "slug": "spec"
+            },
+            "id": "<owed-criterion>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The tree artifact owes its index",
+              "id": "<owed-issue>",
+              "kind": "issue",
+              "supertag": "issue"
+            },
+            "placement_seq": "<seq:owed-criterion>",
+            "rank": "<rank:1>",
+            "role": "tree",
+            "state": "live",
+            "supertag": "criterion",
+            "text": ":::criterion{#ok1}\nThe owed issue's criterion.\n:::",
+            "visibility": "project"
+          },
+          {
+            "attributes": {
+              "placement": "authored",
+              "project": "GOWED",
+              "state": "live",
+              "visibility": "project"
+            },
+            "author": [
+              {
+                "id": "<person>",
+                "kind": "user",
+                "proven": true
+              }
+            ],
+            "block_id": "or2",
+            "checks": 0,
+            "id": "<owed-requirement>",
+            "kind": "block",
+            "made_at": "<time>",
+            "no_conversation": true,
+            "parent": {
+              "first_line": "The tree artifact owes its index",
+              "id": "<owed-issue>",
+              "kind": "issue",
+              "supertag": "issue"
+            },
+            "placement_seq": "<seq:owed-requirement>",
+            "rank": null,
+            "role": "tree",
+            "state": "live",
+            "supertag": "requirement",
+            "text": ":::requirement{#or2}\nThe requirement or2.\n:::",
+            "visibility": "project"
+          }
+        ],
+        "owed_documents": [
+          {
+            "artifact_id": "<owed-tree>",
+            "version": 1
+          }
+        ],
+        "tree": "<owed-tree>",
+        "tuples": [
+          {
+            "from": {
+              "id": "<owed-criterion>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-issue>",
+              "kind": "issue"
+            }
+          },
+          {
+            "from": {
+              "id": "<owed-requirement>",
+              "kind": "block"
+            },
+            "kind": "part_of",
+            "to": {
+              "id": "<owed-issue>",
+              "kind": "issue"
+            }
+          }
+        ],
+        "version": null,
+        "view": "",
+        "view_of": null
+      },
+      "request": {
+        "if_match": null,
+        "login": "<person>",
+        "method": "GET",
+        "path": "/api/v1/issues/<owed-issue>/tree"
+      },
+      "status": 200
+    }
+  },
+  "paged": {
+    "page_size": 20,
+    "pages": [
+      {
+        "body": {
+          "comments_before": null,
+          "converted": true,
+          "cursor": "<cursor:result:<result>>",
+          "document_nodes": [
+            {
+              "artifact_id": "<spec>",
+              "block_count": 16,
+              "slug": "spec"
+            },
+            {
+              "artifact_id": "<verification>",
+              "block_count": 4,
+              "slug": "verification-md"
+            },
+            {
+              "artifact_id": "<plan>",
+              "block_count": 2,
+              "slug": "plan-md"
+            }
+          ],
+          "documents": null,
+          "issue": "<issue>",
+          "nodes": [
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<issue>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "Graph editing's seed",
+              "tree": "<tree>",
+              "view_of": null,
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "memo",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 0,
+                "slug": "spec"
+              },
+              "id": "<memo>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:memo>",
+              "rank": "<rank:1>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "callout",
+              "text": ":::callout{#memo kind=\"note\" title=\"Memo\"}\nThe memo the graph keeps first.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "q1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 2,
+                "slug": "spec"
+              },
+              "id": "<question-block>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:question-block>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask",
+              "text": ":::ask{#q1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"<person>\" answered_at=\"<time>\"}\nWhich edits does the graph take?\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1X",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "d1",
+              "decision": {
+                "asks": [],
+                "block_id": "d1",
+                "changed_at": "<time>",
+                "changed_version": 3,
+                "heading": "The graph keeps one write for each move.",
+                "kept": null,
+                "kind": "agent",
+                "links": [],
+                "ref": "dispatch://<issue>/spec#b-d1",
+                "replaced": false,
+                "text": ":::decision{#d1 replaced=\"false\"}\nThe graph keeps one write for each move.\n:::\n",
+                "text_sha256": "9d98c4b70e2b173c92164fbf87acd6f678dc1a8130738be6c6303fb432ad800e",
+                "uncertainty": null,
+                "uncertainty_reason": null,
+                "unsure": false,
+                "waiting_review": true
+              },
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 12,
+                "slug": "spec"
+              },
+              "id": "<decision>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:decision>",
+              "rank": "<rank:3>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "decision",
+              "text": ":::decision{#d1 replaced=\"false\"}\nThe graph keeps one write for each move.\n:::\n",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "g1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 14,
+                "slug": "spec"
+              },
+              "id": "<reading>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The graph keeps one write for each move.",
+                "id": "<decision>",
+                "kind": "block",
+                "supertag": "decision"
+              },
+              "placement_seq": "<seq:reading>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "reading",
+              "text": ":::reading{#g1}\nThe agent reads each move as one write.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "27",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/paragraph>",
+              "id": "<tree/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/paragraph>",
+              "rank": "<rank:4>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "A paragraph of the issue's own words.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/heading>",
+              "id": "<tree/heading>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/heading>",
+              "rank": "<rank:5>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "## A heading of the issue's own",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list>",
+              "id": "<tree/bullet_list>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/bullet_list>",
+              "rank": "<rank:6>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The first item of the list.\n- The second item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<list-paragraph>",
+              "id": "<list-paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<tree/bullet_list>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:list-paragraph>",
+              "rank": "<rank:5>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The first item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list/paragraph>",
+              "id": "<tree/bullet_list/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<tree/bullet_list>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:tree/bullet_list/paragraph>",
+              "rank": "<rank:6>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The second item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2UU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/table>",
+              "id": "<tree/table>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/table>",
+              "rank": "<rank:7>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "| Act | Key |\n| --- | --- |\n| Indent | Tab |",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/code_block>",
+              "id": "<tree/code_block>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/code_block>",
+              "rank": "<rank:8>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "```go\nfmt.Println(\"graph\")\n```",
+              "visibility": "project"
+            },
+            {
+              "ask": {
+                "answer": "Indent, outdent, the two moves and the delete.",
+                "answered_at": "<time>",
+                "answered_by": "<person>",
+                "multiple": false,
+                "options": [],
+                "selected": [],
+                "urgency": "med"
+              },
+              "attributes": {
+                "answer": "Indent, outdent, the two moves and the delete.",
+                "answer_state": "answered",
+                "answered_at": "<time>",
+                "project": "GEDIT",
+                "selected": "[]",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "decision": {
+                "asks": [
+                  "<question>"
+                ],
+                "block_id": "q1",
+                "changed_at": "<time>",
+                "changed_version": 1,
+                "heading": "Which edits does the graph take?",
+                "kept": null,
+                "kind": "person",
+                "links": [],
+                "ref": "dispatch://<issue>/ask/<question>",
+                "replaced": false,
+                "text": "Which edits does the graph take?",
+                "text_sha256": "f677b01b4920882ae5fbc0ed97eecfd8b68e822903b10bb8530257feea36a2e4",
+                "uncertainty": null,
+                "uncertainty_reason": null,
+                "unsure": false,
+                "waiting_review": false
+              },
+              "id": "<question>",
+              "kind": "ask",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:question>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask",
+              "text": "Which edits does the graph take?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "ask/<question>#b1",
+              "kind": "ask_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask_block",
+              "text": "Which edits does the graph take?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user"
+                }
+              ],
+              "block_id": "b2",
+              "id": "ask/<question>#b2",
+              "kind": "ask_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask_block",
+              "text": "Indent, outdent, the two moves and the delete.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1UU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "k1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 4,
+                "slug": "spec"
+              },
+              "id": "<criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": "<seq:criterion>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "criterion",
+              "text": ":::criterion{#k1 parent=\"dispatch://<issue>/ask/<question>\"}\nThe reader edits the graph by keyboard alone.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "s1",
+              "checks": 2,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 6,
+                "slug": "spec"
+              },
+              "id": "<statement-1>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-1>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s1 serves=\"dispatch://<issue>/spec#b-k1\"}\nAn indent is one write of the node's place.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "c1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c"
+              },
+              "document": {
+                "artifact_id": "<verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<check-shared>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:check-shared>",
+              "rank": "<rank:9>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#c1 serves=\"dispatch://<issue>/spec#b-s1 dispatch://<issue>/spec#b-s2 dispatch://<issue>/spec#b-s3\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nEvery edit of the graph is one write.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<person>",
+              "kind": "person",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "person",
+              "text": "",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "id": "<architect>",
+              "kind": "session",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "session",
+              "text": "",
+              "visibility": "project"
+            }
+          ],
+          "owed_documents": [
+            {
+              "artifact_id": "<decisions>",
+              "version": 2
+            }
+          ],
+          "remaining": 19,
+          "tree": "<tree>",
+          "tuples": [
+            {
+              "from": {
+                "id": "<memo>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<memo>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<question-block>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question-block>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<decision>",
+                "kind": "block"
+              },
+              "kind": "decided_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<decision>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<decision>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<decision>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/heading>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/heading>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/table>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/table>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/code_block>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/code_block>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "answered_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "decided_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "parent",
+              "to": {
+                "id": "<question>",
+                "kind": "ask"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<question>",
+                "kind": "ask"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-3>",
+                "kind": "block"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": null
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<issue>/tree"
+        },
+        "status": 200
+      },
+      {
+        "body": {
+          "comments_before": null,
+          "converted": true,
+          "cursor": null,
+          "document_nodes": [
+            {
+              "artifact_id": "<spec>",
+              "block_count": 16,
+              "slug": "spec"
+            },
+            {
+              "artifact_id": "<verification>",
+              "block_count": 4,
+              "slug": "verification-md"
+            },
+            {
+              "artifact_id": "<plan>",
+              "block_count": 2,
+              "slug": "plan-md"
+            }
+          ],
+          "documents": null,
+          "issue": "<issue>",
+          "nodes": [
+            {
+              "attributes": {
+                "check_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c",
+                "check_version": "1",
+                "commit": "1111111111111111111111111111111111111111",
+                "excluded": "0",
+                "failed": "0",
+                "negative_control": "Broke what the check proves and the run failed.",
+                "observed": "",
+                "project": "GEDIT",
+                "role": "implementer",
+                "run": "",
+                "skipped": "0",
+                "state": "live",
+                "surface": "",
+                "verdict": "pass",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<result>",
+              "kind": "result",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Every edit of the graph is one write.",
+                "id": "<check-shared>",
+                "kind": "block",
+                "supertag": "check"
+              },
+              "placement_seq": "<seq:result>",
+              "rank": null,
+              "result": {
+                "check_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c",
+                "check_version": 1,
+                "verdict": "pass"
+              },
+              "role": "tree",
+              "state": "live",
+              "supertag": "result",
+              "text": "",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "cc1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "c3d4044dbe8d031a8fe4f89d1f7a23a8d72e721c1fe2869c530844436ecd8f75"
+              },
+              "document": {
+                "artifact_id": "<child-verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<child-check>",
+              "issue": "<child>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:child-check>",
+              "rank": "<rank:4>",
+              "read_only": true,
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#cc1 serves=\"dispatch://<issue>/spec#b-s1\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nThe child checks the first statement.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "4U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "t1",
+              "document": {
+                "artifact_id": "<plan>",
+                "position": 0,
+                "slug": "plan-md"
+              },
+              "id": "<plan-task>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:plan-task>",
+              "rank": "<rank:5>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "plan_task",
+              "text": ":::plan_task{#t1 serves=\"dispatch://<issue>/spec#b-s1\"}\nBuild the node menu of Graph.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1VU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "s2",
+              "checks": 2,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 8,
+                "slug": "spec"
+              },
+              "id": "<statement-2>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-2>",
+              "rank": "<rank:1>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s2 serves=\"dispatch://<issue>/spec#b-k1\"}\nA move names the placement it read.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "c2",
+              "check": {
+                "changed_version": 2,
+                "text_sha256": "23f490868b902feef7c264510a044ad6092cf168337c0533831802d6af3401e8"
+              },
+              "document": {
+                "artifact_id": "<verification>",
+                "position": 2,
+                "slug": "verification-md"
+              },
+              "id": "<check-agent>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A move names the placement it read.",
+                "id": "<statement-2>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:check-agent>",
+              "rank": "<rank:4>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#c2 serves=\"dispatch://<issue>/spec#b-s2\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nA move names the placement it read, or stores nothing.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1W",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "s3",
+              "checks": 1,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 10,
+                "slug": "spec"
+              },
+              "id": "<statement-3>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-3>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s3 serves=\"dispatch://<issue>/spec#b-k1\"}\nA refused edit stores nothing at all.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "artifact_id": "<tree>",
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<lens>",
+              "kind": "lens",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A refused edit stores nothing at all.",
+                "id": "<statement-3>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:lens>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "lens",
+              "text": "the pre-mortem over failure modes",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<finding>",
+              "id": "<finding>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "the pre-mortem over failure modes",
+                "id": "<lens>",
+                "kind": "lens",
+                "supertag": "lens"
+              },
+              "placement_seq": "<seq:finding>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "A move read from a stale page lands nowhere.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "early_warning": "The If-Match fails twice.",
+                "heading": "A move lands on a parent read before.",
+                "prevention": "The move names its placement_seq.",
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<risk>",
+              "kind": "risk",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "the pre-mortem over failure modes",
+                "id": "<lens>",
+                "kind": "lens",
+                "supertag": "lens"
+              },
+              "placement_seq": "<seq:risk>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "risk",
+              "text": "A move lands on a parent read before.",
+              "visibility": "project"
+            },
+            {
+              "anchor": {
+                "artifact_id": "<spec>",
+                "block_id": "<statement-3/paragraph>",
+                "mark_id": "<comment-on-statement-3>",
+                "occurrence": 0,
+                "orphaned": false,
+                "quote": "stores nothing",
+                "version": 3
+              },
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<comment-on-statement-3>",
+              "kind": "comment",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A refused edit stores nothing at all.",
+                "id": "<statement-3>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:comment-on-statement-3>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "comment",
+              "text": "Does a refused move store nothing either?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "comment/<comment-on-statement-3>#b1",
+              "kind": "comment_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Does a refused move store nothing either?",
+                "id": "<comment-on-statement-3>",
+                "kind": "comment",
+                "supertag": "comment"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "comment_block",
+              "text": "Does a refused move store nothing either?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "stored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2W",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<prose-under-criterion>",
+              "id": "<prose-under-criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:prose-under-criterion>",
+              "rank": "<rank:3>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The prose block the seed places under the criterion.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<message>",
+              "kind": "message",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message",
+              "text": "The menu ships with the moves first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "message/<message>#b1",
+              "kind": "message_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The menu ships with the moves first.",
+                "id": "<message>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message_block",
+              "text": "The menu ships with the moves first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "id": "<agent-reply>",
+              "kind": "message",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The menu ships with the moves first.",
+                "id": "<message>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message",
+              "text": "The moves are planned first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "b1",
+              "id": "message/<agent-reply>#b1",
+              "kind": "message_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The moves are planned first.",
+                "id": "<agent-reply>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message_block",
+              "text": "The moves are planned first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "reference": "section 13.1.1",
+                "standard": "RFC 9110",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<constraint>",
+              "kind": "constraint",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:constraint>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "constraint",
+              "text": "RFC 9110",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<child>",
+              "issue": "<child>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:child>",
+              "rank": null,
+              "read_only": true,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "The child, a view of the spec",
+              "tree": "<child-tree>",
+              "view_of": "<issue>",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project",
+                "words": "the pre-mortem over failure modes"
+              },
+              "author": [
+                {
+                  "id": "lens-catalogue",
+                  "kind": "system"
+                }
+              ],
+              "id": "pre-mortem",
+              "kind": "lens_kind",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "lens_kind",
+              "text": "the pre-mortem over failure modes",
+              "visibility": "project"
+            }
+          ],
+          "owed_documents": [
+            {
+              "artifact_id": "<decisions>",
+              "version": 2
+            }
+          ],
+          "tree": "<tree>",
+          "tuples": [
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<check-shared>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "result_of",
+              "to": {
+                "id": "<check-shared>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<child>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "has_kind",
+              "to": {
+                "id": "pre-mortem",
+                "kind": "lens_kind"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-3>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<finding>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<finding>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<lens>",
+                "kind": "lens"
+              }
+            },
+            {
+              "from": {
+                "id": "<risk>",
+                "kind": "risk"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<risk>",
+                "kind": "risk"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<lens>",
+                "kind": "lens"
+              }
+            },
+            {
+              "from": {
+                "id": "<comment-on-statement-3>",
+                "kind": "comment"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<prose-under-criterion>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<prose-under-criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<constraint>",
+                "kind": "constraint"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<constraint>",
+                "kind": "constraint"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<child>",
+                "kind": "issue"
+              },
+              "kind": "child_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": null
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<issue>/tree?cursor=<cursor:result:<result>>"
+        },
+        "status": 200
+      }
+    ]
+  },
+  "refused": {
+    "ANSWERED_ASK_KEPT": {
+      "body": {
+        "code": "ANSWERED_ASK_KEPT",
+        "error": "the :::ask block dispatch://<issue>/spec#b-q1, \"Which edits does the graph take?\", is a person's decision, and an agent cannot move it: a person moves it, or an agent acting under a token that holds the person scope"
+      },
+      "request": {
+        "body": {
+          "actor": {
+            "id": "<architect>",
+            "kind": "session"
+          },
+          "parent": "issue/<issue>"
+        },
+        "if_match": "\"<seq:question-block>\"",
+        "login": "<architect>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<question-block>"
+      },
+      "status": 409
+    },
+    "CONTAINER_WOULD_EMPTY": {
+      "body": {
+        "code": "CONTAINER_WOULD_EMPTY",
+        "error": "the move of dispatch://<issue>/artifact/tree#b-<list-paragraph> would leave the list item <issue>/tree#<list-item> with no block of its own: the move takes the block that a list item \"<list-item>\" holds as its own first paragraph out of it, which would leave it no first paragraph of its own; nothing was moved, and the list item itself moves or goes whole"
+      },
+      "request": {
+        "body": {
+          "parent": "issue/<issue>"
+        },
+        "if_match": "\"<seq:list-paragraph>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<list-paragraph>"
+      },
+      "status": 409
+    },
+    "DOCUMENT_WRITER_NOT_ARCHITECT": {
+      "body": {
+        "code": "DOCUMENT_WRITER_NOT_ARCHITECT",
+        "error": "Session <worker> cannot write the requirement dispatch://<issue>/spec#b-s3 of <issue>. Legion runs <issue>. Only a person or an architect of <issue> or of an issue above it can write the requirement dispatch://<issue>/spec#b-s3 of <issue>. Session <worker> is the implementer of <issue>. Dispatch records these architects on <issue> and above it: session <architect> on <issue>. Propose the change with a suggestion or a comment."
+      },
+      "request": {
+        "body": {
+          "actor": {
+            "id": "<worker>",
+            "kind": "session"
+          },
+          "after": null,
+          "parent": "<statement-2>"
+        },
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<worker>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 403
+    },
+    "INVALID_POINTER": {
+      "body": {
+        "code": "INVALID_POINTER",
+        "error": "the move of dispatch://<issue>/spec#b-s1 under dispatch://<issue>/artifact/verification-md#b-c1 would make a cycle: dispatch://<issue>/artifact/verification-md#b-c1 stands in the subtree of dispatch://<issue>/spec#b-s1, so it cannot hold it"
+      },
+      "request": {
+        "body": {
+          "parent": "<check-shared>"
+        },
+        "if_match": "\"<seq:statement-1>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-1>"
+      },
+      "status": 400
+    },
+    "INVALID_POINTER after": {
+      "body": {
+        "code": "INVALID_POINTER",
+        "error": "after \"<check-agent>\": it is no ranked child of dispatch://<issue>/spec#b-k1: after names a node that holds a rank and stands under the parent the moved node has once the move is taken, so nothing was moved"
+      },
+      "request": {
+        "body": {
+          "after": "<check-agent>",
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 400
+    },
+    "INVALID_POINTER constraint": {
+      "body": {
+        "code": "INVALID_POINTER",
+        "error": "the constraint dispatch://constraint/<constraint> may not stand under dispatch://<issue>/spec#b-s3, a requirement: a constraint stands only under an issue node, the issue whose constraints list it, and under any other node it would stand under no issue"
+      },
+      "request": {
+        "body": {
+          "parent": "<statement-3>"
+        },
+        "if_match": "\"<seq:constraint>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/constraint/<constraint>"
+      },
+      "status": 400
+    },
+    "MOVE_INPUT": {
+      "body": {
+        "code": "MOVE_INPUT",
+        "error": "a move names parent, the node to stand under, after, the ranked sibling to follow, or both; this body names neither"
+      },
+      "request": {
+        "body": {},
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 400
+    },
+    "NODE_GONE": {
+      "body": {
+        "code": "NODE_GONE",
+        "error": "the block <statement-3> is gone: no write writes on it"
+      },
+      "request": {
+        "body": {
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-3@3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 409
+    },
+    "NODE_NOT_MOVABLE": {
+      "body": {
+        "code": "NODE_NOT_MOVABLE",
+        "error": "the comment dispatch://<issue>/comment/<comment-on-statement-3> does not move: its part_of follows its own row - an ask's the document that holds its block, a comment's and a message's what each answers or the node its anchor is on - so a move would leave a difference no pass clears, and the next restore would undo it; an ask moves with the block that holds it"
+      },
+      "request": {
+        "body": {
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:comment-on-statement-3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/comment/<comment-on-statement-3>"
+      },
+      "status": 400
+    },
+    "NOT_FOUND": {
+      "body": {
+        "code": "NOT_FOUND",
+        "error": "no node \"<done-statement>\" under <issue>"
+      },
+      "request": {
+        "body": {
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:done-statement>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<done-statement>"
+      },
+      "status": 404
+    },
+    "PARENT_CONTENDED": {
+      "body": {
+        "code": "PARENT_CONTENDED",
+        "error": "the move of dispatch://<issue>/spec#b-s2 under dispatch://<issue>/spec#b-k1 met a node under an issue it had not locked at each of 2 attempts while this request waited for its locks, so nothing was moved: read the tree and move it again"
+      },
+      "request": {
+        "body": {
+          "after": null,
+          "parent": "<criterion>"
+        },
+        "if_match": "\"<seq:statement-2>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-2>"
+      },
+      "status": 409
+    },
+    "PARENT_DOCUMENT_REMOVABLE": {
+      "body": {
+        "code": "PARENT_DOCUMENT_REMOVABLE",
+        "error": "the paragraph dispatch://<issue>/artifact/tree#b-<prose-under-criterion> may not stand under dispatch://<issue>/artifact/notes-u-md, which is or stands under the node of the document <issue>/notes-u-md, a document a removal could take: a removal of the document would leave it live behind no row, and only a lens whose subtree holds lenses, findings and risks alone stands there, so nothing was moved"
+      },
+      "request": {
+        "body": {
+          "parent": "artifact/<issue>/notes-u-md"
+        },
+        "if_match": "\"<seq:prose-under-criterion>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<prose-under-criterion>"
+      },
+      "status": 409
+    },
+    "PARENT_NOT_REACHED": {
+      "body": {
+        "code": "PARENT_NOT_REACHED",
+        "error": "the move of dispatch://<issue>/artifact/tree#b-<prose-under-criterion> under <statement-3> is refused: the walk of <issue> does not reach <statement-3>, because it is gone, so the moved node would stand where no read answers it; nothing was moved"
+      },
+      "request": {
+        "body": {
+          "parent": "<statement-3>"
+        },
+        "if_match": "\"<seq:prose-under-criterion>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<prose-under-criterion>"
+      },
+      "status": 409
+    },
+    "PRECONDITION_FAILED": {
+      "body": {
+        "code": "PRECONDITION_FAILED",
+        "error": "the requirement dispatch://<issue>/spec#b-s3 stands at placement_seq <seq:statement-3@3>, which no If-Match tag names: its parent has changed since it was read, so nothing was moved; read the tree and move it again"
+      },
+      "request": {
+        "body": {
+          "after": null,
+          "parent": "<statement-2>"
+        },
+        "if_match": "\"<seq:statement-3>\"",
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 412
+    },
+    "PRECONDITION_REQUIRED": {
+      "body": {
+        "code": "PRECONDITION_REQUIRED",
+        "error": "a move states the placement it read: send If-Match with the placement_seq of dispatch://<issue>/spec#b-s3 as a quoted entity tag, as the tree read answers it"
+      },
+      "request": {
+        "body": {
+          "after": null,
+          "parent": "<statement-2>"
+        },
+        "if_match": null,
+        "login": "<person>",
+        "method": "PATCH",
+        "path": "/api/v1/issues/<issue>/nodes/<statement-3>"
+      },
+      "status": 428
+    }
+  },
+  "tree": {
+    "child": {
+      "agent": {
+        "request": {
+          "if_match": null,
+          "login": "<agent>",
+          "method": "GET",
+          "path": "/api/v1/issues/<child>/tree"
+        },
+        "same_as_person": true
+      },
+      "person": {
+        "body": {
+          "comments_before": null,
+          "converted": true,
+          "cursor": null,
+          "document_nodes": [
+            {
+              "artifact_id": "<child-spec>",
+              "block_count": 1,
+              "slug": "spec"
+            },
+            {
+              "artifact_id": "<child-verification>",
+              "block_count": 2,
+              "slug": "verification-md"
+            }
+          ],
+          "documents": null,
+          "issue": "<child>",
+          "nodes": [
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<child>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "The child, a view of the spec",
+              "tree": "<child-tree>",
+              "view_of": "<issue>",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "cc1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "c3d4044dbe8d031a8fe4f89d1f7a23a8d72e721c1fe2869c530844436ecd8f75"
+              },
+              "document": {
+                "artifact_id": "<child-verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<child-check>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The child, a view of the spec",
+                "id": "<child>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:child-check>",
+              "rank": "<rank:1>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#cc1 serves=\"dispatch://<issue>/spec#b-s1\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nThe child checks the first statement.\n:::",
+              "visibility": "project"
+            }
+          ],
+          "tree": "<child-tree>",
+          "tuples": [
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<child>",
+                "kind": "issue"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": "<issue>"
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<child>/tree"
+        },
+        "status": 200
+      }
+    },
+    "converted": {
+      "agent": {
+        "request": {
+          "if_match": null,
+          "login": "<agent>",
+          "method": "GET",
+          "path": "/api/v1/issues/<issue>/tree"
+        },
+        "same_as_person": true
+      },
+      "person": {
+        "body": {
+          "comments_before": null,
+          "converted": true,
+          "cursor": null,
+          "document_nodes": [
+            {
+              "artifact_id": "<spec>",
+              "block_count": 16,
+              "slug": "spec"
+            },
+            {
+              "artifact_id": "<verification>",
+              "block_count": 4,
+              "slug": "verification-md"
+            },
+            {
+              "artifact_id": "<plan>",
+              "block_count": 2,
+              "slug": "plan-md"
+            }
+          ],
+          "documents": null,
+          "issue": "<issue>",
+          "nodes": [
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<issue>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "Graph editing's seed",
+              "tree": "<tree>",
+              "view_of": null,
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "memo",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 0,
+                "slug": "spec"
+              },
+              "id": "<memo>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:memo>",
+              "rank": "<rank:01>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "callout",
+              "text": ":::callout{#memo kind=\"note\" title=\"Memo\"}\nThe memo the graph keeps first.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "q1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 2,
+                "slug": "spec"
+              },
+              "id": "<question-block>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:question-block>",
+              "rank": "<rank:02>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask",
+              "text": ":::ask{#q1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"<person>\" answered_at=\"<time>\"}\nWhich edits does the graph take?\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1X",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "d1",
+              "decision": {
+                "asks": [],
+                "block_id": "d1",
+                "changed_at": "<time>",
+                "changed_version": 3,
+                "heading": "The graph keeps one write for each move.",
+                "kept": null,
+                "kind": "agent",
+                "links": [],
+                "ref": "dispatch://<issue>/spec#b-d1",
+                "replaced": false,
+                "text": ":::decision{#d1 replaced=\"false\"}\nThe graph keeps one write for each move.\n:::\n",
+                "text_sha256": "9d98c4b70e2b173c92164fbf87acd6f678dc1a8130738be6c6303fb432ad800e",
+                "uncertainty": null,
+                "uncertainty_reason": null,
+                "unsure": false,
+                "waiting_review": true
+              },
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 12,
+                "slug": "spec"
+              },
+              "id": "<decision>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:decision>",
+              "rank": "<rank:04>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "decision",
+              "text": ":::decision{#d1 replaced=\"false\"}\nThe graph keeps one write for each move.\n:::\n",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "g1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 14,
+                "slug": "spec"
+              },
+              "id": "<reading>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The graph keeps one write for each move.",
+                "id": "<decision>",
+                "kind": "block",
+                "supertag": "decision"
+              },
+              "placement_seq": "<seq:reading>",
+              "rank": "<rank:02>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "reading",
+              "text": ":::reading{#g1}\nThe agent reads each move as one write.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "27",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/paragraph>",
+              "id": "<tree/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/paragraph>",
+              "rank": "<rank:05>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "A paragraph of the issue's own words.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/heading>",
+              "id": "<tree/heading>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/heading>",
+              "rank": "<rank:06>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "## A heading of the issue's own",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list>",
+              "id": "<tree/bullet_list>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/bullet_list>",
+              "rank": "<rank:07>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "- The first item of the list.\n- The second item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<list-paragraph>",
+              "id": "<list-paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<tree/bullet_list>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:list-paragraph>",
+              "rank": "<rank:06>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The first item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/bullet_list/paragraph>",
+              "id": "<tree/bullet_list/paragraph>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The first item of the list.",
+                "id": "<tree/bullet_list>",
+                "kind": "block",
+                "supertag": "block"
+              },
+              "placement_seq": "<seq:tree/bullet_list/paragraph>",
+              "rank": "<rank:07>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The second item of the list.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2UU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/table>",
+              "id": "<tree/table>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/table>",
+              "rank": "<rank:08>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "| Act | Key |\n| --- | --- |\n| Indent | Tab |",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "text",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<tree/code_block>",
+              "id": "<tree/code_block>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:tree/code_block>",
+              "rank": "<rank:09>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "```go\nfmt.Println(\"graph\")\n```",
+              "visibility": "project"
+            },
+            {
+              "ask": {
+                "answer": "Indent, outdent, the two moves and the delete.",
+                "answered_at": "<time>",
+                "answered_by": "<person>",
+                "multiple": false,
+                "options": [],
+                "selected": [],
+                "urgency": "med"
+              },
+              "attributes": {
+                "answer": "Indent, outdent, the two moves and the delete.",
+                "answer_state": "answered",
+                "answered_at": "<time>",
+                "project": "GEDIT",
+                "selected": "[]",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "decision": {
+                "asks": [
+                  "<question>"
+                ],
+                "block_id": "q1",
+                "changed_at": "<time>",
+                "changed_version": 1,
+                "heading": "Which edits does the graph take?",
+                "kept": null,
+                "kind": "person",
+                "links": [],
+                "ref": "dispatch://<issue>/ask/<question>",
+                "replaced": false,
+                "text": "Which edits does the graph take?",
+                "text_sha256": "f677b01b4920882ae5fbc0ed97eecfd8b68e822903b10bb8530257feea36a2e4",
+                "uncertainty": null,
+                "uncertainty_reason": null,
+                "unsure": false,
+                "waiting_review": false
+              },
+              "id": "<question>",
+              "kind": "ask",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:question>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask",
+              "text": "Which edits does the graph take?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "ask/<question>#b1",
+              "kind": "ask_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask_block",
+              "text": "Which edits does the graph take?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user"
+                }
+              ],
+              "block_id": "b2",
+              "id": "ask/<question>#b2",
+              "kind": "ask_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "ask_block",
+              "text": "Indent, outdent, the two moves and the delete.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1UU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "k1",
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 4,
+                "slug": "spec"
+              },
+              "id": "<criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Which edits does the graph take?",
+                "id": "<question>",
+                "kind": "ask",
+                "supertag": "ask"
+              },
+              "placement_seq": "<seq:criterion>",
+              "rank": "<rank:02>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "criterion",
+              "text": ":::criterion{#k1 parent=\"dispatch://<issue>/ask/<question>\"}\nThe reader edits the graph by keyboard alone.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "s1",
+              "checks": 2,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 6,
+                "slug": "spec"
+              },
+              "id": "<statement-1>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-1>",
+              "rank": "<rank:02>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s1 serves=\"dispatch://<issue>/spec#b-k1\"}\nAn indent is one write of the node's place.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "c1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c"
+              },
+              "document": {
+                "artifact_id": "<verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<check-shared>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:check-shared>",
+              "rank": "<rank:10>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#c1 serves=\"dispatch://<issue>/spec#b-s1 dispatch://<issue>/spec#b-s2 dispatch://<issue>/spec#b-s3\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nEvery edit of the graph is one write.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "check_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c",
+                "check_version": "1",
+                "commit": "1111111111111111111111111111111111111111",
+                "excluded": "0",
+                "failed": "0",
+                "negative_control": "Broke what the check proves and the run failed.",
+                "observed": "",
+                "project": "GEDIT",
+                "role": "implementer",
+                "run": "",
+                "skipped": "0",
+                "state": "live",
+                "surface": "",
+                "verdict": "pass",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<result>",
+              "kind": "result",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Every edit of the graph is one write.",
+                "id": "<check-shared>",
+                "kind": "block",
+                "supertag": "check"
+              },
+              "placement_seq": "<seq:result>",
+              "rank": null,
+              "result": {
+                "check_sha256": "0f388964518ea89671ed5fd22d3a116d996c9f050a261db144a12f6a83f9659c",
+                "check_version": 1,
+                "verdict": "pass"
+              },
+              "role": "tree",
+              "state": "live",
+              "supertag": "result",
+              "text": "",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "cc1",
+              "check": {
+                "changed_version": 1,
+                "text_sha256": "c3d4044dbe8d031a8fe4f89d1f7a23a8d72e721c1fe2869c530844436ecd8f75"
+              },
+              "document": {
+                "artifact_id": "<child-verification>",
+                "position": 0,
+                "slug": "verification-md"
+              },
+              "id": "<child-check>",
+              "issue": "<child>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:child-check>",
+              "rank": "<rank:10>",
+              "read_only": true,
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#cc1 serves=\"dispatch://<issue>/spec#b-s1\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nThe child checks the first statement.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "4U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "t1",
+              "document": {
+                "artifact_id": "<plan>",
+                "position": 0,
+                "slug": "plan-md"
+              },
+              "id": "<plan-task>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "An indent is one write of the node's place.",
+                "id": "<statement-1>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:plan-task>",
+              "rank": "<rank:11>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "plan_task",
+              "text": ":::plan_task{#t1 serves=\"dispatch://<issue>/spec#b-s1\"}\nBuild the node menu of Graph.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1VU",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "s2",
+              "checks": 2,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 8,
+                "slug": "spec"
+              },
+              "id": "<statement-2>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-2>",
+              "rank": "<rank:03>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s2 serves=\"dispatch://<issue>/spec#b-k1\"}\nA move names the placement it read.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "3V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "c2",
+              "check": {
+                "changed_version": 2,
+                "text_sha256": "23f490868b902feef7c264510a044ad6092cf168337c0533831802d6af3401e8"
+              },
+              "document": {
+                "artifact_id": "<verification>",
+                "position": 2,
+                "slug": "verification-md"
+              },
+              "id": "<check-agent>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A move names the placement it read.",
+                "id": "<statement-2>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:check-agent>",
+              "rank": "<rank:10>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "check",
+              "text": ":::check{#c2 serves=\"dispatch://<issue>/spec#b-s2\" surface=\"api\" run=\"go test ./graph\" when=\"before_merge\" negative_control=\"Drop the rule: the test fails.\"}\nA move names the placement it read, or stores nothing.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1W",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "s3",
+              "checks": 1,
+              "document": {
+                "artifact_id": "<spec>",
+                "position": 10,
+                "slug": "spec"
+              },
+              "id": "<statement-3>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:statement-3>",
+              "rank": "<rank:04>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#s3 serves=\"dispatch://<issue>/spec#b-k1\"}\nA refused edit stores nothing at all.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "artifact_id": "<tree>",
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<lens>",
+              "kind": "lens",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A refused edit stores nothing at all.",
+                "id": "<statement-3>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:lens>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "lens",
+              "text": "the pre-mortem over failure modes",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<finding>",
+              "id": "<finding>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "the pre-mortem over failure modes",
+                "id": "<lens>",
+                "kind": "lens",
+                "supertag": "lens"
+              },
+              "placement_seq": "<seq:finding>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "A move read from a stale page lands nowhere.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "early_warning": "The If-Match fails twice.",
+                "heading": "A move lands on a parent read before.",
+                "prevention": "The move names its placement_seq.",
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<risk>",
+              "kind": "risk",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "the pre-mortem over failure modes",
+                "id": "<lens>",
+                "kind": "lens",
+                "supertag": "lens"
+              },
+              "placement_seq": "<seq:risk>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "risk",
+              "text": "A move lands on a parent read before.",
+              "visibility": "project"
+            },
+            {
+              "anchor": {
+                "artifact_id": "<spec>",
+                "block_id": "<statement-3/paragraph>",
+                "mark_id": "<comment-on-statement-3>",
+                "occurrence": 0,
+                "orphaned": false,
+                "quote": "stores nothing",
+                "version": 3
+              },
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<comment-on-statement-3>",
+              "kind": "comment",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "A refused edit stores nothing at all.",
+                "id": "<statement-3>",
+                "kind": "block",
+                "supertag": "requirement"
+              },
+              "placement_seq": "<seq:comment-on-statement-3>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "comment",
+              "text": "Does a refused move store nothing either?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "comment/<comment-on-statement-3>#b1",
+              "kind": "comment_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Does a refused move store nothing either?",
+                "id": "<comment-on-statement-3>",
+                "kind": "comment",
+                "supertag": "comment"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "comment_block",
+              "text": "Does a refused move store nothing either?",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "stored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "2W",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "<prose-under-criterion>",
+              "id": "<prose-under-criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The reader edits the graph by keyboard alone.",
+                "id": "<criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:prose-under-criterion>",
+              "rank": "<rank:07>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "block",
+              "text": "The prose block the seed places under the criterion.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<message>",
+              "kind": "message",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message",
+              "text": "The menu ships with the moves first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "b1",
+              "id": "message/<message>#b1",
+              "kind": "message_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The menu ships with the moves first.",
+                "id": "<message>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message_block",
+              "text": "The menu ships with the moves first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "id": "<agent-reply>",
+              "kind": "message",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The menu ships with the moves first.",
+                "id": "<message>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message",
+              "text": "The moves are planned first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {},
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "block_id": "b1",
+              "id": "message/<agent-reply>#b1",
+              "kind": "message_block",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "The moves are planned first.",
+                "id": "<agent-reply>",
+                "kind": "message",
+                "supertag": "message"
+              },
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "message_block",
+              "text": "The moves are planned first.",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "reference": "section 13.1.1",
+                "standard": "RFC 9110",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<constraint>",
+              "kind": "constraint",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:constraint>",
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "constraint",
+              "text": "RFC 9110",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<child>",
+              "issue": "<child>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": {
+                "first_line": "Graph editing's seed",
+                "id": "<issue>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:child>",
+              "rank": null,
+              "read_only": true,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "The child, a view of the spec",
+              "tree": "<child-tree>",
+              "view_of": "<issue>",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project",
+                "words": "the pre-mortem over failure modes"
+              },
+              "author": [
+                {
+                  "id": "lens-catalogue",
+                  "kind": "system"
+                }
+              ],
+              "id": "pre-mortem",
+              "kind": "lens_kind",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "lens_kind",
+              "text": "the pre-mortem over failure modes",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "id": "<person>",
+              "kind": "person",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "person",
+              "text": "",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<architect>",
+                  "kind": "session"
+                }
+              ],
+              "id": "<architect>",
+              "kind": "session",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "context",
+              "state": "live",
+              "supertag": "session",
+              "text": "",
+              "visibility": "project"
+            }
+          ],
+          "owed_documents": [
+            {
+              "artifact_id": "<decisions>",
+              "version": 2
+            }
+          ],
+          "tree": "<tree>",
+          "tuples": [
+            {
+              "from": {
+                "id": "<memo>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<memo>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<question-block>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question-block>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<decision>",
+                "kind": "block"
+              },
+              "kind": "decided_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<decision>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<decision>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<reading>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<decision>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/heading>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/heading>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<list-paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/bullet_list/paragraph>",
+                "kind": "block"
+              },
+              "kind": "text_parent",
+              "to": {
+                "id": "<tree/bullet_list>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/table>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/table>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/code_block>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<tree/code_block>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "answered_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<question>",
+                "kind": "ask"
+              },
+              "kind": "decided_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "parent",
+              "to": {
+                "id": "<question>",
+                "kind": "ask"
+              }
+            },
+            {
+              "from": {
+                "id": "<criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<question>",
+                "kind": "ask"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-1>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-shared>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-3>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<check-shared>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<result>",
+                "kind": "result"
+              },
+              "kind": "result_of",
+              "to": {
+                "id": "<check-shared>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<child>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<child-check>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<plan-task>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-1>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-2>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<architect>",
+                "kind": "session"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<check-agent>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<statement-2>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<statement-3>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "has_kind",
+              "to": {
+                "id": "pre-mortem",
+                "kind": "lens_kind"
+              }
+            },
+            {
+              "from": {
+                "id": "<lens>",
+                "kind": "lens"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<statement-3>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<finding>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<finding>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<lens>",
+                "kind": "lens"
+              }
+            },
+            {
+              "from": {
+                "id": "<risk>",
+                "kind": "risk"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<risk>",
+                "kind": "risk"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<lens>",
+                "kind": "lens"
+              }
+            },
+            {
+              "from": {
+                "id": "<comment-on-statement-3>",
+                "kind": "comment"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<prose-under-criterion>",
+                "kind": "block"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<prose-under-criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<constraint>",
+                "kind": "constraint"
+              },
+              "kind": "authored_by",
+              "to": {
+                "id": "<person>",
+                "kind": "person"
+              }
+            },
+            {
+              "from": {
+                "id": "<constraint>",
+                "kind": "constraint"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<child>",
+                "kind": "issue"
+              },
+              "kind": "child_of",
+              "to": {
+                "id": "<issue>",
+                "kind": "issue"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": null
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<issue>/tree"
+        },
+        "status": 200
+      }
+    },
+    "done": {
+      "agent": {
+        "request": {
+          "if_match": null,
+          "login": "<agent>",
+          "method": "GET",
+          "path": "/api/v1/issues/<done>/tree"
+        },
+        "same_as_person": true
+      },
+      "person": {
+        "body": {
+          "comments_before": null,
+          "converted": true,
+          "cursor": null,
+          "document_nodes": [
+            {
+              "artifact_id": "<done-spec>",
+              "block_count": 4,
+              "slug": "spec"
+            }
+          ],
+          "documents": null,
+          "issue": "<done>",
+          "nodes": [
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": true,
+              "documents": null,
+              "id": "<done>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "The done copy",
+              "tree": "<done-tree>",
+              "view_of": null,
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "dk1",
+              "document": {
+                "artifact_id": "<done-spec>",
+                "position": 0,
+                "slug": "spec"
+              },
+              "id": "<done-criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The done copy",
+                "id": "<done>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:done-criterion>",
+              "rank": "<rank:1>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "criterion",
+              "text": ":::criterion{#dk1}\nThe closed issue keeps its graph.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1V",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "ds1",
+              "checks": 0,
+              "document": {
+                "artifact_id": "<done-spec>",
+                "position": 2,
+                "slug": "spec"
+              },
+              "id": "<done-statement>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The closed issue keeps its graph.",
+                "id": "<done-criterion>",
+                "kind": "block",
+                "supertag": "criterion"
+              },
+              "placement_seq": "<seq:done-statement>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#ds1 serves=\"dispatch://<done>/spec#b-dk1\"}\nThe closed issue's statement.\n:::",
+              "visibility": "project"
+            }
+          ],
+          "tree": "<done-tree>",
+          "tuples": [
+            {
+              "from": {
+                "id": "<done-criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<done>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<done-statement>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<done-criterion>",
+                "kind": "block"
+              }
+            },
+            {
+              "from": {
+                "id": "<done-statement>",
+                "kind": "block"
+              },
+              "kind": "serves",
+              "to": {
+                "id": "<done-criterion>",
+                "kind": "block"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": null
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<done>/tree"
+        },
+        "status": 200
+      }
+    },
+    "unconverted": {
+      "agent": {
+        "request": {
+          "if_match": null,
+          "login": "<agent>",
+          "method": "GET",
+          "path": "/api/v1/issues/<unconverted>/tree"
+        },
+        "same_as_person": true
+      },
+      "person": {
+        "body": {
+          "comments_before": null,
+          "converted": false,
+          "cursor": null,
+          "document_nodes": [
+            {
+              "artifact_id": "<unconverted-spec>",
+              "block_count": 4,
+              "slug": "spec"
+            }
+          ],
+          "documents": {
+            "plan": null,
+            "spec": "<unconverted-spec>",
+            "verification": null
+          },
+          "issue": "<unconverted>",
+          "nodes": [
+            {
+              "attributes": {
+                "project": "GEDIT",
+                "state": "live",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "converted": false,
+              "documents": {
+                "plan": null,
+                "spec": "<unconverted-spec>",
+                "verification": null
+              },
+              "id": "<unconverted>",
+              "kind": "issue",
+              "made_at": "<time>",
+              "parent": null,
+              "placement_seq": null,
+              "rank": null,
+              "role": "tree",
+              "state": "live",
+              "supertag": "issue",
+              "text": "The unconverted issue",
+              "tree": null,
+              "view_of": null,
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1F",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "uk1",
+              "document": {
+                "artifact_id": "<unconverted-spec>",
+                "position": 0,
+                "slug": "spec"
+              },
+              "id": "<unconverted-criterion>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The unconverted issue",
+                "id": "<unconverted>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:unconverted-criterion>",
+              "rank": "<rank:1>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "criterion",
+              "text": ":::criterion{#uk1}\nThe unconverted issue's criterion.\n:::",
+              "visibility": "project"
+            },
+            {
+              "attributes": {
+                "placement": "authored",
+                "project": "GEDIT",
+                "state": "live",
+                "text_rank": "1U",
+                "visibility": "project"
+              },
+              "author": [
+                {
+                  "id": "<person>",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "block_id": "us1",
+              "checks": 0,
+              "document": {
+                "artifact_id": "<unconverted-spec>",
+                "position": 2,
+                "slug": "spec"
+              },
+              "id": "<unconverted-statement>",
+              "kind": "block",
+              "made_at": "<time>",
+              "no_conversation": true,
+              "parent": {
+                "first_line": "The unconverted issue",
+                "id": "<unconverted>",
+                "kind": "issue",
+                "supertag": "issue"
+              },
+              "placement_seq": "<seq:unconverted-statement>",
+              "rank": "<rank:2>",
+              "role": "tree",
+              "state": "live",
+              "supertag": "requirement",
+              "text": ":::requirement{#us1}\nThe unconverted issue's statement.\n:::",
+              "visibility": "project"
+            }
+          ],
+          "tree": null,
+          "tuples": [
+            {
+              "from": {
+                "id": "<unconverted-criterion>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<unconverted>",
+                "kind": "issue"
+              }
+            },
+            {
+              "from": {
+                "id": "<unconverted-statement>",
+                "kind": "block"
+              },
+              "kind": "part_of",
+              "to": {
+                "id": "<unconverted>",
+                "kind": "issue"
+              }
+            }
+          ],
+          "version": null,
+          "view": "",
+          "view_of": null
+        },
+        "request": {
+          "if_match": null,
+          "login": "<person>",
+          "method": "GET",
+          "path": "/api/v1/issues/<unconverted>/tree"
+        },
+        "status": 200
+      }
+    }
+  }
+}
