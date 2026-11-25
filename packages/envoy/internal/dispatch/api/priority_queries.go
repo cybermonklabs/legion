@@ -182,14 +182,17 @@ const (
 // It is one select over member_issue rather than a union of the two arms: the planner reads no
 // statistics of a column of a union, so it took the key of such a member_event for 200 distinct
 // values and sized its join to members at 23,027 rows on the seed of R1, and under the plan made
-// for the values it merged the two after sorting both by key, 22 ms of the full statement against
-// 4.8 ms under the generic plan (dispatch://INFRA-5791, 2026-11-25). Over member_issue alone the
-// key is that of member_issue's group by, which the planner takes for distinct, so both plans hash
-// member_event, in about 4 ms. `materialized` is a fence: the planner plans the CTE on its own, so
-// the join to `members` cannot move below the probe, and the probe runs once for each member issue
-// rather than once for each (issue, priority) pair: without it, on the database cmd/dispatch-seed
-// fills at --scale 1, the planner probed each member row, 14,712 probes for 6,362 member issues
-// (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
+// for the values it merged the two after sorting both by key: that aggregation of the newest
+// event took 21.9 ms under the plan made for the values against 4.9 ms under the generic plan
+// (lab Job infra5791-fin-lab-pk8gq, dispatch://INFRA-5791, 2026-11-25). Over member_issue alone
+// the key is that of member_issue's group by, which the planner takes for distinct, so both plans
+// hash member_event, in about 4 ms. `materialized` is a fence: the planner plans the CTE on its
+// own, so the join to `members` cannot move below the probe, and the probe runs once for each
+// member issue rather than once for each (issue, priority) pair. That reading was of #5316's text,
+// whose member_event probed the event of last_seq in a lateral: without the fence, on the database
+// cmd/dispatch-seed fills at --scale 1, the planner probed each member row, 14,712 probes for 6,362
+// member issues (TestStatementTimings, PostgreSQL 18.6, 2026-11-24); the `case` over member_issue
+// here was not measured without it.
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
