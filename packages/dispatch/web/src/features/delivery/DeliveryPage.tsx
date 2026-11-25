@@ -45,16 +45,12 @@ import {
   type ColorFacet,
 } from "./lib/colorScale";
 import {
-  DEPLOYED_LABELS,
-  type DeployedFacet,
   FACET_KEYS,
   FACET_PARAMS,
   type FacetKey,
   type Filters,
-  isPriorityFacet,
+  ownLabel,
   PLACEHOLDER_LABELS,
-  REWORK_LABELS,
-  type ReworkFacet,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import {
@@ -206,23 +202,11 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const sortText = SORT_PARAM.read(searchParams, "sort");
   const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
-  // `?rework=`, `?deployed=` and `?priority=` keep only the values their facets hold - a priority
-  // as Dispatch reads one - in the address's order, so an unknown one reaches neither the request
-  // nor a chip.
-  const filters: Filters = useMemo(
-    () => ({
-      ...arrayParams,
-      rework: arrayParams.rework.filter((value): value is ReworkFacet =>
-        Object.hasOwn(REWORK_LABELS, value)
-      ),
-      deployed: arrayParams.deployed.filter((value): value is DeployedFacet =>
-        Object.hasOwn(DEPLOYED_LABELS, value)
-      ),
-      priority: arrayParams.priority.filter(isPriorityFacet),
-      search,
-    }),
-    [arrayParams, search]
-  );
+  // Every facet keeps every value the address names, one that names no value of the facet
+  // included: Dispatch selects no row by it, so `?priority=P9` alone lists none and beside a known
+  // value lists what the known one does, as at the merge base (R5), and the page draws it as a
+  // chip the reader can take off.
+  const filters: Filters = useMemo(() => ({ ...arrayParams, search }), [arrayParams, search]);
 
   const setState = useCallback(
     (next: DeliveryUrlState) => {
@@ -550,13 +534,14 @@ function DeliveryControls({
   // issue has no title to read beside its key, so it reads as its key alone.
   const valueLabel = (key: FacetKey, value: string): string => {
     if (isColumnFacet(key)) {
-      if (data === undefined && key === "issue") return PLACEHOLDER_LABELS[value] ?? value;
+      if (data === undefined && key === "issue")
+        return ownLabel(PLACEHOLDER_LABELS, value) ?? value;
       return columnFacetValue(key, value, {
         issueTitles: data?.issue_titles ?? {},
         sessionGroups: data?.session_groups ?? [],
       });
     }
-    const placeholder = PLACEHOLDER_LABELS[value];
+    const placeholder = ownLabel(PLACEHOLDER_LABELS, value);
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
       const title = data?.components?.[value]?.title ?? value;
@@ -758,10 +743,10 @@ export function DeliveryPage(): ReactNode {
     setFilters({
       ...state.filters,
       author: picked.get("author") ?? [],
-      deployed: (picked.get("deployed") ?? []) as DeployedFacet[],
+      deployed: picked.get("deployed") ?? [],
       issue: picked.get("issue") ?? [],
       parentAgent: picked.get("parentAgent") ?? [],
-      rework: (picked.get("rework") ?? []) as ReworkFacet[],
+      rework: picked.get("rework") ?? [],
     });
   };
   const setSorting: OnChangeFn<SortingState> = (update) => {

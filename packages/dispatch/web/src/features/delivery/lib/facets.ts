@@ -34,12 +34,14 @@ export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
 
 export const REWORK_LABELS: Record<ReworkFacet, string> = { value: "value", rework: "rework" };
 
-/** Whether `value` names a value of the priority facet as Dispatch reads a selection of it
- *  (`deliveryPrioritySelection` and `parseDeliverySelection`, `api/delivery.go`): an issue's
- *  priority, P0 to P3, which it reads written `p0` or as the bare digit too, an issue with none
- *  (`NO_PRIORITY`), or a pull request that names no issue (`NO_ISSUE`). */
-export function isPriorityFacet(value: string): boolean {
-  return /^[pP]?[0-3]$/u.test(value) || value === NO_PRIORITY || value === NO_ISSUE;
+/** The label `labels` gives `value` as a key of its own, else none: a value the address carries
+ *  can be any word, `constructor` among them, which every object inherits and no label table
+ *  names. */
+export function ownLabel(
+  labels: Readonly<Record<string, string>>,
+  value: string
+): string | undefined {
+  return Object.hasOwn(labels, value) ? labels[value] : undefined;
 }
 
 /** Drops the "owner/" prefix from a repo label when the bare repo name is unique among
@@ -65,8 +67,11 @@ export interface Filters {
   /** `<project>/<id>`; a selected parent includes its descendants. */
   component: string[];
   author: string[];
-  rework: ReworkFacet[];
-  deployed: DeployedFacet[];
+  // Every value the address names, a word outside `REWORK_LABELS` and `DEPLOYED_LABELS` included:
+  // Dispatch selects no row by such a word, as it does by any other unknown value, and the page
+  // draws it as a chip the reader can take off.
+  rework: string[];
+  deployed: string[];
   search: string;
 }
 

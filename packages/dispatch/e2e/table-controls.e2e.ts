@@ -2058,17 +2058,29 @@ test("the Delivery page's facet parameters open the pull requests they name", as
   expect(await listed("priority=0"), "?priority=").toEqual(["acme/widgets#1"]);
   const knownChips = await chipNames(page.locator("main"));
   expect(knownChips, "?priority=: the known value's chip").not.toEqual([]);
-  // A value that names no priority, beside a known one, is dropped from the address's reading:
-  // the list is the one the known value alone lists, and the control row draws the known
-  // value's chip alone. Dispatch selects nothing by an unknown value, so the list alone would
-  // read the same with it kept; the chip it would draw is what the page itself shows of it.
+  // A value that names no value of its facet is kept, as at the merge base (R5): Dispatch
+  // selects no pull request by it, so beside a known value the list is the one the known value
+  // alone lists, and alone it lists none. The control row draws its chip by its own word, so the
+  // reader can take it off.
   expect(await listed("priority=P9&priority=0"), "?priority= beside an unknown value").toEqual([
     "acme/widgets#1",
   ]);
   expect(
     await chipNames(page.locator("main")),
     "?priority= beside an unknown value: the control row's chips"
-  ).toEqual(knownChips);
+  ).toEqual(["Remove Priority: P9 filter", ...knownChips]);
+  for (const [query, chip] of [
+    ["priority=P9", "Remove Priority: P9 filter"],
+    ["rework=constructor", "Remove Rework: constructor filter"],
+    ["deployed=bogus", "Remove Deployed: bogus filter"],
+  ] as const) {
+    // The count is the answer's for the address (`counted`), so the rows read after it are
+    // Dispatch's answer, not a table drawn before one came.
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list&${query}`);
+    await expect(page.getByText("0 PRs in current filter/window"), `?${query} alone`).toBeVisible();
+    await expect(page.locator("[data-pr-row]"), `?${query} alone`).toHaveCount(0);
+    expect(await chipNames(page.locator("main")), `?${query} alone: its chip`).toEqual([chip]);
+  }
   // ACME-1 carries no component, and #2 links no issue at all, so the server counts only the
   // attributed pull request under the placeholder.
   expect(await listed("component=__no_component__"), "?component=").toEqual(["acme/widgets#1"]);

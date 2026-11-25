@@ -1543,39 +1543,48 @@ test("after a first read that failed the Filter panel offers every verdict with 
   expect(await facetOptionNames(user, "Deployed")).toEqual(["deployed", "waiting", "not tracked"]);
 });
 
-// `?rework=` and `?deployed=` each name a closed set: a value outside it is dropped, as an unknown
-// `?sort=` id is. `constructor` is a key every object inherits, and none of the labels' own.
-test("a rework or deployed value the page has no label for reaches neither the subscription nor a chip, and a known one beside it does", async () => {
-  renderPage(`${DELIVERY_URL}&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`);
+// INFRA-3135's R5: every address a reader can write selects the rows it selected at the merge
+// base. A facet value the page knows no label for - `constructor`, a key every object inherits
+// and none of the labels' own, `bogus`, `P9` - is sent to Dispatch as it was there, which selects
+// no row by it, and the page draws it as a chip by its own word, so the reader can take it off.
+// Alone it lists nothing, as it did; beside a known value it lists what the known one does.
+for (const [facet, query, chip] of [
+  ["priority", "priority=P9", "Remove Priority: P9 filter"],
+  ["rework", "rework=constructor", "Remove Rework: constructor filter"],
+  ["deployed", "deployed=bogus", "Remove Deployed: bogus filter"],
+] as const) {
+  test(`an unknown ${facet} value alone reaches the subscription and draws its chip`, async () => {
+    renderPage(`${DELIVERY_URL}&${query}`);
+    const socket = await openSocket();
+    const { sub } = await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query });
+    serve(socket, snapshotFrame(sub, everyFacet));
+    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    expect(rowControls()).toEqual(["Filter · 1", chip]);
+  });
+}
+
+test("an unknown facet value beside a known one reaches the subscription with it, and each draws its chip", async () => {
+  renderPage(
+    `${DELIVERY_URL}&priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`
+  );
   const socket = await openSocket();
   const { sub } = await subscriptionTo(socket, {
     kind: "timeline",
     window: URL_WINDOW,
-    query: "rework=rework&deployed=waiting",
+    query:
+      "priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus",
   });
   serve(socket, snapshotFrame(sub, everyFacet));
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
   expect(rowControls()).toEqual([
-    "Filter · 2",
+    "Filter · 6",
+    "Remove Priority: P9 filter",
+    "Remove Priority: P0 filter",
+    "Remove Rework: constructor filter",
     "Remove Rework: rework filter",
     "Remove Deployed: waiting filter",
+    "Remove Deployed: bogus filter",
   ]);
-});
-
-// `?priority=` names a closed set too: an issue's priority, P0 to P3, an issue with none and a
-// pull request that names no issue, the values Dispatch counts the facet by and reads a selection
-// of. A value outside it was kept, sent to Dispatch and drawn as a chip.
-test("a priority value outside its facet's values reaches neither the subscription nor a chip, and a known one beside it does", async () => {
-  renderPage(`${DELIVERY_URL}&priority=P9&priority=P0`);
-  const socket = await openSocket();
-  const { sub } = await subscriptionTo(socket, {
-    kind: "timeline",
-    window: URL_WINDOW,
-    query: "priority=P0",
-  });
-  serve(socket, snapshotFrame(sub, everyFacet));
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
-  expect(rowControls()).toEqual(["Filter · 1", "Remove Priority: P0 filter"]);
 });
 
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
