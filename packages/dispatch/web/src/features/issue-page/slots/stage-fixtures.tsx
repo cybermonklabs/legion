@@ -27,12 +27,9 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
 /**
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
  * `view-address.test.tsx`): the page's stage drawn at an address under the page's own providers,
- * the reads it is drawn from, which slot it drew, and where the focus landed. What the app
- * provides above the page (`AppProviders`) is what the stage's tests and the Decisions body's
- * drawn test (`DecisionsFilterBody.drawn.test.tsx`) draw in; the outline's own tests and the
- * Plan view's (`IssueTree.test.tsx`, `outline-reads.test.tsx`, `PlanFilterBody.test.tsx`) draw
- * that stack by hand. Details' tests (`details-more.test.tsx`) draw what they test under the
- * location the browser makes for an address (`renderAtBrowserEntry`), as the stage's tests do.
+ * the reads it is drawn from, which slot it drew, and where the focus landed. Details' tests
+ * (`details-more.test.tsx`) draw what they test under the location the browser makes for an
+ * address (`renderAtBrowserEntry`), as the stage's tests do.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -50,26 +47,31 @@ interface StageViews {
   readonly views?: ViewSlots;
 }
 
-/** The stage's own slots where the case gives them, the issue it is drawn for, and `held`, whose
- *  `navigate` the stage sets to the call that moves the router. */
+/** The stage's own slots where the case gives them, the issue it is drawn for, the query client
+ *  it reads through (`client`), and `held`, whose `navigate` the stage sets to the call that
+ *  moves the router. */
 interface StageProps extends StageViews {
+  readonly client: QueryClient;
   readonly held: { navigate?: NavigateFunction };
   readonly issue: IssueDetails;
 }
 
-/** The page's stage at the address the router holds, under the page's own providers, as the
- *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
- *  render, and the slots `filled` and `views` give where the case gives them. `held.navigate`
- *  moves the router, as a press of a view's control does. */
-function AddressedStage({ filled, held, issue, views }: StageProps): ReactNode {
+/** The page's stage at the address the router holds, under what the app provides above the page
+ *  (`AppProviders`, with `client`) and the page's own providers, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the route read from the address at every render, and the slots
+ *  `filled` and `views` give where the case gives them. `held.navigate` moves the router, as a
+ *  press of a view's control does. Each helper puts its own router around it. */
+function AddressedStage({ client, filled, held, issue, views }: StageProps): ReactNode {
   const { pathname, search } = useLocation();
   held.navigate = useNavigate();
   const route = parseIssuePath(pathname, search);
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
-    <ProvidersSlot issue={issue} route={route}>
-      <StageSlot filled={filled} issue={issue} route={route} views={views} />
-    </ProvidersSlot>
+    <AppProviders client={client}>
+      <ProvidersSlot issue={issue} route={route}>
+        <StageSlot filled={filled} issue={issue} route={route} views={views} />
+      </ProvidersSlot>
+    </AppProviders>
   );
 }
 
@@ -88,19 +90,6 @@ export function AppProviders({
         <MarginProvider>{children}</MarginProvider>
       </KeymapProvider>
     </QueryClientProvider>
-  );
-}
-
-/** The page's stage (`AddressedStage`) under what the app provides above the page
- *  (`AppProviders`). Each helper puts its own router around it. */
-function ProvidedStage({
-  client,
-  ...stage
-}: StageProps & { readonly client: QueryClient }): ReactNode {
-  return (
-    <AppProviders client={client}>
-      <AddressedStage {...stage} />
-    </AppProviders>
   );
 }
 
@@ -125,7 +114,7 @@ export function drawStage(
 ): RenderResult {
   return render(
     <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${after}`]}>
-      <ProvidedStage client={client} held={held} issue={issue} />
+      <AddressedStage client={client} held={held} issue={issue} />
     </MemoryRouter>
   );
 }
@@ -159,7 +148,7 @@ export function drawAtBrowserEntry(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderAtBrowserEntry(
     address,
-    <ProvidedStage {...stage} client={client} held={{}} issue={issue} />
+    <AddressedStage {...stage} client={client} held={{}} issue={issue} />
   );
 }
 

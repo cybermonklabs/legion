@@ -75,8 +75,10 @@ export function versionsNewestFirst(versions: readonly Version[] | null): Versio
 
 export function ArtifactHeader({
   artifact,
+  byline,
   children,
   highlight,
+  documentActions = false,
   isClosed = false,
   onShowDiffChange,
   showDiff = false,
@@ -85,6 +87,16 @@ export function ArtifactHeader({
   version,
 }: {
   artifact: Artifact;
+  /** A line drawn under the name: the new issue page's opened document says which version it
+   *  shows, who wrote it and when (dispatch://INFRA-1196 part N's R2). None by default, which is
+   *  today's header. */
+  byline?: ReactNode;
+  /** Draw Correct title and Remove where no toolbar is given. With a toolbar the header draws
+   *  them beside the document's version controls, as it always has. The new issue page gives its
+   *  opened document's header none, since it draws the version controls beside its views
+   *  (`features/issue-page/VersionControl.tsx`), and asks for these two alone (dispatch://INFRA-1196
+   *  part N's R2). Off by default, which is today's header. */
+  documentActions?: boolean;
   children: ReactNode;
   highlight: boolean;
   isClosed?: boolean;
@@ -144,10 +156,17 @@ export function ArtifactHeader({
 
   return (
     <section className="space-y-4">
+      {/* The ring is a two-second cue that the address landed here, so for two seconds this
+          header draws something the page is about to stop drawing. It is marked while it does,
+          as a Markdown body is marked while it still owes its formatting
+          (`data-markdown-pending`): a reader is meant to see the ring, and a layer that reads
+          the page as a reader does has to be able to wait for it to go. The ring is a box
+          shadow and moves nothing. */}
       <header
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-landing-ring={highlighted || undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">
@@ -181,6 +200,7 @@ export function ArtifactHeader({
             </h2>
             <CopyRefButton className="-my-2 md:-my-0.5" route={documentRoute(artifact, version)} />
           </div>
+          {byline}
           {artifact.approval === undefined ? null : (
             <div className="mt-1">
               {/* Keyed by the document, as the correction and the removal below are: the chip
@@ -292,6 +312,36 @@ export function ArtifactHeader({
                   <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
                 </div>
               </div>
+            )}
+          </div>
+        ) : null}
+        {documentActions && toolbar === undefined ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            {!correctionIsOffered(artifact) ? null : (
+              // Keyed as the toolbar's own Correct title is, and for the same reasons.
+              <CorrectTitle
+                artifact={artifact}
+                key={`correction:${artifact.id}`}
+                refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+              />
+            )}
+            {issueKey === null || !removalIsOffered(artifact) ? null : (
+              // Keyed by the document, and its way back taken only while the route is still the
+              // removed document's (`drawn`), as the toolbar's own Remove does.
+              <RemoveDocument
+                artifact={artifact}
+                key={artifact.id}
+                onRemoved={(removed) => {
+                  // The address stays on the document the issue no longer holds, so the page
+                  // says it is gone.
+                  if (drawn.current === removed.id) {
+                    navigate(
+                      buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
+                    );
+                  }
+                }}
+                refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+              />
             )}
           </div>
         ) : null}

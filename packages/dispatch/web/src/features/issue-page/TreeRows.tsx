@@ -1,11 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
 
-import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
@@ -15,6 +12,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+import { useWhoIsReading } from "./useIssueTree";
 import { nodeEditable } from "./useNodeEditing";
 
 /**
@@ -86,7 +84,7 @@ export function TreeRows({
   // where the model holds no author.
   const agentText = useAgentText();
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
-  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const reader = useWhoIsReading().data?.login;
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();

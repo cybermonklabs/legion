@@ -2,12 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  projectsQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, projectsQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -45,7 +40,7 @@ import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
+import { issueCommentsQuery, useWhoIsReading } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -96,7 +91,7 @@ export function IssuePropertiesRow({
   // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
   // with no blocks read.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({

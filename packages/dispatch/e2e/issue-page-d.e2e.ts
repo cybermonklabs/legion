@@ -146,6 +146,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
 
     // The rail: 56 px at the left edge, the window's height, R2's links in order, no tooltip, and
     // no sidebar beside it.
@@ -590,6 +591,7 @@ test("the five controls are toggles with an address each, one line at every widt
       ["d", "decisions"],
       ["c", "conversation"],
     ] as const) {
+      // no opening focus: /collaborators lands it in Details, and the press after it is no load.
       await focusThePage(page);
       await page.keyboard.press("t");
       await page.keyboard.press(second);

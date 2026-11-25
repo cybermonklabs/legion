@@ -1,10 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
-import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { briefCounts } from "../IssueThreeThings";
@@ -16,6 +13,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { nodesInOrder } from "../tree-keys";
+import { useWhoIsReading } from "../useIssueTree";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
@@ -50,7 +48,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
   // (`useAddressTarget`, as the outline reads it).
   const { named, reveal } = useAddressTarget(root, address);
@@ -85,6 +83,10 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   }, [onAddressDrawn, revealed, tells, view.root]);
   const request = useOutlineRequest();
   const { onEditing, panels } = useOutlineEditing(issue);
+  // While the view is on, the page's Escape that turns every view off (part N's R1) comes before
+  // a statement gives the view up too, words or none.
+  const viewEscape: { holdsEscape?: boolean } =
+    address.preset !== "conversation" ? { holdsEscape: true } : {};
   return (
     <NoTooltips>
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
@@ -100,6 +102,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           // The words filter's Escape comes before the view is left; turning the view off with
           // Escape is a later step of the page's key table.
           holdsEscape={address.filter !== ""}
+          {...viewEscape}
           issue={issue}
           onEditing={onEditing}
           reader={viewer}

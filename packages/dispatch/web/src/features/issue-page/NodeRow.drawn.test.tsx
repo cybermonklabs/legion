@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import type { Actor, DisplayTree, IssueChild } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
@@ -2252,6 +2253,59 @@ test("a focused row under the view row that stays is placed the step it is given
     expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 20 });
   } finally {
     scrollBy.mockRestore();
+    document.documentElement.style.removeProperty("scroll-padding-top");
+  }
+});
+
+/** A focused row at `top`, placed by the page's rule and then by `step`, the placing step of a
+ *  view of its own. */
+function FocusedRowPlacedBy({
+  step,
+  top,
+}: {
+  step: (element: HTMLElement) => void;
+  top: number;
+}): ReactNode {
+  const row = useRef<HTMLDivElement | null>(null);
+  useRowOnScreen(row, true, undefined, true, step);
+  return (
+    <div
+      data-placed=""
+      ref={(element) => {
+        row.current = element;
+        if (element !== null) element.getBoundingClientRect = () => new DOMRect(0, top, 320, 24);
+      }}
+    />
+  );
+}
+
+// Decision 373: a view whose own sticky heads stand under the band places its focused rows below
+// them by a step of its own, which the page's one rule runs on the row after it has placed it, as
+// the row takes the focus and again each time it grows: no second observer of the row's size
+// and no second tracking of its presses (the Spec view's `useOnScreenUnderHeads`).
+test("a row under its heads is placed on screen by the shared placing step", () => {
+  document.documentElement.style.setProperty("scroll-padding-top", "44px");
+  const sizes = installResizeObserver();
+  const placed: string[] = [];
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {
+    placed.push("below what stays");
+  });
+  try {
+    const view = render(
+      <FocusedRowPlacedBy
+        step={(element) => placed.push(`step on ${element.hasAttribute("data-placed")}`)}
+        top={10}
+      />
+    );
+    expect(placed, "as the row took the focus").toEqual(["below what stays", "step on true"]);
+    expect(sizes.live(), "the observers of the row's size").toBe(1);
+    placed.length = 0;
+    sizes.resize();
+    expect(placed, "as the row grew").toEqual(["below what stays", "step on true"]);
+    view.unmount();
+  } finally {
+    scrollBy.mockRestore();
+    sizes.restore();
     document.documentElement.style.removeProperty("scroll-padding-top");
   }
 });

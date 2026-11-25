@@ -1,10 +1,13 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+
+import type { Artifact } from "../../api/types";
 import {
   borderTransparent,
   focusVisibleRing,
   pageDecisionText,
   pageFailedText,
+  pageField,
   pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
@@ -18,6 +21,7 @@ import {
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
+import { NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
@@ -65,19 +69,46 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  */
 export function IssuePresets({
   active,
+  artifacts,
+  filter,
+  isClosed = false,
   issueKey,
+  nodeMenu = false,
+  onFilterChange,
   outline,
   signals,
+  sheet,
+  toolbar,
 }: {
+  /** Every artifact of the issue, which the node menu lists and which a title typed into its
+   *  New document is held against before the write (part N's R2). No node menu is drawn
+   *  without it. */
+  artifacts?: readonly Artifact[];
+  /** What the filter by words holds, which is `?q=`. No words control is drawn without it and
+   *  `onFilterChange`. */
+  filter?: string;
+  /** Whether the issue is closed, which refuses the node menu's upload and New document. */
+  isClosed?: boolean;
   active: Preset;
   issueKey: string;
+  /** Whether the address opens the node menu, which `/artifacts` does (part N's R6). */
+  nodeMenu?: boolean;
+  onFilterChange?: (next: string) => void;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
+  /** The Outline sheet at 760 px and below, handed the three small controls this row moves into
+   *  it there - the version control, the node menu and the filter by words (part N's R4) - with a
+   *  view on or a document open too. A caller that gives it leaves `outline` undefined, so the
+   *  row draws one Outline control (`slots/view-row.tsx`). */
+  sheet?: (tools: ReactNode) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
    *  signal, such as Conversation, draws just its name. The whole record is undefined until the
    *  counts can be read (`slots/view-row.tsx`). */
   signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
+  /** The version control: the view's document's while a view is on, or the opened document's;
+   *  none with neither (part N's R3). */
+  toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -103,6 +134,41 @@ export function IssuePresets({
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+  // Part N's small controls open one menu each - the node menu, the version control's panel -
+  // and the page still opens at most one menu at a time: opening one shuts the row's own.
+  const [small, setSmall] = useState<SmallMenu>(nodeMenu ? "nodes" : undefined);
+  const versionPanelId = `${ids}-version`;
+  // An address that opens the node menu opens it on arrival, and leaving that address closes it
+  // again, so the menu says what the address says.
+  useEffect(() => setSmall(nodeMenu ? "nodes" : undefined), [nodeMenu]);
+  useEffect(() => {
+    if (open !== undefined) setSmall(undefined);
+  }, [open]);
+  useEffect(() => {
+    if (small === undefined) return;
+    setOpen(undefined);
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element && target.closest('[role="dialog"]') !== null;
+    const closeOutside = (event: PointerEvent) => {
+      if (inDialog(event.target)) return;
+      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
+        setSmall(undefined);
+      }
+    };
+    // The press is the open menu's alone: the page's own Escape - which closes a document
+    // opened in place of the outline and turns a view off - waits for the next one.
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || inDialog(event.target)) return;
+      event.preventDefault();
+      setSmall(undefined);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [small]);
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -164,6 +230,13 @@ export function IssuePresets({
   // to the issue's own.
   const press = (preset: Preset) => {
     if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    // Part N's words go with the reader to the view they press, which draws with them, and the
+    // box keeps them (its R4).
+    if (filter !== undefined && filter !== "") {
+      const to = preset === active && preset !== "conversation" ? "conversation" : preset;
+      navigate(`${presetPath(issueKey, to)}?${new URLSearchParams({ q: filter })}`);
+      return;
+    }
     navigate(
       presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
     );
@@ -216,6 +289,65 @@ export function IssuePresets({
     );
   // The small controls, at the row's right end from 761 px up.
   const atTheEnd = <div className="flex shrink-0 items-center gap-2">{keys}</div>;
+  // Part N's three small controls (R4): the version control, while a view is on or a document
+  // is open; the node menu, "Files and documents"; and the filter by words. They stand at the
+  // row's right end before Keys from 761 px up, and in the Outline sheet at 760 px and below,
+  // where the node menu hangs from its left edge.
+  const files = (align: "end" | "start") =>
+    artifacts === undefined ? null : (
+      <NodeMenu
+        align={align}
+        artifacts={artifacts}
+        isClosed={isClosed}
+        issueKey={issueKey}
+        onClose={() => setSmall(undefined)}
+        onToggle={() => setSmall((shown) => (shown === "nodes" ? undefined : "nodes"))}
+        open={small === "nodes"}
+      />
+    );
+  const tools = (
+    <div className="flex shrink-0 items-center gap-2">
+      {toolbar === undefined ? null : (
+        <div className="relative flex shrink-0">
+          <button
+            aria-controls={versionPanelId}
+            aria-expanded={small === "version"}
+            className={pageHeaderControl}
+            onClick={() => setSmall((shown) => (shown === "version" ? undefined : "version"))}
+            type="button"
+            {...pageChrome}
+          >
+            {CONTROL_LABELS.version}
+            <MenuMark />
+          </button>
+          {/* Drawn while it is shut too, so a version the reader picked, a name they typed and
+              a comparison they opened outlive the control closing. */}
+          <div
+            className={`absolute top-full right-0 z-30 mt-1 w-max max-w-[min(480px,calc(100vw-24px))] rounded-[10px] border p-2 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`}
+            hidden={small !== "version"}
+            id={versionPanelId}
+          >
+            {toolbar}
+          </div>
+        </div>
+      )}
+      {files("end")}
+      {filter === undefined || onFilterChange === undefined ? null : (
+        <WordsFilter filter={filter} onFilterChange={onFilterChange} />
+      )}
+    </div>
+  );
+  // The same three in the Outline sheet at 760 px and below, each drawn open: the sheet is where
+  // the reader went to find them.
+  const inTheSheet = (
+    <>
+      {toolbar}
+      {files("start")}
+      {filter === undefined || onFilterChange === undefined ? null : (
+        <WordsFilter filter={filter} inSheet onFilterChange={onFilterChange} />
+      )}
+    </>
+  );
   const filterRow = { [FILTER_ROW_ATTRIBUTE]: "" };
 
   if (!row) {
@@ -294,10 +426,12 @@ export function IssuePresets({
           ) : null}
         </div>
         {/* After the one control, as the 390 px picture draws it. */}
+        {phone && sheet !== undefined ? sheet(inTheSheet) : null}
         {outline}
         {phone ? null : (
           <>
             <span className="flex-1" />
+            {tools}
             {atTheEnd}
           </>
         )}
@@ -376,6 +510,7 @@ export function IssuePresets({
         })}
       </div>
       <span className="flex-1" />
+      <div className="mb-[7px]">{tools}</div>
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
   );
@@ -401,6 +536,10 @@ export function MenuMark(): ReactNode {
 
 /** Which of the row's menus is open; the page opens at most one at a time. */
 type OpenMenu = "presets" | undefined;
+
+/** Which of part N's small controls has its menu open: the node menu, or the version control's
+ *  panel. */
+type SmallMenu = "nodes" | "version" | undefined;
 
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
  *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
@@ -458,3 +597,67 @@ function Signal({
     </span>
   );
 }
+
+/**
+ * The filter by words (R2's `?q=`, `t f`, part N's R4 and its ST-1): one small control while it
+ * holds no words, which opens the box with the caret in it, and the box itself while it holds
+ * words or the caret: emptied with the caret in it, it stays open, and left empty it shuts back
+ * into its control. In the Outline sheet the box is drawn open. The box shows its name as its
+ * placeholder, so a reader sees what it is for before typing (WCAG 3.3.2), and is at least 24 px
+ * tall at every width, as the row's controls are.
+ */
+function WordsFilter({
+  filter,
+  inSheet = false,
+  onFilterChange,
+}: {
+  filter: string;
+  inSheet?: boolean;
+  onFilterChange: (next: string) => void;
+}): ReactNode {
+  // Whether the box holds the caret, or was opened to take it.
+  const [caret, setCaret] = useState(false);
+  const box = useRef<HTMLInputElement>(null);
+  // The control's press opens the box with the caret in it, once the box is drawn.
+  useEffect(() => {
+    if (caret) box.current?.focus();
+  }, [caret]);
+  if (!inSheet && !caret && filter === "") {
+    return (
+      <button
+        className={pageHeaderControl}
+        {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+        onClick={() => setCaret(true)}
+        type="button"
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.filter}
+      </button>
+    );
+  }
+  return (
+    <input
+      aria-label={CONTROL_LABELS.filter}
+      ref={box}
+      className={`min-h-6 min-w-0 rounded-[7px] border px-2 text-xs leading-5 outline-none ${focusVisibleRing} ${pageField} ${
+        inSheet ? "w-full basis-full text-sm" : "w-40 md:py-px"
+      }`}
+      data-testid="issue-filter"
+      {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+      onBlur={() => setCaret(false)}
+      onChange={(event) => onFilterChange(event.target.value)}
+      onFocus={() => setCaret(true)}
+      placeholder={CONTROL_LABELS.filter}
+      type="search"
+      value={filter}
+    />
+  );
+}
+
+/** The mark the filter by words carries, its small control and its box alike, by which `t f`
+ *  finds it (`useIssueKeymap.ts`). */
+export const WORDS_FILTER_ATTRIBUTE = "data-words-filter";
+
+/** The view row's Outline control, whose sheet holds the filter by words at 760 px and below:
+ *  `t f` opens it where the words control is not drawn (`useIssueKeymap.ts`). */
+export const OUTLINE_CONTROL = `[${FILTER_ROW_ATTRIBUTE}] button[aria-haspopup="dialog"]`;

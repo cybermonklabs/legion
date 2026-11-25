@@ -1,4 +1,10 @@
-import { hashKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
+import {
+  hashKey,
+  queryOptions,
+  type UseQueryResult,
+  useQueries,
+  useQuery,
+} from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 
 import { api } from "../../api/client";
@@ -10,7 +16,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { IssueDetails } from "../../api/types";
+import type { AuthenticatedUser, IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PostDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -229,6 +235,20 @@ export const issueMessagesQuery = (key: string) =>
   });
 
 /**
+ * Who is reading the new page: the shell's one read of who is signed in (`["whoami"]`), which
+ * every reader of it on the page takes from here, kept fresh as the tree's own reads are
+ * (`EVENT_FRESH`). No event rule names that key (`api/event-refresh.ts`), since the reader's login
+ * does not change while a page is open. Staleness is per observer, and the page mounts its readers
+ * again as the reader moves - the stage its slots on every press of a view, Details its sections,
+ * a row its editor - so a reader under the app's 30 s `staleTime` (`main.tsx`) would ask for it
+ * again on each mount more than 30 s after the load (decision 369 (c)). `choice.ts` keeps the
+ * app's defaults, because today's pages read it there too.
+ */
+export function useWhoIsReading(): UseQueryResult<AuthenticatedUser> {
+  return useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
+}
+
+/**
  * The issue's tree, from the page's reads. This hook is where the reads are; `buildIssueTree` is
  * pure and holds none of them, so the model is testable without a server and the page makes no
  * request per node.
@@ -295,7 +315,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const messages = useQuery({ ...issueMessagesQuery(key), ...EVENT_FRESH });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.
-  const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
+  const who = useWhoIsReading();
   const viewer = who.data?.login;
   const documentIds = treeDocumentIds(issue);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and

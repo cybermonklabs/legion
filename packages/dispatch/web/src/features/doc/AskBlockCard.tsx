@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import type { Ask } from "../../api/types";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import {
   askBlockPill,
   badgeBlocking,
@@ -31,6 +32,9 @@ export interface AskBlockCardProps {
   /** The block stands in text no server reads - a comment, ask or message body - so nothing
    *  ever activates it: a malformed one is not told to fix its text to re-activate. */
   detached?: boolean;
+  /** How the open question's card keeps its reads of who is reading and of its thread fresh,
+   *  where the host keeps them fresh by events; by default, the app's. */
+  freshness?: EventFreshness;
   host: AskBlockHost;
   /** Whether the block stands in a body a reader reads - a comment, an ask or a message - where
    *  no answer can be given at all, so the card says so. Every caller says which it is: a
@@ -65,6 +69,7 @@ export interface AskBlockCardProps {
 export function AskBlockCard({
   ask,
   detached = false,
+  freshness,
   host,
   inBody,
   onAnswered,
@@ -171,6 +176,7 @@ export function AskBlockCard({
           ) : hosted ? (
             <AskCard
               ask={ask}
+              freshness={freshness}
               frame="block"
               markRead
               onAnswered={onAnswered}

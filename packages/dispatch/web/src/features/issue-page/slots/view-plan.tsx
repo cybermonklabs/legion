@@ -144,6 +144,10 @@ export function ViewPlanSlot({
   // outline's body reads it (`slots/body.tsx`).
   const { onEditing, panels } = useOutlineEditing(issue);
   const isClosed = issue.closed_at !== null;
+  // While the view is on, its own Escape, which turns every view off (part N's R1), comes before
+  // a step gives the chart up too, words or none.
+  const viewEscape: { holdsEscape?: boolean } =
+    address.preset !== "conversation" ? { holdsEscape: true } : {};
   return (
     <NoTooltips>
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,
@@ -158,6 +162,7 @@ export function ViewPlanSlot({
           focusReveal
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
+          {...viewEscape}
           isClosed={isClosed}
           onEditing={onEditing}
           plan={plan}

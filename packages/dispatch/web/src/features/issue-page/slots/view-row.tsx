@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
@@ -14,6 +12,8 @@ import { useOutlineReads } from "../outline-reads";
 import { filterSignals, isFilter } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
+import { useWhoIsReading } from "../useIssueTree";
+import { useViewRowTools } from "../view-row-tools";
 
 /**
  * The view row (R2, R11): Conversation with no count, the four filter controls with signals
@@ -33,6 +33,11 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * page scrolls; above, it scrolls away with the header. While it stays it stands over the page
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
+ *
+ * Part N adds the row's three small controls, the version control, the node menu and the filter
+ * by words, before Keys, and at 760 px and below the Outline sheet that holds them with a view on
+ * or a document open too (`view-row-tools.tsx`), which the row draws in place of D's Outline
+ * control there.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -40,7 +45,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   // Decisions' flag counts the decisions marked `waiting` for the reader.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The four filter signals follow `?q=` and stay hidden until their reads are ready.
   const signals = useMemo(
     () =>
@@ -53,6 +58,11 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
+  const tools = useViewRowTools(props);
+  // Part D's Outline sheet, beside the one control below 1024 px with no view on. At 760 px and
+  // below part N's sheet stands in its place, with a view on or a document open too, and holds
+  // the row's three small controls (`view-row-tools.tsx`).
+  const drawsOutline = !paned && !isFilter(address.preset) && tools.sheet === undefined;
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -61,8 +71,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        outline={drawsOutline ? <OutlineSheet slot={props} /> : undefined}
         signals={signals}
+        {...tools}
       />
     </div>
   );

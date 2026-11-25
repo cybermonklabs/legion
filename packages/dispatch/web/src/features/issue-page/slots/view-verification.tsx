@@ -88,6 +88,7 @@ export function ViewVerificationSlot({
           reads={reads}
           readsSettled={readsSettled}
           {...(revealed === undefined ? {} : { reveal: revealed })}
+          startsOn={named}
           view={view.root}
           whole={whole}
         />

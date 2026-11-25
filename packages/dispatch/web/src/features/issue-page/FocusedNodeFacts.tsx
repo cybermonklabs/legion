@@ -10,7 +10,7 @@ import {
 import { flushSync } from "react-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { askThreadQuery, whoAmIQuery } from "../../api/queries";
+import { askThreadQuery } from "../../api/queries";
 import type { Actor, UserState } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import {
@@ -58,6 +58,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "./page-words";
+import { useWhoIsReading } from "./useIssueTree";
 
 /**
  * The facts of whatever the reader's focus is on, in the panel: what it is, how it stands and
@@ -290,7 +291,7 @@ function ItemControls({
 }): ReactNode {
   const queryClient = useQueryClient();
   const writer = useOutlineWriter();
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The reads the outline is drawn from, under its keys, so the controls cost no request: never
   // stale here, since the outline's own reads and every invalidation keep them current, so
   // the focus landing on a row reads the cache however long ago the outline read it.

@@ -6,7 +6,6 @@ import {
   type RefObject,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -505,13 +504,13 @@ export function SpecFilterBody({
   // answered, so this looks again on every drawing of the columns, and the address is taken only
   // once its row is found. The reader's first act since they followed the address ends the
   // landing (`addressActs`), as it ends the outline's: a reader who acted before the reads
-  // settled - a key, a turn of the wheel, a press on another control, while the stage held the
-  // focus on the first statement - keeps the focus where they put it and the page where they had
-  // it, and the landing does nothing to the page: no focus, no scroll, no hold. Watched only from
-  // the landing's start, a read that answered late pulled them back to the address's row. The
-  // landing is keyed on the following and the node (`landingKey`), as the outline's is: a link to
-  // the node the reader moved away from, followed again, lands again, and the columns drawn again
-  // at the same following land nowhere again.
+  // settled - a key, a turn of the wheel, a press on another control, while the stage gave the
+  // view's tab stop no focus, its landing undecided (`ViewStage`) - keeps the focus where they put
+  // it and the page where they had it, and the landing does nothing to the page: no focus, no
+  // scroll, no hold. Watched only from the landing's start, a read that answered late pulled them
+  // back to the address's row. The landing is keyed on the following and the node (`landingKey`),
+  // as the outline's is: a link to the node the reader moved away from, followed again, lands
+  // again, and the columns drawn again at the same following land nowhere again.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   // The following, which the landing is keyed on with the node.
@@ -557,13 +556,11 @@ export function SpecFilterBody({
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
     onPin: NOTHING,
-    // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
-    // holds. `q` walks the open questions, which the asks read brings, so the flag is
-    // `asksHeld`; `w` walks the decisions, so its report waits on the decisions read as well,
-    // here (`decidedHeld`, which holds only where `asksHeld` does). This filter tells `w`'s
-    // report by its words because the keymap holds that one flag for every key; it goes once
-    // the keymap takes a flag per key, when `w`'s flag is `decidedHeld`.
-    onReport: (line) => reportHere(line === KEY_REPORTS.no_decision && !decidedHeld ? "" : line),
+    // The keymap's `q` and `w` say where they could not go only while their reads hold. `q`
+    // walks the open questions, which the asks read brings, so the tree's flag is `asksHeld`;
+    // `w` walks the decisions, so its report waits on the decisions read as well (`decidedHeld`,
+    // which holds only where `asksHeld` does), by its own flag (`readsHeldFor`).
+    onReport: reportHere,
     // `q` and `w` reach here with the node the keymap found: the next open question, or the
     // decision behind the focused row. Where the view draws a row or a cell for it the focus
     // goes there, and a decision named from a statement is that statement's own cell's to
@@ -585,6 +582,7 @@ export function SpecFilterBody({
     onZoom: NOTHING,
     oneNodeAtATime: false,
     readsHeld: asksHeld,
+    readsHeldFor: { w: decidedHeld },
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
@@ -863,52 +861,19 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  * page's `scroll-padding-top`: it moves only a row whose top lies above that padding, and the
  * heads stand under the band, outside it, so on the tester's build a statement the arrows moved
  * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
- * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`), again
- * whenever it grows - after the rule has placed it, since its observer is made first - and never
- * while a press inside it is held, as the rule holds its own placing. At 901 px and below the
- * heads are not drawn, and the rule alone places it.
+ * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`): the rule's
+ * own placing step (`clearOfHeads`), which it runs after placing the item, again whenever the
+ * item grows, and never while a press inside it is held. At 901 px and below the heads are not
+ * drawn, and the rule alone places it.
  *
- * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
- * the rule's step and for this one.
- *
- * It is a copy of `useRowOnScreen`'s own press tracking and of its layout effect with a resize
- * observer (`NodeRow.tsx`), so a focused statement runs both: two observers, and two pairs of
- * window listeners for each press. It goes once `useRowOnScreen` takes an optional placing
- * step, which this view then passes.
+ * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press.
  */
 function useOnScreenUnderHeads(
   item: RefObject<HTMLElement | null>,
   focused: boolean,
   placesItself = true
 ): () => void {
-  const placeByRule = useRowOnScreen(item, focused, undefined, placesItself);
-  const pressed = useRef(false);
-  // As in `useRowOnScreen`, a change in who places the row does not itself move the page.
-  const placing = useRef(placesItself);
-  placing.current = placesItself;
-  useLayoutEffect(() => {
-    const element = item.current;
-    if (!focused || element === null) return;
-    const place = () => {
-      if (placing.current && !pressed.current) clearOfHeads(element);
-    };
-    place();
-    if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(place);
-    grown.observe(element);
-    return () => grown.disconnect();
-  }, [focused, item]);
-  return () => {
-    placeByRule();
-    pressed.current = true;
-    const ended = new AbortController();
-    const release = () => {
-      pressed.current = false;
-      ended.abort();
-    };
-    window.addEventListener("pointerup", release, { capture: true, signal: ended.signal });
-    window.addEventListener("pointercancel", release, { capture: true, signal: ended.signal });
-  };
+  return useRowOnScreen(item, focused, undefined, placesItself, clearOfHeads);
 }
 
 /** Scrolls the page until `element` stands below its view's column heads, where its top is

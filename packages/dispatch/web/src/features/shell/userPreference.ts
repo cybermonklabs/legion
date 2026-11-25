@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 
 /** A name a browser keeps something under for one signed-in person: a choice they made, and the
  *  bar's recent items (`features/search/recents.ts`), which are theirs the same way. The Inbox's
@@ -46,6 +47,9 @@ type UserPreferenceIdentity = "failed" | "pending" | "resolved";
 
 interface UserPreferenceOptions<T> {
   failed?: T;
+  /** How the read of who is reading is kept fresh, where the host keeps it fresh by events (the
+   *  new issue page's readers, `EVENT_FRESH`); by default, the app's. */
+  freshness?: EventFreshness;
   pending?: T;
 }
 
@@ -77,7 +81,7 @@ export function useUserPreference<T>(
   write: (value: T) => string,
   options?: UserPreferenceOptions<T>
 ): [T, (next: T) => void] {
-  const whoAmI = useQuery(whoAmIQuery());
+  const whoAmI = useQuery({ ...whoAmIQuery(), ...options?.freshness });
   const login = whoAmI.data?.login;
   const identity: UserPreferenceIdentity =
     login !== undefined ? "resolved" : whoAmI.isPending ? "pending" : "failed";

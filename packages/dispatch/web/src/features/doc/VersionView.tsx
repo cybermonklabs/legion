@@ -7,6 +7,7 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
@@ -36,6 +37,9 @@ export interface VersionViewProps {
    *  is marked. */
   changeBaseline?: ChangeBaseline;
   createdAt: string | undefined;
+  /** How the read of who is reading is kept fresh, where the host keeps it fresh by events; by
+   *  default, the app's. */
+  freshness?: EventFreshness;
   highlight: Highlight | undefined;
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
@@ -47,6 +51,7 @@ export function VersionView({
   asks,
   changeBaseline,
   createdAt,
+  freshness,
   highlight,
   owner,
   version,
@@ -69,7 +74,7 @@ export function VersionView({
   // built again while the reader reads. This view reads the person at build time only, so the
   // login - equal to itself across re-reads - is both what the editor needs and the signal
   // that it has arrived.
-  const login = useQuery(whoAmIQuery()).data?.login;
+  const login = useQuery({ ...whoAmIQuery(), ...freshness }).data?.login;
   const queryClient = useQueryClient();
   // The server's reading of this version's text, in its version mode: what the editor draws,
   // with no parse of its own. `DisplayTree` is the same JSON `DocumentJSON` describes - one

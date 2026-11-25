@@ -124,6 +124,10 @@ export function listedEdges(
   );
 }
 
+/** `listedEdges` under its own name, for the list that keeps the issue's own items
+ *  (`ReferencedBy`'s `keepIssueItems`), which reads it with the page's drop of them off. */
+const listedByRule = listedEdges;
+
 /** The colours of the list's heading, its lines, its rows, its excerpts and its links: the
  *  application's, and with `page` the new page's own tokens (`PAGE_COLORS`), as every colour of
  *  Details is - a link in the page's ink, underlined under the pointer as the page's row controls
@@ -315,6 +319,7 @@ export function ReferencedByToggle({
  *  the list outright — so this component has one behaviour. */
 export function ReferencedBy({
   className,
+  keepIssueItems = false,
   page = false,
   pages,
   reference,
@@ -338,6 +343,11 @@ export function ReferencedBy({
       entry: (index: number) => Element | null | undefined
     ) => ReactNode;
   };
+  /** With `page`, whether the list keeps the issue's own asks, comments and messages, which the
+   *  page's rule leaves to the outline (`listedEdges`): a document opened in place of the
+   *  outline stands beside no outline, so its list keeps them (dispatch://INFRA-1196 part N's
+   *  R2). Off by default, which is today's rule. */
+  keepIssueItems?: boolean;
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
@@ -361,6 +371,10 @@ export function ReferencedBy({
 }): ReactNode {
   const freshness = useNewIssuePageFreshness();
   const query = useQuery({ ...referencesQuery(reference), ...freshness });
+  // Where the list keeps the issue's own items, it reads the rule with the page's drop of them
+  // off; its colours stay the page's (`tokens`), and the rule Details counts by is unchanged.
+  const listedEdges: typeof listedByRule = (read, of, onPage) =>
+    listedByRule(read, of, onPage && !keepIssueItems);
   const edges = listedEdges(query.data?.edges, reference, page);
   const groups = groupBySource(edges ?? []);
   const tokens = LIST_TOKENS[page ? "page" : "app"];
@@ -517,6 +531,10 @@ export function ReferencedBy({
                       ) : page && edge.excerpt !== undefined ? (
                         <p
                           className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
+                          // An excerpt is what its source wrote, not the page's own words
+                          // (dispatch://INFRA-1196 part N's R9); today's pages draw no such
+                          // attribute, since they never reach this branch.
+                          data-author-text=""
                         >
                           {edge.excerpt.text}
                         </p>

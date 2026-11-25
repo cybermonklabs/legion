@@ -27,6 +27,7 @@ import type {
   ReferenceQuestions,
 } from "../../api/types";
 import { useMarginDrawer } from "../issue-page/margin-slot";
+import { useKnownReferenceName } from "../issue-page/reference-names";
 import { useAgentText } from "./AgentName";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
@@ -299,6 +300,21 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
   return route !== undefined && "block" in route && route.block !== undefined
     ? buildDispatchReference(route)
     : undefined;
+}
+
+/**
+ * What the page has already read of the block `route` names, in its one batched read of names
+ * (`issue-page/reference-names.tsx`, dispatch://INFRA-1196 R20 and part N's R8): `name`, the
+ * block's stored words, known at once, and `headline`, what a link draws from them, which
+ * arrives a commit later. Both are undefined for a route that names no block, and on a page that
+ * read no name for it, which is every page but the new issue page. A link with a name makes no
+ * read of its own (`useReferenceTarget`). The batched read answers a block's words with no
+ * reading of them, so they are the headline's markdown fallback.
+ */
+function useKnownBlockName(route: DispatchReferenceRoute | undefined) {
+  const name = useKnownReferenceName(blockReferenceOf(route));
+  const headline = useMarkdownHeadline(undefined, TITLE_HEADLINE_MAX, name);
+  return { headline, name };
 }
 
 /** The reference's target records, each present once its query resolved. `issue` is the issue
@@ -669,6 +685,13 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
+  // A link to a block the new issue page has already named, in its one batched read of names,
+  // draws that name and reads nothing of its own: the reads below are handed no route
+  // (`useKnownBlockName`, dispatch://INFRA-1196 part N's R8 and decision 362). A caller that
+  // reads the target's text (`options.text`, a card) reads its own, as every reference does on
+  // every other page, which names no block.
+  const known = useKnownBlockName(options.text ? undefined : route);
+  if (known.name !== undefined) route = undefined;
   const { artifact, ask, block, blockDeletion, comment, issue, markdown, markdownTree, message } =
     useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
@@ -703,6 +726,18 @@ export function useReferenceTarget(
     kind === "comment" ? comment?.comment : kind === "message" ? message?.message : undefined;
   const deleted = kind === "block" ? blockDeletion : postDeletion(post);
   const edited = (kind === "block" ? block?.node.edited_at : post?.edited_at) ?? null;
+  if (known.name !== undefined) {
+    // Until the name's headline is drawn, a link reads as the words its author wrote, as it does
+    // while a read of its own is out.
+    return {
+      title: known.headline?.text,
+      description: known.headline?.cut === true ? known.name : undefined,
+      deleted,
+      edited,
+      descriptionTree: undefined,
+      picture: undefined,
+    };
+  }
 
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the

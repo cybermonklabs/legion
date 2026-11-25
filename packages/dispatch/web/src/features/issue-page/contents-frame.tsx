@@ -63,14 +63,26 @@ export function IssueContentsPane(props: SlotProps): ReactNode {
  * (`contents-chosen.ts`'s `useContentsChosen`). Escape and its Close close it.
  */
 export function OutlineSheet({
+  opened = false,
   slot,
   tools,
 }: {
   /** The page's slot props, which the sheet hands `slots/contents.tsx`. */
   slot: SlotProps;
+  /** Part N's: whether the address opens what the sheet holds, which opens the sheet with it:
+   *  `/artifacts` opens the node menu, which stands in the sheet at 760 px and below (its R4,
+   *  R6). Leaving that address closes the sheet again, as it closes the menu. */
+  opened?: boolean;
   tools?: ReactNode;
 }): ReactNode {
   const [open, setOpen] = useState(false);
+  // Part N's: the sheet follows `opened` as it changes, the first drawing included; between two
+  // changes the reader's own Close and Escape stand.
+  const [openedFor, setOpenedFor] = useState(false);
+  if (openedFor !== opened) {
+    setOpenedFor(opened);
+    setOpen(opened);
+  }
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useDialog<HTMLDivElement>({
     initialFocusRef: closeButton,

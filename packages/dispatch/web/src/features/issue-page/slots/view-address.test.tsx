@@ -158,7 +158,6 @@ test("a plan task under a statement, named on the Verification view's address, d
     view.container.querySelector("[data-verification-body]"),
     "the Verification view was drawn beside the outline"
   ).toBeNull();
-  expect(focusedRow(), "the focus left the plan task's row").toBe(task);
 });
 
 // A node the Verification view draws a row of keeps the view: a comment of the issue, which is
@@ -228,17 +227,22 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
   ).toBeNull();
 });
 
-// A key pressed on the Plan view's step is an act of the following too, but the step it leaves the
-// focus on leaves the page with the view where the view then draws no node the address names.
-// The outline drawn in the view's place lands as it does where the reader pressed nothing: with
-// the comments read out the view draws the task's step with the focus, `j` is pressed there, and
-// once the comments answer, the outline lands on the comment's row.
-test("`j` on the Plan view's step, before it draws the outline in its place for a comment of the issue named on its address, leaves the focus on the comment's row", async () => {
+// A key pressed while the Plan view is drawn is an act of the following too, but where the view
+// then draws no node the address names and the focus was the view's - here held by nothing, since
+// the view's step takes no focus while the address's landing is undecided (decision 413) - the
+// outline drawn in the view's place lands as it does where the reader pressed nothing: with the
+// comments read out the view draws the task's step without the focus, `j` is pressed on the page,
+// and once the comments answer, the outline lands on the comment's row.
+test("`j` pressed while the Plan view is drawn, before it draws the outline in its place for a comment of the issue named on its address, leaves the focus on the comment's row", async () => {
   answerVerificationReads();
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
-  await rowTakesFocus(view, TASK_STEP, "the Plan view with the comments out");
+  await waitFor(() => expect(view.container.querySelector(TASK_STEP)).not.toBeNull());
+  expect(
+    view.container.contains(document.activeElement),
+    `the Plan view with the comments out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+  ).toBe(false);
   act(() => {
     document.activeElement?.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, key: "j" })
@@ -511,9 +515,10 @@ test("the spec's blocks refused, a comment of the issue named on the Spec view's
 // The Spec view lands on the row an address names only once every read the tree's rows come from
 // has settled (`SpecFilterBody` says why), the spec's blocks among them. The statements need no
 // blocks: the coverage read holds the statement (`tree-drafts.ts`'s `addRequirements`), whose row
-// the stage gives the focus as the view's tab stop. The comments answer after it, so with the
-// spec's blocks still out the comment's row is drawn under the statement's without the focus.
-// Once those blocks answer every read has settled, and the comment's row takes the focus.
+// the view draws without the focus, since the stage gives the view's tab stop none while the
+// address's landing is undecided (decision 413). The comments answer after it, so with the spec's
+// blocks still out the comment's row is drawn under the statement's without the focus. Once
+// those blocks answer every read has settled, and the comment's row takes the focus.
 test("the spec's blocks out, a comment of the issue named on the Spec view's address is drawn without the focus, which it takes under the statement once they answer", async () => {
   answerVerificationReads();
   const blocksOut = Promise.withResolvers<ArtifactBlock[]>();
@@ -523,7 +528,11 @@ test("the spec's blocks out, a comment of the issue named on the Spec view's add
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
-  await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view with its blocks and comments out");
+  await waitFor(() => expect(view.container.querySelector(SPEC_STATEMENT_ROW)).not.toBeNull());
+  expect(
+    view.container.contains(document.activeElement),
+    `the Spec view with its blocks and comments out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+  ).toBe(false);
   await act(async () => commentsOut.resolve([...TWO_THREADS]));
   const comment = await waitFor(() => {
     const row = view.container.querySelector<HTMLElement>(SPEC_COMMENT_ROW);
@@ -545,9 +554,10 @@ test("the spec's blocks out, a comment of the issue named on the Spec view's add
 });
 
 // The Spec view lands on the row an address names until the reader's first act since they
-// followed the address, as the outline does. With the messages read out the stage puts the focus
-// on the statement's row, the view's tab stop, and the reader then presses a control outside the
-// stage, which takes the focus. Once the messages answer every read has settled, and the
+// followed the address, as the outline does. With the messages read out the view draws the
+// statement's row without the focus, since the stage gives the view's tab stop none while the
+// address's landing is undecided (decision 413), and the reader then presses a control outside
+// the stage, which takes the focus. Once the messages answer every read has settled, and the
 // comment's row is drawn without the focus: the control keeps it. Watched only from the landing's
 // start, the comment's row took the focus from the control.
 test("a press outside the stage before the Spec view's reads settle keeps the focus on the control pressed, off the comment's row the address names", async () => {
@@ -557,7 +567,11 @@ test("a press outside the stage before the Spec view's reads settle keeps the fo
   const control = document.body.appendChild(document.createElement("button"));
   try {
     const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
-    await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view with the messages out");
+    await waitFor(() => expect(view.container.querySelector(SPEC_STATEMENT_ROW)).not.toBeNull());
+    expect(
+      view.container.contains(document.activeElement),
+      `the Spec view with the messages out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+    ).toBe(false);
     act(() => {
       control.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       control.focus();

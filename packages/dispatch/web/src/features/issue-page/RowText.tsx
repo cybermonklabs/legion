@@ -18,6 +18,7 @@ import { isPlainClick } from "../refs/picture-lightbox";
 import { deletedLineText, type PostDeletion } from "../refs/post-marks";
 import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
+import { joinSplitLinks } from "./joined-links";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
@@ -518,6 +519,8 @@ function DrawnText({
     const element = drawn.current;
     if (element === null) return;
     dropDirectiveLines(element);
+    // A link whose words carry a mark is drawn as one anchor (decision 407).
+    joinSplitLinks(element);
     linkRowReferences(element, names, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";

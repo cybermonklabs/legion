@@ -67,6 +67,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   longWords,
@@ -827,6 +828,7 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     // decisions read, which go out together and answer in either order.
     const yours = issuePage(page).locator('[data-spec-cell][data-said="you"]');
     await expect(yours, "the person's decision is not drawn once").toHaveCount(1);
+    await expectOpeningLanded(page);
     // Nothing is focused and nothing is hovered: the lines are drawn by the page itself.
     await focusThePage(page);
 

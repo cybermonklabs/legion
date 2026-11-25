@@ -172,6 +172,47 @@ export function renderTypedBlock(
   ];
 }
 
+/** The words a page draws for a typed block's type and for its attributes' names, in place of
+ *  the schema's tokens. Today's pages give none and draw the tokens; the new issue page gives its
+ *  own words (dispatch://INFRA-1196 part N's R12, `features/issue-page/page-words.ts`), which no
+ *  file today's pages load imports. */
+export interface TypedBlockNames {
+  readonly attribute: (name: string) => string;
+  readonly type: (name: string) => string;
+}
+
+/**
+ * `renderTypedBlock`'s drawing with the words `names` gives: the eyebrow's type and each `<dt>`.
+ * Every `data-` attribute keeps the schema's own name, since a test names a block and its state
+ * by them and a reader never sees them, and nothing else of the drawing changes.
+ */
+export function renderNamedTypedBlock(
+  node: ProseMirrorNode,
+  type: Pick<BlockTypeSchema, "attributes"> | undefined,
+  names: TypedBlockNames
+): DOMOutputSpec {
+  return renamed(renderTypedBlock(node, type), names);
+}
+
+/** `spec` with the text of its eyebrow (`data-proof-block-name`) and of each `<dt>` given by
+ *  `names`, at any depth. */
+function renamed(spec: DOMOutputSpec, names: TypedBlockNames): DOMOutputSpec {
+  if (!Array.isArray(spec)) return spec;
+  const parts: readonly unknown[] = spec;
+  const [tag, attributes, text] = parts;
+  const eyebrow =
+    tag === "span" &&
+    typeof attributes === "object" &&
+    attributes !== null &&
+    "data-proof-block-name" in attributes;
+  if ((tag === "dt" || eyebrow) && typeof text === "string" && parts.length === 3) {
+    return [String(tag), attributes, eyebrow ? names.type(text) : names.attribute(text)];
+  }
+  return parts.map((part, index) =>
+    index === 0 ? part : renamed(part as DOMOutputSpec, names)
+  ) as unknown as DOMOutputSpec;
+}
+
 /** What an `ask` node says about itself, read once per render from its attributes and content. */
 export interface AskBlockFacts {
   readonly answerText: string;

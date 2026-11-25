@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { api, documentReadRequest } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -118,18 +119,22 @@ const NO_MARKS: readonly BlockMark[] = [];
 export function useSpecMarks({
   artifact,
   enabled,
+  freshness,
   issueKey,
   shownVersion,
 }: {
   artifact: Artifact;
   /** The live spec of an issue, on its own page. */
   enabled: boolean;
+  /** How the decisions read is kept fresh, where the host keeps it fresh by events; by default,
+   *  the app's. */
+  freshness?: EventFreshness;
   issueKey: string;
   /** The version the page shows: the spec's latest. */
   shownVersion: number | undefined;
 }): { changed: ChangedSinceRead | undefined; marks: readonly BlockMark[] } {
   const queryClient = useQueryClient();
-  const decisions = useQuery(issueDecisionsQuery(issueKey, enabled));
+  const decisions = useQuery({ ...issueDecisionsQuery(issueKey, enabled), ...freshness });
   const readKey = ["document-read", artifact.id] as const;
   const read = useQuery({
     enabled,

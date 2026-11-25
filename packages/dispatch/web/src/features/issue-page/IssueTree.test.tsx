@@ -9464,8 +9464,8 @@ test("an item's failure drawn after the reader pressed a key leaves the focus wh
 // and Tab from a row of the outline, the page's last tab stop, which a browser run measured on
 // a missing comment's address (the line took the focus in all 7 of 7 tries where Tab left it on
 // the body). The line takes the focus after an act only where the focus was on the body's box as
-// what it replaces left the page, and the focus leaving that box - from the row the page opened
-// on, by Tab or a press elsewhere - clears that mark.
+// what it replaces left the page, and the focus leaving that box - from a row of the outline the
+// reader pressed, by Tab or a press elsewhere - clears that mark.
 test("an item's failure drawn after the reader left the focus on the page's body leaves it there", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -9486,7 +9486,12 @@ test("an item's failure drawn after the reader left the focus on the page's body
     [
       "Tab from a row of the outline, the last tab stop",
       async (container: HTMLElement) => {
-        await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+        const first = await waitFor(() => {
+          const [row] = rowsFor(container, "head-a");
+          if (row === undefined) throw new Error("the outline drew no row of head-a");
+          return row;
+        });
+        await user.click(first);
         await user.keyboard("{Tab}");
       },
     ],
@@ -9520,10 +9525,16 @@ test("an item's failure drawn after the reader left the focus on the page's body
   }
 });
 
-/** Moves the focus by a key from the row the page opens on, `head-a`, to the next row of the
- *  outline drawn in `container`: an act of the reader's, which leaves the focus on the outline. */
+/** Presses the outline's first row, `head-a`, drawn in `container` - the page opens on no row
+ *  while an address that names a node has not landed (decision 413) - and moves the focus from it
+ *  by a key to the next row: acts of the reader's, which leave the focus on the outline. */
 async function moveOnFromFirstRow(user: UserEvent, container: HTMLElement): Promise<void> {
-  await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+  const first = await waitFor(() => {
+    const [row] = rowsFor(container, "head-a");
+    if (row === undefined) throw new Error("the outline drew no row of head-a");
+    return row;
+  });
+  await user.click(first);
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(container)).not.toBe("head-a"));
   expect(focusedRow(container), "j left the focus on no row").toBeDefined();
@@ -9685,7 +9696,12 @@ test("a line drawn after the focus left a portal inside the outline's box for a 
     );
     const { container } = body.view;
     await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
-    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    const first = await waitFor(() => {
+      const [row] = rowsFor(container, "head-a");
+      if (row === undefined) throw new Error("the outline drew no row of head-a");
+      return row;
+    });
+    await user.click(first);
     const box = container.querySelector<HTMLElement>("[data-issue-body]");
     if (box === null) throw new Error("the body's box is not drawn");
     await act(async () => box.append(stage));

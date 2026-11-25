@@ -22,6 +22,7 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { focusOnDocument } from "../../shell/roving";
+import { APPROVAL_CHIP } from "../approval-chip-box";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
@@ -45,6 +46,7 @@ import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
+import { waitingOnReader } from "../waiting";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -361,13 +363,57 @@ export function DecisionsFilterBody({
   const pressed = useRef<number | undefined>(undefined);
   const went = useRef<string | undefined>(undefined);
   const waiting = useMemo(() => waitingOrder(parts), [parts]);
+  // Part N's stop at the header's approval control inside the cycle (its R5, the plan's ST-3):
+  // the documents whose open approval request waits on the reader, by P's one rule for it
+  // (`waiting.ts`), which reads the issue's open asks and who is reading; the order the last
+  // press read, where an item answered since is found; and whether the reads that say what
+  // waits hold their answers. Each is read as it stands at the press.
+  const approvals = useRef<readonly string[]>([]);
+  approvals.current = waitingOnReader(
+    issue,
+    reader,
+    undefined,
+    () => false,
+    undefined,
+    undefined
+  ).approvals;
+  const order = useRef<readonly string[]>([]);
+  const held = useRef(readsHeld);
+  held.current = readsHeld;
   useEffect(() => {
     if (waitingPress === undefined || waitingPress === pressed.current) return;
+    // The press lands once those reads hold, on the first thing that waits rather than on the
+    // first to arrive (decision 413's rule).
+    if (!held.current) return;
     if (waiting.length === 0) return;
     pressed.current = waitingPress;
+    // An item answered since the last press has left the order: the press goes on to the next
+    // item still waiting after it in the order that press read, or past the last where none is.
+    const last = went.current;
+    if (last !== undefined && last !== APPROVAL_CHIP && !waiting.includes(last)) {
+      const after = order.current
+        .slice(order.current.indexOf(last) + 1)
+        .find((id) => waiting.includes(id));
+      went.current = after === undefined ? waiting.at(-1) : waiting[waiting.indexOf(after) - 1];
+    }
+    // Past the last thing that waits, the header's approval control of a request that waits on
+    // the reader, where the header draws it, is the cycle's next place; the press after it
+    // starts at the first thing again.
+    const chip =
+      waiting.indexOf(went.current ?? "") === waiting.length - 1
+        ? [...document.querySelectorAll<HTMLElement>(APPROVAL_CHIP)].find((found) =>
+            approvals.current.includes(found.dataset.approvalArtifact ?? "")
+          )
+        : undefined;
+    if (chip !== undefined) {
+      went.current = APPROVAL_CHIP;
+      chip.focus();
+      return;
+    }
     const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
     if (next === undefined) return;
     went.current = next;
+    order.current = waiting;
     goTo(next);
   }, [goTo, waiting, waitingPress]);
 

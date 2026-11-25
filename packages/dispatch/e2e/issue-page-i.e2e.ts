@@ -2506,6 +2506,7 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
 
     // Each view's control draws that view in the outline's place, and Conversation's draws the
     // outline back. The outline is read by its own rows rather than by a tree: every view draws

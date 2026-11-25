@@ -174,3 +174,119 @@ export function CreateDocument({
     </TitleForm>
   );
 }
+
+/** One control's making of a document: whether its form is open, the press that opens it, and
+ *  the strip the form is drawn in. The new issue page's node menu holds one behind an item of the
+ *  menu, which closes as it is pressed, so the form is drawn beside the menu rather than in it
+ *  (`features/issue-page/NodeMenu.tsx`). */
+export interface DocumentCreation {
+  /** Whether the form is open. */
+  readonly open: boolean;
+  /** Opens the form, forgetting what the last press answered. */
+  readonly start: () => void;
+  /** The strip: `idle` while the form is closed, the form while it is open, and in both what
+   *  the last write said where it landed with no answer. */
+  readonly strip: (idle: ReactNode) => ReactNode;
+}
+
+/**
+ * `CreateDocument`'s making of a document, with no button of its own: the same write under an
+ * idempotency key, the same refusal of a title the owner already holds, the same strip, for a
+ * control that opens the form from elsewhere (dispatch://INFRA-1196 part N's R2). `CreateDocument`
+ * keeps its own copy until today's issue page goes (INFRA-1196's last step), when it can be this
+ * behind its button.
+ */
+export function useCreateDocument({
+  documents,
+  owner,
+  refusal = null,
+  refusalShownBy,
+}: {
+  readonly documents: readonly Artifact[];
+  readonly owner: DocumentOwner;
+  readonly refusal?: string | null;
+  readonly refusalShownBy?: string;
+}): DocumentCreation {
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState("");
+  const [takenBy, setTakenBy] = useState<Artifact | undefined>();
+  const queryClient = useQueryClient();
+  const submitGuard = useSubmitGuard();
+  const navigate = useNavigate();
+  const create = useKeyedWrite({
+    inline: true,
+    label: (name: string) => `New document ${name}`,
+    method: "POST",
+    write: (name: string, bounds) => api.uploadArtifact(owner, { name }, bounds),
+    onSettled: () => submitGuard.release(),
+    onSuccess: (made) => {
+      setCreating(false);
+      setTitle("");
+      refreshOwnerArtifacts(queryClient, owner);
+      if (made === null) return;
+      navigate(documentPath(owner, made.artifact.slug));
+    },
+  });
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = title.trim();
+    if (name === "" || refusal !== null) {
+      return;
+    }
+    const held = documentHolding(documents, name);
+    if (held !== undefined) {
+      setTakenBy(held);
+      return;
+    }
+    setTakenBy(undefined);
+    submitGuard.guard(() => create.mutate(name));
+  };
+  // A create the reader stopped is said as `CreateDocument` says it, and for its reasons: no
+  // verdict of Dispatch's, and no Retry here, but what a press of Create again does.
+  const problem =
+    takenBy !== undefined
+      ? `${takenBy.kind === "doc" ? "A document" : "A file"} on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy.name}.`
+      : create.isError
+        ? create.error instanceof SendStoppedError
+          ? stoppedCreate(create.variables ?? "")
+          : apiErrorMessage(create.error, "Could not create the document.")
+        : undefined;
+  return {
+    open: creating,
+    start: () => {
+      setCreating(true);
+      setTakenBy(undefined);
+      create.forgetUnanswered();
+    },
+    strip: (idle) => (
+      <TitleForm
+        busyLabel="Creating…"
+        formLabel="New document"
+        idle={idle}
+        onCancel={() => {
+          setCreating(false);
+          setTitle("");
+          setTakenBy(undefined);
+        }}
+        onSubmit={submit}
+        onTitleChange={(typed) => {
+          setTitle(typed);
+          setTakenBy(undefined);
+        }}
+        open={creating}
+        pending={create.isPending}
+        problem={problem}
+        refusal={refusal}
+        refusalShownBy={refusalShownBy}
+        submitLabel="Create"
+        title={title}
+      >
+        {create.unanswered === undefined ? null : (
+          <div className="w-full">
+            <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
+          </div>
+        )}
+      </TitleForm>
+    ),
+  };
+}

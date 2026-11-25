@@ -3068,6 +3068,45 @@ test("q says there is no next question once the asks read is in, and nothing whi
   }
 });
 
+// Decision 373: the tree's keymap holds a flag per key, and the view gives `w` its own, the
+// decisions read's, so no report of `w` is matched by its words here. On a row that is no
+// statement, which the keymap answers `w` on for the decision behind it, with the asks read in,
+// `q` says it found no next question while the decisions read is still out, and `w` says nothing
+// then, since a decision may yet stand behind the row; once that read is in, `w` says none is.
+test("the Spec view does not filter the report of w by its words", async () => {
+  const user = userEvent.setup();
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+  ]);
+  for (const [decisions, said] of [
+    ["out", ""],
+    ["answered", KEY_REPORTS.no_decision],
+  ] as const) {
+    const { read, view } = drawBody(
+      tree,
+      [],
+      decisions === "out" ? { decisions, named: ["comment-1"] } : { named: ["comment-1"] }
+    );
+    try {
+      const row = rowOf(view, "comment-1");
+      act(() => row.focus());
+      await user.keyboard("q");
+      expect(row.querySelector("[data-row-report]")?.textContent ?? "", "q on comment-1").toBe(
+        KEY_REPORTS.no_next_question
+      );
+      await user.keyboard("w");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `w on comment-1 with the decisions read ${decisions}`
+      ).toBe(said);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
 // R11 and R35: each key waits on the reads it walks, and on no other. The results read is one
 // only the marks are drawn from, so while it is out or refused `q` with no open question, `w` on
 // a statement no decision shaped, and `w` on an address-named row with no decision behind it

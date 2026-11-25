@@ -1,10 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
-import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import { issueAddress } from "../issue-address";
@@ -14,6 +11,7 @@ import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
+import { useWhoIsReading } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
@@ -34,7 +32,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
   // time.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it, but for a
   // person's write-up of an answered question (below); the entry it names takes the focus, once

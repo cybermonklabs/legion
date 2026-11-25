@@ -81,6 +81,15 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     route,
     search,
   });
+  // An address that names a node, opening no document, moves the focus once (dispatch://INFRA-1196
+  // decision 413): onto its row (`IssueTree`), or onto the line drawn in the outline's place that
+  // the issue holds none of it (`useAddressFallback`), which waits for every read to hold. Until
+  // then the outline's opening, on a question that waits or on the first row, would move the
+  // focus first, so it waits too. Once the reads have settled with one refused, which holds
+  // nothing, the line is never drawn, and the outline opens by its own rule: on a question that
+  // waits, else on that read's Retry.
+  const openingWaits =
+    address.target !== undefined && address.document === undefined && (!readsSettled || readsHeld);
   const ancestor = fallback?.kind === "agents-only" ? fallback.ancestor : undefined;
   const ancestorNamed = useMemo(
     () => (ancestor === undefined ? undefined : namedBy(ancestor)),
@@ -163,6 +172,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             isClosed={isClosed}
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
             onEditing={onEditing}
+            openingWaits={openingWaits}
             readsHeld={readsHeld}
             readsSettled={readsSettled}
             {...(request === undefined ? {} : { request })}
@@ -290,7 +300,7 @@ function ItemFallback({
       <NotFoundLine
         heading={`${noun} not found`}
         issueKey={route.key}
-        line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
+        line={`That link doesn't name a ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
         takesFocus={takesFocus}
       />
     );
@@ -364,7 +374,7 @@ function useFocusOnDraw<T extends HTMLElement>(takesFocus: TakesFocus) {
 
 /** What each kind of item is called: a copy of `issue/IssuePage.tsx`'s `itemNoun`. */
 const ITEM_NOUNS: Readonly<Record<ItemRoute["kind"], string>> = {
-  ask: "Ask",
+  ask: "Question",
   comment: "Comment",
   message: "Message",
 };

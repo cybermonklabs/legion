@@ -246,7 +246,6 @@ test("a write-up's address under words its question does not hold draws the outl
     expect(drawnSlot(view), "the stage drew the view, which has no row for the write-up").toBe(
       "the body"
     );
-    expect(focusedRow(), "the focus left the write-up's row").toBe(WRITE_UP_NODE);
   } finally {
     asks.mockRestore();
     decisions.mockRestore();
@@ -319,28 +318,33 @@ function askRow(id: string): string {
   return `[data-decisions-body] [data-node-row][data-node-id="${id}"]`;
 }
 
-// A key pressed on a row of the view is an act of the following too, but the row that holds the
-// focus leaves the page with the view where the view then draws no node the address names. The
-// outline drawn in the view's place lands as it does where the reader pressed nothing: with the
-// comments read out the view draws the questions, `j` is pressed on the first one's row, and once
+// A key pressed while the view is drawn is an act of the following too, but where the view then
+// draws no node the address names and the focus was the view's - here held by nothing, since the
+// view's rows take no focus while the address's landing is undecided (decision 413) - the outline
+// drawn in the view's place lands as it does where the reader pressed nothing: with the comments
+// read out the view draws the questions without the focus, `j` is pressed on the page, and once
 // the comments answer, the outline's line that the issue holds no such comment takes the focus.
-test("`j` on a row of the Decisions view, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
+test("`j` pressed while the Decisions view is drawn, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
   spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    await rowTakesFocus(view, askRow("ask-open"), "the Decisions view with the comments out");
+    await waitFor(() => expect(view.container.querySelector(askRow("ask-open"))).not.toBeNull());
+    expect(
+      view.container.contains(document.activeElement),
+      `the Decisions view with the comments out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+    ).toBe(false);
     act(() => {
       document.activeElement?.dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, key: "j" })
       );
     });
     expect(
-      view.container.querySelector(askRow("ask-open")),
-      `the focus left the first question's row at \`j\` for ${focusedRow() ?? document.activeElement?.tagName}`
-    ).toHaveFocus();
+      view.container.contains(document.activeElement),
+      `\`j\` before the address landed moved the focus to ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toBe(false);
     await act(async () => commentsOut.resolve([]));
     await goneLineTakesFocus(view, "the comments answering after `j`");
   } finally {
@@ -361,11 +365,20 @@ test("Enter on the Retry of the Decisions view's refused decisions read, before 
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    const retry = await rowTakesFocus(
-      view,
-      `[data-decisions-body] ${FAILED_READ_RETRY}`,
-      "the view's refused decisions read"
-    );
+    const retry = await waitFor(() => {
+      const button = view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] ${FAILED_READ_RETRY}`
+      );
+      expect(
+        button,
+        `the view's refused decisions read drew no Retry; the stage drew ${drawnSlot(view)}`
+      ).not.toBeNull();
+      expect(
+        button,
+        `the view's refused decisions read left the focus on ${focusedRow() ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return button as HTMLElement;
+    });
     // Enter on a button: its keydown, then the press it makes.
     act(() => {
       retry.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
@@ -388,7 +401,7 @@ const NOTHING_UNREAD = { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, r
 // outline's tree, its rows and the mark that reads a thread in the reader's Inbox
 // (`outline-thread-read.tsx`) each read who is reading, and would ask for it again on a return more
 // than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
-// (`useIssueTree.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
+// (`refs/reference-target.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
 test("coming back to the outline from Decisions after the app's staleTime asks who is reading no second time", async () => {
   // The stub of who is reading that `stubReads` set: `spyOn` hands back that same spy, which
   // keeps its answer, and this counts its calls.

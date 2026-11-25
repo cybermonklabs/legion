@@ -7,7 +7,6 @@ import {
   projectsQuery,
   type ReferenceTargetsAnswer,
   referenceTargetsQuery,
-  whoAmIQuery,
 } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
@@ -79,6 +78,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { useWhoIsReading } from "./useIssueTree";
 import { useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
@@ -470,7 +470,7 @@ export function IssueMarginPanel({
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   const approvalWaits =
     waitingOnReader(issue, viewer, undefined, () => false, undefined, undefined).approvals.length >
     0;

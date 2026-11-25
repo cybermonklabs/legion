@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
+import { hearPresses } from "../margin/details-focus-keeper";
 import { focusOnDocument } from "../shell/roving";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
@@ -131,78 +132,10 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
   return null;
 }
 
-/**
- * Hears the reader's pointer presses on `page`, and returns what ends the hearing. It is the one
- * reader of presses on the page: the keeper's watches and the header's title row read presses
- * through it, so a press is over for each of them on the same events. `begin` is told of each
- * press as its pointer goes down; once the press is over, `done` is told where the focus was as
- * the press began and what `begin` answered. A press is over at the first of these:
- * - Its pointerup, where it has moved the focus by then or is of a button other than the primary
- *   one. A mouse press moves the focus as its button goes down, so a press that has moved it by
- *   its pointerup has done its move then, and a press of any other button sends no click.
- * - Its click. A tap moves the focus only after its pointer is up, from the mousedown the browser
- *   sends it then, so a press of the primary button that has moved no focus by its pointerup is
- *   still under way until its click. That click is heard in the capture phase on the page, before
- *   the target's own handler: the header's Details control cancels its mousedown so the focus
- *   stays where it is, and closes Details from its click, which must not read as the press moving
- *   the focus.
- * - Its pointercancel. A press the browser cancels, as it does a touch it turns into a scroll and
- *   as Chromium does a press it turns into a drag, sends neither a pointerup nor a click.
- * - Its dragend. A press that becomes a drag sends no pointerup and no click, so the drag's end
- *   ends the press where no pointercancel did.
- * - Its contextmenu. Where the menu opens as the button goes down, it takes the pointerup itself.
- * - The blur of the page's window. A press under way as the reader leaves the window may send the
- *   page no release at all. The window keeps its focused element as it blurs, so a press that had
- *   moved no focus by then reads as no move. The blur is heard on the window outside the capture
- *   phase, and only the window's own: a capture listener there hears every element's blur.
- * A new pointerdown replaces a press still under way.
- */
-export function hearPresses<T>(
-  page: Document,
-  begin: (event: PointerEvent) => T,
-  done: (from: Element | null, start: T) => void
-): () => void {
-  /** The press under way: where the focus was as it began, whether it is of the primary button,
-   *  and what `begin` answered; null while no press is under way. */
-  let press: {
-    readonly from: Element | null;
-    readonly primary: boolean;
-    readonly start: T;
-  } | null = null;
-  const notePress = (event: PointerEvent) => {
-    // A touch and a pen press as the primary button does.
-    press = { from: page.activeElement, primary: event.button === 0, start: begin(event) };
-  };
-  /** Ends the press under way, if any, and tells `done` of it. */
-  const endPress = () => {
-    if (press === null) return;
-    const { from, start } = press;
-    press = null;
-    done(from, start);
-  };
-  const notePointerUp = () => {
-    // No click follows a press of any button but the primary one, so such a press ends here
-    // whether or not it moved the focus.
-    if (press !== null && (!press.primary || page.activeElement !== press.from)) endPress();
-  };
-  const view = page.defaultView;
-  page.addEventListener("pointerdown", notePress, true);
-  page.addEventListener("pointerup", notePointerUp, true);
-  page.addEventListener("pointercancel", endPress, true);
-  page.addEventListener("dragend", endPress, true);
-  page.addEventListener("contextmenu", endPress, true);
-  page.addEventListener("click", endPress, true);
-  view?.addEventListener("blur", endPress);
-  return () => {
-    page.removeEventListener("pointerdown", notePress, true);
-    page.removeEventListener("pointerup", notePointerUp, true);
-    page.removeEventListener("pointercancel", endPress, true);
-    page.removeEventListener("dragend", endPress, true);
-    page.removeEventListener("contextmenu", endPress, true);
-    page.removeEventListener("click", endPress, true);
-    view?.removeEventListener("blur", endPress);
-  };
-}
+/** The page's one reading of a reader's pointer press (decision 404), which Details' keeper reads
+ *  too (`margin/details-focus-keeper.ts`): this keeper's watches and the header's title row hear
+ *  presses through it, so a press is over for each of them on the same events. */
+export { hearPresses };
 
 /**
  * Watches `layer`, a layer outside `region` that the focus left the region for from `opener`,

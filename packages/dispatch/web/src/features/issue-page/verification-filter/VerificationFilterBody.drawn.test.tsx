@@ -1535,6 +1535,65 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
   }
 });
 
+// An address that names a row the view draws lands on that row (part N's R14, decision 368): it
+// holds the tree's one tab stop in place of the issue's row from the render that first draws it,
+// so the stage's focus lands on it. It takes the stop once for the node named: the reader's own
+// key moves it on, and the body drawn again for the same address leaves it where they moved it.
+test("under Verification an addressed row holds the tab stop", async () => {
+  const user = userEvent.setup();
+  const met = passing("c-one");
+  const check = checkNode(met);
+  const statement = statementNode("r1", "The page draws it.", [check]);
+  const issue = node({
+    children: [statement, statementNode("r2", "Nothing serves this one.", [])],
+    id: ISSUE_KEY,
+    text: "An issue",
+    type: "issue",
+  });
+  const client = testClient();
+  const drawn = (named: ReadonlySet<string>) => {
+    const view = presetView(issue, "verification", "", named);
+    return (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <ViewStage>
+            <NoTooltips>
+              <VerificationFilterBody
+                checks={[met]}
+                context={view.context}
+                reads={{ state: "answered" }}
+                startsOn={named}
+                view={view.root}
+                whole={undefined}
+              />
+            </NoTooltips>
+          </ViewStage>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
+  const stops = () =>
+    [...document.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
+      row.getAttribute("data-node-id")
+    );
+  const view = render(drawn(new Set([check.id])));
+  try {
+    await act(async () => undefined);
+    expect(stops(), "the rows that hold the tab stop").toEqual([check.id]);
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-node-id"), "the focused row").toBe(check.id)
+    );
+    // `k` goes back to the check's statement, which takes the stop.
+    await user.keyboard("k");
+    expect(stops()).toEqual([statement.id]);
+    view.rerender(drawn(new Set([check.id])));
+    await act(async () => undefined);
+    expect(stops(), "the stop after the same address drew the body again").toEqual([statement.id]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A read refused before it first answers holds nothing to draw from, so the body says so over
 // its tree, one line for each such read in the page's words for it with a Retry that asks that
 // read alone again. It draws no row, since a statement no blocks read placed its check under, or

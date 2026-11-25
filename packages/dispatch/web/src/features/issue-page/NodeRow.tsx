@@ -32,6 +32,7 @@ import { useAgentText } from "../refs/AgentName";
 import { DeletedBody, EditedMark } from "../refs/PostBody";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { DIALOG_RETURN_ATTRIBUTE } from "../shell/useDialog";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
@@ -293,6 +294,9 @@ export function NodeRow({
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={tabStop ? 0 : -1}
+      // A dialog opened from one of the row's acts, which go as the row loses the focus to it,
+      // gives the focus back to the row as it closes (decision 396).
+      {...{ [DIALOG_RETURN_ATTRIBUTE]: "" }}
     >
       {/* One faint guide per level above the row, each at the middle of that level's bullet
           (the prototype's `.tn > .kids`, 9 px into a level 23 px wide, and 8 px into one 17 px
@@ -534,16 +538,24 @@ export const NODE_ROW_LAYOUT = {
  * focus, so a row taller than the screen would be put at its top under the band and the
  * page would open scrolled past its header. Read when the row is placed rather than as a
  * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
+ *
+ * `afterPlacing` is a view's own placing step, run on the row each time the rule has placed it,
+ * as it takes the focus and as it grows, and never while a press is held: a view whose own
+ * sticky heads stand under the band places its rows below them by it (decision 373), with no
+ * second observer or press tracking of its own.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
   below: number = BELOW_WHAT_STAYS,
-  placesItself = true
+  placesItself = true,
+  afterPlacing?: (element: HTMLElement) => void
 ): () => void {
   const pressed = useRef(false);
   const placing = useRef(placesItself);
   placing.current = placesItself;
+  const step = useRef(afterPlacing);
+  step.current = afterPlacing;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -562,6 +574,7 @@ export function useRowOnScreen(
       if (pressed.current) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
+      step.current?.(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;

@@ -173,6 +173,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     for (const width of [1440, 1024, 800, 760, 390, 320]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
+      await expectOpeningLanded(page);
       expect(await activePreset(page), `the view is not named Verification at ${width} px`).toBe(
         PRESET_NAMES.verification
       );

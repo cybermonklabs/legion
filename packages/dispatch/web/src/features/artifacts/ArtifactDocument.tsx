@@ -5,6 +5,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { ambiguousItems, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -74,10 +75,33 @@ function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): Se
   return { candidates, id: whole, rewrite: `${pathname}?${params.toString()}${hash}` };
 }
 
+/**
+ * `useSelectedItem` for another page that lands an address's item: the new issue page's outline
+ * on an ask or a comment `?ask=` or `?comment=` names, and the document it opens on one `?mark=`
+ * names (dispatch://INFRA-1196 part N's R6). The item is resolved as a document's address
+ * resolves one, and an id written short is replaced with the whole id under `param`, the query
+ * parameter the address named it by: its kind's, or `mark`.
+ */
+export function useAddressedItem(
+  owner: MarginOwner,
+  item: SelectedItem | undefined,
+  param: "ask" | "comment" | "mark" | undefined = item?.kind
+): SelectedItemLanding {
+  const { hash, pathname, search } = useLocation();
+  const landing = useSelectedItem(owner, item);
+  if (landing.rewrite === undefined || landing.id === undefined || param === item?.kind) {
+    return landing;
+  }
+  const params = new URLSearchParams(search);
+  if (param !== undefined) params.set(param, landing.id);
+  return { ...landing, rewrite: `${pathname}?${params.toString()}${hash}` };
+}
+
 export function ArtifactDocument({
   artifact,
   askId,
   commentId,
+  freshness,
   highlightTerm,
   isClosed,
   owner,
@@ -89,6 +113,10 @@ export function ArtifactDocument({
   artifact: Artifact;
   askId?: string;
   commentId?: string;
+  /** How the document's reads of who is reading, its decisions and an open question's thread are
+   *  kept fresh, where its host keeps them fresh by events (the new issue page's opened document,
+   *  `EVENT_FRESH`); by default, the app's. */
+  freshness?: EventFreshness;
   highlightTerm?: string;
   isClosed: boolean;
   owner: MarginOwner;
@@ -97,7 +125,7 @@ export function ArtifactDocument({
   onVersionChange: (version: number | null) => void;
   version: number | undefined;
 }): ReactNode {
-  const user = useQuery(whoAmIQuery());
+  const user = useQuery({ ...whoAmIQuery(), ...freshness });
   const selected: SelectedItem | undefined =
     commentId === undefined
       ? askId === undefined
@@ -171,6 +199,7 @@ export function ArtifactDocument({
       {landing.rewrite === undefined ? null : <Navigate replace to={landing.rewrite} />}
       <ProofDocument
         artifact={artifact}
+        freshness={freshness}
         highlight={highlight}
         highlightTerm={highlightTerm}
         isClosed={isClosed}
