@@ -1,0 +1,196 @@
+{
+  "answers": [
+    {
+      "answer": "refusal",
+      "addKeyPaths": [
+        "heldPods",
+        "heldPods.*",
+        "heldPods.*.claims",
+        "heldPods.*.claims.*",
+        "heldPods.*.heldAt",
+        "heldPods.*.issue",
+        "heldPods.*.pause"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "projectRelease",
+        "projectRelease.bound",
+        "projectRelease.boundAt",
+        "projectRelease.endedAt",
+        "projectRelease.endedBy",
+        "projectRelease.finishedAt",
+        "projectRelease.id",
+        "projectRelease.result",
+        "projectRelease.result.claims",
+        "projectRelease.result.claims.*",
+        "projectRelease.result.claims.*.bootStarts",
+        "projectRelease.result.claims.*.detail",
+        "projectRelease.result.claims.*.ended",
+        "projectRelease.result.claims.*.issue",
+        "projectRelease.result.claims.*.role",
+        "projectRelease.result.claims.*.session",
+        "projectRelease.result.claims.*.token",
+        "projectRelease.result.failure",
+        "projectRelease.result.sandboxes",
+        "projectRelease.result.sandboxes.*",
+        "projectRelease.result.sandboxes.*.asked",
+        "projectRelease.result.sandboxes.*.asked.*",
+        "projectRelease.result.sandboxes.*.asked.*.answeredAt",
+        "projectRelease.result.sandboxes.*.asked.*.bound",
+        "projectRelease.result.sandboxes.*.asked.*.role",
+        "projectRelease.result.sandboxes.*.commits",
+        "projectRelease.result.sandboxes.*.issue",
+        "projectRelease.result.sandboxes.*.kind",
+        "projectRelease.result.sandboxes.*.name",
+        "projectRelease.result.sandboxes.*.otherImage",
+        "projectRelease.result.sandboxes.*.outcome",
+        "projectRelease.result.sandboxes.*.reason",
+        "projectRelease.result.sandboxes.*.refusal",
+        "projectRelease.result.sandboxes.*.workingCopyChanged",
+        "projectRelease.startedAt"
+      ],
+      "addValues": {
+        "projectRelease.endedBy": [
+          "boot"
+        ],
+        "projectRelease.result.claims.*.ended": [
+          "daemon",
+          "exit",
+          "failed",
+          "idle",
+          "launch_uncertain",
+          "launching",
+          "operator",
+          "project_release",
+          "queued",
+          "ready",
+          "registered",
+          "released",
+          "retired",
+          "shim_connected",
+          "unknown",
+          "unrecorded",
+          "working"
+        ],
+        "projectRelease.result.claims.*.role": [
+          "architect",
+          "controller",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "projectRelease.result.sandboxes.*.asked.*.role": [
+          "architect",
+          "implementer",
+          "merger",
+          "planner",
+          "reviewer",
+          "tester"
+        ],
+        "projectRelease.result.sandboxes.*.kind": [
+          "cache",
+          "controller",
+          "issue",
+          "probe",
+          "unknown"
+        ],
+        "projectRelease.result.sandboxes.*.outcome": [
+          "deleted",
+          "deleted_clean",
+          "deleted_lost",
+          "deleted_read_refused",
+          "deleted_unread",
+          "left",
+          "waiting"
+        ]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.endedBy",
+      "values": [
+        "boot"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.result.sandboxes.*.kind",
+      "values": [
+        "cache",
+        "controller",
+        "issue",
+        "probe",
+        "unknown"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.result.sandboxes.*.outcome",
+      "values": [
+        "deleted",
+        "deleted_clean",
+        "deleted_lost",
+        "deleted_read_refused",
+        "deleted_unread",
+        "left",
+        "waiting"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.result.sandboxes.*.asked.*.role",
+      "values": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.result.claims.*.role",
+      "values": [
+        "architect",
+        "controller",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "projectRelease.result.claims.*.ended",
+      "values": [
+        "daemon",
+        "exit",
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "operator",
+        "project_release",
+        "queued",
+        "ready",
+        "registered",
+        "released",
+        "retired",
+        "shim_connected",
+        "unknown",
+        "unrecorded",
+        "working"
+      ]
+    }
+  ]
+}

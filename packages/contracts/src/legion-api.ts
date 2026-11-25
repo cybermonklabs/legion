@@ -1383,7 +1383,7 @@ export const LegionProjectReleaseRequest = z.strictObject({
 });
 
 /** `api.ProjectReleaseResponse`, the body of `POST` and `GET /legion/v1/operator/project/release`
- * and the state's `projectRelease` (contract 295): the release's record id (none on a dry run),
+ * and the state's `projectRelease` (entry 20261125162422): the release's record id (none on a dry run),
  * when it started and when it deletes every pod still waiting (`boundAt`), that `bound` as a Go
  * duration, when it finished and when a boot ended it (`endedBy` `boot`), each absent until it
  * happens, and its result: one line per Sandbox of the project and one per claim it stopped,
@@ -1598,8 +1598,8 @@ const legionPaused = z.object({
  * Dispatch credential and the two counts of the Dispatch tokens its launches hand out, written only
  * under `dispatch_token_broker` (contract 275); the route strips it for a caller below 275, read the
  * same way (`api.stateFor`, `withoutDispatchCredential`). `projectRelease` is the project's newest
- * project release, the body its own `GET` answers (contract 295), absent while none was ever
- * recorded and for a caller below 295, read the same way (`api.stateFor`, `withoutProjectRelease`).
+ * project release, the body its own `GET` answers (entry 20261125162422). The route omits it when
+ * none was recorded or the caller is below the entry's contract (`api.stateFor`, `withoutProjectRelease`).
  */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
@@ -2218,7 +2218,7 @@ export const LegionProjectResumeResponse = z.object({
 });
 
 /** `api.PauseHeldPodView` — one pod a pause still holds, as a refused project release names it
- * (contract 295): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
+ * (entry 20261125162422): the pod's `issue`, the `pause` that holds it, `heldAt`, when the hold began, and
  * `claims`, the claims of the pod stored suspended by `released`, the source a pause stops a role
  * by, in token order and never null. An operator's `legion claims resume --claim <token>` of one
  * of them runs a role of the pod again, and that role's ready ends the hold. */
@@ -2235,11 +2235,11 @@ const legionPauseHeldPod = z.object({
  * `PAUSE_UNAVAILABLE` names the `setting` that turns the pause off, and none from a daemon that
  * runs no workflow; `PROJECT_ALREADY_PAUSED` and `PROJECT_PAUSED` name the `pause` that stands;
  * `PROJECT_NOT_PAUSED` names the `lastPause`, where one has ended. `legion project release`'s
- * `PROJECT_PAUSED` (contract 295) names the `pause` where one stands and `heldPods`, each pod a
+ * `PROJECT_PAUSED` (entry 20261125162422) names the `pause` where one stands and `heldPods`, each pod a
  * pause still holds, where one does: the release of a daemon process that has run none refuses
  * while the project is paused and while a pod that a pause stopped is still held after the resume,
  * since it would delete such a pod unread. A pause while a project release runs answers
- * `PROJECT_RELEASING` (contract 295), which names nothing beside its sentence, and the sentence
+ * `PROJECT_RELEASING` (entry 20261125162422), which names nothing beside its sentence, and the sentence
  * names the release. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside its
  * sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a refusal's
  * code and sentence alone (`LegionErrorResponse`), and the sentence says which pause it is, so
@@ -2427,7 +2427,7 @@ export const LegionIssueStatusRequest = z.strictObject({
  * that is not a controller's (`CONTROLLER_REQUIRED`), a blank reason (`PAUSE_REASON_REQUIRED`),
  * a deployment whose configuration cannot hold a pause (`PAUSE_UNAVAILABLE`), a project that
  * is paused already (`PROJECT_ALREADY_PAUSED`) and a pause while a project release of the project
- * runs (`PROJECT_RELEASING`, contract 295). */
+ * runs (`PROJECT_RELEASING`, entry 20261125162422). */
 export const LegionProjectPauseRequest = z.strictObject({
   grantId: nonEmptyString,
   reason: nonEmptyString,

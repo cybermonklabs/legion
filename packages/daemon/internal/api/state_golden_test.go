@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -1170,8 +1172,6 @@ func populatedState(t *testing.T) State {
 		issue.WaitingLine = &line
 		state.Issues[key] = issue
 	}
-	release := goldenProjectRelease()
-	state.ProjectRelease = &release
 	// The intake's open give-ups (contract 228): the Dispatch consumer has two, a decoded event
 	// given up at its bound and a newer message that did not decode, which carries no event id;
 	// the GitHub consumer has one, which the sweep gave up once its durable was made again past it.
@@ -1200,92 +1200,6 @@ func populatedState(t *testing.T) State {
 	return state
 }
 
-// goldenProjectRelease is a finished project release with one line of every kind a release
-// writes: an issue pod deleted with nothing unpushed, one deleted with work lost after its asked
-// role answered, one whose shim refused the read and whose asked role let the bound pass, one
-// with no read, one left because an operator suspended a claim of it, the controller's pod, a
-// repository cache whose delete the volume guard refused, and a claim line of each way a claim
-// ends. It is the body of `GET /legion/v1/operator/project/release` and the state's
-// `projectRelease`.
-func goldenProjectRelease() ProjectReleaseResponse {
-	started := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
-	answered, finished := started.Add(4*time.Minute), started.Add(31*time.Minute)
-	one, changed, unchanged := 1, true, false
-	none := 0
-	return ProjectReleaseResponse{
-		ID: 7, StartedAt: started, BoundAt: started.Add(30 * time.Minute), Bound: (30 * time.Minute).String(), FinishedAt: &finished,
-		Result: ProjectReleaseResult{
-			Sandboxes: []ReleasedSandbox{
-				{Name: "legion-legion-cache-legion-legion", Kind: "cache", Outcome: ReleaseLeft,
-					Reason: "sandbox runtime: refused to delete a Sandbox whose volume holds session files"},
-				{Name: "legion-legion-controller", Kind: "controller", Outcome: ReleaseDeleted},
-				{Name: "legion-legion-legion-208", Kind: "issue", Issue: "LEGION-208", Outcome: ReleaseDeletedClean,
-					Commits: &none, WorkingCopyChanged: &unchanged},
-				{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: ReleaseDeletedLost,
-					Commits: &one, WorkingCopyChanged: &changed,
-					Asked: []ReleasedAsk{{Role: claim.RoleImplementer, AnsweredAt: &answered}}},
-				{Name: "legion-legion-legion-210", Kind: "issue", Issue: "LEGION-210", Outcome: ReleaseDeletedReadRefused,
-					Refusal: "Unknown command: read-unpushed", OtherImage: true,
-					Asked: []ReleasedAsk{{Role: claim.RoleTester, Bound: true}}},
-				{Name: "legion-legion-legion-211", Kind: "issue", Issue: "LEGION-211", Outcome: ReleaseDeletedUnread},
-				{Name: "legion-legion-legion-212", Kind: "issue", Issue: "LEGION-212", Outcome: ReleaseLeft,
-					Reason: "an operator suspended its reviewer"},
-			},
-			Claims: []ReleasedClaim{
-				{Token: "legion-legion-controller", Role: claim.RoleController, Session: "ses_controller", Ended: "project_release", BootStarts: true},
-				{Token: "legion-legion-legion-208-architect", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses_architect",
-					Ended: "project_release", BootStarts: true},
-				{Token: "legion-legion-legion-209-implementer", Issue: "LEGION-209", Role: claim.RoleImplementer, Session: "ses_implementer",
-					Ended: "project_release", BootStarts: true},
-				{Token: "legion-legion-legion-210-tester", Issue: "LEGION-210", Role: claim.RoleTester, Session: "ses_tester",
-					Ended: "daemon"},
-				{Token: "legion-legion-legion-212-planner", Issue: "LEGION-212", Role: claim.RolePlanner, Session: "ses_planner",
-					Ended: "working", Detail: "not stored suspended by operator within 20s: it stands working"},
-			},
-		},
-	}
-}
-
-// The project release's own route answers the release as the state carries it
-// (dispatch://INFRA-3583, contract 295).
-func TestProjectReleaseResponseGolden(t *testing.T) {
-	golden(t, "project-release.json", goldenProjectRelease())
-}
-
-// projectReleaseWords is project-release-words.json: every word of the project release's three
-// finite fields, ReleasedSandbox.Outcome, ProjectReleaseResponse.EndedBy and ReleasedClaim.Ended.
-type projectReleaseWords struct {
-	Outcomes []ReleaseOutcome            `json:"outcomes"`
-	EndedBy  []store.ProjectReleaseEnder `json:"endedBy"`
-	Ended    []ReleasedClaimEnd          `json:"ended"`
-}
-
-// The project release's three finite fields are strict enums in
-// `packages/contracts/src/legion-api.ts` (`LEGION_RELEASE_OUTCOMES`,
-// `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`), and a word the daemon writes
-// that its enum does not name refuses the whole state body at every plugin that reads it. So the
-// Go roster of each is written where the contracts suite reads it, as the failure causes are
-// (TestFailureCausesGolden), and `legion-api.test.ts` holds each enum equal to its list, word for
-// word and in order. The words are written out here beside it, so a constant renamed on the Go
-// side fails here by its own name rather than rewriting the fixture.
-func TestProjectReleaseWordsGolden(t *testing.T) {
-	words := projectReleaseWords{
-		Outcomes: ReleaseOutcomes,
-		EndedBy:  []store.ProjectReleaseEnder{store.ProjectReleaseEndedByBoot},
-		Ended:    ReleasedClaimEnds,
-	}
-	want := projectReleaseWords{
-		Outcomes: []ReleaseOutcome{"waiting", "deleted_clean", "deleted_unread", "deleted_lost", "deleted_read_refused", "deleted", "left"},
-		EndedBy:  []store.ProjectReleaseEnder{"boot"},
-		Ended: []ReleasedClaimEnd{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
-			"failed", "retired", "unknown", "operator", "daemon", "exit", "released", "project_release", "unrecorded"},
-	}
-	if !reflect.DeepEqual(words, want) {
-		t.Fatalf("the project release's words = %q, want the wire words %q", words, want)
-	}
-	golden(t, "project-release-words.json", words)
-}
-
 // newest is the latest of times, which is how the quiet time takes a tree's movement from the
 // several facts that can move it (record.QuietTrees).
 func newest(times ...time.Time) time.Time {
@@ -1298,22 +1212,31 @@ func newest(times ...time.Time) time.Time {
 	return latest
 }
 
-// The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
-// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
-// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
+// The state golden is the body the route serves a caller at this daemon's own contract, marked as
+// the route marks it (shaping's stateFor), with each mark that names this daemon's own contract
+// taken out before the golden is compared or written: both of them here. That number is L plus
+// the build's count of entries, which an entry moves, so a golden that held it would be an edit of
+// every contract change. The marks themselves are held to that number here instead, and the
+// plugin's schema reads them (`legionContract` takes both as optional). A caller below the contract
+// that added the mark is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
-	state := populatedState(t)
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
-	golden(t, "state.json", state)
+	encoded, err := json.Marshal(stateFor(populatedState(t), DaemonAPIVersion(), DaemonAPIVersion(), nil))
+	if err != nil {
+		t.Fatalf("marshal the state: %v", err)
+	}
+	body, taken := withoutOwnContractMarks(t, encoded)
+	if want := map[string]int{"daemon": DaemonAPIVersion(), "caller": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served at this daemon's own contract is marked %v, want both marks at %d, this daemon's own contract", taken, DaemonAPIVersion())
+	}
+	golden(t, "state.json", body)
 }
 
 // The state route's body for a caller whose plugin is at the contract before
 // repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
 // own state, asked through the route itself. The caller is served at the recorded contract at or
-// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
-// block in the shape contract 152 gave it, written from the same entries
+// below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
+// `repositories` block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
 // row stands above that contract too, no `intakeGiveUps` (withoutIntakeGiveUps), since
 // intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
@@ -1321,14 +1244,116 @@ func TestStateGolden(t *testing.T) {
 // served it, since no other row of stateNarrowings stands between shapedAnswersContract and
 // repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
 // contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
-// view's `updateState` and `paused`.
+// view's `updateState` and `paused`. The mark's `daemon` names this daemon's own contract, which
+// an entry moves, so it is taken out before the golden is compared or written and held to that
+// number here, as TestStateGolden takes out its marks; the `caller` is 199, which no entry moves,
+// and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
-	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
+	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served below repositoriesLiveContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
+	}
+	golden(t, "state-narrowed-repositories.json", body)
+}
+
+// withoutOwnContractMarks is body, the JSON of a state, with each mark of its `contract` that names
+// this daemon's own contract taken out, and `contract` itself where that leaves it empty, every
+// other key in its place and every other byte as it stands; and the marks it took out, by name.
+func withoutOwnContractMarks(t *testing.T, body []byte) (json.RawMessage, map[string]int) {
+	t.Helper()
+	var state jsonObject
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state: %v", err)
+	}
+	taken := map[string]int{}
+	at := slices.IndexFunc(state, func(member jsonMember) bool { return member.key == "contract" })
+	if at < 0 {
+		return body, taken
+	}
+	var marks jsonObject
+	if err := json.Unmarshal(state[at].value, &marks); err != nil {
+		t.Fatalf("decode the state's contract mark: %v", err)
+	}
+	marks = slices.DeleteFunc(marks, func(member jsonMember) bool {
+		var contract int
+		if json.Unmarshal(member.value, &contract) != nil || contract != DaemonAPIVersion() {
+			return false
+		}
+		taken[member.key] = contract
+		return true
+	})
+	if len(marks) == 0 {
+		state = slices.Delete(state, at, at+1)
+	} else {
+		encoded, err := json.Marshal(marks)
+		if err != nil {
+			t.Fatalf("encode the state's contract mark: %v", err)
+		}
+		state[at].value = encoded
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode the state: %v", err)
+	}
+	return encoded, taken
+}
+
+// jsonMember is one member of a JSON object: its key and its value as written.
+type jsonMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// jsonObject is a JSON object as its members, in the order they are written, so a member can be
+// taken out of a golden and every other key stays where the writer put it.
+type jsonObject []jsonMember
+
+func (o *jsonObject) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return fmt.Errorf("a JSON object begins with {, not %v (%v)", open, err)
+	}
+	members := jsonObject{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, isKey := token.(string)
+		if !isKey {
+			return fmt.Errorf("a JSON object's key is a string, not %v", token)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		members = append(members, jsonMember{key: key, value: value})
+	}
+	*o = members
+	return nil
+}
+
+func (o jsonObject) MarshalJSON() ([]byte, error) {
+	var encoded bytes.Buffer
+	encoded.WriteByte('{')
+	for i, member := range o {
+		if i > 0 {
+			encoded.WriteByte(',')
+		}
+		key, err := json.Marshal(member.key)
+		if err != nil {
+			return nil, err
+		}
+		encoded.Write(key)
+		encoded.WriteByte(':')
+		encoded.Write(member.value)
+	}
+	encoded.WriteByte('}')
+	return encoded.Bytes(), nil
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
@@ -1635,6 +1660,26 @@ func golden(t *testing.T, name string, value any) {
 	}
 	if !bytes.Equal(encoded, want) {
 		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
+	}
+}
+
+// frozenGolden holds the frozen fixture name, the records of the numbered entries, to value in
+// golden's form, and writes it under no flag: `-update` writes an entry's fixture, never a frozen
+// record (TestEntryFixtures). A frozen record changes only as a correction of a record that was
+// wrong, which is a hand edit the contract check refuses without a `Correction:` paragraph in the
+// entry's text.
+func frozenGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal %s: %v", name, err)
+	}
+	want, err := os.ReadFile(goldenPath(name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if !bytes.Equal(append(encoded, '\n'), want) {
+		t.Fatalf("%s is not in the order and form its records are written in (by contract, then by its answer or route, indented by two spaces); no flag writes it, so put it back in that form by hand", name)
 	}
 }
 
@@ -1996,20 +2041,25 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
-// written out so that the plugin's own side reads the same rows the daemon shapes by.
+// written out so that the plugin's own side reads the same rows the daemon shapes by. It holds the
+// numbered entries' rows alone (frozenAnswers): the rows an entry adds are in that entry's fixture
+// (entryFixture's answerRows), so two entries edit no line of it, and TestEntryFixtures holds
+// this file and those rows to the build's Answers().
 func TestAnswersGolden(t *testing.T) {
-	golden(t, "answers.json", Answers)
+	golden(t, "answers.json", frozenAnswers)
 }
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
 // each value and the contract it arrived at. No route answers this fixture either. It is
 // written out beside answers.json so that the plugin's own side holds its enumerations to the
-// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
-// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
-// reads at a path no row declares. A value added on one side and not the other is red rather
-// than silent.
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file with the rows of the entry
+// fixtures added (`daemon-api-records.ts`), holds each row's values equal to the members of the
+// `z.enum` it reads at that row's key path, and fails a `z.enum` it reads at a path no row
+// declares. A value added on one side and not the other is red rather than silent. It holds the
+// numbered entries' rows alone (enumeratedFields()), as answers.json does, and TestEntryFixtures
+// holds it and the entries' rows to the build's EnumeratedFields().
 func TestEnumeratedFieldsGolden(t *testing.T) {
-	golden(t, "enumerated-fields.json", EnumeratedFields)
+	golden(t, "enumerated-fields.json", enumeratedFields())
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of

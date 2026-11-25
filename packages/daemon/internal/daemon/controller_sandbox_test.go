@@ -1100,7 +1100,7 @@ func (s *controllerSandboxShim) register() error {
 	for {
 		status, err := s.post("/legion/v1/claims/register", claim.RegisterRequest{
 			BootToken: s.bootToken, SessionID: controllerSandboxSession, OmpSessionFile: controllerSandboxSessionFile,
-			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion,
+			AgentID: controllerSandboxSession, PluginContract: api.DaemonAPIVersion(),
 		}, &registration)
 		if err == nil && status == http.StatusOK {
 			break

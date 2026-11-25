@@ -6,10 +6,6 @@
     "firstBootAt": "2026-09-18T14:03:27Z",
     "startedAt": "2026-09-22T09:15:02Z"
   },
-  "contract": {
-    "daemon": 275,
-    "caller": 275
-  },
   "admission": {
     "cap": 5,
     "active": [
@@ -1261,118 +1257,5 @@
         "lastError": "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
       }
     ]
-  },
-  "projectRelease": {
-    "id": 7,
-    "startedAt": "2026-11-15T09:00:00Z",
-    "boundAt": "2026-11-15T09:30:00Z",
-    "bound": "30m0s",
-    "finishedAt": "2026-11-15T09:31:00Z",
-    "result": {
-      "sandboxes": [
-        {
-          "name": "legion-legion-cache-legion-legion",
-          "kind": "cache",
-          "outcome": "left",
-          "reason": "sandbox runtime: refused to delete a Sandbox whose volume holds session files"
-        },
-        {
-          "name": "legion-legion-controller",
-          "kind": "controller",
-          "outcome": "deleted"
-        },
-        {
-          "name": "legion-legion-legion-208",
-          "kind": "issue",
-          "issue": "LEGION-208",
-          "outcome": "deleted_clean",
-          "commits": 0,
-          "workingCopyChanged": false
-        },
-        {
-          "name": "legion-legion-legion-209",
-          "kind": "issue",
-          "issue": "LEGION-209",
-          "outcome": "deleted_lost",
-          "commits": 1,
-          "workingCopyChanged": true,
-          "asked": [
-            {
-              "role": "implementer",
-              "answeredAt": "2026-11-15T09:04:00Z"
-            }
-          ]
-        },
-        {
-          "name": "legion-legion-legion-210",
-          "kind": "issue",
-          "issue": "LEGION-210",
-          "outcome": "deleted_read_refused",
-          "refusal": "Unknown command: read-unpushed",
-          "otherImage": true,
-          "asked": [
-            {
-              "role": "tester",
-              "bound": true
-            }
-          ]
-        },
-        {
-          "name": "legion-legion-legion-211",
-          "kind": "issue",
-          "issue": "LEGION-211",
-          "outcome": "deleted_unread"
-        },
-        {
-          "name": "legion-legion-legion-212",
-          "kind": "issue",
-          "issue": "LEGION-212",
-          "outcome": "left",
-          "reason": "an operator suspended its reviewer"
-        }
-      ],
-      "claims": [
-        {
-          "token": "legion-legion-controller",
-          "role": "controller",
-          "session": "ses_controller",
-          "ended": "project_release",
-          "bootStarts": true
-        },
-        {
-          "token": "legion-legion-legion-208-architect",
-          "issue": "LEGION-208",
-          "role": "architect",
-          "session": "ses_architect",
-          "ended": "project_release",
-          "bootStarts": true
-        },
-        {
-          "token": "legion-legion-legion-209-implementer",
-          "issue": "LEGION-209",
-          "role": "implementer",
-          "session": "ses_implementer",
-          "ended": "project_release",
-          "bootStarts": true
-        },
-        {
-          "token": "legion-legion-legion-210-tester",
-          "issue": "LEGION-210",
-          "role": "tester",
-          "session": "ses_tester",
-          "ended": "daemon",
-          "bootStarts": false
-        },
-        {
-          "token": "legion-legion-legion-212-planner",
-          "issue": "LEGION-212",
-          "role": "planner",
-          "session": "ses_planner",
-          "ended": "working",
-          "bootStarts": false,
-          "detail": "not stored suspended by operator within 20s: it stands working"
-        }
-      ]
-    }
   }
 }

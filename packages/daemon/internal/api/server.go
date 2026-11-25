@@ -551,7 +551,7 @@ type statingContract struct {
 }
 
 func (s statingContract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))
+	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion()))
 	s.handler.ServeHTTP(w, r)
 }
 

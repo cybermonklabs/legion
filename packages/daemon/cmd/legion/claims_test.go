@@ -277,7 +277,7 @@ func newOperatorDaemon(t *testing.T, options ...func(*api.Options)) *operatorDae
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	opts := api.Options{
@@ -407,7 +407,7 @@ func (d *operatorDaemon) ready(token legionclaim.Token) {
 	var registered legionclaim.RegisterResponse
 	d.post("/legion/v1/claims/register", legionclaim.RegisterRequest{
 		BootToken: bootToken, SessionID: "ses_" + string(token), OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, &registered)
 	d.post("/legion/v1/claims/ready", legionclaim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_" + string(token), Secret: registered.Secret, Generation: registered.Generation,
@@ -1170,25 +1170,25 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 		{
 			name: "released",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "stopped by the project release",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-211-architect", Role: "architect", Issue: "LEGION-211",
-				State: "suspended", SuspendedBy: "project_release", Generation: 4, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "project_release", Generation: 4, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-211-architect architect LEGION-211 suspended:project_release - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "suspended by the operator",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "failed",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
-				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - - -\n",
 		},
 	} {
@@ -1261,7 +1261,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 	list := api.OperatorClaims{Claims: []api.OperatorClaim{
 		{
 			Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 4, Deaths: 1},
 			Failure: &api.ClaimFailureView{
 				Cause: supervise.CauseDied, Detail: "launch failures ran out", At: &failedAt,
@@ -1270,7 +1270,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion,
+			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion(),
 		},
 	}}
 	answer, err := json.Marshal(list)
@@ -1308,7 +1308,7 @@ func TestTheClaimsListPrintsTheLeakCheckCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 3},
 			Failure: &api.ClaimFailureView{
 				Cause:  supervise.CauseLaunchRefused,

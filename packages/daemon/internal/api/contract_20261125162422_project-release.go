@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// 20261125162422 project-release: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 20261125162422 project-release: dispatch://INFRA-3583 -- the project release.
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `merged`, `sessions`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`, `workingCopyChanged`,
 // `error`): how many commits of the issue's work the issue's workspace holds that no remote branch
@@ -21,7 +21,7 @@ import (
 // <one of sessions>` or `Dispatch: <issue>`; `sessions` is the `session` and `file-id` names the
 // issue's claims hold in claim_sessions that meet the trailer's rule (claim.SessionIDRule), at most
 // shimwire.MaxReadUnpushedSessions of them, and the daemon reads no workspace whose issue's claims
-// hold more. A shim older than this number forwards the frame to Oh My Pi, which refuses it, and
+// hold more. A shim older than this entry forwards the frame to Oh My Pi, which refuses it, and
 // the daemon reads that refusal as a workspace unread. The operator's routes gain `POST
 // /legion/v1/operator/project/release` (body `bound`, a Go duration, and `dryRun`; 202 with the
 // release's record, 200 with a dry run's report, and 200 with this process's release once one ran,
@@ -36,21 +36,19 @@ import (
 // Answers, as the operator's pause and resume are none, and the request body is a row of the routes
 // no plugin sends a body to. `outcome`, `endedBy` and `ended` are closed sets of words
 // (api.ReleaseOutcomes, store.ProjectReleaseEndedByBoot and api.ReleasedClaimEnds), each a `z.enum`
-// in `packages/contracts/src/legion-api.ts`, which refuses a word it does not name, so a word added
-// later bumps this number. `GET /legion/v1/state` gains `projectRelease`, that same body for the
-// project's newest release, absent while none was recorded; a caller that states a contract below
-// 295, or that states none from a pod whose claims record one below 193 (podContracts reads no
-// claim at or above shapedAnswersContract, since every build from 193 states its contract), is
-// served the state without it (the band of shaping.go's stateNarrowings at projectReleaseContract,
-// withoutProjectRelease), as a caller below 178 is served it without `paused` and `lastPause` and a
-// caller below 202 with the `repositories` block in 152's shape (202's entry above), and the bands
-// compose: a caller at 202 to 294 is served the `live` block and no `projectRelease`. The release's
-// six enumerated fields on the state, `projectRelease.endedBy`,
-// `projectRelease.result.sandboxes.*.kind`, `….outcome` and `….asked.*.role`, and
-// `projectRelease.result.claims.*.role` and `….ended`, are rows of answers.go's EnumeratedFields,
-// each value arriving with its key at 295 and riding the band, so no value strip is owed. A claim's
-// `suspendedBy` on the operator routes takes `project_release`, a claim the release stopped, which
-// the daemon's next boot starts again. The release's ask to a role rides the role's own topic as an
+// in `packages/contracts/src/legion-api.ts`, which refuses a word it does not name, so a new word
+// needs its own entry. `GET /legion/v1/state` gains `projectRelease`, that same body for the
+// project's newest release, absent while none was recorded. The daemon omits it for a caller
+// whose contract is below this entry's number, including a caller placed by a pod's claims
+// below shapedAnswersContract (podContracts). The band (withoutProjectRelease) composes with
+// the older bands: a caller at or above repositoriesLiveContract but below this entry is served
+// the `live` repositories block and no `projectRelease`. The release's six enumerated fields
+// on the state are `projectRelease.endedBy`, `projectRelease.result.sandboxes.*.kind`,
+// `….outcome`, `….asked.*.role`, `projectRelease.result.claims.*.role` and `….ended`. Each value
+// arrives with its key in this entry, so its band holds back all six fields without a separate
+// value strip. A claim's `suspendedBy` on the operator routes takes `project_release`, a claim
+// the release stopped, which the daemon's next boot starts again. The release's ask to a role
+// rides the role's own topic as an
 // update round's ask does, under the round `release:<id>`, and `POST
 // /legion/v1/claims/ready-for-update` hands an answer naming the running release's round to the
 // release, which records it on its own record and none of the claim's round columns. While a
@@ -62,14 +60,15 @@ import (
 // dry run's included, answers 409 `PROJECT_PAUSED` with api.PauseFailure, which gains `heldPods`,
 // each such pod's `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the
 // `pause` that stands where one does, and records, stops and deletes nothing; the refusal's row of
-// shapeAnswer serves a caller below 295 a PauseFailure without `heldPods`. A process that has run
-// one answers it, 200, whatever the pause, as above. While a release runs (its record neither
-// finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
-// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
-// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 295's, which are 275's with
-// the key paths of `projectRelease` on the state's and of `heldPods` on the refusal's, and every
-// record below 295 gains the empty domain of each of the six fields, which no contract below 295
-// admits a value of. This change took 209 at the forward merge that brought in 3c59c0cc, the lowest
+// shapeAnswer serves a caller below this entry's number a PauseFailure without `heldPods`. A
+// process that has run one answers it, 200, whatever the pause, as above. While a release
+// runs (its record neither finished nor ended by a boot, store.ProjectRelease.Runs), both doors'
+// pause answers 409
+// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. This entry's fixture records
+// the key paths of `projectRelease` on the state and `heldPods` on the refusal, and the domains
+// and registrations of the six enumerated fields. The numbered records are unchanged.
+//
+// Before #5399, this change took 209 at the forward merge that brought in 3c59c0cc, the lowest
 // number above main's 202 that no other open pull request declared then: main reached 202 with
 // #4493 (dispatch://INFRA-4401, its entry above), and a reading of `const DaemonAPIVersion` at the
 // head of every open pull request that changes this file, made between 2026-11-21T05:39:55Z and
@@ -132,44 +131,13 @@ import (
 // of every open pull request's head, made between 2026-11-24T19:43:55Z and 19:46:33Z, found 253
 // declared by #4065 and #4596 as well, 254 by #4432, 255 by #5164, 256 by #5180 and #5230, 257 by
 // #4580 and 258 by none. This entry took 258 provisionally and was not pushed at that number.
-// #4432 and #5164 now declare 258. dispatch://INFRA-3118 assigns contract numbers until #5399
-// merges and allocated 272 to this release. The forward merge of 2026-11-25 that brought in
-// ac1c9a33 brought main's 275 (#4392, dispatch://INFRA-4425's entry above), above 272, and
-// dispatch://INFRA-3118 allocated 295 to this release. A pod at main's 275, or at another contract
-// below 295, is served the state without `projectRelease`. A renumber also moves
-// projectReleaseContract in shaping.go: that contract added the state's `projectRelease`, the
-// refusal's `heldPods`, and the six fields' values, and is the last number in answers.go's
-// SupportedContracts.
+// #4432 and #5164 then declared 258. Before #5399 merged, dispatch://INFRA-3118 allocated 272
+// to this release. The forward merge of 2026-11-25 that brought in ac1c9a33 brought main's 275
+// (#4392, dispatch://INFRA-4425), above 272, and 295 was the provisional allocation before this
+// change was converted to an entry.
 //
-// projectReleaseContract is the daemon contract that added the project release (version.go's 295,
-// dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
-// project's newest project release and its result, to the state, and `heldPods`, each pod a pause
-// still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
-// holds the project). A plugin before it is served the state without its key
-// (withoutProjectRelease, its row of stateNarrowings) and a PauseFailure without its list
-// (withoutHeldPods, in the refusal's row of shapeAnswer): one built before sjawhar/legion#2788
-// reads the state with a strict schema and would refuse the whole body for a key it does not name,
-// and one built after strips the key instead, so the strip is what keeps the release from a caller
-// that did not ask for it. The roles a running release asks are such callers, and they are asked to
-// push and end their turn on that same body. repositoriesLiveContract stands below it, and the six
-// rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
-// assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
-// 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
-// which takes each issue's `priority` and its waiting line's `priority` off below 250,
-// causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
-// below 256, and dispatchCredentialContract's, which takes the state's `dispatchCredential` off
-// below 275, so a caller at or above repositoriesLiveContract and below this contract, 202 to 294,
-// is served the `live` block and not `projectRelease`. The release's six enumerated fields
-// (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
-// ride its band, so no value strip is owed. The release's own two routes answer the `legion`
-// command, which is built from the daemon's own commit, so their bodies are no row of answers.go's
-// Answers.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys arrived at stays where it is. It moves only with the
-// number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
-// answers.go's SupportedContracts, which names the constant rather than its number for that reason,
-// as it names cachesSourceContract.
+// projectReleaseContract is this entry's id. The registry computes its number from its rank
+// in the build's order (entryNumber).
 const projectReleaseContract = 20261125162422
 
 func init() {
@@ -182,8 +150,8 @@ func init() {
 			// The project's newest project release (api.ProjectReleaseResponse): who ended it, and on
 			// each line of its result a Sandbox's `kind` and `outcome` and each asked role's `role`, and a
 			// stopped claim's `role` and `ended`. All six arrived with `projectRelease`, which is served
-			// down below that contract whole (shaping.go's withoutProjectRelease), so no body below 295
-			// carries a value of any of them. A claim line's role takes `controller` beside the claim
+			// below this entry's number without that entire object (withoutProjectRelease), so no
+			// such body carries any of those values. A claim line's role takes `controller` beside the claim
 			// roles, since the release stops the controller's claim too; an asked role never does, since
 			// the release asks the roles of an issue pod alone.
 			{Answer: AnswerState, KeyPath: "projectRelease.endedBy", Values: releaseEnders},
@@ -201,8 +169,8 @@ func init() {
 // (api.ReleaseOutcome), and releasedSandboxKinds every kind of Sandbox a line names
 // (runtime.ProjectSandboxKind). releaseClaimEnds is every word for how a claim of the stop set
 // ended (api.ReleasedClaimEnd): each claim state but `suspended`, each suspension source, and
-// `unrecorded`. All four are recorded at projectReleaseContract, the contract `projectRelease`
-// arrived at. Each names its constants rather than reading api.ReleaseOutcomes or
+// `unrecorded`. All four record the entry id, which the registry resolves to the contract
+// `projectRelease` arrived at. Each names its constants rather than reading api.ReleaseOutcomes or
 // api.ReleasedClaimEnds, as failureCauses names its causes, because a word added to one of those
 // later arrives at its own contract and not at this one; TestProjectReleaseWordsGolden holds the
 // rosters themselves to the plugin's enums.
