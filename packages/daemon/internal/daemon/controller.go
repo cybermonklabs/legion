@@ -45,12 +45,16 @@ const (
 
 // controllerKeeper keeps the daemon's own controller running (`controller: daemon`). The controller
 // is one claim, on the controller role with no issue, which its machine supervises as any claim's:
-// a death relaunches the same session, within the launch failure budget. What the machine leaves to
-// its caller is the keeper's: the claim is created when the store holds none, launched while
-// queued, resumed when suspended, and, when its budget ran out (failed) or its agent ended it
-// (retired), retried with fresh budgets after a wait that doubles while it keeps failing. At each
-// ready it hands the controller the start message. The liveness sweep (watchController) says when
-// the controller is not registered, from a loop of its own.
+// a death relaunches the same session, within the launch failure budget, and the launch after the
+// session's second end in a row with no finished turn between starts a fresh session (supervise's
+// SessionRun, dispatch://INFRA-2045 R1). What the machine leaves to its caller is the keeper's: the
+// claim is created when the store holds none, launched while queued, resumed when suspended, and,
+// when its budget ran out (failed) or its agent ended it (retired), retried with fresh budgets after
+// a wait that doubles while it keeps failing. At each ready it hands the controller the start
+// message. At each look of a running controller it ends a turn open longer than turnBound
+// (TurnPastBound, R2), and replaces an idle session older than maxAge with a fresh one (replaceOld,
+// R3). The liveness sweep (watchController) says when the controller is not registered, from a
+// loop of its own.
 type controllerKeeper struct {
 	supervisor *supervisor
 	// project is the project token the claim is filed under.
@@ -72,6 +76,9 @@ type controllerKeeper struct {
 	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
 	// cleared at one point, leaveHeld, at each way out of the episode.
 	heldLogged, heldReason string
+	// turnBound is `controller_turn_bound_minutes` and maxAge `controller_session_max_age_hours`,
+	// each 0 for its rule off (config.Config.ControllerTurnBound, ControllerSessionMaxAge).
+	turnBound, maxAge time.Duration
 }
 
 func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
@@ -154,23 +161,24 @@ func (k *controllerKeeper) keep() error {
 		request = supervise.RequestRetry{Claim: token}
 	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
 		k.retryAt, k.backoff = time.Time{}, 0
-		return nil
+		return k.mind(ctx, m)
 	default:
 		// Launching, connected, registered, or a launch the previous daemon left uncertain: the
 		// machine and boot's reconciliation own those.
 		return nil
 	}
 	err := m.Handle(ctx, request)
-	// A retry resumes the recorded session (R5 of dispatch://INFRA-4508): a new session is the
-	// operator's or the controller's choice, and the run of refused turns no longer starts one. The
-	// keeper makes that choice for the daemon's own controller in one case alone: the resume is
-	// refused because one of the recorded session's names is held for another claim, or for none
-	// (supervise.IsSessionHeldElsewhere, claim.SessionHeldRefusal). Such a resume would be refused
-	// at every retry, and nobody else retries this claim, so the keeper asks the retry again in a
-	// new session, as an operator's `legion claims retry --fresh-session` does, and the answer to
-	// that is the one judged below: the hold's wait on the role, a lookup the listener refuses, or
-	// the retry admitted. The resume's other refusals — a session name the daemon cannot hold, a
-	// claim at the cap of held names — are answered as before: no new session is asked for.
+	// A retry resumes the recorded session (R5 of dispatch://INFRA-4508): the run of refused turns
+	// no longer starts a new one, and the machine starts one only after the session's launches keep
+	// ending (supervise's SessionRun). The keeper asks for a new session in a retry in one case
+	// alone: the resume is refused because one of the recorded session's names is held for another
+	// claim, or for none (supervise.IsSessionHeldElsewhere, claim.SessionHeldRefusal). Such a resume
+	// would be refused at every retry, and nobody else retries this claim, so the keeper asks the
+	// retry again in a new session, as an operator's `legion claims retry --fresh-session` does,
+	// and the answer to that is the one judged below: the hold's wait on the role, a lookup the
+	// listener refuses, or the retry admitted. The resume's other refusals — a session name the
+	// daemon cannot hold, a claim at the cap of held names — are answered as before: no new session
+	// is asked for.
 	if retry, ok := request.(supervise.RequestRetry); ok && !retry.FreshSession && supervise.IsSessionHeldElsewhere(err) {
 		request = supervise.RequestRetry{Claim: token, FreshSession: true}
 		err = m.Handle(ctx, request)

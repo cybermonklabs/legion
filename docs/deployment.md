@@ -880,6 +880,19 @@ provider_keys:
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
   `dispatch_url`. A project with no GitHub owner to mint for runs it with gh acting as nobody, its
   gh directory empty.
+- **The daemon replaces its own controller's session** under `controller: daemon`, under either
+  runtime. After two launches of one session in a row end before the session finishes a turn — a
+  death the daemon charges, before or after ready, or a turn the daemon ended — the next launch
+  starts a fresh session. `controller_turn_bound_minutes` (90 by default, `0` off) is how long a
+  controller turn may stay open, steps or none, before the daemon ends that launch and counts the
+  end. `controller_session_max_age_hours` (72 by default, `0` off) is how old the session, read
+  from its id, may grow before the daemon replaces it at a look that finds it idle with no task
+  waiting. Each replacement writes one Warn line naming the claim, the old session and the
+  reason, and the fresh session's ready one line naming both sessions; the fresh session's first
+  prompt names the old session and the reason and says that messages sent to the old session may
+  be lost. The old session's transcript stays in the session store. A session that never finished
+  a turn is not replaced again: the keeper retries it with its waits, and one Error line says that
+  a fresh session also failed.
 
 ## How workspaces are provisioned on the host
 

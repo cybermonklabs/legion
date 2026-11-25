@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    Under `controller: daemon` the keeper ends a controller turn that stays open longer than
+    `controller_turn_bound_minutes` (90 by default, `0` off), whether or not steps still arrive in
+    it, as the stall backstop ends a stalled turn; the end counts against the session, so two such
+    ends in a row with no finished turn between start a fresh session. The keeper also replaces an
+    idle controller session, with no turn open and no task waiting, whose id says it is older than
+    `controller_session_max_age_hours` (72 by default, `0` off): it suspends the claim as the
+    daemon, forgets the session with the reason and resumes the claim by rule, and writes one Warn
+    line naming the claim, the old session and the reason. The state's `settings` carry both keys.
+time: 2026-11-25T03:47:58Z
+custom:
+    Issue: INFRA-2045
