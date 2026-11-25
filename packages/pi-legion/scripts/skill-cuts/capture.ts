@@ -151,11 +151,13 @@
  * **The Legion tool.** A Legion pane (a Legion role other than the controller, which is not
  * reproduced) whose context installs `pi-legion` as an extension sends that plugin's `legion`
  * tool, which the plugin defines at the end of its session start, after its registration with
- * the stand-in daemon; Oh My Pi reports a session-start handler that throws as `Extension error`
- * on stderr and goes on, so such a run's body can lack the tool. Such a body is refused and the
+ * the stand-in daemon; Oh My Pi reports a session-start handler that throws as `Extension error`,
+ * and an extension whose module it cannot load as `Failed to load extension` (the plugin refuses
+ * to load a bundle whose package.json holds no `legion.daemonApiVersion`, which a pack writes), on
+ * stderr, and goes on, so such a run's body can lack the tool. Such a body is refused and the
  * arm captured once more by a fresh run: the same inputs, with no turn, temporary file or pane
  * state of the refused run. The record keeps each attempt (`legionAttempts`: its tool count,
- * whether it defines `legion`, its `[legion]` and `Extension error` lines of stderr), and its other
+ * whether it defines `legion`, its `[legion]`, `Extension error` and `Failed to load extension` lines of stderr), and its other
  * fields are the last attempt's. When the second body lacks the tool too, the capture throws
  * LegionToolUndefined, naming the case, the arm, the plugin and each attempt's lines, and saves
  * nothing. A context that installs no `pi-legion`, or installs it as skills only, is not refused.
@@ -320,16 +322,23 @@ export const LEGION_TOOL_UNDEFINED = "legion-tool-undefined";
 
 /** What a capture throws when the body of each of the LEGION_ATTEMPTS attempts of a Legion pane
  *  whose context installs LEGION_PLUGIN as an extension defines no `legion` tool. Its message
- *  names the case, the arm, the plugin and each attempt's `[legion]` and `Extension error` lines
+ *  names the case, the arm, the plugin and each attempt's `[legion]`, `Extension error` and `Failed to load extension` lines
  *  of stderr. */
 export class LegionToolUndefined extends Error {}
 
-/** The lines of a run's stderr that say what the Legion plugin did: its own (`[legion]`), and Oh
- *  My Pi's on an extension whose handler threw (`Extension error`). */
+/** The lines of a run's stderr that say what the Legion plugin did: its own (`[legion]`), Oh My
+ *  Pi's on an extension whose handler threw (`Extension error`), and its on an extension whose
+ *  module it could not load (`Failed to load extension`, as when the plugin refuses to load a
+ *  bundle whose package.json holds no `legion.daemonApiVersion`, which a pack writes). */
 function legionLines(stderr: string): string[] {
   return stderr
     .split("\n")
-    .filter((line) => line.startsWith("[legion]") || line.includes("Extension error"));
+    .filter(
+      (line) =>
+        line.startsWith("[legion]") ||
+        line.includes("Extension error") ||
+        line.includes("Failed to load extension")
+    );
 }
 
 /** The names of the tools a body defines, in order. */
@@ -634,7 +643,7 @@ export interface CaptureRecord {
   /** For a Legion pane whose context installs LEGION_PLUGIN as an extension: each capture run
    *  whose body was checked for the `legion` tool, in order (the file's header, "The Legion
    *  tool"), with how many tools its body defines, whether `legion` is among them, and its
-   *  `[legion]` and `Extension error` lines of stderr. Every other field of the record is the last
+   *  `[legion]`, `Extension error` and `Failed to load extension` lines of stderr. Every other field of the record is the last
    *  attempt's, whose body is saved. Null for any other context; absent from a capture saved
    *  before this field. */
   readonly legionAttempts?:
@@ -2393,7 +2402,7 @@ export async function captureBody(
       if (legionAttempts.length === LEGION_ATTEMPTS) {
         const said = legionAttempts.map(
           (each, index) =>
-            `attempt ${index + 1}: its body defines ${each.tools} tools, legion not among them, and its stderr's [legion] and Extension error lines are ${each.stderr.length === 0 ? "none" : each.stderr.map((line) => JSON.stringify(line)).join(" ")}`
+            `attempt ${index + 1}: its body defines ${each.tools} tools, legion not among them, and its stderr's [legion], Extension error and Failed to load extension lines are ${each.stderr.length === 0 ? "none" : each.stderr.map((line) => JSON.stringify(line)).join(" ")}`
         );
         throw new LegionToolUndefined(
           `case ${c.id} arm ${arm.name}: the captured body is refused: a Legion ${legionPane.role} pane whose context installs ${LEGION_PLUGIN} as an extension must send ${LEGION_PLUGIN}'s legion tool, and the body of none of its ${LEGION_ATTEMPTS} attempts defines it: ${said.join("; ")}`

@@ -442,20 +442,50 @@ function builtPlugins(names: readonly string[]): Profile["plugins"] {
   if (!pluginsBuilt) {
     const repo = path.join(dir, "repos/acme/legion", COMMIT);
     const packages = path.resolve(import.meta.dir, "../../..");
+    const buildStamped = path.join(dir, "build-stamped.ts");
+    writeFileSync(
+      buildStamped,
+      `const [entry = "", outdir = "", externals = "[]"] = process.argv.slice(2);
+const built = await Bun.build({
+  entrypoints: [entry],
+  outdir,
+  target: "bun",
+  format: "esm",
+  external: JSON.parse(externals),
+  plugins: [
+    {
+      name: "pack",
+      setup(build) {
+        build.onLoad({ filter: /package\\.json$/ }, async ({ path }) => {
+          const manifest = JSON.parse(await Bun.file(path).text());
+          manifest.legion = { ...manifest.legion, daemonApiVersion: 1 };
+          return { contents: JSON.stringify(manifest), loader: "json" };
+        });
+      },
+    },
+  ],
+});
+if (!built.success) {
+  console.error(built.logs.join("\\n"));
+  process.exit(1);
+}
+`
+    );
     for (const plugin of PLUGINS) {
       const dist = path.join(repo, "packages", plugin.name, "dist");
+      // `bun build` of the extension, with the plugin's package.json inlined as a pack leaves it:
+      // holding `legion.daemonApiVersion`. Since 2026-11-25 pi-legion on main reads that field in
+      // the bundle as it loads and refuses to load without it, unless the bundle sits in a
+      // checkout; a bundle built from the source manifest here has no `legion` tool (CI, which
+      // tests the merge with main, saw that). The source file is not touched.
       const built = Bun.spawnSync(
         [
           "bun",
-          "build",
+          "run",
+          buildStamped,
           `extensions/${plugin.entry}.ts`,
-          "--outdir",
           dist,
-          "--target",
-          "bun",
-          "--format",
-          "esm",
-          ...plugin.externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
+          JSON.stringify(plugin.externals.map((name) => `@oh-my-pi/${name}`)),
         ],
         { cwd: path.join(packages, plugin.name), stderr: "pipe" }
       );
@@ -467,6 +497,7 @@ function builtPlugins(names: readonly string[]): Profile["plugins"] {
         "package.json": JSON.stringify({
           name: `@acme/${plugin.name}`,
           files: ["dist"],
+          legion: { daemonApiVersion: 1 },
           omp: { extensions: [`dist/${plugin.entry}.js`], skills: ["dist/skills"] },
         }),
       });
@@ -961,6 +992,38 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       }
       const files = capturePaths(path.join(dir, "out"), "legion-throws-1", "old");
       expect([existsSync(files.body), existsSync(files.record)]).toEqual([false, false]);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a refusal that says "none" for a plugin that never loaded, so the cause of a missing
+  // legion tool (CI's red row of 2026-11-25: the plugin refusing a manifest with no contract) is
+  // not in the message.
+  test(
+    "a Legion pane's capture whose pi-legion cannot load its module is refused, and each attempt names Oh My Pi's own words of the load failure",
+    async () => {
+      await captures();
+      const plugin = standInLegion(
+        "legion-no-load",
+        `throw new Error("the stand-in pi-legion refuses to load: its manifest holds no contract");
+export default function legion() {}
+`
+      );
+      const failed = await legionCapture("legion-no-load-1", plugin).then(
+        (made) => made.record.pluginTools,
+        (caught: unknown) => caught
+      );
+      expect(failed).toBeInstanceOf(Error);
+      const [first = "", second = "", ...more] = String((failed as Error).message)
+        .split(/attempt \d: /)
+        .slice(1);
+      expect(more).toEqual([]);
+      for (const attempt of [first, second]) {
+        expect(attempt).toContain("Failed to load extension");
+        expect(attempt).toContain(
+          "the stand-in pi-legion refuses to load: its manifest holds no contract"
+        );
+      }
     },
     ROW_TIMEOUT_MS
   );
