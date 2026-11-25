@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
@@ -299,115 +298,19 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // below the contract it is served at, which is why the golden carries `lowestPluginContract` and
 // each claim view's `updateState`; the populated state holds no pause, so it carries no `paused`.
 // The mark's `daemon` names this daemon's own contract, which an entry moves, so it is taken out
-// before the golden is compared or written and held to that number here, as internal/daemon's
-// TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes out state.json's marks; the
-// `caller` is 199, which no entry moves, and stays.
+// before the golden is compared or written (apifixture.WithoutOwnContractMarks) and held to that
+// number here, as internal/daemon's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes
+// out state.json's marks with the same strip; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
+	body, taken := apifixture.WithoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1), DaemonAPIVersion())
 	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
 		t.Errorf("the state served below repositoriesLiveContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
 	}
 	stateGolden(t, "state-narrowed-repositories.json", body)
-}
-
-// withoutOwnContractMarks is body, the JSON of a state, with each mark of its `contract` that names
-// this daemon's own contract taken out, and `contract` itself where that leaves it empty, every
-// other key in its place and every other byte as it stands; and the marks it took out, by name.
-func withoutOwnContractMarks(t *testing.T, body []byte) (json.RawMessage, map[string]int) {
-	t.Helper()
-	var state jsonObject
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode the state: %v", err)
-	}
-	taken := map[string]int{}
-	at := slices.IndexFunc(state, func(member jsonMember) bool { return member.key == "contract" })
-	if at < 0 {
-		return body, taken
-	}
-	var marks jsonObject
-	if err := json.Unmarshal(state[at].value, &marks); err != nil {
-		t.Fatalf("decode the state's contract mark: %v", err)
-	}
-	marks = slices.DeleteFunc(marks, func(member jsonMember) bool {
-		var contract int
-		if json.Unmarshal(member.value, &contract) != nil || contract != DaemonAPIVersion() {
-			return false
-		}
-		taken[member.key] = contract
-		return true
-	})
-	if len(marks) == 0 {
-		state = slices.Delete(state, at, at+1)
-	} else {
-		encoded, err := json.Marshal(marks)
-		if err != nil {
-			t.Fatalf("encode the state's contract mark: %v", err)
-		}
-		state[at].value = encoded
-	}
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("encode the state: %v", err)
-	}
-	return encoded, taken
-}
-
-// jsonMember is one member of a JSON object: its key and its value as written.
-type jsonMember struct {
-	key   string
-	value json.RawMessage
-}
-
-// jsonObject is a JSON object as its members, in the order they are written, so a member can be
-// taken out of a golden and every other key stays where the writer put it.
-type jsonObject []jsonMember
-
-func (o *jsonObject) UnmarshalJSON(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
-		return fmt.Errorf("a JSON object begins with {, not %v (%v)", open, err)
-	}
-	members := jsonObject{}
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		key, isKey := token.(string)
-		if !isKey {
-			return fmt.Errorf("a JSON object's key is a string, not %v", token)
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return err
-		}
-		members = append(members, jsonMember{key: key, value: value})
-	}
-	*o = members
-	return nil
-}
-
-func (o jsonObject) MarshalJSON() ([]byte, error) {
-	var encoded bytes.Buffer
-	encoded.WriteByte('{')
-	for i, member := range o {
-		if i > 0 {
-			encoded.WriteByte(',')
-		}
-		key, err := json.Marshal(member.key)
-		if err != nil {
-			return nil, err
-		}
-		encoded.Write(key)
-		encoded.WriteByte(':')
-		encoded.Write(member.value)
-	}
-	encoded.WriteByte('}')
-	return encoded.Bytes(), nil
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`

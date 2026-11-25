@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,11 +151,14 @@ func TestTheStateFixturesSettingsAreReadFromInternalAPIsGoldens(t *testing.T) {
 // moves moves the fixture, and a value no rule of the daemon serves over the seed cannot reach one.
 //
 // Each fixture is the body as the route serves it to a caller at this daemon's own contract, less
-// the route's `contract` mark (api's stateFor; withoutMark): both of its numbers name this
-// daemon's own contract, which is LastNumberedContract plus the build's count of entries, so a
-// fixture that held it would be an edit of every contract change. The mark is held to that number
-// instead, and the plugin's schema reads it as optional. internal/api's populatedState reads
-// state.json back for that package's goldens, and every route that package serves the state
+// the route's `contract` mark (api's stateFor; apifixture.WithoutOwnContractMarks) and with 0 in
+// place of `daemon.schemaVersion` (withNoSchemaVersion), both taken off here, in the test, before
+// the fixture is compared or written. Both numbers of the mark name this daemon's own contract,
+// which is LastNumberedContract plus the build's count of entries, so a fixture that held it would
+// be an edit of every contract change. The marks taken off are held to that number instead, and
+// the plugin's schema reads the mark as optional. The served schema version is held to the newest
+// migration the store embeds, for the same reason at every migration. internal/api's populatedState
+// reads state.json back for that package's goldens, and every route that package serves the state
 // through writes the mark again.
 func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 	t.Parallel()
@@ -171,7 +175,11 @@ func TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newSeeding(t)
-			body := withoutMark(t, s.served(tc.seed(s)))
+			body, taken := apifixture.WithoutOwnContractMarks(t, s.served(tc.seed(s)), api.DaemonAPIVersion())
+			if own := api.DaemonAPIVersion(); !maps.Equal(taken, map[string]int{"daemon": own, "caller": own}) {
+				t.Fatalf("the state route marked the body with %v of this daemon's own contract, want the daemon and the caller mark both at %d, the marks of a caller at this daemon's own contract", taken, own)
+			}
+			body = withNoSchemaVersion(t, body)
 			testgolden.Check(t, apifixture.Path(tc.file), json.RawMessage(body), *updateStateFixtures, apifixture.StateFixturesRewrite)
 		})
 	}
@@ -274,7 +282,7 @@ func (s *seeding) served(c composition) []byte {
 	if recorder.Code != http.StatusOK {
 		s.t.Fatalf("GET /legion/v1/state = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	return withNoSchemaVersion(s.t, recorder.Body.Bytes())
+	return recorder.Body.Bytes()
 }
 
 // withNoSchemaVersion is body, the state route's answer, with 0 written where it names the
@@ -282,7 +290,8 @@ func (s *seeding) served(c composition) []byte {
 // store reads (store.Store.SchemaVersionTx), which every migration added moves; a fixture that
 // held it would go stale at every migration and conflict as text between any two pull requests
 // that add one. So the served version is held here to the newest migration the store embeds
-// (migrations.All), and the fixture holds 0 in its place, as withoutMark leaves off the mark.
+// (migrations.All), and the fixture holds 0 in its place, as apifixture.WithoutOwnContractMarks
+// takes off the marks of this daemon's own contract.
 func withNoSchemaVersion(t testing.TB, body []byte) []byte {
 	t.Helper()
 	var served struct {
@@ -306,54 +315,6 @@ func withNoSchemaVersion(t testing.TB, body []byte) []byte {
 		t.Fatalf("the state body names %s %d times, want once", version, n)
 	}
 	return bytes.Replace(body, version, []byte(`"schemaVersion":0`), 1)
-}
-
-// withoutMark is body, the state route's answer to a caller at this daemon's own contract, without
-// the mark the route writes on every state it shapes (api.State.Contract, api's stateFor): the
-// state as the source and the route's reads beside it answer it, before the route marks the shape
-// it served, since the shaping takes nothing else off a body for a caller at this contract. That
-// state is what every state fixture pins, and packages/contracts/src/legion-api.test.ts reads the
-// Stage 3 one as a body that carries no mark. The mark taken off is held to the one a caller at
-// this contract is written, both numbers at api.DaemonAPIVersion(), and every other member of the
-// body is kept as the route wrote it, in its order.
-func withoutMark(t *testing.T, body []byte) []byte {
-	t.Helper()
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
-		t.Fatalf("the state route answered %s, which is no JSON object (%v)", body, err)
-	}
-	unmarked := []byte{'{'}
-	var mark json.RawMessage
-	for decoder.More() {
-		key, err := decoder.Token()
-		if err != nil {
-			t.Fatalf("read a key of the state body: %v", err)
-		}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			t.Fatalf("read the state body's %v: %v", key, err)
-		}
-		if key == "contract" {
-			mark = value
-			continue
-		}
-		name, err := json.Marshal(key)
-		if err != nil {
-			t.Fatalf("write the key %v: %v", key, err)
-		}
-		if len(unmarked) > 1 {
-			unmarked = append(unmarked, ',')
-		}
-		unmarked = append(append(append(unmarked, name...), ':'), value...)
-	}
-	want, err := json.Marshal(api.ContractView{Daemon: api.DaemonAPIVersion(), Caller: api.DaemonAPIVersion()})
-	if err != nil {
-		t.Fatalf("write the mark: %v", err)
-	}
-	if !bytes.Equal(mark, want) {
-		t.Fatalf("the state route marked the body %s, want %s, the mark of a caller at this daemon's own contract", mark, want)
-	}
-	return append(unmarked, '}')
 }
 
 // issuedSecretsLogin is the daemon's broker login holding a credential, logged in as the boot's
