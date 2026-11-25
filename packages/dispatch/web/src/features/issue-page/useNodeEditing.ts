@@ -1,9 +1,8 @@
-import type { DisplayTree } from "@legion/contracts";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { MouseEvent } from "react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
 import { isCompositionKey } from "../refs/ref-picker";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";

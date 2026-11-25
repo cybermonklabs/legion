@@ -408,7 +408,8 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     const specBefore = await presetCountOf(page, "spec");
     const { thread } = seeded;
 
-    // (1) `f` reaches the act on the focused comment, and Enter aims the box at the comment.
+    // (1) `f` reaches the act on the focused comment, and Enter aims the box at the comment, whose
+    // target line names the comment by its author and its kind and draws none of its words.
     const comment = await focusRow(page, thread.row);
     const act = criterionAct(comment);
     await expect(act, "the focused comment offers Write a criterion").toBeVisible();
@@ -424,8 +425,16 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     ).toContainText(CONTROL_LABELS.criterion_target);
     await expect(
       composerTarget(page),
-      "the box does not name the comment's first line"
-    ).toContainText(thread.firstLine);
+      "the box does not name the comment's author as the page names alice"
+    ).toContainText(READER);
+    await expect(
+      composerTarget(page),
+      "the box does not name the comment by the page's word for its kind"
+    ).toContainText(NODE_TYPE_NAMES.comment);
+    await expect(
+      composerTarget(page),
+      "the box draws the comment's words on its target line"
+    ).not.toContainText(thread.firstLine);
     await expect(
       composerField(page),
       `the box does not say what to write at ${size.width} px`

@@ -400,8 +400,8 @@ export function MentionField({
       ) : open ? (
         // The host's line is one row of its own controls, so the open list takes a row of its own
         // at the line's end, which the host's line wraps to. A flex item is no narrower than its
-        // widest line unless it may shrink, so the row takes `min-w-0`: a row's long label, cut to
-        // one line, would otherwise widen the page past a phone's screen.
+        // content's min-content width (`min-width: auto`), so the wrapper takes `min-w-0`: a picker
+        // row's long label, cut to one line, would otherwise widen the page past a phone's screen.
         <div className="order-last min-w-0 basis-full">
           <RefPickerList id={listboxId} onTake={takePick} picker={picker} />
         </div>

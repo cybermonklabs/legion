@@ -221,9 +221,6 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
   "approval-reason": "An open approval request sends the reason to whoever asked.",
   "architecture-reason": "A comment on the issue tells a picked agent or role.",
   ask: "The ask goes to the assignee's Inbox.",
-  // An answer written outside the ask card, whose box says both of its writes in one line
-  // (`hintWords`): the issue page's answer field.
-  "ask-answer": "The answer goes to whoever asked.",
   "ask-decline": "The note goes to whoever asked.",
   broadcast: "The message goes to each agent you selected.",
   "comment-edit": "A new comment, not an edit, tells a picked agent or role.",

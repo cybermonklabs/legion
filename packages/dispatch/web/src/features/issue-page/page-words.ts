@@ -696,8 +696,8 @@ export const ANSWER_LINES = freeze({
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
-  /** What Send says while the send is out, on the answer line and on the write line of the box
-   *  at the foot of the outline, beside the busy words above. */
+  /** What Send says while the send is out, on the write line of the box at the foot of the
+   *  outline, beside the busy words above. */
   sending: "Sending…",
   /** What the write line says while a file pasted or dropped into its draft uploads: on its Send,
    *  and on the status line under the field. */
@@ -711,7 +711,7 @@ export const ANSWER_LINES = freeze({
    *  whole words alone, so the same words are refused again whatever is sent, and the draft
    *  stays in the box. */
   statement_twice:
-    "The statement's words stand twice in its document, so the comment cannot be placed under it.",
+    "The statement's words stand twice in its document, so the comment cannot be placed on it.",
   /** What the box says, once a row's Reply moved it on, of what the reader wrote on the issue,
    *  or on a statement, and the box keeps there, with the control that goes back to it: the
    *  box's own that writes on the issue, or the statement's Reply. A reply kept for a row is said
@@ -1005,7 +1005,8 @@ export const CONTROL_LABELS = freeze({
   /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
    *  page offers it on the same node (part G's R6, root R19). */
   copy_reference: "Copy reference",
-  /** What the box's criterion line says of the row it writes under, before its first line. */
+  /** What the box's criterion line says of the row it writes under, before that row's author and
+   *  the page's word for its kind. */
   criterion_target: "Criterion under:",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
@@ -1244,7 +1245,7 @@ export const CONTROL_LABELS = freeze({
   write_criterion: "Write a criterion",
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
    *  question on the issue itself: where the words go, as the reply's
-   *  and the answer's placeholders say where theirs go. */
+   *  and the statement's placeholders say where theirs go. */
   issue_placeholder: "Write on the issue…  (Enter sends)",
   /** Each placeholder of that box in the shorter words it says at 760 px and below, where its
    *  line is about 240 px wide and a placeholder is one line, cut by the line's edge: each fits
@@ -1253,8 +1254,13 @@ export const CONTROL_LABELS = freeze({
   reply_placeholder_phone: "Your reply, under the row…",
   /** What the box's criterion line says while it is empty, at 760 px and below. */
   criterion_placeholder_phone: "What should a person be able to do?",
-  answer_placeholder_phone: "Answer in your own words…",
   edit_placeholder_phone: "Your comment, rewritten…",
+  /** What the box says while it is empty and writes a comment on a statement: the comment goes
+   *  beside the statement, in the margin that draws a comment on a statement's text, and not
+   *  under its row as a reply does. */
+  statement_placeholder: "Your comment, beside the statement it is on…  (Enter sends)",
+  /** The same in the shorter words the box says at 760 px and below, which fit its line whole. */
+  statement_placeholder_phone: "Comment beside the statement…",
   /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
    *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
    *  that opens `Unsure:`. */

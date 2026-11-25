@@ -97,12 +97,7 @@ function waitingAsk(id: string, made: string): TreeNode {
 }
 
 /** The writer with no target set: the line writes a new comment on the issue. */
-const NOTHING_AIMED: PointAim = { answer: undefined, reply: null, statement: undefined };
-
-/** The writer answering the question whose row is `nodeId`. */
-function answering(nodeId: string): PointAim {
-  return { ...NOTHING_AIMED, answer: { askId: nodeId, multiple: false, nodeId, selected: [] } };
-}
+const NOTHING_AIMED: PointAim = { reply: null, statement: undefined };
 
 /** The writer commenting on the statement whose row is `row`. */
 function commentingOn(row: string): PointAim {
@@ -148,12 +143,11 @@ function targets(): TreeNode {
 }
 
 // While the reader has aimed the line, what it is aimed at is the point, over anything newer: a
-// question it answers by that question's row, a statement it comments on by the statement's row,
-// and an entry it replies to by the entry's own id and kind, read from each row's reference.
+// statement it comments on by the statement's row, and an entry it replies to by the entry's own
+// id and kind, read from each row's reference.
 test("the line's target is the point, a reply's found through its row's reference", () => {
   const root = targets();
   expect(currentPath(root, NOTHING_AIMED)).toEqual([KEY, "c9"]);
-  expect(currentPath(root, answering("a1"))).toEqual([KEY, "a1"]);
   expect(currentPath(root, commentingOn(STATEMENT))).toEqual([KEY, STATEMENT]);
   expect(currentPath(root, replyingTo("t2", "comment"))).toEqual([KEY, "c1", "turn-c"]);
   expect(currentPath(root, replyingTo("t2", "message"))).toEqual([KEY, "turn-m"]);
@@ -163,7 +157,7 @@ test("the line's target is the point, a reply's found through its row's referenc
 // A target the tree does not hold marks nothing, rather than a node the reader did not aim at.
 test("a target the tree does not hold is no point, though a question waits on the reader", () => {
   const root = issue([waitingAsk("a1", at(1)), comment("c9", at(9))]);
-  expect(currentPath(root, answering("gone"))).toBeUndefined();
+  expect(currentPath(root, replyingTo("gone", "ask"))).toBeUndefined();
   expect(currentPath(root, commentingOn("spec#b-gone"))).toBeUndefined();
   expect(currentPath(root, replyingTo("gone", "comment"))).toBeUndefined();
 });
@@ -215,6 +209,16 @@ test("with nothing aimed and no question waiting, the newest act is the point", 
 test.each([
   ["comment", acts(at(3), comment("c3", at(11))), [KEY, "c3"]],
   ["message", acts(at(3), message("m2", at(11))), [KEY, "m2"]],
+  ["question asked", acts(at(3), ask("a2", at(11))), [KEY, "a2"]],
+  // The answer to the older question is an act on that question's node.
+  ["answer", acts(at(11)), [KEY, "a1"]],
+])("a later %s decides the point", (_kind, root, path) => {
+  expect(currentPath(root, NOTHING_AIMED)).toEqual(path);
+});
+
+// A check's result and a decision's last change are no turn of the conversation: either, made
+// after every act, leaves the point on the newest act.
+test.each([
   [
     "result",
     acts(
@@ -225,19 +229,10 @@ test.each([
         type: "check",
       })
     ),
-    [KEY, "verification#b-c2", "r2"],
   ],
-  ["question asked", acts(at(3), ask("a2", at(11))), [KEY, "a2"]],
-  // The answer to the older question is an act on that question's node.
-  ["answer", acts(at(11)), [KEY, "a1"]],
-  // A decision's last change is no act of the conversation.
-  [
-    "decision changed",
-    acts(at(3), node({ at: at(11), id: "d1", type: "decision" })),
-    [KEY, "c1", "c2"],
-  ],
-])("a later %s decides the point", (_kind, root, path) => {
-  expect(currentPath(root, NOTHING_AIMED)).toEqual(path);
+  ["decision changed", acts(at(3), node({ at: at(11), id: "d1", type: "decision" }))],
+])("a later %s is no act, and leaves the point where it was", (_kind, root) => {
+  expect(currentPath(root, NOTHING_AIMED)).toEqual([KEY, "c1", "c2"]);
 });
 
 test("a new act landing moves the point to it", () => {
@@ -416,14 +411,18 @@ function renderPoint(root: TreeNode) {
   return { view, writer };
 }
 
-// The hook reads the writer's three targets and nothing else it holds: a kind switched while the
-// line answers a question leaves the point as it was, the same path and not merely an equal one.
+// The hook reads the writer's two targets and nothing else it holds: an answer the writer holds
+// aims nothing, since the ask's own body answers it, and a kind switched while the line replies
+// leaves the point as it was, the same path and not merely an equal one.
 test("the page's point follows the writer's targets and nothing else the writer holds", () => {
   const question = ask("a1", at(1));
   const { view, writer } = renderPoint(issue([question, comment("c9", at(9))]));
   try {
     expect(view.result.current.point).toEqual([KEY, "c9"]);
     act(() => writer().answerNode(question));
+    expect(writer().answer?.askId).toBe("a1");
+    expect(view.result.current.point).toEqual([KEY, "c9"]);
+    act(() => writer().replyTo({ author: BOB, id: "a1", kind: "ask", text: "a1" }));
     expect(view.result.current.point).toEqual([KEY, "a1"]);
     const aimed = view.result.current.point;
     act(() => writer().setKind("ask"));

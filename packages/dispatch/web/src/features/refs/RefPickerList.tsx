@@ -26,6 +26,11 @@ import {
 } from "./ref-picker";
 import type { RefPicker } from "./useRefPicker";
 
+/** A line a picker row draws whole where its surface draws no tooltips (the issue page), in the
+ *  stronger muted role: it breaks anywhere, since nothing on that surface could give back what an
+ *  ellipsis cut. */
+const WRAPPED_LINE = `overflow-hidden text-xs [overflow-wrap:anywhere] ${textOptionDescription}`;
+
 /**
  * What the agent and role rows' own source is, where those rows would be: the shared refilling
  * notice, the list still loading, or the listener unreachable. Every view that reads the agent
@@ -206,8 +211,7 @@ export function RefPickerList({
   const headingPrefix = useId();
   // A row's detail is cut to one line, and its `title` gives the whole detail back. A surface
   // with no tooltips (the issue page) carries no `title` for it (`useTooltips`), so there the
-  // detail wraps whole and breaks anywhere: nothing on that surface could give back what an
-  // ellipsis cut.
+  // detail is drawn whole (`WRAPPED_LINE`).
   const tooltips = useTooltips();
   if (!picker.open) return null;
   const take = (id: string) => {
@@ -226,11 +230,7 @@ export function RefPickerList({
   const sessionLine = (one: RefPickerRow) => {
     const id = sessionLineId(one);
     return id === undefined ? null : (
-      <span
-        aria-hidden="true"
-        className={`min-w-0 text-xs [overflow-wrap:anywhere] ${textOptionDescription}`}
-        id={id}
-      >
+      <span aria-hidden="true" className={WRAPPED_LINE} id={id}>
         {sessionOf(one)}
       </span>
     );
@@ -267,19 +267,16 @@ export function RefPickerList({
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
         <RefRowLabel row={one} />
-        {one.detail === "" ? null : (
+        {one.detail === "" ? null : tooltips ? (
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
-          <TruncatedText
-            className={
-              tooltips
-                ? `text-xs ${textOptionDescription}`
-                : `text-xs whitespace-normal! [overflow-wrap:anywhere] ${textOptionDescription}`
-            }
-            title={tooltips ? one.detail : undefined}
-          >
+          <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
             <RefRowDetail row={one} />
           </TruncatedText>
+        ) : (
+          <span className={WRAPPED_LINE}>
+            <RefRowDetail row={one} />
+          </span>
         )}
         {sessionLine(one)}
       </span>

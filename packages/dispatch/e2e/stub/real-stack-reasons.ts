@@ -182,7 +182,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-l.e2e.ts":
-    "each row writes from the box at the foot and then reads its own write: the comment, reply, answer or read mark Dispatch stored, and the row the outline draws from the server's reads",
+    "each row writes from the box at the foot and then reads its own write: the comment, reply or read mark Dispatch stored, and the row the outline draws from the server's reads",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issue-page-y.e2e.ts":

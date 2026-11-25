@@ -107,7 +107,6 @@ export type DispatchReadingSurface =
   | "search-ask-chosen-options"
   | "search-result"
   | "ref-picker-row-label"
-  | "issue-page-composer-target"
   | "agent-message-issue-option"
   | "issue-page-title"
   | "issue-outline-page-title"
@@ -1229,21 +1228,6 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "ref-picker-row-label",
-  },
-  // The new issue page's box: the one line above its field naming what
-  // it writes to, and the options of the question it answers, each a control the reader presses.
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
-    proof: {
-      file: "packages/dispatch/web/src/features/issue-page/IssueComposer.test.tsx",
-      test: "the target line reads the entry, the question and its options as their plain words",
-    },
-    reach:
-      "/issues/<ISSUE> with the new issue page: the box's target line and its answer's options",
-    reason: `The box's target line is one line naming what the box writes to - the entry a reply answers, the statement a comment is on, the comment an edit changes, the question an answer answers, with the options chosen - and an option of that question is a control the reader presses, worded with the option's label. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
-    record: true,
-    rendered: false,
-    surface: "issue-page-composer-target",
   },
   // The five places a record's text is still written into an element that can hold no markup.
   {

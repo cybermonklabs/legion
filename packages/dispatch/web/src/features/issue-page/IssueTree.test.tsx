@@ -12085,6 +12085,41 @@ test("the reader's edit, a collaborator's drawn with it, Escape and three other 
   );
 });
 
+// An edit's note ends at the first tree drawn after the reader leaves the row, though that tree
+// draws other words than the edit left (decision 409): it still reads the note for a drop, and
+// the tree after it does not. Here a collaborator's letter, saved before the read of the reader's
+// edit, is drawn merged with it, so no read draws the reader's words alone. The reader presses
+// Escape, and exactly one read comes, which draws the merged words and drops nothing. Another
+// session's read then drops the row the focus is back on, and the focus stays on the page's body.
+// A note that ended one tree later would count that drop as the reader's, and hand the focus to
+// the row now in the statement's place.
+test("the one read after Escape ends the edit's note though it draws a collaborator's edit merged with the reader's, so a read that then drops the focused row is another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  // A letter at the end of the word before the full stop.
+  collaboratorEdits(room, "A new statement of the spec".length, 0, "s");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A new statement of the specs.")
+  );
+  await escapeToStatement(user, view);
+
+  await act(async () => view.reread(statementRead("A new statement of the specs.")));
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0],
+    "the one read after Escape, which drew the merged words, took the focus off the statement's row"
+  ).toHaveFocus();
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's edit, a collaborator's, Escape and the one read that drew both"
+  );
+});
+
 // The one tree drawn after the reader leaves the row still reads the edit's note, as the read of
 // their last edit may come just after they leave, so a drop there is theirs. A collaborator's
 // change that drops the row in that one tree is counted so too, which decision 409 accepts: the

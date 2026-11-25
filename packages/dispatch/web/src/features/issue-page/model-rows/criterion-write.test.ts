@@ -385,11 +385,11 @@ test("a conversation node is a criterion's parent and no other is", () => {
     text: TEXT,
     type,
   });
+  // None of the node's words go with it: the target line names the node by its author and kind.
   expect(criterionItemOf(node("comment", PARENT))).toEqual({
     address: PARENT,
     id: "row-comment",
     kind: "comment",
-    text: TEXT,
   });
   const message = `dispatch://${KEY}/message/message-1`;
   expect(criterionItemOf(node("message", message))?.kind).toBe("message");
@@ -400,14 +400,14 @@ test("a conversation node is a criterion's parent and no other is", () => {
     address: ask,
     id: "spec#b-q1",
     kind: "ask",
-    text: TEXT,
   });
-  // Its record and its reading go with it, for the target line to draw its first line.
-  const source = { id: "comment-1", issue: KEY, kind: "comment" } as const;
-  const tree: NonNullable<TreeNode["tree"]> = { children: [], type: "root" };
-  expect(criterionItemOf({ ...node("comment", PARENT), source, tree })).toMatchObject({
-    source,
-    tree,
+  // Its author goes with it, for the target line to name the node by.
+  const author = { id: "bob", kind: "user" } as const;
+  expect(criterionItemOf({ ...node("comment", PARENT), author })).toEqual({
+    address: PARENT,
+    author,
+    id: "row-comment",
+    kind: "comment",
   });
   // A node of another issue is one too: whether the act is offered there is the writer's.
   expect(criterionItemOf(node("comment", "dispatch://CORE-2/comment/comment-2"))?.address).toBe(

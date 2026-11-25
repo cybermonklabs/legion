@@ -1,14 +1,16 @@
 import type { Locator, Page } from "@playwright/test";
 
+import type { ArtifactBlock } from "../web/src/api/types";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
   CURRENT_POINT,
+  NODE_TYPE_NAMES,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
-  createAsk,
+  answerAsk,
   createIssue,
   createIssueArtifact,
   createProject,
@@ -19,13 +21,14 @@ import {
 } from "./api";
 import { nextFrames } from "./frames";
 import { seedReplyNesting } from "./issue-layout-seed";
-import { gotoIssue, phase } from "./issue-page";
+import { closeDetails, gotoIssue, openDetails, phase } from "./issue-page";
 import {
   blockNode,
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
   focusRow,
+  issuePage,
   nodeRow,
   nodeRows,
   PHONE,
@@ -40,10 +43,14 @@ import {
   branchMoreRows,
   expectActivePreset,
   focusedNodeId,
+  focusInside,
   onScreen,
   openEveryDeeperBranch,
+  pickPreset,
 } from "./issue-page-i";
 import {
+  CITED_TITLE,
+  citesWords,
   clearOfBox,
   composer,
   composerField,
@@ -52,15 +59,21 @@ import {
   composerTarget,
   endPlace,
   outlineEnd,
+  panelEntry,
   placesHolding,
   replyFromRow,
   STATEMENT_BLOCKS,
   STATEMENT_WORDS,
+  type StatementsSeed,
   scrollEndUnderBox,
   seedFortyComments,
+  seedHistoryTurns,
+  seedPastFifty,
+  seedResultAfterAct,
   seedStatements,
   seedUnreadIssue,
   sendFromComposer,
+  sendWithKeys,
   wordsInField,
 } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
@@ -75,10 +88,12 @@ import { asUser } from "./users";
  * read mark at the outline's end. Each row is one check of
  * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
- * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
- * then (`@owed`). Row (10) is R12's: the conversation's current point, which the outline marks on
- * one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that the
- * reader causes, beside the row of `issue-page-i.e2e.ts` for the other half.
+ * its Spec view half. Row (10) is R12's: the conversation's current point, which the outline
+ * marks on one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that
+ * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
+ * check owes on a part not yet under this part's head is a row of its own beside its check's
+ * rows, skipped with an annotation naming that part and tagged `@owed`: four of c-replies, one of
+ * c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
@@ -355,10 +370,10 @@ function owedRing(page: Page, ring: RingClass): Promise<Ring> {
 
 // c-replies (1): a reply is drawn
 // under the entry it answers, at any depth, a resolved question's reply included; every node
-// that takes a reply draws the control; a reply from the box lands under its target; an answer
-// is drawn in the question's row; and a comment with no target is drawn at the outline's top
-// level, where the issue's own nodes are. On a phone a branch below the first level is one line
-// counting its nodes, which opens them in place.
+// that takes a reply draws the control; a reply from the box lands under its target; and a
+// comment with no target is drawn at the outline's top level, where the issue's own nodes are.
+// On a phone a branch below the first level is one line counting its nodes, which opens them in
+// place.
 // SLOW(>=2s): a thread four levels deep unfolded press by press, three writes from the box each
 // read back from the server and the outline, and a second load at the phone's width.
 test("a reply is drawn under the entry it answers, and every node takes a reply @phone", async ({
@@ -447,24 +462,12 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
       "the reply to a reply is not drawn under it"
     );
 
-    // An answer sent from the open ask's control is drawn in the ask's row.
-    await focusRow(page, seeded.openAsk);
-    await nodeRow(page, seeded.openAsk).first().locator('[data-pick-option="Left"]').click();
-    await composer(page).getByRole("button", { name: CONTROL_LABELS.send_answer }).click();
-    await expect(nodeRow(page, seeded.openAsk).first()).toHaveAttribute(
-      "data-node-state",
-      "answered"
-    );
-    await expect(
-      nodeRow(page, seeded.openAsk).first().locator('[data-node-option="chosen"]')
-    ).toContainText("Left");
-
     // The box at the foot posts a comment drawn at the outline's top level, where the issue's
     // own nodes are: the issue itself is no row.
     const instead = composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue });
-    // The answer that landed above ended the line's target, so the box holds no reply and offers
+    // The reply that landed above ended the line's target, so the box holds no reply and offers
     // no way back to the issue.
-    await expect(instead, "the box still holds a target after the answer landed").toHaveCount(0);
+    await expect(instead, "the box still holds a target after the reply landed").toHaveCount(0);
     await sendFromComposer(page, "A comment on the issue from the composer.");
     await drawnUnder(
       (await commentWithBody(seeded.key, undefined, "A comment on the issue from the composer."))
@@ -533,9 +536,12 @@ test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => 
 
 // c-replies (3). R4, R16 and the tester's F1: what the reader sends from the box at the foot is
 // drawn at once, its branch unfolded, on screen clear of the box and with the focus on it,
-// whether it is a reply under a folded thread, a reply under an answered question, or a new
-// comment or question on the issue, which both land at the outline's end.
-// SLOW(>=2s): four writes from the box, each waited on until the outline draws and focuses it.
+// whether it is a reply under a thread the reader folded with its head's own fold control, a
+// reply under an answered question, or a new comment or question on the issue, which both land
+// at the outline's end. The page folds nothing itself, but the outline it draws now still opens
+// the thread folded, so the row first unfolds it and then folds it with its head's control.
+// SLOW(>=2s): the thread unfolded and folded again, and four writes from the box, each waited on
+// until the outline draws and focuses it.
 test("what the reader sends from the box is drawn, in view and focused, wherever it lands", async ({
   browser,
 }) => {
@@ -558,21 +564,21 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
         .toBe(true);
       return id;
     };
-    /** Sends `words` from the box with the keyboard alone, after `key` on node `id`'s row. */
-    const sendWithKeys = async (id: string, key: string, words: string): Promise<void> => {
-      await focusRow(page, id);
-      await page.keyboard.press(key);
-      await expect(composerField(page), `${key} put no caret in the box`).toBeFocused();
-      await page.keyboard.type(words);
-      await page.keyboard.press("Enter");
-    };
 
-    // A reply under a thread the page folds: `r`, the words, Enter.
+    // A reply under a thread the reader folded with its head's own fold control: `r`, the words,
+    // Enter. The outline opens the thread folded, so its head unfolds it first.
+    const head = nodeRow(page, seeded.head).first();
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
     await expect(
       nodeRow(page, seeded.first),
-      "the seed's thread is open, so a reply under it proves nothing about the fold"
+      "the thread's head draws no reply once its fold control unfolds it"
+    ).not.toHaveCount(0);
+    await head.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(
+      nodeRow(page, seeded.first),
+      "the thread is open after its head's fold control, so a reply under it proves nothing about the fold"
     ).toHaveCount(0);
-    await sendWithKeys(seeded.head, "r", "A reply under the folded thread.");
+    await sendWithKeys(page, seeded.head, "A reply under the folded thread.");
     const reply = await expectLandedOn("A reply under the folded thread.", "a reply under a fold");
     expect(await parentOfRow(page, reply), "the reply is not drawn under the row it answers").toBe(
       seeded.head
@@ -591,7 +597,7 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
       .toBe(seeded.answeredAsk);
 
     // A reply under an answered question.
-    await sendWithKeys(seeded.answeredAsk, "r", "A word under the answered question.");
+    await sendWithKeys(page, seeded.answeredAsk, "A word under the answered question.");
     const under = await expectLandedOn(
       "A word under the answered question.",
       "a reply under an answered question"
@@ -617,11 +623,11 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
   });
 });
 
-// c-replies (4). The tester's F10: a send made with the keyboard alone - `a` on an open question,
-// the words, Enter - leaves the focus on a row of the outline, the question's own, and the next
-// key goes on from there, not from the outline's first row.
-// SLOW(>=2s): a seeded thread and three questions, and an answer written from the box and waited
-// on until the outline draws it in the question's row and gives the row the focus back.
+// c-replies (4). The tester's F10: a send made with the keyboard alone - `r` on a row, the words,
+// Enter - leaves the focus on a row of the outline, the new reply's own, and the next key goes on
+// from there, not from the outline's first row, where a page with nothing focused starts.
+// SLOW(>=2s): a seeded thread and three questions, and a reply written from the box with the keys
+// alone and waited on until the outline draws it and gives its row the focus.
 test("a send with the keyboard leaves the focus on the reader's row of the outline", async ({
   browser,
 }) => {
@@ -629,33 +635,199 @@ test("a send with the keyboard leaves the focus on the reader's row of the outli
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await focusRow(page, seeded.openAsk);
-    await page.keyboard.press("a");
-    await expect(composerField(page), "a put no caret in the box").toBeFocused();
-    await page.keyboard.type("Left, in my own words.");
-    await page.keyboard.press("Enter");
-    await expect(nodeRow(page, seeded.openAsk).first()).toContainText("Left, in my own words.");
+    // The answered question is the outline's second row: the thread's head is its first.
+    const words = "A reply sent with the keys alone.";
+    await sendWithKeys(page, seeded.answeredAsk, words);
+    const reply = (await commentWithBody(seeded.key, undefined, words)).id;
     await expect
       .poll(() => focusedNodeId(page), {
-        message: "after an answer sent with the keyboard the focus is not on the question's row",
+        message: "after a reply sent with the keyboard the focus is not on the new reply's row",
       })
-      .toBe(seeded.openAsk);
+      .toBe(reply);
+    expect(
+      await parentOfRow(page, reply),
+      "the reply is not drawn under the question it answers"
+    ).toBe(seeded.answeredAsk);
+    // Up from the new row is the question it answers, the row above it.
     await page.keyboard.press("k");
     await expect
       .poll(() => focusedNodeId(page), {
-        message: "the next key does not go on from the question's row",
+        message: "the next key does not go on from the new reply's row",
       })
-      .toBe(seeded.resolvedAsk);
+      .toBe(seeded.answeredAsk);
+  });
+});
+
+// c-replies (3), owed on part T (root R40, decision 127): a new comment on an issue of more than
+// 50 top-level rows stands past the first 50 the outline draws, behind the control for the rest,
+// and the box takes the reader to it, drawn, on screen clear of the box and focused. Until part T
+// pages the outline it draws every row, so the reading is skipped with an annotation naming T and
+// tagged `@owed`, which the check's run leaves out (decision 135). The round that brings T under
+// this part's head takes the skip and the tag off.
+test.skip("what the reader sends from the box past the first 50 rows is drawn, in view and focused @owed", {
+  annotation: {
+    description:
+      "Owed on part T (decision 127): the outline draws a node's first 50 children and a control for the rest only once T pages it, so this reading is skipped until then.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedPastFifty, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      branchMoreRows(page),
+      "an outline of more than 50 top-level rows draws no control for the rest"
+    ).toHaveCount(1);
+    const words = "A new comment past the first fifty rows.";
+    await composerField(page).click();
+    await sendFromComposer(page, words);
+    const comment = (await commentWithBody(seeded.key, undefined, words)).id;
+    const row = nodeRow(page, comment).first();
+    await expect(row, "the new comment past the first 50 rows is not drawn").toBeVisible();
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the focus is not on the new comment past the first 50 rows",
+      })
+      .toBe(comment);
+    await expect
+      .poll(() => clearOfBox(row), {
+        message: "the new comment past the first 50 rows is off screen",
+      })
+      .toBe(true);
+  });
+});
+
+// c-replies (3), owed on part M (root R15, decision 127): a reply from the panel's history to a
+// turn of a thread the Legion daemon began lands in the history, under that turn, on screen and
+// focused, and the outline draws no row of it. Until part M is under this part's head the panel
+// draws no history with a Reply, so the reading is skipped with an annotation naming M and tagged
+// `@owed`, which the check's run leaves out (decision 135). The round that brings M under the
+// head takes the skip and the tag off.
+test.skip("what the reader sends from the box as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn @owed", {
+  annotation: {
+    description:
+      "Owed on part M (decision 127): the panel's history and its Reply come with part M, so this reading is skipped until M is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await openDetails(page);
+    const turn = panelEntry(page, seeded.daemon.words);
+    await expect(turn, "the panel's history draws no turn of the daemon's thread").toHaveCount(1);
+    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply to the daemon's turn, from the history.";
+    await sendFromComposer(page, words);
+    const reply = panelEntry(page, words);
+    await expect(reply, "the reply is not drawn in the panel's history").toBeVisible();
+    await expect(
+      turn.filter({ hasText: words }),
+      "the reply is not drawn under the daemon's turn in the history"
+    ).toHaveCount(1);
+    await expect
+      .poll(() => focusInside(reply), { message: "the focus is not on the reply in the history" })
+      .toBe(true);
+    await expect
+      .poll(() => onScreen(reply), { message: "the reply in the history is off screen" })
+      .toBe(true);
+    await expect(
+      nodeRows(page).filter({ hasText: words }),
+      "the outline draws a row of the reply to the daemon's turn"
+    ).toHaveCount(0);
+  });
+});
+
+// c-replies (3), owed on parts M and T (root R1 and R15, decision 127): a reply from the panel's
+// history to an agent's comment tied to no text, in a thread no person wrote in, makes that thread
+// a person's, so the outline draws the comment with the reply under it, on screen and focused.
+// Until M's history with its Reply and T's outline are both under this part's head, the reading
+// is skipped with an annotation naming M and T and tagged `@owed`, which the check's run leaves
+// out (decision 135). The round that brings the second of them under the head takes the skip and
+// the tag off.
+test.skip("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it @owed", {
+  annotation: {
+    description:
+      "Owed on parts M and T (decision 127): the panel's history and its Reply come with part M, and the outline that then draws the agent's comment with T, so this reading is skipped until both are under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      nodeRow(page, seeded.agent.id),
+      "the outline draws the agent's comment before a person wrote in its thread"
+    ).toHaveCount(0);
+    await openDetails(page);
+    const turn = panelEntry(page, seeded.agent.words);
+    await expect(turn, "the panel's history draws no agent's comment").toHaveCount(1);
+    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply to the agent's comment, from the history.";
+    await sendFromComposer(page, words);
+    const reply = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expect
+      .poll(() => parentOfRow(page, reply), {
+        message: "the reply is not drawn in the conversation under the agent's comment",
+      })
+      .toBe(seeded.agent.id);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the focus is not on the reply's row" })
+      .toBe(reply);
+    await expect
+      .poll(() => clearOfBox(nodeRow(page, reply)), { message: "the reply's row is off screen" })
+      .toBe(true);
+  });
+});
+
+/** The view control of Graph, by its word: the part that builds Graph adds it to the view row. */
+const GRAPH = "Graph";
+
+// c-replies (3), owed on part T (root R38, decision 127): a reply written in Graph through T's
+// Reply lands in Graph, its row drawn there, on screen and focused. Until part T is under this
+// part's head the page has no Graph, so the reading is skipped with an annotation naming T and
+// tagged `@owed`, which the check's run leaves out (decision 135). The round that brings T under
+// the head takes the skip and the tag off.
+test.skip("what the reader sends from the box as a reply written in Graph is drawn in Graph, in view and focused @owed", {
+  annotation: {
+    description:
+      "Owed on part T (decision 127): Graph and its Reply come with part T, so this reading is skipped until T is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await pickPreset(page, GRAPH);
+    await expectActivePreset(page, GRAPH);
+    const head = await focusRow(page, seeded.head);
+    await rowAct(head, "reply").click();
+    await expect(composerTarget(page), "Graph's Reply draws no target line").toBeVisible();
+    const words = "A reply written in Graph.";
+    await sendFromComposer(page, words);
+    const reply = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expectActivePreset(page, GRAPH);
+    const row = nodeRow(page, reply).first();
+    await expect(row, "the reply written in Graph is not drawn there").toBeVisible();
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the focus is not on the reply in Graph" })
+      .toBe(reply);
+    await expect
+      .poll(() => clearOfBox(row), { message: "the reply in Graph is off screen" })
+      .toBe(true);
   });
 });
 
 // c-box (5). The tester's F2 and F9, and the architect's ruling 5: empty and at rest the box is
 // one line with Send, as the pictures draw it, at 390 px as at 1440 px, and it says the words go
 // on the issue (R3, `issue_placeholder`, in its phone form at 760 px and below); while it replies
-// its placeholder says where the words go; and on a phone the box that answers a question has the
-// line's width, with the options under it.
-// SLOW(>=2s): two cold loads, at 1440 px and at 390 px, each with a reply and an answer line
-// opened and left again.
+// its placeholder says where the words go; and `a` on an open question leaves it as it is at
+// rest, since the ask's own body answers the ask (R5): no target line, no option, no answer field
+// and no caret in it, the focus left on the question's row.
+// SLOW(>=2s): two cold loads, at 1440 px and at 390 px, each with a reply opened and left again
+// and `a` pressed on the open question.
 test("the box at the foot is one line at rest, and says where a reply goes @phone", async ({
   browser,
 }) => {
@@ -720,26 +892,42 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
       // reader's next press is, rather than inside it, where the caret would take it back.
       await nextFrames(page);
 
-      // The box that answers a question: its field has room to type in.
+      // `a` on the open question: the box stays as it is at rest and the focus on the row.
       await focusRow(page, seeded.openAsk);
       await page.keyboard.press("a");
-      await expect(composerField(page)).toBeFocused();
-      // The field is measured once it holds the caret (the wait above), because the row reads the
-      // width it is drawn at for typing.
-      const field = await composerField(page).boundingBox();
-      console.log(
-        `the answer field at ${at}: ${field?.width.toFixed(0)} x ${field?.height.toFixed(0)}`
-      );
-      expect(
-        field?.width ?? 0,
-        `the answer's field is ${field?.width.toFixed(0)} px wide at ${at}`
-      ).toBeGreaterThanOrEqual(240);
-      await page.keyboard.press("Escape");
+      // The key's handler and the render it asks for are done within these frames, so a box that
+      // the key aimed at the question would have drawn its line and taken the caret by their end.
+      await nextFrames(page);
+      await expect(
+        composerTarget(page),
+        `a on the open question draws a target line in the box at ${at}`
+      ).toHaveCount(0);
+      for (const option of ["Left", "Right"]) {
+        await expect(
+          composer(page).getByRole("button", { exact: true, name: option }),
+          `a on the open question draws an option in the box at ${at}`
+        ).toHaveCount(0);
+      }
+      await expect(
+        composer(page).getByRole("textbox", { exact: true, name: CONTROL_LABELS.answer }),
+        `a on the open question draws an answer field in the box at ${at}`
+      ).toHaveCount(0);
+      await expect(
+        composerField(page),
+        `a on the open question put the caret in the box at ${at}`
+      ).not.toBeFocused();
       await expect
         .poll(() => focusedNodeId(page), {
-          message: `Escape from the answering box does not give the question's row back at ${at}`,
+          message: `a on the open question took the focus off its row at ${at}`,
         })
         .toBe(seeded.openAsk);
+      await expect(
+        composerField(page),
+        `a on the open question changed what the box at rest says at ${at}`
+      ).toHaveAttribute(
+        "placeholder",
+        phone ? CONTROL_LABELS.issue_placeholder_phone : CONTROL_LABELS.issue_placeholder
+      );
     }
   });
 });
@@ -749,10 +937,11 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
 // side at 760 px and below), and the focused last row ends above it; at rest its line is 26 px
 // and each placeholder fits it whole; it grows to 150 px and then scrolls inside itself, and on a
 // phone a draft that wraps fits the field again once the focus leaves it; Tab reaches the line,
-// each kind and Send; each control is at least 24 by 24 px; and Enter sends a comment and a
-// question, each one new row by the reader.
+// each kind and Send; each control is at least 24 by 24 px, after `r` too and after `a`, which
+// leaves the box as it is at rest; and Enter sends a comment and a question, each one new row by
+// the reader.
 // SLOW(>=2s): an outline of forty-one rows loaded at four widths, each read from rest to two
-// sends, with the answer line and a reply opened at the two widths the check names.
+// sends, with a reply opened and `a` pressed at the two widths the check names.
 test("the box stays at the foot, grows as it is typed and writes both kinds @phone", async ({
   browser,
 }) => {
@@ -798,10 +987,12 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
           rest?.width ?? 0,
           `the field at rest is ${rest?.width.toFixed(0)} px wide ${at}`
         ).toBeGreaterThanOrEqual(240);
+        // The box's placeholders in their phone words: on the issue, under a row, beside a
+        // statement, and over the reader's own comment.
         for (const words of [
           CONTROL_LABELS.issue_placeholder_phone,
           CONTROL_LABELS.reply_placeholder_phone,
-          CONTROL_LABELS.answer_placeholder_phone,
+          CONTROL_LABELS.statement_placeholder_phone,
           CONTROL_LABELS.edit_placeholder_phone,
         ]) {
           const measured = await wordsInField(field, words);
@@ -970,18 +1161,22 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
       ).toHaveCount(0);
       await expectControlsLeast(page, `${at}, replying`);
       await page.keyboard.press("Escape");
+      // Escape at rest keeps the caret in the box, which the page puts back on a frame once the
+      // line is drawn: the question's row is taken after that frame, as a reader's next press is.
+      await nextFrames(page);
 
-      // So is each control of the answer line.
+      // `a` on the open question leaves the box as it is at rest, since the ask's own body
+      // answers the ask: no target line, and each control at least 24 by 24 px.
       await focusRow(page, seeded.question);
       await page.keyboard.press("a");
-      await expect(composerField(page), `a put no caret in the box ${at}`).toBeFocused();
-      await expectControlsLeast(page, `${at}, answering`);
-      await page.keyboard.press("Escape");
-      await expect
-        .poll(() => focusedNodeId(page), {
-          message: `Escape from the answer line does not give the question's row back ${at}`,
-        })
-        .toBe(seeded.question);
+      // The key's handler and the render it asks for are done within these frames, so a box that
+      // the key aimed at the question would have drawn its target line by their end.
+      await nextFrames(page);
+      await expect(
+        composerTarget(page),
+        `a on the open question draws a target line in the box ${at}`
+      ).toHaveCount(0);
+      await expectControlsLeast(page, `${at}, after a on the open question`);
     }
 
     // Decision 72: 760 px is the phone's form - 10 px from each side, the kinds drawn only once
@@ -1068,130 +1263,74 @@ test("the box that shrinks at the outline's end stands 8 px above the foot again
   });
 });
 
-// The answer line's options, Decline to answer and Send answer stand inside the box and inside
-// the screen at every width, however many options the question offers: on a phone the controls
-// stand under the field, and a row of them that is wider than the line wraps. A question of four
-// options whose labels are a few words each, as the questions on real issues are, is the case to
-// read.
-// SLOW(>=2s): forty comments and a question of four options seeded, and the answer line opened
-// at two widths.
-test("the answer line's options and Send answer stand inside the box and the screen @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = async () => {
-    const forty = await seedFortyComments();
-    const question = await createAsk(
-      forty.key,
-      {
-        options: [
-          { label: "B, a document switcher (recommended)" },
-          { label: "A, one scroll with no switcher" },
-          { label: "C, four tabs, Decisions first, as your message named" },
-          { label: "Other" },
-        ],
-        question: "Which layout does the issue page take?",
-      },
-      { actor: { id: "e2e-box-asker", kind: "session" as const }, as: "agent" as const }
-    );
-    return { ...forty, fourOptions: question.id };
-  };
-  await phase(browser, seed, async (page, seeded) => {
+/** The view control of Threads, by its word: the part that builds Threads adds it to the view
+ *  row. */
+const THREADS = "Threads";
+
+// c-box, owed on the part that builds Threads (decision 127): Threads carries a box of its own
+// for a thread opened there, so the box at the foot is never drawn in Threads, and the panel's
+// Reply on a turn of its history and its Edit on the reader's own comment set no target there;
+// Conversation opened after them draws the box at rest, with no target line. Until Threads is
+// under this part's head the page draws no Threads view, so the reading is skipped with an
+// annotation naming that part and tagged `@owed`, which the check's run leaves out (decision
+// 135). The round that brings Threads under the head takes the skip and the tag off.
+test.skip("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone @owed", {
+  annotation: {
+    description:
+      "Owed on the part that builds Threads (decision 127): the page draws no Threads view until that part builds it, so this reading is skipped until Threads is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width}x${size.height}`;
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
-      await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
-      await focusRow(page, seeded.fourOptions);
-      await page.keyboard.press("a");
-      await expect(composerField(page), `a put no caret in the box ${at}`).toBeFocused();
+      await pickPreset(page, THREADS);
+      await expectActivePreset(page, THREADS);
+      await expect(composer(page), `the box at the foot is drawn in Threads ${at}`).toHaveCount(0);
+      await openDetails(page);
+      await panelEntry(page, seeded.daemon.words)
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.reply })
+        .click();
+      // The press's handler and the render it asks for are done within these frames, so a box
+      // the press aimed would be drawn by their end.
+      await nextFrames(page);
       await expect(
-        composer(page).locator("[data-answer-option]"),
-        `the answer line draws no option ${at}`
-      ).toHaveCount(4);
-
-      // Each control the answer line draws ends inside the box and inside the screen.
-      const outside = await composer(page).evaluate((section) => {
-        const edge = Math.min(
-          section.getBoundingClientRect().right,
-          document.documentElement.clientWidth
-        );
-        return [...section.querySelectorAll<HTMLElement>("button")]
-          .filter((control) => control.getClientRects().length > 0)
-          .filter((control) => control.getBoundingClientRect().right > edge + 0.5)
-          .map((control) =>
-            (control.getAttribute("aria-label") ?? control.textContent ?? "").trim()
-          );
-      });
-      expect(outside, `a control of the answer line ends past the box or the screen ${at}`).toEqual(
-        []
-      );
-      const sideways = await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-      );
-      expect(sideways, `the answer line makes the page scroll sideways ${at}`).toBeLessThanOrEqual(
-        0
-      );
-      await page.keyboard.press("Escape");
+        composer(page),
+        `the panel's Reply on a turn of the history drew the box in Threads ${at}`
+      ).toHaveCount(0);
+      await panelEntry(page, seeded.own.words)
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
+        .click();
+      // The same frames, for the Edit's press.
+      await nextFrames(page);
+      await expect(
+        composer(page),
+        `the panel's Edit on the reader's own comment drew the box in Threads ${at}`
+      ).toHaveCount(0);
+      await closeDetails(page);
+      await pickPreset(page, PRESET_NAMES.conversation);
+      await expectActivePreset(page, PRESET_NAMES.conversation);
+      await expect(
+        composerField(page),
+        `Conversation draws no box after Threads ${at}`
+      ).toBeVisible();
+      await expect(
+        composerTarget(page),
+        `the panel's Reply or Edit in Threads set a target the box draws in Conversation ${at}`
+      ).toHaveCount(0);
     }
   });
 });
 
-// The answer line's field keeps room to type at every width, however much of the line the
-// options take: words alone make an answer, and 240 px is the room the box gives the field to
-// type in on a phone. A question of three options whose chips with Decline to answer and Send
-// answer almost fill the line beside the field is the case to read: the controls then take a
-// row of their own under the field rather than leave it a few words wide.
-// SLOW(>=2s): forty comments and a question of three options seeded, and the answer line opened.
-test("the answer line's field keeps room to type beside options that almost fill the line", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = async () => {
-    const forty = await seedFortyComments();
-    const question = await createAsk(
-      forty.key,
-      {
-        options: [
-          { label: "The first choice of three, long one" },
-          { label: "The second choice of three, long" },
-          { label: "The third choice, also rather long ones here" },
-        ],
-        question: "Which of three long choices?",
-      },
-      { actor: { id: "e2e-box-asker", kind: "session" as const }, as: "agent" as const }
-    );
-    return { ...forty, threeOptions: question.id };
-  };
-  await phase(browser, seed, async (page, seeded) => {
-    const at = `at ${DESKTOP.width}x${DESKTOP.height}`;
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectIssuePageDrawn(page);
-    await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
-    await focusRow(page, seeded.threeOptions);
-    await page.keyboard.press("a");
-    const field = composerField(page);
-    await expect(field, `a put no caret in the box ${at}`).toBeFocused();
-    await expect(
-      composer(page).locator("[data-answer-option]"),
-      `the answer line draws no option ${at}`
-    ).toHaveCount(3);
-    const width = (await field.boundingBox())?.width ?? 0;
-    expect(
-      width,
-      `the answer's field is ${width.toFixed(1)} px wide beside the options ${at}`
-    ).toBeGreaterThanOrEqual(240);
-  });
-});
-
 // The tester's red row (round 13), the root spec's R18 and R19: no part of the page scrolls in
-// two dimensions from 320 px to 1440 px, and nothing a reader could read before is lost. A row
-// of the box's picker draws its detail on one line (`RefPickerList`'s `TruncatedText`), a
-// document's address runs past a phone's width, and the page draws no tooltip to give back an
-// ellipsis's cut. So when such a row is listed, the list stays inside the box, the page stays one
-// screen wide, and the row draws its whole detail.
+// two dimensions from 320 px to 1440 px, and nothing a reader could read before is lost. A
+// document's address runs past a phone's width, and the page draws no tooltip to give back what an
+// ellipsis cuts, so on the issue page a row of the box's picker draws its whole detail, wrapped
+// (`RefPickerList`'s `WRAPPED_LINE`). So when such a row is listed, the list stays inside the box,
+// the page stays one screen wide, and no part of the row cuts its detail.
 test("the box's picker keeps the page one screen wide when a row's detail is long @phone", async ({
   browser,
 }) => {
@@ -1374,87 +1513,221 @@ test("the end of the outline on screen for a second marks the issue read", async
   });
 });
 
-// c-statement-reply, its outline half (R11, decision 74 of the parts): `r` on a focused statement
-// aims the box at it, and what is sent is a comment anchored to that statement - its document
-// and its block - drawn under it and focused; the box then writes on the issue again. A
-// statement's address in its words reads in the target line as its name, never raw. A
-// statement of two paragraphs is anchored to the statement itself, and one whose words the spec
-// holds twice is refused, in the page's words and with no Retry, the draft kept. The Spec view's
-// half is the row after this one, owed on part J (decisions 74 and 61).
+// c-mark (7), owed on part T (root R40, decision 127): an outline whose last row is followed by
+// a control that shows more rows does not end there, so its end on screen for a second leaves the
+// mark where it was, and the read mark is not drawn. Until part T pages the outline it draws every
+// row and ends in the read mark, so the reading is skipped with an annotation naming T and tagged
+// `@owed`, which the check's run leaves out (decision 135). The round that brings T under this
+// part's head takes the skip and the tag off.
+test.skip("the end of the outline on screen for a second marks the issue read, and not where a control that shows more rows ends it @owed", {
+  annotation: {
+    description:
+      "Owed on part T (decision 127): the outline ends in a control that shows more rows only once T pages it, so this reading is skipped until T is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedPastFifty, async (page, seeded) => {
+    const { key } = seeded;
+    const writes = watchWrites(page, "PUT", `/api/v1/me/issues/${key}/state`);
+    const head = (await getIssueEvents(key, { limit: 1, order: "desc" }))[0]?.seq ?? 0;
+    const mark = async () => (await getMyState())[key]?.last_read_seq ?? 0;
+    expect(await mark(), "the seed left the issue read for the reader").toBeLessThan(head);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectIssuePageDrawn(page);
+    await expect(composerField(page)).toBeVisible();
+    const more = branchMoreRows(page);
+    await expect(
+      more,
+      "an outline of more than 50 top-level rows ends in no control that shows more rows"
+    ).toHaveCount(1);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => onScreen(more), {
+        message: "the control that shows more rows is not on screen after End",
+      })
+      .toBe(true);
+    await expect(
+      outlineEnd(page),
+      "the outline draws its read mark while a control that shows more rows ends it"
+    ).toHaveCount(0);
+    // The mark must not be written while the outline goes on past that control, and a write that
+    // never comes leaves nothing to poll for, so this span is the check: two dwells long, so a
+    // dwell begun at End ends by its middle, and its write leaves before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
+    expect(
+      writes,
+      "an outline that a control that shows more rows ends wrote the read mark"
+    ).toEqual([]);
+    expect(
+      await mark(),
+      "an outline that a control that shows more rows ends marked the issue read"
+    ).toBeLessThan(head);
+  });
+});
+
+/** One statement of `seedStatements` a row writes a comment on from the box. */
+interface StatementCase {
+  readonly block: string;
+  /** Words of the statement, or of the issue it cites, that its target line draws none of. */
+  readonly drawsNone: readonly string[];
+  /** The statement's whole words, which the comment is anchored by. */
+  readonly quote: string;
+  /** How a failure names the statement. */
+  readonly what: string;
+  /** The words of the comment the row writes on it. */
+  readonly words: string;
+}
+
+/** The two statements of `seedStatements` a comment lands on: the one that cites an issue by its
+ *  address, and the one of two paragraphs, whose comment the server anchors to the statement
+ *  itself. */
+function statementCases(seeded: StatementsSeed): {
+  readonly cites: StatementCase;
+  readonly two: StatementCase;
+} {
+  return {
+    cites: {
+      block: STATEMENT_BLOCKS.cites,
+      drawsNone: [STATEMENT_WORDS.citesLead, seeded.cited, CITED_TITLE],
+      quote: citesWords(seeded.cited),
+      what: "the statement that cites an issue",
+      words: "A comment on the statement that cites an issue.",
+    },
+    two: {
+      block: STATEMENT_BLOCKS.two,
+      drawsNone: [STATEMENT_WORDS.first, STATEMENT_WORDS.second],
+      quote: `${STATEMENT_WORDS.first} ${STATEMENT_WORDS.second}`,
+      what: "the statement of two paragraphs",
+      words: "A comment on the statement of two paragraphs.",
+    },
+  };
+}
+
+/**
+ * Writes `one.words` as a comment on the statement `one` names, with the keys alone, from the
+ * stage the page draws now - the outline or the Spec view. Fails unless `r` on the statement's
+ * row puts the caret in the box; the target line says "Replying to:" and the page's word for a
+ * statement, and draws none of `one.drawsNone` and no address, since the statement stands whole
+ * in its own row; the placeholder is the statement's own; the box sends the statement's whole
+ * words as the anchor's quote and no occurrence, and Dispatch stores the comment anchored in the
+ * spec to the statement's block, or a block inside it, with that quote, as `blocks`, the spec's
+ * blocks, which the caller reads once, since no comment changes them; the focus is back on the
+ * statement's row; and, once the page's read of the issue's comments holds the comment, no row of
+ * it is drawn under the statement, since the margin beside a statement draws a comment on its
+ * text.
+ */
+async function commentOnStatement(
+  page: Page,
+  seeded: StatementsSeed,
+  one: StatementCase,
+  blocks: readonly ArtifactBlock[]
+): Promise<void> {
+  const statement = blockNode(seeded.specSlug, one.block);
+  await expect(nodeRow(page, statement), `${one.what} draws no row`).toHaveCount(1);
+  await focusRow(page, statement);
+  await page.keyboard.press("r");
+  await expect(composerField(page), `r on ${one.what} put no caret in the box`).toBeFocused();
+  const target = composerTarget(page);
+  await expect(target, `r on ${one.what} draws no target line`).toBeVisible();
+  await expect(
+    target,
+    `the target line of ${one.what} does not say the box is replying`
+  ).toContainText(CONTROL_LABELS.replying_to);
+  await expect(target, `the target line does not name ${one.what} a statement`).toContainText(
+    NODE_TYPE_NAMES.requirement
+  );
+  for (const words of one.drawsNone) {
+    await expect(
+      target,
+      `the target line of ${one.what} draws "${words}", words of the statement`
+    ).not.toContainText(words);
+  }
+  await expect(target, `the target line of ${one.what} draws an address`).not.toContainText(
+    "dispatch://"
+  );
+  await expect(
+    composerField(page),
+    `the box's placeholder on ${one.what} is not the statement's own`
+  ).toHaveAttribute("placeholder", CONTROL_LABELS.statement_placeholder);
+  const writes = watchWrites(page, "POST", `/api/v1/issues/${seeded.key}/comments`);
+  // The page's read of the issue's comments that holds the new one: the read the outline and each
+  // view draw a comment from.
+  const read = page.waitForResponse(
+    async (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === `/api/v1/issues/${seeded.key}/comments` &&
+      (await response.text().catch(() => "")).includes(one.words)
+  );
+  await page.keyboard.type(one.words);
+  await page.keyboard.press("Enter");
+
+  // Sent anchored by the statement's whole words alone, with no occurrence, and stored anchored
+  // in the spec to the statement's block, or a block inside its range, with those words.
+  await expect
+    .poll(() => writes.map((write) => write.input), {
+      message: `the box did not anchor the comment on ${one.what} by the statement's whole words and no occurrence`,
+    })
+    .toContainEqual(
+      expect.objectContaining({
+        anchor: { artifact: seeded.specSlug, quote: one.quote },
+        body: one.words,
+      })
+    );
+  const comment = await commentWithBody(seeded.key, undefined, one.words);
+  expect(
+    comment.anchor?.artifact_id,
+    `the comment on ${one.what} is not anchored in the spec`
+  ).toBe(seeded.specArtifactId);
+  expect(
+    comment.anchor?.quote,
+    `the comment on ${one.what} is not anchored by the statement's whole words`
+  ).toBe(one.quote);
+  const range = blocks.find((block) => block.id === one.block);
+  const anchored = blocks.find((block) => block.id === comment.anchor?.block_id);
+  expect(
+    range !== undefined &&
+      anchored !== undefined &&
+      anchored.from >= range.from &&
+      anchored.to <= range.to,
+    `the comment on ${one.what} is anchored to block ${comment.anchor?.block_id}, not inside ${one.block}`
+  ).toBe(true);
+
+  await expect
+    .poll(() => focusedNodeId(page), {
+      message: `the focus is not back on ${one.what}'s row once its comment landed`,
+    })
+    .toBe(statement);
+  // The read that holds the comment has answered, and the render it asks for is done within the
+  // frames after it, so a row the page drew of the comment under the statement is drawn by then.
+  await read;
+  await nextFrames(page);
+  expect(
+    await parentOfRow(page, comment.id),
+    `the comment on ${one.what} is drawn in a row under it`
+  ).not.toBe(statement);
+}
+
+// c-statement-reply, its outline half (R11): `r` on a focused statement aims the box at it. Its
+// target line says "Replying to:" and the page's word for a statement and draws none of the
+// statement's words - not its first line, not the issue it cites, no address - since the
+// statement stands whole in its own row; the placeholder is the statement's own. What is sent is
+// a comment on the statement's text, anchored in the spec to its block by its whole words and no
+// occurrence, drawn in no row under it, the margin beside it being the comment's place; the focus
+// is back on the statement's row, and the box then writes on the issue again. A statement of two
+// paragraphs is anchored to the statement itself, and one whose words the spec holds twice is
+// refused, in the page's words and with no Retry, the draft and the target kept. The row after
+// this one reads the statement's author on the target line, and the one after that the Spec
+// view's half, each owed on another part.
 // SLOW(>=2s): five writes from the box, each read back from the server and the outline.
-test("r on a statement writes a comment under it", async ({ browser }) => {
+test("r on a statement writes a comment on its text", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedStatements, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    const { cites, two } = statementCases(seeded);
     const blocks = await getArtifactBlocks(seeded.specArtifactId);
-    for (const one of [
-      {
-        block: STATEMENT_BLOCKS.cites,
-        cited: seeded.cited,
-        first: STATEMENT_WORDS.citesLead,
-        what: "the statement that cites an issue",
-        words: "A comment on the statement that cites an issue.",
-      },
-      {
-        block: STATEMENT_BLOCKS.two,
-        first: STATEMENT_WORDS.first,
-        not: STATEMENT_WORDS.second,
-        what: "the statement of two paragraphs",
-        words: "A comment on the statement of two paragraphs.",
-      },
-    ]) {
-      const statement = blockNode(seeded.specSlug, one.block);
-      await expect(nodeRow(page, statement), `${one.what} draws no row`).toHaveCount(1);
-      await focusRow(page, statement);
-      await page.keyboard.press("r");
-      await expect(composerField(page), `r on ${one.what} put no caret in the box`).toBeFocused();
-      const target = composerTarget(page);
-      await expect(target, `r on ${one.what} draws no target line`).toBeVisible();
-      await expect(target).toContainText(CONTROL_LABELS.replying_to);
-      await expect(target, `the target line does not name ${one.what}'s first line`).toContainText(
-        one.first
-      );
-      if (one.not !== undefined) await expect(target).not.toContainText(one.not);
-      // The issue it cites by its address reads as that issue's name, never as the address
-      // (R7, the reading list's `issue-page-composer-target`).
-      if (one.cited !== undefined) {
-        await expect(target, `the target line draws ${one.what}'s address raw`).not.toContainText(
-          "dispatch://"
-        );
-        await expect(
-          target,
-          `the target line does not name the issue ${one.what} cites`
-        ).toContainText(one.cited);
-      }
-      await page.keyboard.type(one.words);
-      await page.keyboard.press("Enter");
-
-      // Stored as a comment anchored to the statement's block, or a block inside its range.
-      const comment = await commentWithBody(seeded.key, undefined, one.words);
-      expect(
-        comment.anchor?.artifact_id,
-        `the comment on ${one.what} is not anchored in the spec`
-      ).toBe(seeded.specArtifactId);
-      const range = blocks.find((block) => block.id === one.block);
-      const anchored = blocks.find((block) => block.id === comment.anchor?.block_id);
-      expect(
-        range !== undefined &&
-          anchored !== undefined &&
-          anchored.from >= range.from &&
-          anchored.to <= range.to,
-        `the comment on ${one.what} is anchored to block ${comment.anchor?.block_id}, not inside ${one.block}`
-      ).toBe(true);
-      // Drawn under the statement, with the focus on it.
-      await expect
-        .poll(() => focusedNodeId(page), {
-          message: `the focus is not on the comment sent on ${one.what}`,
-        })
-        .toBe(comment.id);
-      expect(
-        await parentOfRow(page, comment.id),
-        `the comment on ${one.what} is not drawn under it`
-      ).toBe(statement);
+    for (const one of [cites, two]) {
+      await commentOnStatement(page, seeded, one, blocks);
 
       // The box's next send is a comment on the issue, with no anchor.
       await expect(composerTarget(page), "the box still names the statement").toHaveCount(0);
@@ -1484,7 +1757,10 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
       composerField(page),
       "r on the twice-held statement put no caret in the box"
     ).toBeFocused();
-    await expect(composerTarget(page)).toContainText(STATEMENT_WORDS.twice);
+    await expect(
+      composerTarget(page),
+      "r on the twice-held statement draws no target line naming a statement"
+    ).toContainText(NODE_TYPE_NAMES.requirement);
     await page.keyboard.type(refused);
     await page.keyboard.press("Enter");
     const refusal = composer(page).getByRole("alert");
@@ -1499,7 +1775,15 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
     ).toHaveCount(0);
     await expect(composerField(page), "the refused comment's draft is gone").toHaveValue(refused);
     await expect(composerTarget(page), "the refused comment's target is gone").toContainText(
-      STATEMENT_WORDS.twice
+      NODE_TYPE_NAMES.requirement
+    );
+    // The target line names no words of the statement, so the conversation's current point, which
+    // is the box's target, says which statement the box still holds.
+    await expectPointOn(
+      page,
+      twice,
+      "the twice-held statement's row",
+      "while the box holds its refused comment"
     );
     expect(
       (await listComments(seeded.key)).some((one) => one.body === refused),
@@ -1508,15 +1792,51 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
   });
 });
 
+// c-statement-reply, the statement's author on its target line (R11), owed on part T (decision
+// 127): the line names the first person the statement's node lists as its author, as the
+// statement's row names it. On this base a statement's node carries no author, so the line names
+// none; T's tree read gives the node its author. Until T is under this part's head the reading is
+// skipped with an annotation naming T and tagged `@owed`, which the check's run leaves out
+// (decision 135). The round that brings T under the head takes the skip and the tag off.
+test.skip("r on a statement writes a comment on its text, and its target line names the first author its node lists @owed", {
+  annotation: {
+    description:
+      "Owed on part T (decision 127): a statement's node carries its author only once T's tree read gives it the first person its node lists, so this reading is skipped until T is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedStatements, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    const statement = blockNode(seeded.specSlug, STATEMENT_BLOCKS.two);
+    await expect(nodeRow(page, statement), "the outline draws no row of the statement").toHaveCount(
+      1
+    );
+    // The author the statement's row names: the first its node lists.
+    const authorOfRow = async () => rowOf(await drawnRows(page), statement)?.author ?? null;
+    await expect
+      .poll(authorOfRow, { message: "the statement's row names no author" })
+      .not.toBeNull();
+    const author = (await authorOfRow()) ?? "";
+    await focusRow(page, statement);
+    await page.keyboard.press("r");
+    await expect(composerField(page), "r on the statement put no caret in the box").toBeFocused();
+    await expect(
+      composerTarget(page),
+      `the target line does not name ${author}, the first author the statement's node lists`
+    ).toContainText(author);
+  });
+});
+
 // c-statement-reply, its Spec view half (R11): `r` on a focused statement of the Spec view aims
-// the box at it as on the outline, and what is sent is a comment anchored to that statement.
-// Owed on part J (decision 74 of the parts: J passes the writer to the view's keymap; decision
-// 61: the check names an owed reading and the part it waits on). Until J is under this part's
-// head the Spec view draws no rows (`issue-page-switch.e2e.ts`), so the reading is skipped with
-// an annotation naming J and those decisions (decision 127) and tagged `@owed`, which the
-// check's run leaves out (decision 135). The round that brings J under the head takes the skip
-// and the tag off.
-test.skip("r on a statement in the Spec view writes a comment under it @owed", {
+// the box at it as on the outline, and what is sent is a comment on the statement's text, read as
+// the outline's half reads it. Owed on part J (decision 74 of the parts: J passes the writer to
+// the view's keymap; decision 61: the check names an owed reading and the part it waits on).
+// Until J is under this part's head the Spec view draws no rows (`issue-page-switch.e2e.ts`), so
+// the reading is skipped with an annotation naming J and those decisions (decision 127) and
+// tagged `@owed`, which the check's run leaves out (decision 135). The round that brings J under
+// the head takes the skip and the tag off.
+test.skip("r on a statement in the Spec view writes a comment on its text @owed", {
   annotation: {
     description:
       "Owed on part J (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap, so this reading is skipped until then.",
@@ -1526,33 +1846,16 @@ test.skip("r on a statement in the Spec view writes a comment under it @owed", {
   await phase(browser, seedStatements, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/spec`);
     await expectActivePreset(page, PRESET_NAMES.spec);
-    const statement = blockNode(seeded.specSlug, STATEMENT_BLOCKS.two);
-    await expect(
-      nodeRow(page, statement),
-      "the Spec view draws no row of the statement"
-    ).toHaveCount(1);
-    await focusRow(page, statement);
-    await page.keyboard.press("r");
-    await expect(
-      composerField(page),
-      "r on the Spec view's statement put no caret in the box"
-    ).toBeFocused();
-    await expect(composerTarget(page)).toContainText(STATEMENT_WORDS.first);
-    const words = "A comment on the statement from the Spec view.";
-    await page.keyboard.type(words);
-    await page.keyboard.press("Enter");
-    const comment = await commentWithBody(seeded.key, undefined, words);
-    const blocks = await getArtifactBlocks(seeded.specArtifactId);
-    const range = blocks.find((block) => block.id === STATEMENT_BLOCKS.two);
-    const anchored = blocks.find((block) => block.id === comment.anchor?.block_id);
-    expect(
-      comment.anchor?.artifact_id === seeded.specArtifactId &&
-        range !== undefined &&
-        anchored !== undefined &&
-        anchored.from >= range.from &&
-        anchored.to <= range.to,
-      `the comment from the Spec view is anchored to ${JSON.stringify(comment.anchor)}, not inside ${STATEMENT_BLOCKS.two}`
-    ).toBe(true);
+    await commentOnStatement(
+      page,
+      seeded,
+      {
+        ...statementCases(seeded).two,
+        what: "the Spec view's statement of two paragraphs",
+        words: "A comment on the statement from the Spec view.",
+      },
+      await getArtifactBlocks(seeded.specArtifactId)
+    );
   });
 });
 
@@ -1631,11 +1934,12 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
 // reader or is only the newest act, since the seed asks it last. A Reply moves the mark to the
 // row the box is aimed at and Escape moves it back, the focus staying the box's; while the
 // point's own row is folded away no row is the current location and the row above it on its path
-// carries a lighter ring; and an answer and then a new comment, each the newest act, take the
-// mark with them.
+// carries a lighter ring; a new act takes the mark with it - an answer a second login writes to
+// the open question after a comment of the reader's, then another comment; and no filter draws
+// the mark: the Spec filter, opened at the same point, marks no row.
 // SLOW(>=2s): a seeded thread and three questions, the thread opened press by press twice, two
-// replies aimed and ended, and an answer and a comment written from the box, each waited on until
-// the outline marks it.
+// replies aimed and ended, two comments written from the box and an answer through the API, each
+// waited on until the outline marks it, and the Spec filter opened.
 test("the outline marks the current point of the conversation on one row, and the mark follows the box and each new act @phone", async ({
   browser,
 }) => {
@@ -1764,27 +2068,102 @@ test("the outline marks the current point of the conversation on one row, and th
       "once Escape ended the reply to the fourth level"
     );
 
-    // A new act moves the mark: the answer sent from the open question's row is the newest act,
-    // on that question's own row, and no question waits once it is answered; then a comment on
-    // the issue is the newest act, and the mark is on its row alone.
-    await focusRow(page, seeded.openAsk);
-    await nodeRow(page, seeded.openAsk).first().locator('[data-pick-option="Left"]').click();
-    await composer(page).getByRole("button", { name: CONTROL_LABELS.send_answer }).click();
+    // A new act moves the mark. A comment of the reader's lands first; then a second login
+    // answers the open question: once it is answered no question waits on the reader, and its
+    // answer, written after that comment, is the newest act, so the mark is on the question's own
+    // row whether or not the question waited on the reader before; then another comment on the
+    // issue is the newest act, and the mark is on its row alone.
+    const before = "A comment on the issue, written before the question is answered.";
+    await sendFromComposer(page, before);
+    const earlier = (await commentWithBody(seeded.key, undefined, before)).id;
+    await expect(
+      nodeRow(page, earlier),
+      "the comment written before the answer is not drawn"
+    ).not.toHaveCount(0);
+    await answerAsk(
+      seeded.openAsk,
+      { expected_edited_at: null, selected: ["Left"] },
+      { login: "bob" }
+    );
     await expect(
       nodeRow(page, seeded.openAsk).first(),
-      "the answer sent from the open question's row did not land"
+      "the answer a second login wrote to the open question is not drawn"
     ).toHaveAttribute("data-node-state", "answered");
     await expectPointOn(
       page,
       seeded.openAsk,
       "the open question's row",
-      "once its answer, the newest act, landed"
+      "once a second login's answer to it, the newest act, landed"
     );
     const words = "A comment on the issue, the newest act of all.";
     await sendFromComposer(page, words);
     const comment = (await commentWithBody(seeded.key, undefined, words)).id;
     await expect(nodeRow(page, comment), "the new comment is not drawn").not.toHaveCount(0);
     await expectPointOn(page, comment, "the new comment's row", "once it landed on the issue");
+
+    // No filter draws the mark: the Spec filter, opened at this point, marks nothing. The same
+    // reading finds the comment's mark in the conversation first, so it reads the marks the page
+    // draws.
+    const marks = issuePage(page).locator(
+      `[aria-current="${CURRENT_POINT}"], [data-current-point]`
+    );
+    await expect(marks, "the conversation's mark is not read where the page draws it").toHaveCount(
+      1
+    );
+    await pickPreset(page, PRESET_NAMES.spec);
+    await expectActivePreset(page, PRESET_NAMES.spec);
+    await expect(
+      issuePage(page).locator("[data-issue-body]"),
+      "the Spec filter still draws the conversation's outline"
+    ).toHaveCount(0);
+    await expect(marks, "the Spec filter draws a mark of the current point").toHaveCount(0);
+  });
+});
+
+// (10), owed on part T (root R40, decision 127): a result recorded after the newest act that the
+// conversation draws is no act of it, so the mark stays on that act's row; and a current point
+// that stands past its parent's first 50 children, behind the control for the rest, rings that
+// control with the path's lighter ring, and no row is the current location. Until part T is under
+// this part's head the outline draws every row and no control for the rest, so the reading is
+// skipped with an annotation naming T and tagged `@owed`, which the check's run leaves out
+// (decision 135). The round that brings T under the head takes the skip and the tag off.
+test.skip("the current point stays on the newest act past a result recorded after it, and rings the control for the rest that it stands behind @owed", {
+  annotation: {
+    description:
+      "Owed on part T (decision 127): the outline T moves onto its tree read draws a control for the rest of a node's children past its first 50, and the half of the current point that reads a result after the newest act waits on T's outline as well, so this reading is skipped until T is under this part's head.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedResultAfterAct, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expectPointOn(
+      page,
+      seeded.comment,
+      "the comment's row, the newest act the conversation draws",
+      "with a check's result recorded after it"
+    );
+  });
+  await phase(browser, seedPastFifty, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    const more = branchMoreRows(page);
+    await expect(
+      more,
+      "an outline of more than 50 top-level rows draws no control for the rest"
+    ).toHaveCount(1);
+    await expect(
+      nodeRow(page, seeded.comments.at(-1) ?? ""),
+      "the newest comment, the current point, is drawn among the first 50 rows"
+    ).toHaveCount(0);
+    await expect(
+      currentRows(page),
+      "a row is the current location while the point stands behind the control for the rest"
+    ).toHaveCount(0);
+    await expect(
+      more.first(),
+      "the control for the rest does not carry the path's mark while the point stands behind it"
+    ).toHaveAttribute("data-current-point", "path");
   });
 });
 

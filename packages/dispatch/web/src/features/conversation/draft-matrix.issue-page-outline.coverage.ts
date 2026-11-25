@@ -67,7 +67,6 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Write on the issue instead, the issue keeping a comment of its own`)
   ),
   ...answers(`WriteLine | ${WRITE_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
-  ...answers("WriteLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `WriteLine | ${WRITE_MOUNT} | lifetime | <MentionComposer mutationKey={writer.sendKey}>`,
     cells(`${HOST} · the page reloaded, then back`)
@@ -94,7 +93,6 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${EDITING} · issue left, then Edit again`)
   ),
   ...answers(`EditLine | ${EDIT_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
-  ...answers("EditLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `EditLine | ${EDIT_MOUNT} | lifetime | <MentionComposer mutationKey={mutationKey}>`,
     cells(`${EDITING} · the page reloaded, then Edit again`)
@@ -103,7 +101,7 @@ export const coverage: readonly CoverageEntry[] = [
   // The box, above the write line.
   ...answers(
     "IssueComposer | WriteLine | conditional | <div hidden={!writing}>",
-    cells(`${HOST} · an answer opened, then ended`)
+    cells(`${HOST} · an edit opened, then ended`)
   ),
   ...answers(
     "IssueComposer | WriteLine | conditional | <div hidden={writer.criterion !== undefined}>",
@@ -135,7 +133,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "IssueComposer | WriteLine | address prop | writer={writer}",
     cells(`${HOST} · Reply on another row, then back`),
-    cells(`${HOST} · an answer opened, then ended`)
+    cells(`${HOST} · an edit opened, then ended`)
   ),
   ...answers("IssueComposer | WriteLine | address prop | tree={tree}", GONE_ROWS, {
     reason: REASONS[10],

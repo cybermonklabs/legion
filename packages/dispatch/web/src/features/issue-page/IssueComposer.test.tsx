@@ -6,7 +6,6 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 
-import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -55,11 +54,13 @@ import {
   outlineWithout,
   type Place,
   READER,
+  replyingTo,
   rowOf,
   SPEC_SOURCE,
   STATEMENT_QUOTE,
   STATEMENT_REWRITTEN,
   statementNode,
+  targetNamed,
   targetWords,
   writeField,
 } from "./composer-fixture";
@@ -67,7 +68,7 @@ import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import * as roomTarget from "./model-rows/room-target";
 import type { OutlineWriter } from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -142,19 +143,26 @@ function holdFrames(): { readonly release: () => void; readonly run: () => void 
   };
 }
 
-/** The answer line's form, once the box answers a question. */
-function answerForm(): HTMLFormElement {
-  const found = composerBox().querySelector<HTMLFormElement>("form[data-answering]");
-  if (found === null) throw new Error("the box drew no answer line");
-  return found;
-}
-
-function answerField(): HTMLTextAreaElement {
-  return within(answerForm()).getByRole<HTMLTextAreaElement>("textbox", { name: "Answer" });
+/** Opens the edit of comment `id`, its words `body`, on `page`'s writer, the page's frames held
+ *  while the edit draws and run inside `act` after (`holdFrames`): the writer puts the caret in
+ *  the edit's field on a frame (`OutlineWriter.focus`), once the edit is drawn. The page gets its
+ *  own frames back whether or not the edit draws. */
+async function editHoldingFrames(
+  page: Pick<BoxPage, "writer">,
+  id: string,
+  body: string
+): Promise<void> {
+  const frames = holdFrames();
+  try {
+    await act(async () => page.writer().edit(id, body));
+    act(() => frames.run());
+  } finally {
+    frames.release();
+  }
 }
 
 /** The kinds the drawn line shows as chips, in their order, each with whether it is pressed: the
- *  write line's own stay in the page, hidden, while the box answers or edits. */
+ *  write line's own stay in the page, hidden, while the box edits. */
 function kinds(): { kind: string | undefined; name: string | null; pressed: string | null }[] {
   return [...composerBox().querySelectorAll<HTMLElement>("[data-composer-kind]")]
     .filter((chip) => chip.closest("[hidden]") === null)
@@ -249,12 +257,12 @@ test("the box draws two kinds, and none with a target or on a closed issue", asy
   };
   // A reply's target, then a statement's: no chip while either is held.
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   expect(kinds()).toEqual([]);
   await writeOnIssue();
   expect(kinds()).toHaveLength(2);
   await page.press(user, "spec#b-r1", "r");
-  await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
   expect(kinds()).toEqual([]);
   await writeOnIssue();
   expect(kinds()).toHaveLength(2);
@@ -278,7 +286,7 @@ test("the box draws two kinds, and none with a target or on a closed issue", asy
 // R1: while a view is on or a document is open the box is hidden, never unmounted, so what the
 // reader typed is there when it is drawn again; it is drawn there once the reader asks to write -
 // a Reply or an Edit, which put the caret in its field (IC:83) - or while a send of the line's
-// own is out.
+// own is out. An Answer asks for nothing here: the ask's own body answers it.
 test("under a view or a document the box is hidden until the reader asks to write, and its draft is kept", async () => {
   const user = userEvent.setup();
   const page = renderPage();
@@ -296,15 +304,22 @@ test("under a view or a document the box is hidden until the reader asks to writ
   expect(composerBox()).not.toHaveAttribute("hidden");
   expect(writeField().value).toBe("Half a thought");
 
+  // An Answer on a view's row leaves the box hidden, its draft kept, and the focus on the Answer.
+  page.redraw({ viewOn: true });
+  const answer = screen.getByRole("button", { name: "Answer" });
+  await user.click(answer);
+  await waitFor(() => expect(page.writer().answer?.askId).toBe("ask-1"));
+  expect(composerBox()).toHaveAttribute("hidden");
+  expect(answer).toHaveFocus();
+  expect(writeField().value).toBe("Half a thought");
+  await act(async () => page.writer().clear());
+
   // With a document open, Edit and Reply each draw the box with the caret in their field, and
   // ending them hides it again.
   page.redraw({ documentOpen: true });
   // The writer puts the caret in the line's field on a frame, once the edit is drawn
-  // (`OutlineWriter.focus`): the frames are held while the edit draws and run inside `act` after.
-  const frames = holdFrames();
-  await act(async () => page.writer().edit("comment-2", "My own words"));
-  act(() => frames.run());
-  frames.release();
+  // (`OutlineWriter.focus`), so the edit is opened with the frames held (`editHoldingFrames`).
+  await editHoldingFrames(page, "comment-2", "My own words");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("textbox", { name: "Edit comment" })).toHaveFocus()
   );
@@ -360,7 +375,7 @@ test("a Reply keeps a comment half-typed in the box at rest", async () => {
   await user.click(writeField());
   await user.keyboard("Half a thought");
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe("");
   expect(keptLines()).toEqual([KEPT_FOR_ISSUE]);
@@ -380,7 +395,7 @@ test("a Reply on another row keeps the reply typed for its own row, and that row
   const user = userEvent.setup();
   const page = renderPage();
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   await user.keyboard("My reply to bob");
 
@@ -389,7 +404,7 @@ test("a Reply on another row keeps the reply typed for its own row, and that row
   const reply = rowOf("ask-2").querySelector<HTMLElement>('[data-row-act="reply"]');
   if (reply === null) throw new Error("the question's row drew no Reply");
   await user.click(reply);
-  await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("carol", "ask")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(page.writer().reply?.id).toBe("ask-2");
   expect(writeField().value).toBe("");
@@ -397,11 +412,11 @@ test("a Reply on another row keeps the reply typed for its own row, and that row
 
   // `r` on a statement, and back to bob's comment.
   await page.press(user, "spec#b-r1", "r");
-  await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
   expect(writeField().value).toBe("");
   expect(keptLines()).toEqual([keptReplyLine("bob")]);
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   expect(writeField().value).toBe("My reply to bob");
   expect(keptLines()).toEqual([]);
 });
@@ -569,7 +584,7 @@ function renderWithPlannerComment() {
 /** Replies to the planner's comment, which writes the planner's mention into the empty box. */
 async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
   await page.press(user, "comment-3", "r");
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe(PLANNER_SEED);
 }
@@ -587,7 +602,7 @@ test("a Reply on a person's comment after one on an agent's takes the agent's me
   await replyToPlanner(user, page);
 
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   const draft = writeField().value;
   await user.keyboard("Thanks{Enter}");
@@ -618,7 +633,7 @@ test("ending a reply to an agent's comment takes the agent's mention out of the 
 
   await replyToPlanner(user, page);
   await page.press(user, "spec#b-r1", "r");
-  await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
   expect(writeField().value).toBe("");
 });
 
@@ -631,10 +646,10 @@ async function toBobAndBack(
   page: DrawnPage
 ): Promise<{ held: string; kept: string[] }> {
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   const away = { held: writeField().value, kept: keptLines() };
   await page.press(user, "comment-3", "r");
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   return away;
 }
@@ -865,7 +880,7 @@ async function afterRefusedPlannerReply(
   if (remount) {
     first.view.unmount();
     page = renderPage({}, plannerOutline(), first.client);
-    await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+    await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
     expect(page.writer().reply?.id).toBe("comment-3");
     expect(writeField().value).toBe(written);
   }
@@ -894,7 +909,7 @@ async function afterRefusedPlannerReply(
       if (reply === null) throw new Error("bob's row drew no Reply");
       await user.click(reply);
     }
-    await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+    await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
     await waitFor(() => expect(writeField()).toHaveFocus());
     await user.keyboard("{Enter}");
     const send = within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send });
@@ -1064,7 +1079,7 @@ test("a link to the agent the reader writes at the front over a refused reply, i
 
   first.view.unmount();
   const page = renderPage({}, plannerOutline(), first.client);
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   expect(page.writer().reply?.id).toBe("comment-3");
   expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
   await user.click(writeField());
@@ -1087,7 +1102,7 @@ test("a link to the agent the reader writes at the front, in place of the box's 
   first.view.unmount();
   const page = renderPage({}, plannerOutline(), first.client);
   await page.press(user, "comment-3", "r");
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
   await user.keyboard("{Escape}");
@@ -1095,67 +1110,44 @@ test("a link to the agent the reader writes at the front, in place of the box's 
   expect(writeField().value).toBe(OWN_LINK_IN_FRONT);
 });
 
-// R5: an answer sends the options picked and the reader's words, and a change of the reader's own
-// answer carries the time of the answer it replaces (`expected_answer_at`).
-test("an answer sends the options and the words, and a change carries expected_answer_at", async () => {
+// R5: the box answers no ask - the ask's own body does. The writer's answer to an open question,
+// its change of the reader's own answer and an option pressed on a question's row each leave the
+// box as it is with no target: its write line drawn with its kinds and its draft, no target line,
+// no field but its own, and the caret where the reader left it, on a row outside the box. The
+// frames the writer puts a caret in the box on are held and run inside `act`, so a caret asked
+// for lands before the box is read.
+test("the writer's answer, its change and an option's press open nothing in the box and put no caret in it", async () => {
   const user = userEvent.setup();
-  const answerAsk = stub(
-    spyOn(api, "answerAsk").mockImplementation(async (id, input) => {
-      const answer = {
-        at: "2026-11-07T00:00:00Z",
-        selected: input.selected ?? null,
-        text: input.text ?? "",
-        user: READER,
-      };
-      return askRecord(id, { answer, state: "answered" });
-    })
-  );
   const page = renderPage();
-
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  expect(targetWords()).toContain("Question ask-1?");
-  await user.click(within(answerForm()).getByRole("button", { name: "Yes" }));
-  expect(within(answerForm()).getByRole("button", { name: "Yes" })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-  await user.click(answerField());
-  await user.keyboard("Because it ships{Enter}");
-  await waitFor(() =>
-    expect(answerAsk).toHaveBeenCalledWith(
-      "ask-1",
-      { expected_edited_at: null, selected: ["Yes"], text: "Because it ships" },
-      keyedAttempt
-    )
-  );
-  expect(answerAsk.mock.calls[0]?.[1]).not.toHaveProperty("expected_answer_at");
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-
-  // The reader's own answer to ask-2, changed: the line opens on its words and its pick.
-  await act(async () => page.writer().changeAnswer(askNode("ask-2", "answered")));
-  await waitFor(() => expect(answerField().value).toBe("Old reason"));
-  expect(within(answerForm()).getByRole("button", { name: "No" })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-  await user.click(answerField());
-  await user.keyboard("{Control>}a{/Control}New reason{Enter}");
-  await waitFor(() =>
-    expect(answerAsk).toHaveBeenLastCalledWith(
-      "ask-2",
-      {
-        expected_answer_at: ANSWERED_AT,
-        expected_edited_at: null,
-        selected: ["No"],
-        text: "New reason",
-      },
-      keyedAttempt
-    )
-  );
+  await user.click(writeField());
+  await user.keyboard("Half a thought");
+  const presses = [
+    ["an answer", () => page.writer().answerNode(askNode("ask-1", "open"))],
+    ["a change of answer", () => page.writer().changeAnswer(askNode("ask-2", "answered"))],
+    ["an option", () => page.writer().pick(askNode("ask-1", "open"), "Yes")],
+  ] as const;
+  const frames = holdFrames();
+  try {
+    for (const [name, press] of presses) {
+      await act(async () => rowOf("comment-1").focus());
+      await act(async () => press());
+      act(() => frames.run());
+      expect(page.writer().answer, name).toBeDefined();
+      expect(document.activeElement, name).toBe(rowOf("comment-1"));
+      expect(composerBox().contains(document.activeElement), name).toBe(false);
+      expect(composerBox(), name).not.toHaveAttribute("hidden");
+      expect(writeField().closest("[hidden]"), name).toBeNull();
+      expect(within(composerBox()).getAllByRole("textbox"), name).toEqual([writeField()]);
+      expect(targetWords(), name).toBeNull();
+      expect(kinds(), name).toHaveLength(2);
+      expect(writeField().value, name).toBe("Half a thought");
+    }
+  } finally {
+    frames.release();
+  }
 });
 
-// R5: the writer holding the reader's own comment (part M's Edit), the box holds its words, and
+// R5: the writer holding the reader's own comment (an Edit of it), the box holds its words, and
 // Save writes the words the reader left there; the edit then ends on the comment's row.
 test("an edit saves the comment's words", async () => {
   const user = userEvent.setup();
@@ -1172,7 +1164,7 @@ test("an edit saves the comment's words", async () => {
   });
   await waitFor(() => expect(field).toHaveFocus());
   expect(field.value).toBe("My own words");
-  expect(targetWords()).toBe(`${CONTROL_LABELS.editing} My own words`);
+  expect(targetWords()).toBe(targetNamed(CONTROL_LABELS.editing, READER, "comment"));
   expect(kinds()).toEqual([]);
   expect(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.save })).toBeTruthy();
 
@@ -1329,38 +1321,20 @@ test("the box publishes its own height while it stands above the screen's foot",
   expect(footHeight()).toBe("54px");
 });
 
-// IC:92: the line that writes on the issue stays mounted while the box answers a question or
-// edits a comment, so what the reader was typing there is still there when that ends.
-test("a comment typed in the box is still there after an answer or an edit ends", async () => {
+// IC:92: the line that writes on the issue stays mounted while the box edits a comment, so what
+// the reader was typing there is still there when the edit ends.
+test("a comment typed in the box is still there after an edit ends", async () => {
   const user = userEvent.setup();
-  stub(
-    spyOn(api, "answerAsk").mockResolvedValue(
-      askRecord("ask-1", {
-        answer: { at: "2026-11-07T00:00:00Z", selected: ["Yes"], text: "", user: READER },
-        state: "answered",
-      })
-    )
-  );
   const page = renderPage();
   await user.click(writeField());
   await user.keyboard("Half a thought");
 
-  // An answer, sent.
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  expect(writeField().closest("[hidden]")).not.toBeNull();
-  expect(writeField().value).toBe("Half a thought");
-  await user.click(within(answerForm()).getByRole("button", { name: "Yes" }));
-  await user.click(answerField());
-  await user.keyboard("{Enter}");
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-  expect(writeField().closest("[hidden]")).toBeNull();
-  expect(writeField().value).toBe("Half a thought");
-
-  // An edit, left with Escape.
-  await act(async () => page.writer().edit("comment-2", "My own words"));
+  // An edit, left with Escape. The writer puts the caret in the edit's field on a frame, which
+  // takes it from the write line's field, so the edit is opened with the frames held.
+  await editHoldingFrames(page, "comment-2", "My own words");
   const edit = within(composerBox()).getByRole("textbox", { name: "Edit comment" });
   await waitFor(() => expect(edit).toHaveFocus());
+  expect(writeField().closest("[hidden]")).not.toBeNull();
   expect(writeField().value).toBe("Half a thought");
   await user.keyboard("{Escape}");
   await waitFor(() => expect(page.writer().editing).toBeUndefined());
@@ -1368,81 +1342,11 @@ test("a comment typed in the box is still there after an answer or an edit ends"
   expect(writeField().value).toBe("Half a thought");
 });
 
-// IC:219: a change refused because the answer changed under it takes the current answer, its
-// words in the field and its time, so the next send is measured against that answer.
-test("a change refused because the answer changed sends the current answer's time next", async () => {
-  const user = userEvent.setup();
-  const newer = "2026-11-08T00:00:00Z";
-  const answerAsk = stub(
-    spyOn(api, "answerAsk")
-      .mockImplementationOnce(async () => {
-        // The answer moved on another surface: the read that answers next holds it.
-        reads.asks = [askRecord("ask-1"), answeredAsk(newer, "Their newer words")];
-        throw new ApiError(409, {
-          code: "ASK_ANSWER_CHANGED",
-          error: "The answer changed since you opened it.",
-        });
-      })
-      .mockImplementation(async () => answeredAsk("2026-11-09T00:00:00Z", "Their newer words"))
-  );
-  const page = renderPage();
-
-  await act(async () => page.writer().changeAnswer(askNode("ask-2", "answered")));
-  await waitFor(() => expect(answerField().value).toBe("Old reason"));
-  await user.click(answerField());
-  await user.keyboard("{Control>}a{/Control}My change{Enter}");
-  await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
-  expect(answerAsk.mock.calls[0]?.[1]).toMatchObject({ expected_answer_at: ANSWERED_AT });
-
-  await waitFor(() => expect(answerField().value).toBe("Their newer words"));
-  expect(answerForm()).toHaveTextContent(
-    "The answer changed since you opened it; here is the current one."
-  );
-  await user.click(answerField());
-  await user.keyboard("{Enter}");
-  await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(2));
-  expect(answerAsk.mock.calls[1]?.[1]).toMatchObject({
-    expected_answer_at: newer,
-    text: "Their newer words",
-  });
-});
-
-// IC:219: a change Dispatch refuses because another person answered ends the change - nothing of
-// it can be sent again - and the line says why.
-test("a change refused to another answerer ends the change and says why", async () => {
-  const user = userEvent.setup();
-  const why = "Only the person who answered can change this answer.";
-  reads.asks = [askRecord("ask-1"), answeredAsk(ANSWERED_AT, "Bob's reason", "bob")];
-  const answerAsk = stub(
-    spyOn(api, "answerAsk").mockRejectedValue(
-      new ApiError(403, { code: "NOT_ANSWERER", error: "only the answerer may change it" })
-    )
-  );
-  const page = renderPage();
-
-  await act(async () => page.writer().changeAnswer(askNode("ask-2", "answered")));
-  await waitFor(() => expect(answerField().value).toBe("Bob's reason"));
-  await user.click(answerField());
-  await user.keyboard(" and mine{Enter}");
-  await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
-
-  await waitFor(() => expect(answerForm()).toHaveTextContent(why));
-  const send = within(answerForm()).getByRole("button", { name: CONTROL_LABELS.send_answer });
-  expect(send).toHaveAttribute("aria-disabled", "true");
-  // Send says why it is refused, on the line its description names (`RefusableButton`).
-  const reason = send.getAttribute("aria-describedby") ?? "";
-  expect(document.getElementById(reason)?.textContent).toBe(why);
-  await user.click(send);
-  await user.click(answerField());
-  await user.keyboard("{Enter}");
-  expect(answerAsk).toHaveBeenCalledTimes(1);
-});
-
-// An empty criterion line's Send is refused and says why, on the line its description names
-// (`RefusableButton`), as the answer's Send does; its press writes nothing. The line is drawn only
-// once the issue's tree read names its tree artifact, and the page reads no tree yet, so the
-// room's facts stand in for that read here; the line is aimed at bob's comment directly, since no
-// row offers Write a criterion until the page reads the tree.
+// An empty criterion line's Send is refused and says what to type, on the line its description
+// names (`RefusableButton`); its press writes nothing. The line is drawn only once the issue's
+// tree read names its tree artifact, and the page reads no tree yet, so the room's facts stand in
+// for that read here; the line is aimed at bob's comment directly, since no row offers Write a
+// criterion until the page reads the tree.
 test("an empty criterion line's Send says why it sends nothing", async () => {
   const user = userEvent.setup();
   stub(
@@ -1484,150 +1388,55 @@ test("an empty criterion line's Send says why it sends nothing", async () => {
   expect(page.writer().criterion?.id).toBe("comment-1");
 });
 
-// IC:232: a question answered elsewhere while the line holds it is not answered here: the line
-// goes back to writing on the issue, taking the reader to the question where the line held
-// their focus, and leaving the focus where it is otherwise.
-test("the answer line closes when its question is answered elsewhere", async () => {
+// The criterion line's target line names the node the criterion goes under as the box's own
+// target line names a reply's entry: "Criterion under:", the node's author and the page's word
+// for its kind - a comment, a message, a question - and none of its words, which stand whole in
+// the node's own row. Its control ends the aim. The room's facts stand in for the tree read, as
+// in the case above.
+test("the criterion line's target line names the node by its author and its kind, and draws none of its words", async () => {
   const user = userEvent.setup();
-  const page = renderPage();
-  const answeredByBob = askRecord("ask-1", {
-    answer: { at: "2026-11-07T00:00:00Z", selected: ["No"], text: "", user: "bob" },
-    state: "answered",
-  });
-
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  act(() => {
-    page.client.setQueryData(["asks", KEY], [answeredByBob, reads.asks[1]]);
-  });
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-  expect(composerBox().querySelector("form[data-answering]")).toBeNull();
-  await waitFor(() => expect(focusedRowId()).toBe("ask-1"));
-
-  // The reader's focus elsewhere: the line closes and the focus stays where they put it.
-  act(() => {
-    page.client.setQueryData(["asks", KEY], reads.asks);
-  });
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  await act(async () => rowOf("comment-1").focus());
-  act(() => {
-    page.client.setQueryData(["asks", KEY], [answeredByBob, reads.asks[1]]);
-  });
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-  expect(page.writer().landing).toBeUndefined();
-  expect(focusedRowId()).toBe("comment-1");
-});
-
-// IC:239, IC:160: Escape from any control of the answer line - its field, each option, Decline
-// and Send answer - and its × each end the answer and give the focus back to the question's row.
-test("Escape from any control of the answer line, and its close control, give the question's row back", async () => {
-  const user = userEvent.setup();
-  const page = renderPage();
-  const controls: readonly { readonly name: string; readonly take: () => HTMLElement }[] = [
-    { name: "the field", take: answerField },
-    { name: "Yes", take: () => within(answerForm()).getByRole("button", { name: "Yes" }) },
-    { name: "No", take: () => within(answerForm()).getByRole("button", { name: "No" }) },
+  stub(
+    spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+      converted: false,
+      issueKey: KEY,
+      tree: "artifact-tree",
+      viewOf: null,
+    })
+  );
+  const page = renderPage({}, messageOutline());
+  for (const { author, kind, node, words } of [
     {
-      name: "Decline to answer",
-      take: () => within(answerForm()).getByRole("button", { name: "Decline to answer" }),
+      author: "bob",
+      kind: "comment",
+      node: commentNode("comment-1", BOB, "Earlier words"),
+      words: "Earlier words",
     },
     {
-      name: "Send answer",
-      take: () => within(answerForm()).getByRole("button", { name: CONTROL_LABELS.send_answer }),
+      author: "bob",
+      kind: "message",
+      node: messageNode("message-1", BOB, "A message"),
+      words: "A message",
     },
-  ];
-  for (const { name, take } of controls) {
-    await page.press(user, "ask-1", "a");
-    await waitFor(() => expect(answerField()).toHaveFocus());
-    await act(async () => take().focus());
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(page.writer().answer, name).toBeUndefined());
-    await waitFor(() => expect(focusedRowId(), name).toBe("ask-1"));
+    { author: "carol", kind: "ask", node: askNode("ask-1", "open"), words: "Question ask-1?" },
+  ] as const) {
+    await act(async () => page.writer().criterionUnder(node));
+    await waitFor(() =>
+      expect(targetWords(), node.id).toBe(
+        targetNamed(CONTROL_LABELS.criterion_target, author, kind)
+      )
+    );
+    expect(page.writer().criterion?.id, node.id).toBe(node.id);
+    expect(targetWords(), node.id).not.toContain(words);
+    // The target line drawn is the criterion line's own: the write line is hidden under it.
+    const line = composerBox().querySelector(`form[data-criterion-under="${node.id}"]`);
+    expect(line?.querySelector("[data-composer-target]"), node.id).not.toBeNull();
   }
 
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
   await user.click(
-    within(answerForm()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
   );
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-  await waitFor(() => expect(focusedRowId()).toBe("ask-1"));
-});
-
-// IC:355: the decline dialog is drawn outside the answer's form, so Enter, Escape and
-// Ctrl/Cmd+Enter typed in its note are the dialog's: a new line, its own close, and a decline -
-// never the answer sent, and never the answer line ended.
-test("keys typed in the decline note stay in the decline dialog", async () => {
-  const user = userEvent.setup();
-  // An answer the box must not send, refused as Dispatch would refuse a stale one.
-  const answerAsk = stub(
-    spyOn(api, "answerAsk").mockRejectedValue(
-      new ApiError(409, { code: "ASK_CLOSED", error: "This ask was already answered." })
-    )
-  );
-  const declineAsk = stub(
-    spyOn(api, "declineAsk")
-      .mockRejectedValueOnce(
-        new ApiError(409, { code: "ASK_NOT_DECLINABLE", error: "This question is already closed." })
-      )
-      .mockResolvedValue(
-        askRecord("ask-1", {
-          resolution: {
-            actor: ALICE,
-            at: "2026-11-07T00:00:00Z",
-            dispatch_words: "",
-            kind: "declined",
-            reason: "Not mine to answer",
-          },
-          state: "resolved",
-        })
-      )
-  );
-  const page = renderPage();
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  // Words in the answer, so a key that reached its form would send them.
-  await user.keyboard("My answer");
-
-  const openNote = async () => {
-    await user.click(within(answerForm()).getByRole("button", { name: "Decline to answer" }));
-    const dialog = await screen.findByRole("dialog", { name: "Decline to answer" });
-    const note = within(dialog).getByLabelText<HTMLTextAreaElement>("Note (optional)");
-    await waitFor(() => expect(note).toHaveFocus());
-    return { dialog, note };
-  };
-
-  // Enter is a new line of the note.
-  const first = await openNote();
-  await user.keyboard("Not mine{Enter}");
-  expect(first.note.value).toBe("Not mine\n");
-  expect(screen.getByRole("dialog", { name: "Decline to answer" })).toBeInTheDocument();
-  // Escape closes the dialog alone.
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(page.writer().answer?.askId).toBe("ask-1");
-  expect(answerField().value).toBe("My answer");
-
-  // Ctrl+Enter, then Cmd+Enter, decline.
-  const second = await openNote();
-  await user.keyboard("Not mine to answer");
-  await user.keyboard("{Control>}{Enter}{/Control}");
-  await waitFor(() => expect(declineAsk).toHaveBeenCalledTimes(1));
-  expect(await within(second.dialog).findByRole("alert")).toHaveTextContent(
-    "This question is already closed."
-  );
-  expect(page.writer().answer?.askId).toBe("ask-1");
-  await user.click(second.note);
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
-  await waitFor(() => expect(declineAsk).toHaveBeenCalledTimes(2));
-  expect(declineAsk).toHaveBeenLastCalledWith(
-    "ask-1",
-    { note: "Not mine to answer" },
-    keyedAttempt
-  );
-  await waitFor(() => expect(page.writer().answer).toBeUndefined());
-  expect(answerAsk).not.toHaveBeenCalled();
+  await waitFor(() => expect(page.writer().criterion).toBeUndefined());
+  expect(composerBox().querySelector("form[data-criterion-under]")).toBeNull();
 });
 
 // Departure 1 of the plan: under a view no outline is drawn to consume a landing, so a write sent
@@ -1637,14 +1446,6 @@ test("under a view a sent write leaves no landing and gives the focus back where
   const createComment = stub(
     spyOn(api, "createComment").mockResolvedValue(
       commentRecord("comment-9", ALICE, "Under the view", { reply_to: "comment-1" })
-    )
-  );
-  const answerAsk = stub(
-    spyOn(api, "answerAsk").mockResolvedValue(
-      askRecord("ask-1", {
-        answer: { at: "2026-11-07T00:00:00Z", selected: [], text: "Yes please", user: READER },
-        state: "answered",
-      })
     )
   );
   const page = renderPage({ viewOn: true });
@@ -1666,23 +1467,15 @@ test("under a view a sent write leaves no landing and gives the focus back where
   expect(page.writer().landing).toBeUndefined();
   expect(page.writer().reply).toBeNull();
   expect(composerBox()).toHaveAttribute("hidden");
-
-  const answer = screen.getByRole("button", { name: "Answer" });
-  await user.click(answer);
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  await user.keyboard("Yes please{Enter}");
-  await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(answer).toHaveFocus());
-  expect(page.writer().landing).toBeUndefined();
-  expect(page.writer().answer).toBeUndefined();
-  expect(composerBox()).toHaveAttribute("hidden");
 });
 
-// R11: `r` on a statement aims the box at it: the target line names the statement by its first
-// line in plain words, and the comment sent carries the statement's whole words as its anchor's
-// quote, with no occurrence, so words the document holds twice are refused rather than anchored
-// to the wrong block. The comment lands under the statement.
-test("a statement's target line names its first line, and its send carries its words as the quote", async () => {
+// R11: `r` on a statement aims the box at it: the target line names it by the page's word for its
+// kind and draws none of its words, and the placeholder says the comment goes beside the
+// statement. The comment sent carries the statement's whole words as its anchor's quote, with no
+// occurrence, so words the document holds twice are refused rather than anchored to the wrong
+// block. The margin beside the statement draws the comment, and no row of the outline, so once
+// it lands the reader is back on the statement's own row.
+test("a statement's target line names its kind, and its comment carries its words as the quote and lands on its row", async () => {
   const user = userEvent.setup();
   const createComment = stub(
     spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "Agreed"))
@@ -1691,10 +1484,8 @@ test("a statement's target line names its first line, and its send carries its w
 
   await page.press(user, "spec#b-r1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
-  await waitFor(() =>
-    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`)
-  );
-  expect(writeField()).toHaveAttribute("placeholder", CONTROL_LABELS.reply_placeholder);
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
+  expect(writeField()).toHaveAttribute("placeholder", CONTROL_LABELS.statement_placeholder);
   expect(kinds()).toEqual([]);
 
   await user.keyboard("Agreed{Enter}");
@@ -1705,68 +1496,50 @@ test("a statement's target line names its first line, and its send carries its w
   expect(input).toEqual({ anchor: { artifact: "spec", quote: STATEMENT_QUOTE }, body: "Agreed" });
   expect(Object.keys(input?.anchor ?? {}).sort()).toEqual(["artifact", "quote"]);
   await waitFor(() => expect(page.writer().statement).toBeUndefined());
-  expect(page.writer().landing).toEqual({
-    to: "newest",
-    under: { id: "spec#b-r1", kind: "statement" },
-  });
+  // The landing names the statement's own row, which the outline takes at once: it waits for no
+  // new row under the statement.
+  expect(page.writer().landing).toBeUndefined();
+  await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
 });
 
-// The reviewer's finding 4593511319: a statement's row holds the coverage read's words, which
-// leave each of its references out (`blockWords` in Go's `api/results.go`), beside the reading
-// of its whole words, which keeps them. The target line reads a reference that reading holds as
-// the name the row draws for it - the issue's key and title - and never as its address.
-test("a statement's target line names the issue its words cite, never its address", async () => {
+// R11: the target line names a statement by the author its node holds, where it holds one, and
+// by its kind alone where it holds none, never by the document's maker; either way it draws none
+// of its words, which stand whole in the statement's own row.
+test("a statement's target line names the first author its node lists, and no one where the list is empty", async () => {
   const user = userEvent.setup();
-  const tree = displayTree(
-    "A comment on this statement is drawn under it, as dispatch://CORE-2 asks."
-  );
-  if (tree === undefined) throw new Error("the engine read no statement");
-  const summary = stub(
-    spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
-      documents: [],
-      key,
-      project: "CORE",
-      status: "in_progress",
-      title: "The issue a statement cites",
-    }))
-  );
-  const root = node({
-    children: [
-      node({
-        id: "spec#b-r2",
-        reference: `dispatch://${KEY}/spec#b-r2`,
-        source: SPEC_SOURCE,
-        statement: true,
-        // The coverage read's words, the address left out, as the page's row holds them.
-        text: "A comment on this statement is drawn under it, as asks.",
-        tree,
-        type: "requirement",
-      }),
-    ],
-    id: KEY,
-    type: "issue",
+  const words = "The box sits at the foot of the outline.";
+  const drawn = outline();
+  const authored = node({
+    author: BOB,
+    id: "spec#b-r2",
+    reference: `dispatch://${KEY}/spec#b-r2`,
+    source: SPEC_SOURCE,
+    statement: true,
+    text: words,
+    type: "requirement",
   });
-  const page = renderPage({}, root);
+  const page = renderPage({}, { ...drawn, children: [...drawn.children, authored] });
 
   await page.press(user, "spec#b-r2", "r");
-  await waitFor(() => expect(writeField()).toHaveFocus());
-  await waitFor(() =>
-    expect(targetWords()).toBe(
-      `${CONTROL_LABELS.replying_to} A comment on this statement is drawn under it, as CORE-2 The issue a statement cites asks.`
-    )
-  );
-  expect(summary).toHaveBeenCalledWith("CORE-2");
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "requirement")));
+  expect(page.writer().statement?.row).toBe("spec#b-r2");
+  expect(targetWords()).not.toContain(words);
+
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
+  expect(page.writer().statement?.row).toBe("spec#b-r1");
+  for (const part of STATEMENT_QUOTE.split(". ")) expect(targetWords()).not.toContain(part);
 });
 
 // The reviewer's finding 4593511280: a move of the page's carries nothing, so a refusal stays
 // with the address it was written for, and the box's address names the statement it comments on
 // (`OutlineLook.anchor`), so at its own statement a refused comment is no draft written elsewhere
 // and its Retry sends it. A comment on a statement Dispatch refused holds the box on the
-// statement - a Reply on another row, or an Answer, puts the caret back in it on that statement,
-// its refused words and its Retry kept - and a box that mounts again over the refused send, as
-// one does when the reader leaves the issue and comes back, names the statement from the send and
-// sends the words to it again. The send keeps the statement's document, words and row, so the
-// line names it by those words, and a write to it lands under the statement's row.
+// statement - a Reply on another row puts the caret back in it on that statement, and an Answer
+// leaves it there with the caret on the row, its refused words and its Retry kept either way -
+// and a box that mounts again over the refused send, as one does when the reader leaves the issue
+// and comes back, names the statement from the send and sends the words to it again. The send
+// keeps the statement's document, words and row, so a write to it lands on the statement's row.
 test("a refused comment on a statement keeps its words and its statement, through a Reply elsewhere and a new mount", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1787,13 +1560,14 @@ test("a refused comment on a statement keeps its words and its statement, throug
   expect(retry()).not.toBeNull();
 
   // `r` on bob's comment, and `a` on the open question.
-  const named = `${CONTROL_LABELS.replying_to} The page draws one box.`;
+  const named = replyingTo(undefined, "requirement");
   for (const [row, key] of [
     ["comment-1", "r"],
     ["ask-1", "a"],
   ] as const) {
     await first.press(user, row, key);
-    await waitFor(() => expect(writeField()).toHaveFocus());
+    if (key === "r") await waitFor(() => expect(writeField()).toHaveFocus());
+    else expect(focusedRowId(), `${key} on ${row}`).toBe(row);
     expect(targetWords(), `${key} on ${row}`).toBe(named);
     expect(writeField().value, `${key} on ${row}`).toBe("Agreed");
     expect(first.writer().reply, `${key} on ${row}`).toBeNull();
@@ -1801,8 +1575,8 @@ test("a refused comment on a statement keeps its words and its statement, throug
     expect(retry(), `${key} on ${row}`).not.toBeNull();
   }
 
-  // The box mounted again in the same tab, over the send it refused: the statement named by the
-  // first line of its words, as its row names it.
+  // The box mounted again in the same tab, over the send it refused: the statement named by its
+  // kind, as before.
   first.view.unmount();
   const again = renderPage({}, outline(), first.client);
   await waitFor(() => expect(targetWords()).toBe(named));
@@ -1819,20 +1593,18 @@ test("a refused comment on a statement keeps its words and its statement, throug
     body: "Agreed",
   });
   await waitFor(() => expect(again.writer().statement).toBeUndefined());
-  expect(again.writer().landing).toEqual({
-    to: "newest",
-    under: { id: "spec#b-r1", kind: "statement" },
-  });
+  expect(again.writer().landing).toBeUndefined();
+  await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
 });
 
 // The reviewer's finding 5942007779: a comment on a statement sent from a box that mounted again
 // over its refused send - as a reload brings one back - lands as every send from the box lands
 // (R4). The box mounted again shows the statement the refusal was written for, so Send there is
 // that refusal's own and goes. The held send keeps the statement's row beside its words, so once
-// the read draws the reader's new comment under the statement, the outline unfolds it, brings its
-// row on screen and gives it the focus, rather than giving the focus back to where the reader
-// came from.
-test("a comment on a statement sent again from a box mounted over its refused send lands on its new row", async () => {
+// the comment lands the outline brings the statement's row on screen and gives it the focus - the
+// margin beside it draws the comment, which has no row of its own - rather than giving the focus
+// back to where the reader came from.
+test("a comment on a statement sent again from a box mounted over its refused send lands on the statement's row", async () => {
   const user = userEvent.setup();
   stub(
     spyOn(api, "createComment")
@@ -1852,41 +1624,28 @@ test("a comment on a statement sent again from a box mounted over its refused se
   // The box mounted again over the send it refused, as a reload brings it back.
   first.view.unmount();
   const again = renderPage({}, outline(), first.client);
-  await waitFor(() =>
-    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`)
-  );
+  await waitFor(() => expect(targetWords()).toBe(replyingTo(undefined, "requirement")));
   expect(writeField().value).toBe("Agreed");
   expect(
     within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send })
   ).not.toHaveAttribute("aria-disabled");
 
-  // The new comment's row is drawn below the screen, so landing on it has to scroll to it.
+  // The statement's row is drawn below the screen, so landing on it has to scroll to it.
   const scrolled = stub(spyOn(window, "scrollBy").mockImplementation(() => {}));
   stub(
     spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement
     ) {
-      return this.dataset.nodeId === "comment-9" ? new DOMRect(0, 2000, 800, 24) : new DOMRect();
+      return this.dataset.nodeId === "spec#b-r1" ? new DOMRect(0, 2000, 800, 24) : new DOMRect();
     })
   );
   await user.click(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send }));
   await waitFor(() => expect(again.writer().statement).toBeUndefined());
-
-  // The read the send makes draws the reader's comment under the statement.
-  const drawn = outline();
-  again.redrawOutline({
-    ...drawn,
-    children: drawn.children.map((child) =>
-      child.id === "spec#b-r1"
-        ? { ...child, children: [commentNode("comment-9", ALICE, "Agreed")], held: 1 }
-        : child
-    ),
-  });
-  await waitFor(() => expect(focusedRowId()).toBe("comment-9"));
+  expect(again.writer().landing).toBeUndefined();
+  await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
   // Scrolled until the row's bottom clears the box at the foot (`bringOnScreen`).
   const floor = window.innerHeight - (Number.parseFloat(footHeight()) || 0);
   expect(scrolled).toHaveBeenCalledWith({ top: 2024 - floor + 8 });
-  expect(again.writer().landing).toBeUndefined();
 });
 
 // The reviewer's finding 4593511306: a statement whose words its document holds twice is
@@ -1913,15 +1672,14 @@ test("a statement held twice is refused in the page's words, with no Retry and t
   expect(alert.textContent).not.toContain("occurrence");
   expect(within(composerBox()).queryByRole("button", { name: "Retry" })).toBeNull();
   expect(writeField().value).toBe("Agreed");
-  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
+  expect(targetWords()).toBe(replyingTo(undefined, "requirement"));
 });
 
 // The reviewer's finding PRRT_kwDORFy7ds64Sg45: a comment on a statement refused with
 // `TARGET_AMBIGUOUS` holds the box on its statement only while the held send carries it. The
 // target line's control takes the statement off the held send, its refusal and its words kept,
-// so `r` on another row then aims the box at that row, the refused words kept, and `a` on an
-// open question draws the answer line.
-test("a refused statement let go with the target line's control frees a Reply and an Answer", async () => {
+// so `r` on another row then aims the box at that row, the refused words kept.
+test("a refused statement let go with the target line's control frees a Reply", async () => {
   const user = userEvent.setup();
   const createComment = stub(
     spyOn(api, "createComment").mockRejectedValue(
@@ -1949,20 +1707,11 @@ test("a refused statement let go with the target line's control frees a Reply an
 
   // `r` on bob's comment: a reply to it, the refused words still the box's draft.
   await page.press(user, "comment-1", "r");
-  await waitFor(() =>
-    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`)
-  );
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(page.writer().reply?.id).toBe("comment-1");
   expect(page.writer().statement).toBeUndefined();
   expect(writeField().value).toBe("Agreed");
-
-  // `a` on the open question: the answer line.
-  await page.press(user, "ask-1", "a");
-  await waitFor(() => expect(answerField()).toHaveFocus());
-  expect(targetWords()).toBe(`${CONTROL_LABELS.answering} Question ask-1?`);
-  expect(page.writer().answer?.askId).toBe("ask-1");
-  expect(page.writer().statement).toBeUndefined();
 
   // The refusal is still held, with no statement left on it.
   const held = heldSends(page.client).get(["issue-composer", KEY]);
@@ -1996,7 +1745,7 @@ test("r on a statement keeps the box on a refused reply, and the send carries th
   // `r` on the statement: the box stays on bob's comment, the refused words in it.
   await page.press(user, "spec#b-r1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
-  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
+  expect(targetWords()).toBe(replyingTo("bob", "comment"));
   expect(page.writer().reply?.id).toBe("comment-1");
   expect(page.writer().statement).toBeUndefined();
   expect(writeField().value).toBe("My reply to bob");
@@ -2032,60 +1781,13 @@ async function refuseReply(user: UserEvent, page: DrawnPage): Promise<void> {
 /** That the box is still on the refused reply to bob's comment, with no answer and no edit set
  *  beside it, the caret in the line and the refused words in it. */
 async function onRefusedReply(page: DrawnPage): Promise<void> {
-  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
-  expect(composerBox().querySelector("form[data-answering]")).toBeNull();
+  expect(targetWords()).toBe(replyingTo("bob", "comment"));
   expect(page.writer().answer).toBeUndefined();
   expect(page.writer().editing).toBeUndefined();
   expect(page.writer().reply?.id).toBe("comment-1");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe("My reply to bob");
 }
-
-// The same rule for a reply: a reply Dispatch refused holds the box on the comment it answers
-// when the reader presses `a` on an open question, so the refused words are never sent as a
-// comment on the issue once the answer line is done.
-test("a on an open question keeps the box on a refused reply", async () => {
-  const user = userEvent.setup();
-  const page = renderPage();
-  await refuseReply(user, page);
-  await page.press(user, "ask-1", "a");
-  await onRefusedReply(page);
-});
-
-// A change of the reader's own answer, pressed on its row, keeps the box on a refused reply as
-// an Answer does: the line it would open seeds the old answer's words, and the reply's would be
-// lost.
-test("a change of answer keeps the box on a refused reply", async () => {
-  const user = userEvent.setup();
-  const drawn = outline();
-  // ask-2's row carries the reader's own answer, so it offers to change it.
-  const root = {
-    ...drawn,
-    children: drawn.children.map((child) =>
-      child.id === "ask-2"
-        ? { ...child, answer: { at: ANSWERED_AT, by: ALICE, selected: ["No"], text: "Old reason" } }
-        : child
-    ),
-  };
-  const page = renderPage({}, root);
-  await refuseReply(user, page);
-  await act(async () => rowOf("ask-2").focus());
-  const change = rowOf("ask-2").querySelector<HTMLElement>('[data-row-act="change-answer"]');
-  if (change === null) throw new Error("the answered question's row drew no change of answer");
-  await user.click(change);
-  await onRefusedReply(page);
-});
-
-// An option picked on an open question's row keeps the box on a refused reply as an Answer does.
-test("an option picked on a question's row keeps the box on a refused reply", async () => {
-  const user = userEvent.setup();
-  const page = renderPage();
-  await refuseReply(user, page);
-  const option = rowOf("ask-1").querySelector<HTMLElement>('[data-pick-option="Yes"]');
-  if (option === null) throw new Error("the open question's row drew no option to pick");
-  await user.click(option);
-  await onRefusedReply(page);
-});
 
 // An Edit of the reader's own comment keeps the box on a refused reply: the edit would put the
 // comment's words in place of the reply's. No row draws Edit yet, so the case asks the writer.
@@ -2136,7 +1838,7 @@ test("the issue's own Reply keeps the box on a refused comment on a statement", 
   await act(async () => rowOf("comment-2").focus());
   await act(async () => page.writer().writeOnIssue());
   await waitFor(() => expect(writeField()).toHaveFocus());
-  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
+  expect(targetWords()).toBe(replyingTo(undefined, "requirement"));
   expect(writeField().value).toBe("Agreed");
   expect(page.writer().statement?.quote).toBe(STATEMENT_QUOTE);
   expect(heldSends(page.client).get(["issue-composer", KEY])?.request.statement).toEqual({
@@ -2162,7 +1864,7 @@ test("a refused reply let go with the target line's control frees a Reply on ano
 
   // `r` on the question the reader answered: a reply to it, the refused words kept.
   await page.press(user, "ask-2", "r");
-  await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("carol", "ask")));
   expect(page.writer().reply?.id).toBe("ask-2");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe("My reply to bob");
@@ -2223,51 +1925,42 @@ test("a stopped reply let go with the target line's control is sent under a new 
   }
 });
 
-// The reading list's `issue-page-composer-target`: the target line and the answer's options draw
-// a stored text as its plain words - formatting gone, a reference read as the name it reads as -
-// never as the characters it is stored as.
-test("the target line reads the entry, the question and its options as their plain words", async () => {
+// R3: the target line names the entry a reply answers by its author and the page's word for its
+// kind - a comment, a message, a question - and draws none of its words: the entry stands whole
+// in its own row, and the line is no place the page shortens a node's text.
+test("the target line names the entry by its author and its kind, and draws none of its words", async () => {
   const user = userEvent.setup();
-  const entry = `I saw **the relay** drop ${PLANNER_MENTION}`;
-  const question = `Ship **which** path for ${PLANNER_MENTION}?`;
-  const option = `**Fast** for ${PLANNER_MENTION}`;
-  const questionTree = displayTree(question);
-  const optionTree = displayTree(option);
-  if (questionTree === undefined || optionTree === undefined) {
-    throw new Error("the engine read no question");
+  const page = renderPage({}, messageOutline());
+  for (const { author, kind, row, words } of [
+    { author: "bob", kind: "comment", row: "comment-1", words: "Earlier words" },
+    { author: "bob", kind: "message", row: "message-1", words: "A message" },
+    { author: "carol", kind: "ask", row: "ask-1", words: "Question ask-1?" },
+  ] as const) {
+    await page.press(user, row, "r");
+    await waitFor(() => expect(targetWords(), row).toBe(replyingTo(author, kind)));
+    expect(page.writer().reply?.id, row).toBe(row);
+    expect(targetWords(), row).not.toContain(words);
   }
-  reads.comments = [...reads.comments, commentRecord("comment-3", BOB, entry)];
-  reads.asks = [
-    ...reads.asks,
-    askRecord("ask-3", {
-      options: [{ label: option, label_tree: optionTree }, { label: "Slow" }],
-      question,
-      question_tree: questionTree,
-    }),
-  ];
-  const page = renderPage();
+});
 
-  // The entry a reply answers.
-  await act(async () =>
-    page.writer().replyTo({ author: BOB, id: "comment-3", kind: "comment", text: entry })
-  );
-  await waitFor(() =>
-    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob I saw the relay drop @Planner`)
-  );
-
-  // The question an answer answers, its options, and the one the reader chose.
-  await act(async () => page.writer().answerNode({ ...askNode("ask-3", "open"), text: question }));
-  await waitFor(() =>
-    expect(targetWords()).toBe(`${CONTROL_LABELS.answering} Ship which path for @Planner?`)
-  );
-  const chip = within(answerForm()).getByRole("button", { name: "Fast for @Planner" });
-  expect(chip.textContent).toBe("Fast for @Planner");
-  await user.click(chip);
+// R3: the target line names a person who acted through a session as the page names an author
+// (`useAgentText().author`), as the row of their comment names them: by their login and the
+// page's words for an act made through an agent, not by the session's id.
+test("the target line names a person who acted through a session as the page names an author", async () => {
+  const user = userEvent.setup();
+  const through: Actor = { act: { session: PLANNER.id }, id: "bob", kind: "user" };
+  const words = "Written through the planner";
+  reads.comments.push(commentRecord("comment-4", through, words));
+  const root = outline();
+  const drawn = { ...root, children: [...root.children, commentNode("comment-4", through, words)] };
+  const page = renderPage({}, drawn);
+  await page.press(user, "comment-4", "r");
   await waitFor(() =>
     expect(targetWords()).toBe(
-      `${CONTROL_LABELS.answering} Ship which path for @Planner? · ${CONTROL_LABELS.answer_chose} “Fast for @Planner”`
+      replyingTo(`bob, acting through ${AUTHOR_KIND_WORDS.agent}`, "comment")
     )
   );
+  expect(page.writer().reply?.id).toBe("comment-4");
 });
 
 /** The classes of `element` and of everything inside it that are a colour of the dashboard's
@@ -2469,7 +2162,7 @@ test("the current point follows the box's target as it is set and ended", async 
   expect(drawnPoint()).toEqual(pointOn("comment-2"));
 
   await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   expect(drawnPoint()).toEqual(pointOn("comment-1"));
   await waitFor(() => expect(writeField()).toHaveFocus());
   await user.keyboard("{Escape}");

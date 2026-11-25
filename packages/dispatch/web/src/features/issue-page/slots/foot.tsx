@@ -12,7 +12,7 @@ import type { SlotProps } from "../slot-props";
 
 /**
  * The foot of the new issue page: the end of the outline, which reads the issue once the
- * reader has seen it (`IssueReadMark`, R9), and the one place to write, held at the foot of the
+ * reader has seen it (`IssueReadMark`, R9), and the box to write in, held at the foot of the
  * screen (`IssueComposer`, R1). The column the root draws the stage and this slot in is at least
  * the screen's height (`IssueOutlinePage.tsx`), so the box's wrapper stands at the screen's foot
  * however short the outline is, and stays there while a long one scrolls under it.
