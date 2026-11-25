@@ -25,6 +25,7 @@ const projects: Project[] = [
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   },
   {
     created_at: "2026-09-10T00:00:00Z",
@@ -32,6 +33,7 @@ const projects: Project[] = [
     name: "Operations",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   },
 ];
 

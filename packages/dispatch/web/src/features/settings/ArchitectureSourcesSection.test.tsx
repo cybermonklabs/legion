@@ -29,10 +29,11 @@ const architectureSource: ArchitectureSource = {
 
 const core: Project = {
   created_at: "2026-09-01T00:00:00Z",
+  gated_steps: [],
   key: "CORE",
   name: "Core",
   open_asks: 0,
-  gated_steps: [],
+  proven_sessions: false,
 };
 
 /** The architecture source routes' server state as the Settings page reaches it: one row per
@@ -86,6 +87,7 @@ test("a human adds an architecture source and the verified row appears", async (
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockResolvedValue(
@@ -136,6 +138,7 @@ test("a failed architecture source access check shows the server's reason inline
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockRejectedValue(
@@ -201,6 +204,7 @@ test("each architecture source of a project is its own row, refreshed and delete
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockImplementation(server.put);

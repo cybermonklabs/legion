@@ -2423,6 +2423,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2465,6 +2466,7 @@ test("IssuePage draws the steps of a root whose parent is in another project", a
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2503,6 +2505,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
