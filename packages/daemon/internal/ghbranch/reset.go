@@ -57,12 +57,15 @@ type Result struct {
 // Stands), so a push in that window stays on the branch. A create is no such risk: GitHub refuses
 // the create of a ref that exists.
 //
-// The ref name passes this repository's private-name rules first, as Create's does, and nothing is
-// read or written for a name they refuse.
-func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.Repository, branch, base, fallback, mergedHead string) (Result, error) {
+// The ref name passes the deployment's private-name rules first, rules, the set the daemon
+// compiled at boot, as Create's does (leakguard.RuleSet.Check), and nothing is read or written for
+// a name they refuse. Nil rules are a deployment that names no rule file.
+func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.Repository, branch, base, fallback, mergedHead string, rules *leakguard.RuleSet) (Result, error) {
 	ref := "refs/heads/" + branch
-	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
-		return Result{}, fmt.Errorf("reset a branch of %s: %w", repo, err)
+	if rules != nil {
+		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
+			return Result{}, fmt.Errorf("reset a branch of %s: %w", repo, err)
+		}
 	}
 	result := Result{Base: base}
 	head, found, err := refCommit(ctx, github, repo, base)
