@@ -162,7 +162,7 @@ func TestTheStoreHoldsATaskAtItsParts(t *testing.T) {
 		}
 	}
 	for _, place := range []record.TaskPlace{{Kind: record.PlaceParts, Position: 1}, {Kind: record.PlaceReported, Position: 1}} {
-		err := store.Tx(ctx, func(tx pgx.Tx) error {
+		err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return records.MoveTask(ctx, tx, "LEGION-208", 3, "f", place, record.TaskRunning)
 		})
 		if err == nil || !strings.Contains(err.Error(), "no task stands at that place") {
