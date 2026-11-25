@@ -15,10 +15,11 @@ const issueViewReferences = DISPATCH_DASHBOARD_PAGES.tabs
   .map(({ reference }) => reference)
   .filter((reference) => !["log", "activity", "children"].includes(reference));
 
-/** An issue's own references: the issue, its spec, its events, its children, a view tab, a
- *  document at a version, and an ask, a comment and an issue message. */
+/** An issue's own references: the issue, its spec, its events, its children, its comments, a view
+ *  tab, a document at a version, and an ask, a comment and an issue message. Each kind's group
+ *  stands in the order `parseDispatchRef` reads the match in. */
 const issueReferencePattern = new RegExp(
-  `^dispatch://([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:/(spec)|/(log|activity)|/(children)|/(?:${issueViewReferences.join("|")})|/artifact/([^/@]+)(?:@v(\\d+))?|/ask/([^/]+)|/comment/([^/]+)|/message/([^/]+))?$`
+  `^dispatch://([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:/(spec)|/(log|activity)|/(children)|/(comments)|/(?:${issueViewReferences.join("|")})|/artifact/([^/@]+)(?:@v(\\d+))?|/ask/([^/]+)|/comment/([^/]+)|/message/([^/]+))?$`
 );
 
 /**
@@ -98,6 +99,7 @@ export interface ParsedDispatchRef {
     | "spec"
     | "log"
     | "children"
+    | "comments"
     | "artifact"
     | "block"
     | "ask"
@@ -211,12 +213,14 @@ export function parseDispatchRef(ref: string): ParsedDispatchRef | null {
   // both read the issue's events; it is no kind of its own. A view tab names the issue.
   const issueReference = ref.match(issueReferencePattern);
   if (!issueReference) return null;
-  const [, issue, spec, log, children, artifact, version, ask, comment, message] = issueReference;
+  const [, issue, spec, log, children, comments, artifact, version, ask, comment, message] =
+    issueReference;
   if (!issue || (version !== undefined && Number(version) < 1)) return null;
   const owner: Owner = { kind: "issue", issue };
   if (spec) return { owner, kind: "spec", id: spec };
   if (log) return { owner, kind: "log", id: log };
   if (children) return { owner, kind: "children", id: children };
+  if (comments) return { owner, kind: "comments", id: comments };
   if (artifact) {
     return {
       owner,

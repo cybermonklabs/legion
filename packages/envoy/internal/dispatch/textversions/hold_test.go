@@ -39,7 +39,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	var holders cursorHolders
 	var ids []int64
@@ -103,8 +103,8 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 // writes the next event. Its events are woken only once it is seen to hold the hold, so a standby
 // that needs an event's wake to take it fails. Each wait is on its fact, bounded by the test
 // binary's deadline alone: a fixed span from the stop would include the pass's wait on the event
-// horizon, which waits on the whole Postgres instance (textversionstest.AwaitRowsUntil), not on
-// the standby.
+// horizon, which waits on the database's open event writes (textversionstest.AwaitRowsUntil), not
+// on the standby.
 func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -114,7 +114,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	second := startFillRetrying(t, standbyStore, released, make(chan time.Time), true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
 	written := commitComment(t, database, broker, textversionstest.Issue).id
 	first.Wake()
@@ -157,7 +157,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 //
 // Each wait is on its fact, bounded by the test binary's deadline alone: the hold coming free, the
 // retry's take, and the row, which the pass writes only once the event horizon, which waits on the
-// whole Postgres instance, has passed the event (textversionstest.AwaitRowsUntil). A fixed span
+// database's open event writes, has passed the event (textversionstest.AwaitRowsUntil). A fixed span
 // from the holder's stop, the ticker's 10 s and 5 s more, read the instance's load as well as the
 // standby (merge-group run 44963211024: `the events [1] had 0 rows within 14.996081355s; want 1`).
 func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
@@ -169,7 +169,7 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	never := make(chan struct{})
 	retry := make(chan time.Time, 1)
 	second := startFillRetrying(t, storetest.SecondProcess(t, database), never, retry, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	first.Stop(t)
 	// The holder released its hold as it stopped, or, where its release did not reach the

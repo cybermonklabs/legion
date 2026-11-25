@@ -22,7 +22,7 @@ import (
 // issues.github_repo (0047, 0048), pull_requests.repo (0004), cleared_pull_requests.repo
 // (20261120144241), production_checks.repo (0049) and repo_notes.resolved_repo (0047). No other
 // column holds one: the claims' and claim capabilities' locators name a tmux pane or a Sandbox,
-// the outbox's payloads and the bundles' rows carry no repository, and processed_events.event_id
+// the outbox's payloads carry no repository, and processed_events.event_id
 // only embeds one in a dedupe key. Every comparison is made without case
 // (`lower(col) = lower(from)`), as every read of a repository name in the record is, so a row in
 // any spelling of the old name is written; the new name is written as the caller hands it, on

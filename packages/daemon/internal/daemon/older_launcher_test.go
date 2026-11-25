@@ -284,7 +284,7 @@ func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	ctx, stop := context.WithCancel(r.ctx)
+	ctx, stop := context.WithCancel(store.ForConcurrentWorker(r.ctx))
 	defer stop()
 	decided := make(chan error, 1)
 	go func() { decided <- r.machine.Handle(ctx, ev) }()

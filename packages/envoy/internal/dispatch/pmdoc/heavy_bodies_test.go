@@ -523,6 +523,7 @@ func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
 // TestHeavyBodiesCountedHelper is the run of the counted build the rows count: it prepares the op
 // countedHelperEnv names, runs it once, and logs countedHelperRan with it and its outcome.
 func TestHeavyBodiesCountedHelper(t *testing.T) {
+	t.Parallel()
 	text := os.Getenv(countedHelperEnv)
 	if text == "" {
 		t.Skip("the child process the heavy-bodies rows count statements in")
@@ -630,6 +631,7 @@ func cpuGrowthVerdict(characters [2]int, perCharacter [2]float64) (string, bool)
 // as the dearest of these rows measured, fails work quadratic in it, and fails a time of none,
 // which would pass any growth at all.
 func TestCPUGrowthVerdictCatchesQuadraticWorkAndRefusesATimeOfNone(t *testing.T) {
+	t.Parallel()
 	characters := [2]int{32_000, cpuCheckLength * 32_000}
 	for _, test := range []struct {
 		name         string
@@ -796,6 +798,7 @@ func countGrowthVerdict(sizes []int, counts []uint64, allowance int, unit string
 // growth at all: the same arithmetic TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack
 // proves of the timed verdict, on counts.
 func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing.T) {
+	t.Parallel()
 	sizes := []int{4_000, 4_000 * growthStep}
 	linear := func(size int) uint64 { return uint64(3*size + 500) }
 	quadratic := func(size int) uint64 { return uint64(size) * uint64(size) / 64 }

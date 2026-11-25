@@ -47,7 +47,8 @@ func pacedDeps(rate int) func(*Deps) {
 	return func(d *Deps) {
 		d.WakePace = WakePace{Rate: rate, Burst: 1}
 		if rate > 0 {
-			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+			limiter := wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart })
+			d.WakePace.Reserve, d.WakePace.Interval = limiter.Reserve, limiter.Interval()
 		}
 	}
 }
@@ -254,8 +255,79 @@ func TestASpawnWhoseCarriedTurnPassedLongAgoIsPacedAgain(t *testing.T) {
 	if held := second.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(wakeInterval+wakePart)) {
 		t.Fatalf("the spawn whose turn passed two intervals ago holds wake %+v, want one reserved afresh, due one interval and a part on", held)
 	}
+	if late := h.logs.lines("reached the wake gate an interval or more after the turn its caller reserved"); len(late) != 1 ||
+		!strings.Contains(late[0], "claim="+string(secondToken)) {
+		t.Fatalf("the lines that say a late turn was reserved afresh are %v, want one, the second claim's", late)
+	}
 	if held := third.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(3*wakeInterval)) {
 		t.Fatalf("the spawn whose turn is to come holds wake %+v, want its own turn, three intervals on", held)
+	}
+}
+
+// A parked wake runs at the turn its claim's view names, however far the clock moved between the
+// decision's read of it and the arm of the wake's timer (Clock.At). Here the reservation moves the
+// clock a second, as the test goroutine of internal/daemon's
+// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst moved the wave clock inside
+// another goroutine's park, which failed it with "timed out waiting for the launch of … at its
+// turn" (awaitLaunchAtItsTurn).
+func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
+	const moved = time.Second
+	var h *harness
+	h = pacedHarness(t, wakeRate, func(d *Deps) {
+		reserve := d.WakePace.Reserve
+		d.WakePace.Reserve = func(now time.Time) time.Time {
+			at := reserve(now)
+			if at.After(now) {
+				h.clock.Advance(moved)
+			}
+			return at
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	start := h.clock.Now()
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+
+	held := second.View().WakeWaiting
+	if want := start.Add(wakeInterval + wakePart); held == nil || !held.At.Equal(want) {
+		t.Fatalf("the waiting claim names wake %+v, want its turn at %s, one interval and a part after the first", held, want)
+	}
+	if now := h.clock.Now(); !now.Equal(start.Add(moved)) {
+		t.Fatalf("the clock reads %s after the park, want %s: the reservation moved it %s", now, start.Add(moved), moved)
+	}
+	h.clock.Advance(held.At.Sub(h.clock.Now()) - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// The fake clock arms a moment it has passed, by either arm, for its own time: it fires at the
+// clock's next move and never moves the clock back.
+func TestTheFakeClockFiresAPassedMomentAtItsOwnTime(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		arm  func(c *fakeClock, passed time.Time, f func())
+	}{
+		{name: "AfterFunc", arm: func(c *fakeClock, passed time.Time, f func()) { c.AfterFunc(passed.Sub(c.Now()), f) }},
+		{name: "At", arm: func(c *fakeClock, passed time.Time, f func()) { c.At(passed, f) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := newFakeClock()
+			c.Advance(time.Hour)
+			before := c.Now()
+			var read time.Time
+			row.arm(c, before.Add(-time.Minute), func() { read = c.Now() })
+			c.Advance(time.Nanosecond)
+			if read.IsZero() || read.Before(before) {
+				t.Fatalf("the timer %s armed for a passed moment read the clock at %s, want no earlier than %s, the clock's time at the arm", row.name, read, before)
+			}
+		})
 	}
 }
 
@@ -1512,7 +1584,8 @@ func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
 // death's turn and before the pass's replay parks the relaunch at a turn of its own, behind every
 // turn the pass reserved. The replay moves that wake to the turn the pass handed it, so a report
 // that lands after the pass reserved costs the relaunch no place in the owed order, and the
-// relaunch is charged no second launch failure and launches once.
+// relaunch is charged no second launch failure and launches once, at that turn, however far the
+// clock moves between the replay's read of it and the arm (Clock.At).
 //
 // The negative control is the replay deciding nothing over the waiting wake, as it does for a
 // relaunch it finds parked at an earlier turn: the wake stays at the report's later turn.
@@ -1530,12 +1603,19 @@ func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn(t *tes
 	if !turn.Before(late.At) {
 		t.Fatalf("the report's relaunch waits for %s, want a turn after %s: the queue ahead of it is too short", late.At, turn)
 	}
+	clock := &movingClock{fakeClock: h.clock, step: time.Millisecond}
+	h.m.deps.Clock = clock
 
+	clock.moving.Store(true)
 	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: turn})
+	clock.moving.Store(false)
 
+	if clock.moves.Load() == 0 {
+		t.Fatal("the replay read the clock no time while it was moving: the clock moved nothing between a read and the arm")
+	}
 	h.wantWakeDueAt(WakeWaiting{Kind: WakeLaunch, At: turn})
 	h.wantBudgets(Budgets{LaunchFailures: 1})
-	h.advance(wakeInterval)
+	h.advance(turn.Sub(h.clock.Now()))
 	h.wantStarts(h.token, 2)
 	if held := h.m.View().WakeWaiting; held != nil {
 		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later turn is spent, not run", *held)

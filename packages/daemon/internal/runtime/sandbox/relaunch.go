@@ -395,6 +395,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
 				return fail("remove the release's record that its secrets are deleted", err)
 			}
+			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
 			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
@@ -445,7 +446,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
