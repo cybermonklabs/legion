@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ const newestEventFillMigration = "20261125094600_issues_last_event_at_backfill.u
 // that runs out is the fill waiting on that row, not a slow machine.
 const newestEventFillWait = 20 * time.Second
 
-// TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds holds 20261125094600's fill to
+// TestTheNewestEventFillNeverWaitsOnAHeldIssueRow holds 20261125094600's fill to
 // R5 of dispatch://INFRA-5791: it never waits on a row lock. A request takes its issues' rows in
 // the order its statements reach them, so a fill that waited for a row a request holds could hold
 // the row that request asks for next, and Postgres would abort one of the two. The fill leaves a
@@ -32,7 +33,7 @@ const newestEventFillWait = 20 * time.Second
 // row still held, the held issue's pair is null and the other two hold the pair of their event of
 // last_seq. Then the second transaction appends an event to the held issue as this release's
 // QueueAppendWithLogins writes one, and commits, and the issue's pair is that event's.
-func TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds(t *testing.T) {
+func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	fill, err := migrationFiles.ReadFile("migrations/" + newestEventFillMigration)
@@ -101,7 +102,11 @@ func TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds(t *testing.T
 				t.Fatalf("read where the fill waits: %v", err)
 			}
 			if behind {
-				t.Fatalf("the fill waits behind the second transaction's row of %s: it waits on a row another transaction holds", held)
+				var blocked string
+				if err := store.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, fillerPID).Scan(&blocked); err != nil {
+					t.Fatalf("read the fill's blocked statement: %v", err)
+				}
+				t.Fatalf("the fill waits behind the transaction that holds the row of %s: %s", held, withoutComments(blocked))
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("the fill did not end within %s while a second transaction holds the row of %s", newestEventFillWait, held)
@@ -169,4 +174,16 @@ func TestTheNewestEventFillWaitsOnNoIssueRowAnotherTransactionHolds(t *testing.T
 	if !pairs()[held] {
 		t.Errorf("after an append to the held issue %s, its pair names no event of last_seq, want the append's", held)
 	}
+}
+
+// withoutComments is statement, a migration file's text, with its `--` comment lines left out and
+// its whitespace run together, as a failure names the statement a backend runs.
+func withoutComments(statement string) string {
+	var kept []string
+	for _, line := range strings.Split(statement, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(strings.Fields(strings.Join(kept, " ")), " ")
 }
