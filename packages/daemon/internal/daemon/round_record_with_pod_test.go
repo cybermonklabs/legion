@@ -12,10 +12,12 @@ package daemon
 //   - a: the launch records its act and suspends the Sandbox over the round's pod, then fails in
 //     its wait for the pod to go, so it never tells the daemon what it took. The round's
 //     replacement by issue, which waited for the pod's launch turn, finds the Sandbox Suspended
-//     and asks no last word. The round's record stands beside the launch's, holding nothing, and
-//     the round ends with no notice of its own; once the Sandbox is gone, the launch's finish
-//     takes both records and tells the architect once, from the read of the two that tells most
-//     (the Legion reviewer's Medium 1 on #5285 at 4b123279).
+//     and asks no last word. The round's call yields to the launch's record: in one transaction
+//     the round's read moves onto the launch's record where it weighs more, and the round's
+//     record goes, so one record stands for the one act (the Legion reviewer's Medium 1 on #5285
+//     at 18d81dad). The round ends with no notice of its own; once the Sandbox is gone, the
+//     launch's finish tells the architect once, from the read that tells most of the launch's and
+//     the round's (the Legion reviewer's Medium 1 on #5285 at 4b123279).
 //   - c: the daemon stops between the launch's delete of the Sandbox and its word of what it took.
 //     The round's record is newer than the launch's, since the round wrote it before its call
 //     waited for the launch turn. After the restart the sweep decides the launch's record first,
@@ -29,6 +31,11 @@ package daemon
 // TestARoundsCallThatYieldedIsToldFromItsReadByTheLaunchsNotice is the Legion reviewer's Medium 1
 // on #5285 at 4b123279: path a, where the round's read found a commit and the launch's read could
 // not be made. The launch's one notice names the round's commit.
+//
+// TestARoundsCallThatYieldedToALaunchsActThatWasNotMadeTellsNobody is the Legion reviewer's Medium
+// 1 on #5285 at 18d81dad: path a, where a later launch resumes the Sandbox instead of deleting it,
+// so the launch's act is not made and its record is forgotten. No record of the round's call is
+// left to be told as a replacement of its own: the architect is told nothing, and no record stands.
 
 import (
 	"errors"
@@ -139,8 +146,8 @@ func TestALaunchThatFailedAfterItTookARoundsPodTellsTheArchitectOnce(t *testing.
 	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
 		t.Fatalf("the architect was told %+v while the Sandbox and its kept volume stand, want nothing yet: the act is the launch's, and its record tells once the Sandbox is gone", told)
 	}
-	if records := rig.replacementRecords(); records != 2 {
-		t.Fatalf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's and the round's, whose read the launch's notice weighs", records)
+	if records := rig.replacementRecords(); records != 1 {
+		t.Fatalf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's alone: the round's call yielded to it, and its read moved onto it where it weighed more", records)
 	}
 
 	rig.rt.ScriptSandboxGone(keptSandboxUID)
@@ -198,11 +205,11 @@ func TestARoundsCallThatYieldedIsToldFromItsReadByTheLaunchsNotice(t *testing.T)
 	for range roundSweeps {
 		rig.tick()
 	}
-	if records := rig.replacementRecords(); records != 2 {
-		t.Errorf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's and the round's", records)
+	if records := rig.replacementRecords(); records != 1 {
+		t.Errorf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's alone, holding the round's read", records)
 	}
 	if held := loggedLines(t, rig.logs.String(), unfinishedHoldLine); len(held) != 0 {
-		t.Errorf("the sweep held the issue's rounds %d times for a standing record, want never: the round of the record that stands is over", len(held))
+		t.Errorf("the sweep held the issue's rounds %d times for a standing record, want never: no record of the round stands", len(held))
 	}
 
 	rig.rt.ScriptSandboxGone(keptSandboxUID)
@@ -220,6 +227,52 @@ func TestARoundsCallThatYieldedIsToldFromItsReadByTheLaunchsNotice(t *testing.T)
 	}
 	if records := rig.replacementRecords(); records != 0 {
 		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
+	}
+}
+
+func TestARoundsCallThatYieldedToALaunchsActThatWasNotMadeTellsNobody(t *testing.T) {
+	t.Parallel()
+	rig := podlessKeptVolumeRound(t)
+	launched := false
+	rig.rt.HoldReplaceIssuePod(func() {
+		if launched {
+			return
+		}
+		launched = true
+		// The launch records its delete of the Sandbox and its kept volume over the round's pod,
+		// suspends the Sandbox, which takes the pod, and fails before its delete.
+		if err := rig.s.recordLaunchTakes(rig.ctx, withPodTaken(rig, "launch-volume-1")); err != nil {
+			t.Errorf("record the launch's act: %v", err)
+		}
+		rig.rt.ScriptSuspendedOver(podUpdatePod)
+	})
+	rig.awaitSwept(claim.RoleImplementer, "its round to end once the launch took its pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if !launched {
+		t.Fatal("the sweep asked for no replacement by issue, so this case proves nothing")
+	}
+	if asked := rig.byIssueAsks(); len(asked) != 1 || asked[0].Method != "ReplaceIssuePodNoPod" {
+		t.Fatalf("the replacement by issue was asked %+v, want one that found the pod taken", asked)
+	}
+	if records := rig.replacementRecords(); records != 1 {
+		t.Errorf("the store holds %d records once the round's call yielded, want the launch's alone", records)
+	}
+
+	// A later launch resumes the Sandbox instead of deleting it, so the Sandbox runs a new pod on
+	// its kept volume, built from the configuration as it now reads: the launch's delete was not
+	// made, and nothing took the disk the round's pod ran on.
+	rig.drifts()
+	rig.rt.ScriptIssuePod(podUpdateIssue, "pod-of-the-resumed-sandbox")
+	for range roundSweeps {
+		rig.tick()
+	}
+	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
+		t.Fatalf("the architect was told %+v, want nothing: the launch's delete was not made, the Sandbox's new pod mounts the kept volume, and the round's call took nothing", told)
+	}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q, want nothing", messages)
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records once the launch's act read not made, want none", records)
 	}
 }
 
