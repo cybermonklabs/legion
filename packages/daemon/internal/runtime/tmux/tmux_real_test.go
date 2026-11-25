@@ -468,8 +468,9 @@ func (c *stubConn) awaitEvent(t *testing.T, want string) {
 // rig is one test's private tmux server, daemon, stream stub, and runtime.
 type rig struct {
 	t *testing.T
-	// clock is every runtime's of the rig (Options.Clock): the sweep's period and each tmux
-	// client's command timeout run on it, and a row moves it (nextSweep, hungServer.outlast).
+	// clock is every runtime's of the rig (Options.Clock): the sweep's period, each tmux client's
+	// command timeout, a launch's wait for its pane's command and a stop's grace run on it, and a
+	// row moves it (nextSweep, hungServer.outlast, passDeadline).
 	clock        *clocktest.Fake
 	dir          string // the server's TMUX_TMPDIR as well as the rig's files
 	stateDir     string
@@ -554,8 +555,9 @@ func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 		NatsURLs:      []string{"nats://127.0.0.1:4222"},
 		Launchers:     ompOnly(shellprefix.Word(r.omp)),
 		StopGrace:     5 * time.Second,
-		// The daemon's defaults (probe_interval_seconds, slow_command_timeout_seconds, and the
-		// runtime's own 30 s command timeout), on the rig's fake clock, which only a row moves.
+		// The daemon's defaults: probe_interval_seconds, on the rig's fake clock, which only a row
+		// moves, as the runtime's own 30 s command timeout is; and slow_command_timeout_seconds,
+		// which the agent's connection measures (AdoptWorkingCopy), not the runtime's clock.
 		ProbeInterval:        30 * time.Second,
 		AdoptTimeout:         300 * time.Second,
 		Clock:                r.clock,
