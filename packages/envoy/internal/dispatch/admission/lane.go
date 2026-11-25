@@ -117,24 +117,37 @@ const MinHeavyReadLane = 3
 // MaxHeavyReadLane is the widest a heavy read lane grows: the read class's cap over the four lanes.
 const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 
-// fifoGate is a limit of places and the queue that waits for one, served first in, first out, one
-// place a holder: the gate a heavy read's lane (laneGate) and the request pool's work outside
-// admission (Outside) are both built on. It has a mutex of its own, since neither holds any of the
+// fifoGate is a limit of places and the queue that waits for one, one place a holder: the gate a
+// heavy read's lane (laneGate) and the request pool's work outside admission (Outside) are both
+// built on. Its queue is served as a class's is (gate.next): first in, first out while it absorbs a
+// burst, and newest first once it has stood non-empty for a whole wait, until it empties
+// (ReadBurstFactor says why). Its waiters join in the order they ask, so the newest is the last,
+// and every one of them may be refused: a lane's wait and a place's are always bounded, and no
+// take-back that must not be refused holds a place (Away.TakeBackNeverRefused), so no waiter here
+// needs a class queue's kept (gate.next). It has a mutex of its own, since neither holds any of the
 // Limiter's while it waits. A waiter waits for what is left of its wait and is refused only when
 // that wait runs out, or at once where the queue already holds ReadBurstFactor times the limit: a
 // bound on the memory the waiters take, a goroutine and a request each, as a class's burst cap
 // is, and never a refusal of a waiter whose wait still has room (ReadBurstFactor says why). That
 // is 22 times a lane's limit, 154 at a lane of 7 (MaxHeavyReadLane), and 22 times the outside
-// places' 8, 176 (OutsideQueueLimit). How long a waiter waits, and what a refusal is and is
+// places' 8, 176 (OutsideQueueLimit). How a waiter counts its wait, and what a refusal is and is
 // counted against, are the caller's (enter).
 type fifoGate struct {
 	limit int
+	// wait is how long a waiter waits for a place, which its caller counts (enter), and the wait
+	// the queue stands after (next); now is the clock that decision reads (Limiter.now). New sets
+	// both once.
+	wait time.Duration
+	now  func() time.Time
 
-	// mu guards the places held, the queue and its longest length.
-	mu        sync.Mutex
-	used      int
-	waiters   list.List // of chan struct{}, in arrival order
-	maxQueued int
+	// mu guards the places held, the queue, when it last went from empty to non-empty, its
+	// longest length and its newest-first grants.
+	mu            sync.Mutex
+	used          int
+	waiters       list.List // of chan struct{}, in the order they joined, the newest last
+	nonEmptySince time.Time
+	maxQueued     int
+	newestFirst   uint64
 }
 
 // errGateFull is fifoGate.enter's answer where the queue already holds ReadBurstFactor times the
@@ -142,14 +155,14 @@ type fifoGate struct {
 var errGateFull = errors.New("the queue for a place is full")
 
 // enter takes a place and answers nil once it holds one: at once where a place is free and nothing
-// waits, else after waiting for one in the queue, behind every caller that asked before it. wait
-// does the waiting: it waits on ready, which leave closes to hand the caller a place, and answers
-// whether the place came and, where not, why - the caller's own refusal where its wait ran out,
-// ctx's error where ctx ended. A caller refused or gone holds no place and has left the queue:
-// enter answers errGateFull at once where the queue is at its cap, and otherwise wait's failure,
-// with leftQueue true. A place handed over in the moment the wait ended is the caller's where ctx
-// is still live; where ctx has ended it is given straight on and enter answers wait's failure
-// with leftQueue false, since that caller was handed a place rather than refused one.
+// waits, else after waiting for one in the queue (next says in what order). wait does the waiting:
+// it waits on ready, which leave closes to hand the caller a place, and answers whether the place
+// came and, where not, why - the caller's own refusal where its wait ran out, ctx's error where
+// ctx ended. A caller refused or gone holds no place and has left the queue: enter answers
+// errGateFull at once where the queue is at its cap, and otherwise wait's failure, with leftQueue
+// true. A place handed over in the moment the wait ended is the caller's where ctx is still live;
+// where ctx has ended it is given straight on and enter answers wait's failure with leftQueue
+// false, since that caller was handed a place rather than refused one.
 func (g *fifoGate) enter(ctx context.Context, wait func(ready <-chan struct{}) (bool, error)) (leftQueue bool, err error) {
 	g.mu.Lock()
 	if g.waiters.Len() == 0 && g.used < g.limit {
@@ -162,6 +175,9 @@ func (g *fifoGate) enter(ctx context.Context, wait func(ready <-chan struct{}) (
 		return false, errGateFull
 	}
 	ready := make(chan struct{})
+	if g.waiters.Len() == 0 {
+		g.nonEmptySince = g.now()
+	}
 	element := g.waiters.PushBack(ready)
 	g.maxQueued = max(g.maxQueued, g.waiters.Len())
 	g.mu.Unlock()
@@ -189,35 +205,54 @@ func (g *fifoGate) enter(ctx context.Context, wait func(ready <-chan struct{}) (
 	return true, failure
 }
 
-// leave gives one place back, handing it to the waiter at the head of the queue where any waits.
+// leave gives one place back, handing it to the waiter the queue serves next where any waits.
 func (g *fifoGate) leave() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if front := g.waiters.Front(); front != nil {
-		g.waiters.Remove(front)
-		close(front.Value.(chan struct{}))
+	if next, newestFirst := g.next(); next != nil {
+		g.waiters.Remove(next)
+		if newestFirst {
+			g.newestFirst++
+		}
+		close(next.Value.(chan struct{}))
 		return
 	}
 	g.used--
 }
 
-// counts reads the places held, the waiters queued now and the most that have queued at once.
-func (g *fifoGate) counts() (used, queued, maxQueued int) {
+// next is the waiter the queue serves next and whether it serves it newest first, or nil for an
+// empty queue, decided as a class's queue decides it (gate.next) and by the same clock: the first
+// to join while the queue went from empty to non-empty less than a wait ago, and the last to join
+// once it has stood non-empty for a whole wait. g.mu is held.
+func (g *fifoGate) next() (*list.Element, bool) {
+	front := g.waiters.Front()
+	if front == nil {
+		return nil, false
+	}
+	if g.now().Sub(g.nonEmptySince) < g.wait {
+		return front, false
+	}
+	return g.waiters.Back(), true
+}
+
+// counts reads the places held, the waiters queued now, the most that have queued at once and the
+// grants the queue made newest first.
+func (g *fifoGate) counts() (used, queued, maxQueued int, newestFirst uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.used, g.waiters.Len(), g.maxQueued
+	return g.used, g.waiters.Len(), g.maxQueued, g.newestFirst
 }
 
 // laneGate is one lane's limit and its queue: a fifoGate, since a lane is taken before the
-// classes and holds none of their units while it waits. Its waiters are served first in, first
-// out - a request takes its lane before anything else it waits for, right after the arrival that
-// stamps its place (Limiter.Arrive), so the order it reaches the queue is the order it arrived
-// in. Its wait is the read class's, which EnterLane counts against the wait the request has
-// already spent.
+// classes and holds none of their units while it waits. A request takes its lane before anything
+// else it waits for, right after the arrival that stamps its place (Limiter.Arrive), so the order
+// it reaches the queue is the order it arrived in: a lane absorbing a burst serves its waiters in
+// arrival order, and one that stands serves its newest first (fifoGate). Its wait is the read
+// class's, which EnterLane counts against the wait the request has already spent, and the wait
+// the lane stands after.
 type laneGate struct {
 	fifoGate
 	lane Lane
-	wait time.Duration
 
 	queueFull, waitExceeded atomic.Uint64
 }
@@ -231,6 +266,9 @@ type LaneStats struct {
 	// QueueFull and WaitExceeded count the requests the lane refused for each reason since the
 	// Limiter was made.
 	QueueFull, WaitExceeded uint64
+	// NewestFirst counts the requests the lane gave a place newest first, its queue standing
+	// (fifoGate), since the Limiter was made.
+	NewestFirst uint64
 }
 
 // LaneStats reads every lane's counts.
@@ -238,18 +276,19 @@ func (l *Limiter) LaneStats() []LaneStats {
 	stats := make([]LaneStats, 0, len(HeavyReadLanes()))
 	for _, lane := range HeavyReadLanes() {
 		g := l.lanes[lane]
-		used, queued, _ := g.counts()
-		stats = append(stats, LaneStats{Lane: lane, Limit: g.limit, InFlight: used,
-			Queued: queued, QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load()})
+		used, queued, _, newestFirst := g.counts()
+		stats = append(stats, LaneStats{Lane: lane, Limit: g.limit, InFlight: used, Queued: queued,
+			QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load(), NewestFirst: newestFirst})
 	}
 	return stats
 }
 
 // EnterLane takes a place in lane for a request that has arrived (Limiter.Arrive) and is about to
 // ask for its class's units, and returns the release that gives the place back. A request that
-// finds the lane full waits in its queue, in arrival order, holding no admission unit while it
-// waits - which is the point of taking the lane before the units: a heavy read waiting for its
-// lane costs the other routes nothing. One whose wait runs out is refused then, and one that finds
+// finds the lane full waits in its queue - in arrival order while the lane absorbs a burst, newest
+// first once it has stood a whole wait (fifoGate) - holding no admission unit while it waits,
+// which is the point of taking the lane before the units: a heavy read waiting for its lane costs
+// the other routes nothing. One whose wait runs out is refused then, and one that finds
 // the queue already at its cap, ReadBurstFactor times the lane's limit, the bound on its memory
 // (fifoGate), is refused at once: either way a *Refusal naming the lane, which its caller answers
 // 429 OVERLOADED with Retry-After, as it answers a class's refusal.

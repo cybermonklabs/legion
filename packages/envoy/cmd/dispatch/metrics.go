@@ -252,6 +252,9 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
+	registry.NewCounterVecFunc(metricPrefix+"http_newest_first_total", "Requests admission's class queue granted newest first, by class. A queue serves first come, first served until it has stood non-empty for one whole wait of its class (1 s for a read, 2 s for a write); from then until it empties each unit that frees goes to the request that joined it last, a take-back that may not be refused first, and the oldest are refused at their wait.", func() []metrics.Sample {
+		return classSamples(func(c admission.ClassStats) float64 { return float64(c.NewestFirst) })
+	})
 	laneSamples := func(value func(admission.LaneStats) float64) []metrics.Sample {
 		stats := sources.Admission.LaneStats()
 		samples := make([]metrics.Sample, 0, len(stats))
@@ -280,6 +283,9 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
+	registry.NewCounterVecFunc(metricPrefix+"http_lane_newest_first_total", "Requests a heavy read lane gave a place newest first, by lane. A lane's queue serves first come, first served until it has stood non-empty for one whole read wait (1 s); from then until it empties each place that frees goes to the request that joined it last, and the oldest are refused at their wait.", func() []metrics.Sample {
+		return laneSamples(func(l admission.LaneStats) float64 { return float64(l.NewestFirst) })
+	})
 	registry.NewGaugeFunc(metricPrefix+"http_admitted_units", "Admission units the admitted requests of both classes hold now, under the combined cap.", func() int64 {
 		return int64(sources.Admission.Totals().InFlight)
 	})
@@ -295,7 +301,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_limit", "Places of the request pool's share admission leaves: the pool's connections less admission's combined cap.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().Limit)
 	})
-	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued", "Work outside admission waiting now for a place of the request pool's share admission leaves, first in first out, at most 22 times the places, the cap that bounds the queue's memory.", func() int64 {
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued", "Work outside admission waiting now for a place of the request pool's share admission leaves, at most 22 times the places, the cap that bounds the queue's memory.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().Queued)
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued_max", "The most work outside admission that has waited for a place at once since the process started.", func() int64 {
@@ -312,6 +318,9 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 			)
 		}
 		return samples
+	})
+	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_newest_first_total", "Work outside admission given a place of the request pool's share newest first. The queue for a place serves first come, first served until it has stood non-empty for one whole second, the wait work has for a place; from then until it empties each place that frees goes to the work that joined it last, and the oldest are refused at their wait.", func() []metrics.Sample {
+		return []metrics.Sample{{Value: float64(sources.Admission.Outside().Stats().NewestFirst)}}
 	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or a place of the request pool's share outside admission refused it, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
 		return []metrics.Sample{{Value: float64(sources.Heartbeats.TransientFailures())}}

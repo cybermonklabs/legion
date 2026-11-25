@@ -1197,9 +1197,11 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // (drainedBody.readWhole) and waits holding no unit: with the body off the connection net/http's
 // own read of it runs, so a client that hangs up while its write is queued cancels the request
 // there and then and is recorded as the 499 it is, where a queued write with an unread body held
-// its slot for its whole wait and was answered a 429 nobody read. The queue serves the write at
-// the place it arrived, ahead of every write that arrived while its body did, and the wait it
-// then has is the one wait the queue costs it, so no write is refused for waiting twice.
+// its slot for its whole wait and was answered a 429 nobody read. A queue absorbing a burst serves
+// the write at the place it arrived, ahead of every write that arrived while its body did, and a
+// queue that has stood a whole wait serves it as its newest waiter (admission's adaptive LIFO);
+// either way the wait it then has is the one wait the queue costs it, so no write is refused for
+// waiting twice.
 //
 // The ticket goes to the drain's body as well as to the context: a body still arriving after its
 // request was admitted parks it, so a client still sending holds none of the units
@@ -1235,9 +1237,10 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // whose statements the database spends its processors on cannot take them from everything else.
 // Its refusal is the same 429 OVERLOADED, naming the lane. The arrival is taken before the lane
 // and passed to it, so the lane's wait is what is left of the request's one wait and the class
-// queue gets the rest, and a read the lane held waits in the class queue at the place it
-// arrived rather than behind everything that arrived while it waited: before that a lane route
-// cost up to two whole waits, one in the lane and a fresh one in its class (INFRA-592).
+// queue gets the rest. A read the lane held waits in a class queue absorbing a burst at the place
+// it arrived, and in one that has stood a whole wait as its newest waiter, rather than behind
+// everything that arrived while it waited: before that a lane route cost up to two whole waits,
+// one in the lane and a fresh one in its class (INFRA-592).
 func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler contextHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)

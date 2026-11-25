@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,6 +160,374 @@ func TestAHeavyRequestAtTheHeadIsNotOvertaken(t *testing.T) {
 	heavyTicket.ticket.Release()
 	if result := receive(t, light); result.err != nil {
 		t.Fatalf("light request: %v", result.err)
+	}
+}
+
+// testClock is the clock the queues' standing decision reads in a row on their order
+// (newWithClock), which a row moves by hand: it stands a queue by moving the clock a whole wait on,
+// never by waiting one out. A waiter's own wait, which refuses it, still runs on the real clock.
+type testClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newTestClock() *testClock { return &testClock{at: time.Unix(1_800_000_000, 0)} }
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *testClock) advance(by time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(by)
+}
+
+// orderedQueue is one of admission's queues as the rows on its order drive it: places is how many
+// requests it holds at once, take asks for one for a request arriving now and answers once the
+// request holds it, with the give-back, or why not, reason is the Reason a refusal of its refuses
+// for, and counts reads how many wait in it now and how many it has granted newest first.
+type orderedQueue struct {
+	places int
+	take   func(ctx context.Context) (give func(), err error)
+	reason func(err error) Reason
+	counts func() (queued int, newestFirst uint64)
+}
+
+// orderedQueues are the queues the rows on their order drive, each built on a Limiter of its own
+// whose standing decision reads clock and whose waiters wait wait: each class's queue with one
+// unit, a heavy read's lane with one place, and the places outside admission (OutsideLimit).
+var orderedQueues = []struct {
+	name  string
+	build func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue
+}{
+	{"the read class", classQueue(Read)},
+	{"the write class", classQueue(Write)},
+	{"a lane", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
+		l := newWithClock(Limits{Read: 8, Write: 1, HeavyReadLane: 1, ReadWait: wait}, clock.now)
+		return orderedQueue{
+			places: 1,
+			take:   func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
+			reason: refusalReason,
+			counts: func() (int, uint64) {
+				stats := laneStatsOf(t, l, Search)
+				return stats.Queued, stats.NewestFirst
+			},
+		}
+	}},
+	{"the outside places", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
+		outside := newWithClock(Limits{OutsideWait: wait}, clock.now).Outside()
+		return orderedQueue{
+			places: OutsideLimit,
+			take: func(ctx context.Context) (func(), error) {
+				return outside.Release, outside.Take(ctx, HeartbeatCheck)
+			},
+			reason: outsideRefusalReason,
+			counts: func() (int, uint64) {
+				stats := outside.Stats()
+				return stats.Queued, stats.NewestFirst
+			},
+		}
+	}},
+}
+
+// classQueue builds class's queue for orderedQueues.
+func classQueue(class Class) func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
+	return func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
+		l := newWithClock(Limits{Read: 1, Write: 1, ReadWait: wait, WriteWait: wait}, clock.now)
+		return orderedQueue{
+			places: 1,
+			take: func(ctx context.Context) (func(), error) {
+				ticket, err := l.Admit(ctx, class, 1)
+				return func() { ticket.Release() }, err
+			},
+			reason: refusalReason,
+			counts: func() (int, uint64) {
+				stats := classStats(l, class)
+				return stats.Queued, stats.NewestFirst
+			},
+		}
+	}
+}
+
+// served is what one request a row lined up was answered: its place in the line, nil once it
+// holds a place or why not, how long after it asked, and the give-back of the place it holds.
+type served struct {
+	place  int
+	err    error
+	waited time.Duration
+	give   func()
+}
+
+// holdEveryPlace takes every place of q, failing the row where one is not free at once, and
+// answers their give-backs.
+func holdEveryPlace(t *testing.T, ctx context.Context, q orderedQueue) []func() {
+	t.Helper()
+	held := make([]func(), q.places)
+	for i := range held {
+		give, err := q.take(ctx)
+		if err != nil {
+			t.Fatalf("place %d of %d: %v, want it taken at once", i+1, q.places, err)
+		}
+		held[i] = give
+	}
+	return held
+}
+
+// lineUp sends n requests into q's queue one after another, each once the one before it has joined
+// it, and answers the channel their answers arrive on, in the order they are answered. Every place
+// of q is held, so a request answered before it joins fails the row.
+func lineUp(t *testing.T, ctx context.Context, q orderedQueue, n int) <-chan served {
+	t.Helper()
+	answers := make(chan served, n)
+	for place := range n {
+		before, _ := q.counts()
+		go func() {
+			asked := time.Now()
+			give, err := q.take(ctx)
+			answers <- served{place, err, time.Since(asked), give}
+		}()
+		testwait.Until(t, "the request lined up joined the queue", func() (int, bool) {
+			queued, _ := q.counts()
+			return queued, queued == before+1 || len(answers) != 0
+		})
+		if len(answers) != 0 {
+			got := <-answers
+			t.Fatalf("request %d of the line was answered %v before it joined the queue, want it queued behind every place held", got.place, got.err)
+		}
+	}
+	return answers
+}
+
+// grantedNext receives the next answer of a line and fails the row unless it is the grant of the
+// request at place want.
+func grantedNext(t *testing.T, answers <-chan served, want int, why string) served {
+	t.Helper()
+	got := testwait.Receive(t, "the next request granted a place", answers)
+	if got.err != nil || got.place != want {
+		t.Fatalf("the place that came free was answered to request %d of the line (%v), want request %d granted: %s", got.place, got.err, want, why)
+	}
+	return got
+}
+
+// A burst that queues and drains within less than a wait keeps its order: four requests - the
+// write queue's whole cap at a limit of one (WriteBurstFactor) - line up behind every place held,
+// the queue has been non-empty for less than its wait when the places start coming back, and each
+// place goes to the request that asked first of those left - on each class's queue, a heavy read's
+// lane and the places outside admission alike - and none is granted newest first. A queue that
+// emptied within its last wait is absorbing a burst (gate.next).
+func TestABurstThatDrainsWithinAWaitIsServedInArrivalOrder(t *testing.T) {
+	t.Parallel()
+	const burst = WriteBurstFactor
+	for _, kind := range orderedQueues {
+		t.Run(kind.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			q := kind.build(t, clock, patient)
+			ctx := testwait.Context(t)
+			held := holdEveryPlace(t, ctx, q)
+			answers := lineUp(t, ctx, q, burst)
+			clock.advance(patient - time.Nanosecond)
+			held[0]()
+			for want := range burst {
+				got := grantedNext(t, answers, want, "a queue non-empty for less than its wait serves first come, first served")
+				got.give()
+			}
+			if queued, newestFirst := q.counts(); queued != 0 || newestFirst != 0 {
+				t.Fatalf("%d queued and %d granted newest first once the burst drained, want none of either", queued, newestFirst)
+			}
+			for _, give := range held[1:] {
+				give()
+			}
+		})
+	}
+}
+
+// A queue that has stood non-empty for a whole wait serves its newest waiter first and refuses its
+// oldest at the oldest's wait: three requests line up behind every place held and the queue stands
+// a wait (by the clock its decision reads), so the first place back goes to the third, which gives
+// it back, and the next to the second, which keeps it; the first is refused wait_exceeded once its
+// own wait has run, not before, and the queue counts its two grants newest first - on each class's
+// queue, a heavy read's lane and the places outside admission alike. First come, first served
+// there gave every request it served the whole wait first (ReadBurstFactor).
+func TestAStandingQueueServesTheNewestFirstAndRefusesTheOldestAtItsWait(t *testing.T) {
+	t.Parallel()
+	const wait = time.Second
+	for _, kind := range orderedQueues {
+		t.Run(kind.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			q := kind.build(t, clock, wait)
+			ctx := testwait.Context(t)
+			held := holdEveryPlace(t, ctx, q)
+			answers := lineUp(t, ctx, q, 3)
+			clock.advance(wait)
+			held[0]()
+			const why = "a queue that has stood non-empty for a whole wait serves the newest first"
+			grantedNext(t, answers, 2, why).give()
+			second := grantedNext(t, answers, 1, why)
+			oldest := testwait.Receive(t, "the oldest request's answer", answers)
+			if oldest.place != 0 || q.reason(oldest.err) != WaitExceeded {
+				t.Fatalf("request %d of the line was answered %v, want the oldest, request 0, refused wait_exceeded at its wait", oldest.place, oldest.err)
+			}
+			if oldest.waited < wait {
+				t.Fatalf("the oldest request was refused %v after it asked, before its %v wait had run", oldest.waited, wait)
+			}
+			second.give()
+			if queued, newestFirst := q.counts(); queued != 0 || newestFirst != 2 {
+				t.Fatalf("%d queued and %d granted newest first, want none queued and the two grants counted", queued, newestFirst)
+			}
+			for _, give := range held[1:] {
+				give()
+			}
+		})
+	}
+}
+
+// A queue that empties serves first come, first served again: a line of three is served newest
+// first once the queue has stood a wait, and the queue empties with the last of them granted; a
+// second line of three then joins it, the clock where the first line had stood, and is served in
+// arrival order, since the queue went from empty to non-empty less than a wait ago - on each
+// class's queue, a heavy read's lane and the places outside admission alike.
+func TestAQueueThatEmptiesServesFirstComeFirstServedAgain(t *testing.T) {
+	t.Parallel()
+	for _, kind := range orderedQueues {
+		t.Run(kind.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			q := kind.build(t, clock, patient)
+			ctx := testwait.Context(t)
+			held := holdEveryPlace(t, ctx, q)
+			first := lineUp(t, ctx, q, 3)
+			clock.advance(patient)
+			held[0]()
+			grantedNext(t, first, 2, "the queue stood a whole wait").give()
+			grantedNext(t, first, 1, "the queue stood a whole wait").give()
+			last := grantedNext(t, first, 0, "the queue stood a whole wait")
+			if queued, _ := q.counts(); queued != 0 {
+				t.Fatalf("%d queued once the first line was granted, want the queue empty", queued)
+			}
+			second := lineUp(t, ctx, q, 3)
+			last.give()
+			for want := range 3 {
+				grantedNext(t, second, want, "a queue that emptied serves first come, first served until it stands again").give()
+			}
+			if _, newestFirst := q.counts(); newestFirst != 3 {
+				t.Fatalf("%d granted newest first, want the first line's 3 alone", newestFirst)
+			}
+			for _, give := range held[1:] {
+				give()
+			}
+		})
+	}
+}
+
+// In a queue that stands, a take-back that must not be refused (Away.TakeBackNeverRefused) is
+// served ahead of every waiter that may be refused, the oldest of such take-backs first: it has no
+// wait to run out, so newest first would pass it over for as long as the overload lasted, after its
+// request had changed another server's state. Two requests give their units back for a wait on the
+// network and take them back never refused, the later arrival asking first; two requests that may
+// be refused queue after them; and once the queue has stood a wait, the units that come back go to
+// the earlier take-back, then the later, and only then newest first to the other two.
+func TestATakeBackThatMustNotBeRefusedIsServedFirstInAStandingQueue(t *testing.T) {
+	t.Parallel()
+	for _, class := range []Class{Read, Write} {
+		t.Run(class.String(), func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			l := newWithClock(Limits{Read: 1, Write: 1, ReadWait: patient, WriteWait: patient}, clock.now)
+			ctx := testwait.Context(t)
+			names := [...]string{"the take-back that arrived first", "the take-back that arrived second", "the older request", "the newer request"}
+			type granted struct {
+				who    string
+				ticket *Ticket
+				err    error
+			}
+			grants := make(chan granted, len(names))
+			var kept [2]*Ticket
+			var aways [2]Away
+			for i := range kept {
+				kept[i] = admit(t, l, class, 1)
+				aways[i] = GiveBack(WithTicket(ctx, kept[i]))
+			}
+			holder := admit(t, l, class, 1)
+			for _, i := range []int{1, 0} {
+				queuedBefore := classStats(l, class).Queued
+				go func() { grants <- granted{names[i], kept[i], aways[i].TakeBackNeverRefused(ctx)} }()
+				waitForQueued(t, l, class, queuedBefore+1)
+			}
+			for _, who := range names[2:] {
+				queuedBefore := classStats(l, class).Queued
+				go func() {
+					ticket, err := l.Admit(ctx, class, 1)
+					grants <- granted{who, ticket, err}
+				}()
+				waitForQueued(t, l, class, queuedBefore+1)
+			}
+			clock.advance(patient)
+			holder.Release()
+			for _, want := range []string{names[0], names[1], names[3], names[2]} {
+				got := testwait.Receive(t, "the next unit's holder", grants)
+				if got.err != nil || got.who != want {
+					t.Fatalf("the unit that came back went to %s (%v), want %s: a queue that stands serves a take-back that must not be refused ahead of every other waiter, the oldest first", got.who, got.err, want)
+				}
+				got.ticket.Release()
+			}
+		})
+	}
+}
+
+// A queue that stands keeps the two classes' guarantees with its candidate in place of its head
+// (grant, heldByTotal): a weight-2 write the standing write queue serves next, which the combined
+// cap alone holds up, is not overtaken by a read the cap has room for. With the cap of 4 full of
+// reads, a weight-1 write queues and the write queue stands a wait; a weight-2 write then joins it,
+// its newest waiter and so its candidate, and a read queues. The first read unit back is held for
+// the weight-2 write - neither the read nor the older weight-1 write, which would fit, takes it -
+// and the second unit back grants it, newest first.
+func TestAStandingQueuesWeightTwoCandidateIsNotStarvedByTheOtherClass(t *testing.T) {
+	t.Parallel()
+	clock := newTestClock()
+	l := newWithClock(Limits{Read: 4, Write: 4, Total: 4, ReadWait: patient, WriteWait: patient}, clock.now)
+	ctx := testwait.Context(t)
+	reads := make([]*Ticket, 4)
+	for i := range reads {
+		reads[i] = admit(t, l, Read, 1)
+	}
+	older := admitInBackground(t, l, ctx, Write, 1)
+	clock.advance(patient)
+	heavy := admitInBackground(t, l, ctx, Write, 2)
+	read := admitInBackground(t, l, ctx, Read, 1)
+
+	reads[0].Release()
+	if got := (Totals{Limit: 4, InFlight: 3}); l.Totals() != got {
+		t.Fatalf("totals %+v once one read unit came back, want %+v: the unit is the weight-2 write's, which the standing write queue serves next", l.Totals(), got)
+	}
+	if reads, writes := classStats(l, Read), classStats(l, Write); reads.Queued != 1 || writes.Queued != 2 || writes.NewestFirst != 0 {
+		t.Fatalf("read stats %+v and write stats %+v, want the read and both writes still queued", reads, writes)
+	}
+	reads[1].Release()
+	granted := receive(t, heavy)
+	if granted.err != nil {
+		t.Fatalf("the weight-2 write once the cap had room for its 2 units: %v, want it granted", granted.err)
+	}
+	if writes := classStats(l, Write); writes.InFlight != 2 || writes.Queued != 1 || writes.NewestFirst != 1 {
+		t.Fatalf("write stats %+v, want the weight-2 write's 2 units in flight, granted newest first, and the older write queued", writes)
+	}
+
+	granted.ticket.Release()
+	reads[2].Release()
+	reads[3].Release()
+	for _, outcome := range []<-chan admitted{older, read} {
+		result := receive(t, outcome)
+		if result.err != nil {
+			t.Fatalf("a request still queued once every unit came back: %v", result.err)
+		}
+		result.ticket.Release()
+	}
+	if got := (Totals{Limit: 4}); l.Totals() != got {
+		t.Fatalf("totals %+v after every release, want %+v", l.Totals(), got)
 	}
 }
 

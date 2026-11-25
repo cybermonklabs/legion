@@ -48,25 +48,26 @@ import (
 // dashboard's assets of other builds are read through a cache that keeps them, one read in flight
 // for each. The test hooks never run in production.
 //
-// Work that finds every place held waits for one, first in first out, as a request waits in its
-// class's queue and a heavy read in its lane's: in a queue of at most OutsideQueueLimit, for at most
-// a second counted from when it asked (Limits.OutsideWait). It was refused at once before, and on
-// INFRA-592's stress step (ten times the load, 1,000 editors, a restart) that refused 47,962 of the
-// 48,580 refused document sockets, skipped 4,136 heartbeat checks and closed 223 sockets at the
-// heartbeat's ceiling: the places were held by work waiting on a request pool the load had filled,
-// and each burst - 1,000 editors coming back after the restart - found them held for a moment and
-// was refused whole and sent again, so the handshakes per editor rose from 52.8 to 70.9. Work that
-// finds the queue full, or whose second runs out, is refused as before (OutsideRefusal: the same
-// QueueFull and WaitExceeded a class's queue refuses for), and work whose context ends while it
-// waits leaves the queue. A place is held for the whole of the work that reads the pool: a
-// decision's proof check and the row it writes, once the broker has answered, a check's whole
-// check, and a socket's three admission reads - all but a wait on another server inside them: the
-// sign-in issuer's renewal of a lapsed confirmation, and IAP's key set read where the caller's
-// assertion names a key the set in memory does not hold, or the set is due to be read again. The
-// work gives its place back for that wait and takes it again after, for the renewal's own reads
-// and writes and for what it reads next (GiveBack, Away.TakeBack: the one mechanism that gives an
-// admitted request's units back for the same waits), so an issuer slow to answer holds none of the
-// places, as a broker slow to answer holds none.
+// Work that finds every place held waits for one as a request waits in its class's queue and a
+// heavy read in its lane's - first in, first out while the queue absorbs a burst, and newest first
+// once it has stood non-empty for its whole wait (fifoGate) - in a queue of at most
+// OutsideQueueLimit, for at most a second counted from when it asked (Limits.OutsideWait). It was
+// refused at once before, and on INFRA-592's stress step (ten times the load, 1,000 editors, a
+// restart) that refused 47,962 of the 48,580 refused document sockets, skipped 4,136 heartbeat
+// checks and closed 223 sockets at the heartbeat's ceiling: the places were held by work waiting
+// on a request pool the load had filled, and each burst - 1,000 editors coming back after the
+// restart - found them held for a moment and was refused whole and sent again, so the handshakes
+// per editor rose from 52.8 to 70.9. Work that finds the queue full, or whose second runs out, is
+// refused as before (OutsideRefusal: the same QueueFull and WaitExceeded a class's queue refuses
+// for), and work whose context ends while it waits leaves the queue. A place is held for the whole
+// of the work that reads the pool: a decision's proof check and the row it writes, once the broker
+// has answered, a check's whole check, and a socket's three admission reads - all but a wait on
+// another server inside them: the sign-in issuer's renewal of a lapsed confirmation, and IAP's key
+// set read where the caller's assertion names a key the set in memory does not hold, or the set is
+// due to be read again. The work gives its place back for that wait and takes it again after, for
+// the renewal's own reads and writes and for what it reads next (GiveBack, Away.TakeBack: the one
+// mechanism that gives an admitted request's units back for the same waits), so an issuer slow to
+// answer holds none of the places, as a broker slow to answer holds none.
 
 // OutsideLimit is how many places the work outside admission may hold at once: the request
 // pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
@@ -127,14 +128,13 @@ func (r *OutsideRefusal) Error() string {
 }
 
 // Outside is a Limiter's places for the request-pool work outside admission (OutsideLimit), and
-// the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait
+// the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait -
+// the one each work waits, counted from when it asks (Take), and the one its queue stands after -
 // and its refusals counted by user. A nil Outside limits nothing, so a server a test builds
 // without a Limiter takes every place it asks for.
 type Outside struct {
-	// fifoGate's limit is OutsideLimit, set once by New.
+	// fifoGate's limit is OutsideLimit and its wait Limits.OutsideWait, set once by New.
 	fifoGate
-	// wait is how long work waits for a place (Limits.OutsideWait), set once by New.
-	wait time.Duration
 
 	refused [outsideUserCount]outsideRefusalCounts
 }
@@ -145,11 +145,11 @@ type outsideRefusalCounts struct {
 }
 
 // Take takes a place for user's work and answers nil once it holds one. Where every place is held
-// it waits for one in the queue, behind every work that asked before it, for at most the wait,
-// and answers an *OutsideRefusal - QueueFull at once where the queue is full, WaitExceeded where
-// the wait runs out - or ctx's error where ctx ends first, holding no place and having left the
-// queue either way. A caller that took a place gives it back with Release once its work has given
-// its connection back.
+// it waits for one in the queue (fifoGate says in what order) for at most the wait, and answers an
+// *OutsideRefusal - QueueFull at once where the queue is full, WaitExceeded where the wait runs
+// out - or ctx's error where ctx ends first, holding no place and having left the queue either
+// way. A caller that took a place gives it back with Release once its work has given its
+// connection back.
 func (o *Outside) Take(ctx context.Context, user OutsideUser) error {
 	if o == nil {
 		return nil
@@ -179,7 +179,7 @@ func (o *Outside) Take(ctx context.Context, user OutsideUser) error {
 	return err
 }
 
-// Release gives back a place Take took, handing it to the work at the head of the queue where any
+// Release gives back a place Take took, handing it to the work the queue serves next where any
 // waits.
 func (o *Outside) Release() {
 	if o == nil {
@@ -239,7 +239,7 @@ func WriteOutsideRefused(w http.ResponseWriter, refusal *OutsideRefusal) {
 		refusal.User.String()+" ("+string(refusal.Reason)+"); nothing ran, retry after Retry-After")
 }
 
-// Release gives the place back where it is held, handing it to the work at the head of the queue
+// Release gives the place back where it is held, handing it to the work the queue serves next
 // where any waits, and does nothing where it is not, so a caller may call it where its work ends
 // and defer it too. A nil Place holds nothing.
 func (p *Place) Release() { p.release() }
@@ -255,9 +255,8 @@ func (p *Place) release() bool {
 	return true
 }
 
-// Retake takes the place again where it was given back, waiting for it as Take waits, behind every
-// work that asked before it, and answers Take's answer. A place still held, and a nil Place, answer
-// nil at once.
+// Retake takes the place again where it was given back, waiting for it as Take waits, and answers
+// Take's answer. A place still held, and a nil Place, answer nil at once.
 func (p *Place) Retake(ctx context.Context) error {
 	if p == nil || p.held {
 		return nil
@@ -291,6 +290,9 @@ type OutsideStats struct {
 	// Limit is OutsideLimit, InUse the places held now, Queued the work waiting for one now and
 	// MaxQueued the most that has waited at once since the Limiter was made.
 	Limit, InUse, Queued, MaxQueued int
+	// NewestFirst counts the work the queue gave a place newest first, its queue standing
+	// (fifoGate), since the Limiter was made.
+	NewestFirst uint64
 	// Refused counts, by user, the work refused a place since the Limiter was made: a DPoP
 	// decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket answered 503.
 	Refused [outsideUserCount]OutsideRefusals
@@ -301,12 +303,12 @@ type OutsideRefusals struct {
 	QueueFull, WaitExceeded uint64
 }
 
-// Stats reads the counts: the places, the queue and its longest length together, and each
-// refusal count on its own, so a scrape that races a refusal may see it in one count and not yet
-// in another.
+// Stats reads the counts: the places, the queue, its longest length and its newest-first grants
+// together, and each refusal count on its own, so a scrape that races a refusal may see it in one
+// count and not yet in another.
 func (o *Outside) Stats() OutsideStats {
-	used, queued, maxQueued := o.counts()
-	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued}
+	used, queued, maxQueued, newestFirst := o.counts()
+	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued, NewestFirst: newestFirst}
 	for user := range outsideUserCount {
 		stats.Refused[user] = OutsideRefusals{
 			QueueFull: o.refused[user].queueFull.Load(), WaitExceeded: o.refused[user].waitExceeded.Load(),
