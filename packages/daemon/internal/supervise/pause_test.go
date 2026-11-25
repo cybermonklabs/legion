@@ -477,7 +477,7 @@ func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
 		t.Helper()
 		var armed atomic.Bool
 		h, flag, stops = pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time {
+			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Interval: time.Minute / wakeRate, Reserve: func(now time.Time) time.Time {
 				if armed.CompareAndSwap(true, false) {
 					flag.set(7)
 				}

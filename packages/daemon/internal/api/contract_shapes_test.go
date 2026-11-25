@@ -644,9 +644,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Compacted: false, Reason: "Nothing to compact (session too small)",
 		}}},
 		// The turn outcome's golden own value (TestTurnOutcomeResponseGolden): the two keys this
-		// answer always writes, neither of them omitempty.
+		// answer always writes, neither of them omitempty, so `failed` is written false.
 		AnswerTurnOutcome: {roots: typesOf(claim.TurnOutcomeResponse{}), bodies: []any{claim.TurnOutcomeResponse{
-			RefusedRun: 3, Failed: true,
+			RefusedRun: 3,
 		}}},
 		// Richer than the golden, which releases one child that started nothing: the record
 		// describes the two lists a release fills and the keys of a held child.

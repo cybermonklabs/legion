@@ -15,7 +15,7 @@ import {
   type RelayMessage,
   type RelayReply,
 } from "../consumer-delivery";
-import { renderInbound } from "../delivery";
+import { INBOUND_CARD_MAX_BYTES, renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
 
@@ -597,6 +597,32 @@ describe("replies", () => {
     });
     const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
     expect(card.envoy).toMatchObject({ id: "evt-deep", message: nested });
+  });
+
+  // An array chain 9,999 levels deep, a 20 KB frame, the encoder reaches the bottom of: its
+  // layout indents every line below each level, and made a card of 100,060,107 bytes in the
+  // session of every recipient. The card shows it as its text, under the bound, and is taken.
+  test("a frame whose payload is an array chain 9,999 deep is taken, its card under the bound", async () => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-wide", source: "agent", payload: arrays });
+
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.wide", payload }));
+    await settled();
+
+    expect({ answers: repliesTo(replies, "_INBOX.wide"), logs, shown: shown.length }).toEqual({
+      answers: ["received", "done"],
+      logs: [],
+      shown: 1,
+    });
+    expect(Buffer.byteLength(shown[0] ?? "")).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({ id: "evt-wide", message: arrays });
   });
 
   // The two fixes meet here. The card cannot lay out a payload nested 9,999 deep, so it shows the

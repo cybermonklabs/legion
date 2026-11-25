@@ -66,6 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Status:       issue.Status,
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
+			Priority:     issue.Priority,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -406,7 +407,9 @@ const eventPageLimit = 200
 // Message bodies are carried by message.created events, which hold at most the first part of a
 // long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
 // body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
-// body and the cut would drop it.
+// body and the cut would drop it. A message its author deleted keeps its message.created event,
+// whose every read carries deleted_at and no body: it is no notice the outbox posted, so the read
+// passes over it, and any other event with no body is still refused.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -433,12 +436,16 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				ID            string `json:"id"`
-				Body          string `json:"body"`
-				BodyTruncated bool   `json:"body_truncated"`
+				ID            string          `json:"id"`
+				Body          string          `json:"body"`
+				BodyTruncated bool            `json:"body_truncated"`
+				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
+			}
+			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
+				continue
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -763,6 +770,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -777,6 +785,7 @@ type issueResponse struct {
 	Status            string         `json:"status"`
 	Parent            *string        `json:"parent"`
 	Rank              string         `json:"rank"`
+	Priority          *int           `json:"priority"`
 	Labels            []string       `json:"labels"`
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
@@ -794,6 +803,7 @@ func (r issueResponse) issue() Issue {
 		Status:            r.Status,
 		Parent:            r.Parent,
 		Rank:              r.Rank,
+		Priority:          r.Priority,
 		Labels:            r.Labels,
 		HandedOver:        CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID: r.PrimaryArtifactID,

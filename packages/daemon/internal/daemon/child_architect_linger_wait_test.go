@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // A child's architect's first start that reaches the outbox while its tree does not run waits for
@@ -159,7 +160,7 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotR
 					t.Fatalf("clear the design gate of the re-admitted %s: %v", doorRoot, err)
 				}
 				// A setup guard: the case is the root waiting in the line, or it tests nothing.
-				if !record.QueuedRoot(*root, record.TreeGate{Steps: rig.runner.gatedSteps}) {
+				if !record.QueuedRoot(*root, treelifecycle.Lifecycle{}, record.TreeGate{Steps: rig.runner.gatedSteps}) {
 					t.Fatalf("the re-admitted root %+v with no gate does not wait in the line, want it waiting (record.QueuedRoot)", root)
 				}
 			}

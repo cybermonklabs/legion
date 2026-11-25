@@ -394,14 +394,15 @@ Each item below names a script, then what it proves.
 
 - `refusal-fallback-omp.sh`
 
-  a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1), measured on three real Legion panes of the pinned Oh My Pi, each the root architect of an issue of its own, each with this checkout's two plugins, an OpenAI-shaped model stand-in of its own and a chain that carries `retry.fallbackRevertPolicy: never`:
-  one pane is refused by a content filter with no content, one by the same filter after streamed text, and one is rate-limited with HTTP 429 and `retry-after: 60`;
+  a Legion worker a provider refused stays off that model for the plugin's cooldown and returns when it ends, measured on four real panes of the pinned Oh My Pi:
+  two panes get content-filter refusals, before and after streamed text, and two get HTTP 429 with `retry-after: 60`, one retried by the transport and one with `x-should-retry: false`;
   each pane's first request goes to the refused model and the next to the chain's next one;
   the arming the pane recorded carries the cause and the due time that fallback calls for;
   no request at all reaches the refused model between the fifth minute and the cooldown's end at the tenth, which is the window a restore of Oh My Pi's own would show in;
   the first request after the cooldown goes to that model again;
-  and the rate-limited pane comes back on the host's own suppression instead, about three minutes after its fallback.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for the one NATS server it builds and starts, and about fifteen minutes of wall clock, longer than any job of `ci.yaml` holds
+  the retried 429 ends as a timeout after ten minutes, and its return waits on the host's five-minute suppression;
+  the final 429 returns after its sixty-second suppression, with requests ten seconds apart so an early return is observable.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for its NATS server, `bun` with the checkout's dependencies and twenty-one minutes of driving time.
 
 - `handoff-records.sh`
 
@@ -978,7 +979,7 @@ Each round names one concrete correction the spec permits (a distinct line appen
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing; each planner, implementer, tester and reviewer completion names a Dispatch handoff record written by that role's claim session, never a commit, and the pushed tip the implementer's completion reports is authored and committed by the implement App, read from the issue's workspace).
 It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
-the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
+the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done` ([`lib/stage3-no-change-close.jq`](lib/stage3-no-change-close.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted), every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
 — authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and which holds `config.yml` and `hosts.yml` alone;
 the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in that tool call's result, holds that owner's directory and nothing but other owners' directories and `renames.txt`, and as the host holds it, holds that owner's directory and the bundle's `renames.txt`, and beside them only other owners' directories, since a bundle holds one directory per owner account the App is installed on, which GitHub decides and the run does not, and no directory for a repository (INFRA-2543 R2);
@@ -2974,7 +2975,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `daily-report`
 
   the controller's daily report, which the proof's instructions exempt from their wait for a targeted message and fit to the run:
-  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters;
+  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters ([`lib/stage4b-report-posted.jq`](lib/stage4b-report-posted.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted);
   in the controller's session, the call that posted it comes on a turn a `tick on LEGSMOKE` delivery started once the start turn had ended, never in its start turn.
   That call is the controller's first `dispatch message --issue <report>` run through bash, made any way Oh My Pi offers:
   the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq), which `stage3-4b13b-acceptance.sh`'s merger check reads too; `lib/report-after-tick.test.ts`).
@@ -3903,6 +3904,7 @@ Each item below names an observation, then what it judges; an item that names no
   — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
+  A message its author deleted reads with `deleted_at` set and no body (dispatch://INFRA-1523), and is no note ([`lib/multi-repo-none-note.jq`](lib/multi-repo-none-note.jq), tested by `bun test scripts/e2e/lib`).
 
 - `negative repo-edit before|after <run id>? <child>`
 
@@ -3912,7 +3914,8 @@ Each item below names an observation, then what it judges; an item that names no
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
   and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`)
+  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`).
+  A message its author deleted is no note ([`lib/multi-repo-kept-note.jq`](lib/multi-repo-kept-note.jq), tested by `bun test scripts/e2e/lib`).
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
 `before` mints a fresh run id, captures the baseline under `$MULTIREPO_EVIDENCE_DIR/runs/<run id>/baseline.json` (the directory made with a plain `mkdir`, the file written with `set -o noclobber` — both fail loudly rather than overwrite, so two overlapping `before` calls for the same issue can never collide), binds it to the project, the daemon URL and the issue's own generation, and prints `BASELINE <name>: captured` — never `PASS`, since capturing a baseline is not an acceptance judgment.
@@ -4680,7 +4683,7 @@ one on an open pull request GitHub answers `blocked` for, which is the issue the
 one on an open pull request whose reviewer requests changes in step 5;
 and one whose pull request the record holds closed, its reviewer's approval standing at the head it was closed at.
 Facts enter only as production's do, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream:
-CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `askMergeStateFor`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
+CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `mergeStateOwed`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
 Every assertion is a read of `GET /legion/v1/state`:
 of the `mergeWait` object it decodes to for what the wait says, and of the body's own keys for what the daemon leaves off, since a key written empty and a key left off decode to one Go value and only one of them is what the daemon writes.
 
@@ -5069,15 +5072,16 @@ the run's work directory, the driver binary among it, is under `TMPDIR` too.
 LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # → "refusal fallback e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is a quarter of an hour:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes and the plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
-The pi-legion job that runs the plugin's suite (`.github/workflows/ci-job-pi-legion.yaml`) has `timeout-minutes: 28`, but its test step lasts as long as its slowest worker, and it took at most 296.7 s in the three runs of 2026-11-22 that file's comment measures, while a whole run of this proof takes 798 s (below): as a file of that suite it would be the slowest worker, and every run of the job would wait on it.
+A content-filter refusal must move the same session to the next model until the plugin's cooldown ends, so this proof measures both switches in a long turn.
+A rate limit instead waits only for the host's suppression.
+Its four panes run together for twenty-one minutes, outside the plugin's unit-test suite.
+The retried-429 pane needs the transport's ten-minute first-event budget, the host's five-minute suppression and the request after the return within that span.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:
 each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS server the Envoy extension connects to is one the run builds and starts itself (`packages/envoy/internal/testnats/cmd/natsd`, on a port the kernel picks, logged to the evidence directory), since a session a listener can give no consumer receives nothing and its claim boot ends it.
-A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane that never gets its model back holds one to about eighteen minutes.
+A pane that does not settle is bounded by the driving span and two allowances of 150 seconds for its last return and shutdown.
+The inventory allows thirty minutes, including setup, so the proof can report those failures itself.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5085,25 +5089,34 @@ A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane
 | `nats` | the JetStream server the run builds and starts (`packages/envoy/internal/testnats/cmd/natsd`), whose URL the driver is given as `REFUSAL_FALLBACK_NATS_URL` |
 | `runs` | the driver (`packages/pi-legion/scripts/refusal-fallback-pane.ts`, run with `bun`), which prints one section per expectation of its own |
 
-Three Legion panes run at the same time, each the root architect of an issue of its own, each one real `omp --mode rpc` child of the pinned Oh My Pi with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and an OpenAI-shaped model stand-in of its own, under a profile whose chain steps from `standin/strong-model` to `standin/weak-model` with `retry.fallbackRevertPolicy: never`, the shape a deployment's own operator overlay carries, and `retry.rateLimitWalksChain: true`, which Oh My Pi has off:
-on, a rate limit is admitted to the chain consult rather than deferred to another attempt on the same model.
-Each pane is driven about once a minute for about twelve and a half minutes — the stand-in answers every turn with a `bash sleep`, so one long turn asks again each minute — and the model of each request says where that session stood at that minute.
-The three differ in the one answer that refuses:
+Four Legion panes run together, each the root architect of its own issue, each one real `omp --mode rpc` child with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and its own OpenAI-shaped stand-in.
+The profile walks from `standin/strong-model` to `standin/weak-model`, with `retry.fallbackRevertPolicy: never` and `retry.rateLimitWalksChain: true`.
+The stand-in answers each request with a `bash sleep`, which keeps the turn running and makes the next request another reading of the model.
+The final-429 pane sleeps ten seconds; the other panes keep their 58-second sleeps even when the driving span grows.
+The panes differ in the answer that refuses:
 
 - `filtered-clean`: `finish_reason: content_filter` with no content, which Oh My Pi may replay, so the host walks its own chain and the plugin arms the return from the host's own reason;
 
 - `filtered-after-text`: the same after streamed text, which is replay-unsafe, so the host leaves the session where it is and the plugin walks the chain itself;
 
-- `rate-limited`: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes a suppression of that model for the 60 s the provider asked for, the arming's cause is `other`, and the return waits on that suppression, which is a different clock from the cooldown.
+- `rate-limited`: HTTP 429 with `retry-after: 60`, retried inside the transport until its first-event budget ends.
+  The host then sees a timeout with no retry-after, walks the chain and suppresses the model for its five-minute floor.
+  The plugin returns within one request's cadence after that suppression, before the ten-minute plugin cooldown would end.
+
+- `rate-limited-final`: the same 429 with `x-should-retry: false`, which the transport surfaces.
+  The host walks the chain and suppresses the model for sixty seconds.
+  This pane requests every ten seconds, so a plugin that ignores suppression produces a request before it ends.
 
 What the run holds each pane to:
 the first request goes to the refused model and the next to the chain's next one (`<pane>-walks-the-chain`);
 the arming the pane recorded in its own transcript has the cause and the due time that fallback calls for (`<pane>-arms-the-return`);
 no request at all goes to the refused model between the fifth minute and the end of the ten-minute cooldown (`<pane>-quiet-between-five-and-ten`), which is the window a restore of Oh My Pi's own would show in, since five minutes is its own floor for a suppression it cannot time;
 the first request after the cooldown goes to that model again (`<pane>-comes-back-after-ten`);
-and the rate-limited pane goes back about three minutes after its fallback, the 60 s suppression plus the gap between readings, rather than waiting the cooldown out (`rate-limited-comes-back-on-the-suppression`).
+and each rate-limited pane returns after its host suppression, with the transcript's `model_change` timestamp within one request's cadence after that suppression (`<pane>-comes-back-on-the-suppression`).
+The first request on the strong model must also precede the plugin cooldown's end.
+The transcript is needed because the host chooses a request's model before the plugin's context hook switches it: a request alone reads the switch one request late.
 Unlike a stage proof, a failed expectation does not stop the driver:
-the twelve minutes are already spent and every other measurement is evidence about the same run, so every expectation is reported and the run exits non-zero naming the first that failed.
+every measurement is reported and any failed expectation makes the run exit non-zero.
 `REFUSAL_FALLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) holds the transcript, `logs/nats.log` of the JetStream server the run starts, and a copy of every pane's Oh My Pi transcript;
 each pane's scratch root is under `TMPDIR` too, since a pod's own disk is small and its `TMPDIR` names the issue's volume.
 The run's own scratch directory, which holds the natsd it built and that server's JetStream store, is removed at the end with the server, however the run ended; the evidence directory is never touched.
@@ -6075,7 +6088,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Eleven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6089,6 +6102,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds or extracts anything, through that same copy.
+The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_dsn` in `services_up` and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
@@ -6100,6 +6114,7 @@ psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
 Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) and [`approved-version-news.sh`](#approved-version-newssh) unset them before their own calls.
+The skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, drops the three in the sweep of the environment it does not inherit, before its own calls in `services_up` and `own_dispatch`.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -6141,7 +6156,8 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
-[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eleven scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_dsn` in its own `arguments` check as well, before it builds or extracts anything.
@@ -6875,8 +6891,8 @@ A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` 
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Seven of the eleven scripts that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
-`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+Eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+`envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
 
@@ -6894,6 +6910,7 @@ Each item below names a function, then what it does.
 
   runs CMD every half second until it succeeds.
   After SECONDS of wall time, each poll's own run included, it runs `timeout_hook` and fails naming WHAT.
+  A caller that sets `until_true_deadline`, a value of `$SECONDS`, bounds every wait by the time left until it instead of by SECONDS, and still polls once at that bound: a test row's shell sets it 20 s before the row's own bound ([`lib/row-waits.ts`](#librow-waitsts)), since how soon the kernel delivers an exit or a zombie is a loaded host's; no proof sets it.
   It says what it waits for on entry and every 60 s.
   A poll that never returns would hold the wait, so callers bound their remote calls.
   A guard that writes `$evidence/pane-endpoint-violation.txt` makes the next wait abort, naming the violation
@@ -6982,7 +6999,7 @@ Each item below names a function, then what it does.
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` on `PATH` that records every call and answers nothing and a `grep` that counts its calls:
 it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
 It names a marked process double-forked to pid 1, which no tree the run started holds, once the process's exec of `sleep` is done (`untilExecDone`): inside the exec its `/proc/<pid>/environ` reads empty while its exe link, and then its command line, already name `sleep`, so a walk then names nothing, and the sweep row waits on its escaped process the same way.
-Every row of the file has a bound of 60 s of its own (`setDefaultTimeout`), whatever the runner's command line, and its waits on the kernel run until 15 s before it, then fail naming what they waited for; no shorter span decides a wait, since a loaded devbox held an escaped process inside its exec for more than the 3 s a fixed wait gave it.
+Every row of the file has the directory's row bound (`rowWaits(libRowBoundMs)`, [`lib/row-waits.ts`](#librow-waitsts)), whatever the runner's command line, and its waits on the kernel, `untilExecDone` among them, run until 20 s before it, then fail naming what they waited for; no shorter span decides a wait, since a loaded devbox held an escaped process inside its exec for more than the 3 s a fixed wait gave it.
 `listening_holders` names only this test process, the holder of the socket on `127.0.0.1:PORT`, while another process listens on `127.0.0.2` with the same port, and while one listens on `1.0.0.127` with it, where `IP_FREEBIND` lets a socket bind there (a host that refuses it skips that row by name).
 Each of those two rows has the other process take a port the kernel chooses first and listens on `127.0.0.1` at that port after, so the collision it is about cannot stop its setup.
 A port the kernel gives the other address can already be listening on `127.0.0.1`, which no order removes, since the box's processes share one network namespace: the row then takes a fresh port until its waits end, and past that fails naming each port `127.0.0.1` refused (`no port free on both … by the end of the row's waits`), with `listening_holders` not run.
@@ -6992,7 +7009,7 @@ A `find` or a `grep` that a signal ends after part of its output makes `listenin
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
-it signals no pid whose start time is not the one its walk read;
+it signals no pid whose start time is not the one its walk read, which the row reads from a record of every signal the sweep sends (`kill` shadowed), and a sweep given the pid's own start fills that record;
 and it ends a child a marked process started under `env -i`, which carries no mark, with or without a grace, also when the grace's SIGTERM ends the process that started it.
 Every process a row signals, and every harness shell, runs in a process group of its own ([`lib/own-group.ts`](#libown-groupts)).
 
@@ -7006,11 +7023,21 @@ A Legion pod (`4.19.0-gvisor`) still did so when measured on 2026-11-18.
 gVisor's commit 553528ee1034 (2026-10-07) sends them only when the group becomes orphaned, as Linux does: under runsc release-20260928.0 a stopped member of an orphaned group got SIGHUP when another member exited, and under release-20261012.0 and release-20261116.0 it did not.
 A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
-`untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
-`lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
+`untilRunning(pid, program, end)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails at `end`, the end of the row's waits ([`lib/row-waits.ts`](#librow-waitsts)), naming both and what the pid ran instead: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
+`lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, that `untilRunning` fails at the end it is given and not before, naming the pid, the program and what the pid runs, and that it looks once at an end that has passed.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
 `lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`.
 The `lib/` files gate those rows on perl with `hostGate` (`@legion/test-fixtures/host-tools`): a host without perl skips them by name outside CI and fails them by name under `GITHUB_ACTIONS`; the skill-scenario rig's rows skip by name where the host has no perl
+
+## lib/row-waits.ts
+
+The waits a test row of this directory makes on what the kernel does: a process to run a program, to exec, to end.
+No fake clock drives the kernel, and a loaded host took more than 10 s to deliver a zombie (2026-11-20, 8 busy loops on two CPUs), so each wait ends on its event, never on a count of polls, and its one bound is the row's own.
+Bun ends a row at its bound and names no wait, so each wait gives up `rowWaitMarginMs` (20 s) before that bound, naming what it waited for and what it saw instead.
+`rowWaits(rowBoundMs)` makes `rowBoundMs` the bound of every row of the calling file (`setDefaultTimeout`), whatever the runner's command line, and marks each row's start (`beforeEach`): its `end()` is that start plus the bound less the margin, and its `secondsLeft()` the whole seconds from now to that end, which each shell a row starts sets [`until_true_deadline`](#librigsh) from, so every wait of the row, the shell's own polls included, shares one end.
+`libRowBoundMs` is 200 s, the bound `bun run test:e2e-lib` gives every row: about twice the slowest row of the directory measured with 8 busy loops on its two CPUs (98.5 s).
+`untilTrue(what, end, look)` polls `look` every 50 ms until it answers true, looks once more at `end` itself, as `until_true` does, and then fails naming `what` and `look`'s last answer; `untilGone(pid, what, end)` waits so for `pid` to end, a zombie counting as ended, and refuses at once a pid that names no process at all, which would read as gone.
+`lib/row-waits.test.ts` holds each of those; `lib/process-tree.test.ts`, `lib/run-processes.test.ts`, `lib/unread-proc.test.ts`, `lib/leftovers.test.ts`, `lib/own-group.test.ts`, `lib/parked-decision-teardown.test.ts`, `lib/stage4b-role-kill.test.ts`, `lib/multi-repo-second-owner.test.ts`, `lib/held-port.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows wait through it
 
 ## lib/arg-max-force.sh
 
@@ -7416,6 +7443,7 @@ Every wait for an issue to reach one phase is `wait_for_phase ISSUE PHASE [SECON
 `phase_seconds` (600 s, the proof's budget for an agent's turn), unless the phase's worker runs a whole loop and the caller passes its own bound:
 a correction round, the retro, and planning, whose planner runs its gap analyst and its plan-review rounds, which have no limit, before its handoff (Stage 4b's `plan_seconds`, 2700 s).
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
+`review_cap_posted ISSUE`, Stage 3's wait for its third review round's `pr-blocked`, holds that a message on the issue names `review_round_cap=3`, a message its author deleted counting as not posted ([`lib/review-cap-posted.jq`](lib/review-cap-posted.jq), tested by `bun test scripts/e2e/lib`).
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:
 `drive_gate ISSUE LABEL [SECONDS]` runs `architect_registers_gate`, then `await_gate_wait` (the root in `awaiting_person` with `waitingOn.kind` `gate` and no `answeredAt`, holding its `.slot` and named by `admission.active`, while its architect stays live within `phase_seconds`), approves the registered version as the proof human, then `await_answered_resume`:

@@ -92,12 +92,22 @@ export interface DeviceLogin {
   readonly accessToken: string;
   /** When that access token lapses; null where the file keeps none. */
   readonly accessExpiresAt: Date | null;
+  /** The life that access token had when it landed, in whole seconds: the `expires_in` the grant
+   *  answered, the broker's `BROKER_ACCESS_TOKEN_SECONDS`. Null where the file keeps none, as a
+   *  file an older build wrote does not; the next refresh keeps it. */
+  readonly accessLifeSeconds: number | null;
 }
 
 /** A member of the file's JSON as a string, "" where it is absent or not one. */
 function member(json: Record<string, unknown>, name: string): string {
   const value = json[name];
   return typeof value === "string" ? value : "";
+}
+
+/** A member of the file's JSON as a positive whole number, null where it is absent or not one. */
+function wholeMember(json: Record<string, unknown>, name: string): number | null {
+  const value = json[name];
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 /**
@@ -711,6 +721,7 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
     broker,
     accessToken: accessUsable ? holdSecret(accessToken, accessExpiresAt) : "",
     accessExpiresAt: accessUsable ? accessExpiresAt : null,
+    accessLifeSeconds: accessUsable ? wholeMember(json, "access_life_seconds") : null,
   };
 }
 
@@ -793,6 +804,9 @@ export async function saveDeviceLogin(
       : {
           access_token: login.accessToken,
           access_expires_at: login.accessExpiresAt.toISOString(),
+          ...(login.accessLifeSeconds === null
+            ? {}
+            : { access_life_seconds: login.accessLifeSeconds }),
         }),
   });
   await deviceLoginPlace(path);
