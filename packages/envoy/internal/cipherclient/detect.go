@@ -471,23 +471,35 @@ func credentialFileFailure(fields credentialFields) string {
 }
 
 // CredentialsFileFailure is why a credentials file must not be handed to Google's library, in
-// words that print no path and no part of it, and "" where it may be: it repeats a key
-// (repeatsKey), whatever its type, or it is an external_account credential of an X.509 certificate
-// whose files cannot be used (certificateFailure), as these bytes read in the types the library
-// decodes them into. A file that is not JSON answers "", for its reader's own refusal. Any reader
-// that hands a credentials file to the library calls it first, on the bytes it hands over: the
-// secret forms' sign-in (cmd/cipher), as the machine source does in Token.
+// words that print no path and no part of it, and "" where it may be. A file that is not JSON
+// (json.Valid) answers "", for its reader's own refusal, and so does a file of another type than
+// external_account, of which this client reads only its type, as every reader decodes it. An
+// external_account file is refused where it repeats a key (repeatsKey), or where the check cannot
+// read it in the types the library decodes it into, or where it is an X.509 certificate's whose
+// files cannot be used (certificateFailure). Any reader that hands a credentials file to the
+// library calls it first, on the bytes it hands over: the secret forms' sign-in (cmd/cipher), as
+// the machine source does in Token.
 func CredentialsFileFailure(credential []byte) string {
-	if repeated, err := repeatsKey(credential); err != nil {
+	const unread = "it is JSON that this client cannot read as Google's library reads it"
+	if !json.Valid(credential) {
 		return ""
-	} else if repeated {
-		return "it repeats a key, which Google's library could read as another credential than this client does"
 	}
 	var kind struct {
 		Type string `json:"type"`
 	}
+	if json.Unmarshal(credential, &kind) != nil || kind.Type != string(credentials.ExternalAccount) {
+		return ""
+	}
+	if repeated, err := repeatsKey(credential, credentialFieldsType); err != nil {
+		return unread
+	} else if repeated {
+		return "it repeats a key, which Google's library could read as another credential than this client does"
+	}
 	fields, err := readCredentialFields(credential)
-	if err != nil || json.Unmarshal(credential, &kind) != nil || kind.Type != string(credentials.ExternalAccount) || fields.certificate() == nil {
+	if err != nil {
+		return unread
+	}
+	if fields.certificate() == nil {
 		return ""
 	}
 	return certificateFailure(*fields.certificate())

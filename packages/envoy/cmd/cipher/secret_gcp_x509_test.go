@@ -221,15 +221,18 @@ func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
 	}
 }
 
-// TestAStoreCredentialsFileThatRepeatsAKeyIsRefused: a credentials file that repeats a key is
-// refused before any reader reads it, whatever its type, in the machine source's words: the shapes
-// a review found, an external_account file with no certificate, and an authorized_user file. The
-// one whose library-alone read starts the enterprise certificate proxy's signer (a null between
-// two credential_source, the last asking for the default configuration, which
-// GOOGLE_API_CERTIFICATE_CONFIG names as the proxy's) starts none. Control: the authorized_user
-// file with no key repeated loads.
+// TestAStoreCredentialsFileThatRepeatsAKeyIsRefused: an external_account credentials file that
+// repeats a key, two keys Google's library decodes into one field, is refused before any reader
+// reads it, in the machine source's words: the shapes a review found, and one of a subject token
+// file. So is an X.509 file whose certificate configuration is an enterprise certificate proxy's
+// beside a number outside float64's range, which the check reads as text. Each row whose
+// library-alone read starts the proxy's signer (GOOGLE_API_CERTIFICATE_CONFIG names the proxy's
+// configuration as the default one) starts none through the loader. Controls, which load: the
+// file gcloud writes with two header names that differ in case (a map, whose keys are compared
+// exactly), an authorized_user file, and one whose client_id repeats in another case, of which
+// this client reads only its type, as on main.
 func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
-	const want = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: it repeats a key"
+	const repeats = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: it repeats a key"
 	dir := t.TempDir()
 	surface, err := repeatprobe.New(dir)
 	if err != nil {
@@ -245,18 +248,28 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 	// is, so no line of this file reads as a credential assigned a value.
 	user := `"type":"authorized_user","client_id":"store-client",` + strconv.Quote("client"+"_secret") + `:"store-fixture",` +
 		strconv.Quote("refresh"+"_token") + `:"store-fixture"`
+	gcloud, err := os.ReadFile(filepath.Join("..", "..", "internal", "cipherclient", "testdata", "gcloud-credential-case-distinct-headers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, row := range []struct {
 		name, credential string
 		signer           bool
+		// want is the refusal's start, or "" where the file loads.
+		want string
 	}{
 		{"credential_source, then null, then the default configuration",
-			`{` + top + `,"credential_source":` + location(surface.Workload) + `,"credential_source":null,"credential_source":{"certificate":{"use_default_certificate_config":true}}}`, true},
+			`{` + top + `,"credential_source":` + location(surface.Workload) + `,"credential_source":null,"credential_source":{"certificate":{"use_default_certificate_config":true}}}`, true, repeats},
 		{"credential_source, then CREDENTIAL_SOURCE",
-			`{` + top + `,"credential_source":` + location(surface.Proxy) + `,"CREDENTIAL_SOURCE":` + location(surface.Workload) + `}`, false},
+			`{` + top + `,"credential_source":` + location(surface.Proxy) + `,"CREDENTIAL_SOURCE":` + location(surface.Workload) + `}`, false, repeats},
 		{"an external_account file of a subject token file whose token_url repeats",
-			`{` + top + `,"TOKEN_URL":"https://sts.invalid/v1/token","credential_source":{"file":"/nowhere"}}`, false},
-		{"an authorized_user file whose client_id repeats in another case", `{` + user + `,"Client_ID":"other"}`, false},
-		{"control: an authorized_user file", `{` + user + `}`, false},
+			`{` + top + `,"TOKEN_URL":"https://sts.invalid/v1/token","credential_source":{"file":"/nowhere"}}`, false, repeats},
+		{"a proxy's configuration beside a number outside float64's range",
+			`{` + top + `,"x":1e400,"credential_source":` + location(surface.Proxy) + `}`, true,
+			"the credentials file GOOGLE_APPLICATION_CREDENTIALS names: the certificate configuration its credential_source names holds no workload certificate and private key"},
+		{"control: gcloud's file with two header names that differ in case", string(gcloud), false, ""},
+		{"control: an authorized_user file whose client_id repeats in another case", `{` + user + `,"Client_ID":"other"}`, false, ""},
+		{"control: an authorized_user file", `{` + user + `}`, false, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "credentials.json")
@@ -270,15 +283,15 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 				}
 			}
 			_, err := gcpCredentialsFile(context.Background(), path)
-			if strings.HasPrefix(row.name, "control:") {
+			if row.want == "" {
 				if err != nil {
 					t.Fatalf("control: gcpCredentialsFile: %v; want the file loaded", err)
 				}
 				return
 			}
 			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
-			if err == nil || !strings.HasPrefix(refusal.Error(), want) {
-				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			if err == nil || !strings.HasPrefix(refusal.Error(), row.want) {
+				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
 			}
 			if _, err := os.Stat(surface.Ran); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
