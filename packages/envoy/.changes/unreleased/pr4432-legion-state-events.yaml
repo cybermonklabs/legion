@@ -15,8 +15,8 @@ body: |-
   fails sends that message back until a minute after that read began, at most 10 times in all,
   and its next delivery is then acknowledged. The project's cursor counts these hand-backs, so a
   lease take-over does not start the count again, and a take-over or a settings change makes no
-  read of a project whose owed read a message holds: it joins the read that the message's
-  redelivery makes. A read waits 60 s at the
+  read of a project whose owed read a message holds, the starting read included: it joins the read
+  that the message's redelivery makes. A read waits 60 s at the
   most, so one message holds the consumer's ack floor for about 11 minutes at the most, also when
   the daemon does not answer its reads or a take-over comes meanwhile, and a take-over replays at
   most that long of messages. A failed read that no message holds, a failed starting read that no
@@ -38,9 +38,10 @@ body: |-
   When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, makes one
   whole read: at once, or, where the project's last whole read began less than a minute before,
   when that minute ends, through one deferred call of the `PUT`'s wake. A `PUT` of the same URL
-  while a message holds the project's owed read joins that read, so the count of the message's
-  hand-backs goes on. A `PUT` that names another daemon ends that hold instead: Dispatch
-  acknowledges the message at its next delivery and does not apply it.
+  while a message holds the project's owed read joins that read, also before the project's
+  starting read was first made, so the count of the message's hand-backs goes on, and its wake
+  defers no call. A `PUT` that names another URL ends that hold instead: Dispatch acknowledges
+  the message at its next delivery and does not apply it.
   After a `PUT` that names another daemon, Dispatch applies no message of the store that the
   project followed before, until a `PUT` names the URL of that daemon again. Such a message holds
   a read only as a message past the cap (below), and its redelivery then makes the read. It waits

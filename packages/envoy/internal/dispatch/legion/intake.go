@@ -328,12 +328,13 @@ func (in *Intake) Run(ctx context.Context) {
 // once, or ReadRetryAfter after the project's newest whole read began, for which the call queues
 // the starting point once more (startLater). A project whose cursor owes a read that is due and
 // that no message holds is read for the reasons it owes it for, and every other project is not
-// read at all. Where a message holds the owed read, the call joins that read, which the message's
-// redelivery makes; a write of the same URL leaves such a cursor as it is (settingWritten), so its
-// wake joins the read too. A settings read that fails queues nothing: a project with no starting
-// point is read at its next message all the same, and the listener's wake fires again once it
-// listens again. A process that does not hold the durable queues nothing: the process that holds
-// it heard the same notification.
+// read at all. Where a message holds the owed read, the starting read included, the call joins
+// that read, which the message's redelivery makes, and queues nothing; a write of the URL the
+// setting names already leaves such a cursor as it is (settingWritten), so its wake joins the read
+// too. A settings read that fails queues nothing: a project with no starting point is read at its
+// next message all the same, and the listener's wake fires again once it listens again. A process
+// that does not hold the durable queues nothing: the process that holds it heard the same
+// notification.
 func (in *Intake) SettingsChanged(ctx context.Context) {
 	settings, err := ListSettings(ctx, in.pool)
 	if err != nil {
@@ -366,18 +367,22 @@ func (in *Intake) takenOver() {
 // startingPoint reads project's daemon whole where its observations have no starting point
 // (ReadReasonStart), or where a read is owed and due and no message holds it, for the reasons it
 // is owed for, and reads nothing otherwise (cursor.readFor, called with no message): where a
-// message holds the owed read, the message's redelivery makes it. A settings change and a
-// take-over queue it (SettingsChanged), and so does a message of a store the project's cursor drops
-// (callRead). It takes no starting point while a Dispatch process of an earlier build is in
-// the fleet (startBlocked). It runs on the project's runner; a database step that fails is tried
-// again in place until it succeeds or the handling ends.
+// message holds the owed read, the starting read included, the message's redelivery makes it. A
+// settings change and a take-over queue it (SettingsChanged), and so does a message of a store the
+// project's cursor drops (callRead). It takes no starting point while a Dispatch process of an
+// earlier build is in the fleet (startBlocked). It runs on the project's runner; a database step
+// that fails is tried again in place until it succeeds or the handling ends.
 //
 // wake is whether a write's wake or a take-over calls it (SettingsChanged). Such a call that finds
 // the starting read not due, since the project's newest whole read began less than ReadRetryAfter
-// ago, queues the starting point once more for when the minute ends (startLater), so the read is
-// made then and not at the project's next message alone. The deferred call and a message's call
-// (callRead) pass false: each wake and each take-over defers one call at the most, and no timer
-// recurs.
+// ago, and no message holding it, queues the starting point once more for when the minute ends
+// (startLater), so the read is made then and not at the project's next message alone. Where a
+// message holds the starting read, it queues nothing: that message's redelivery makes the read
+// once it is due (R3: "its redelivery makes the read"), and a deferred call would only join it. A
+// wake or a take-over makes the starting read only where no message holds it: before a message
+// takes it, or once the holder is released (its stateMaxHolds hand-backs, a write of another URL,
+// or a starting read an earlier build blocks). The deferred call and a message's call (callRead)
+// pass false: each wake and each take-over defers one call at the most, and no timer recurs.
 func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) {
 	var pending *wholeRead
 	in.untilDone(ctx, nil, project, func(ctx context.Context) (outcome, error) {
@@ -392,7 +397,7 @@ func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) 
 		now := in.now()
 		answer := current.readFor(reason, now, 0, false, nil)
 		if !answer.read {
-			if wake && reason == ReadReasonStart {
+			if wake && reason == ReadReasonStart && current.readHolder == nil {
 				in.startLater(project, current.readDueIn(now))
 			}
 			return outcomeDone, nil
@@ -416,9 +421,10 @@ func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) 
 
 // startLater queues project's starting point on the project's runner once more, d from now on
 // the intake's clock (after): the call of a wake or a take-over that found the starting read not
-// due (startingPoint). The deferred call defers no further call. A process that no longer delivers
-// from the durable when d ends queues nothing (delivery.HeldDurable.Queue), and the process that
-// took the durable over has queued the starting point of its own take-over.
+// due and held by no message (startingPoint). The deferred call defers no further call, and makes
+// no read where a message holds the starting read by the time it runs (cursor.readFor). A process
+// that no longer delivers from the durable when d ends queues nothing (delivery.HeldDurable.Queue),
+// and the process that took the durable over has queued the starting point of its own take-over.
 func (in *Intake) startLater(project string, d time.Duration) {
 	in.after(d, func() {
 		in.durable.Queue(project, func(ctx context.Context) { in.startingPoint(ctx, project, false) })

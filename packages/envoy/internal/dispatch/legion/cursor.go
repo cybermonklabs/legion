@@ -33,18 +33,19 @@ const holdAtLeast = time.Second
 // holder, one more at each hand-back after it (owe), and 0 once it names no holder. A take-over
 // creates the durable again, which starts the message's own NumDelivered again at 1, and keeps
 // the cursor's count, so the bound holds for the message across every take-over. Neither a
-// take-over's call for the read nor a settings change's makes a read while the message holds it
-// (cursor.readFor), so neither adds a read to the hold. A write of the setting that names the same
-// daemon leaves the holder and its count as they are, and one that names another daemon ends the
-// hold: the message is acknowledged unapplied at its next delivery (settingWritten,
-// cursor.releasedHolder, outcomeReleased), and a message of the newly named daemon may hold the
-// read from a count of 1. A holder that has gone back stateMaxHolds times holds the read no more:
-// that delivery is acknowledged, the cursor names no holder from then on (readAnswer.release), and
-// the read stays owed (ReadReasonRetry) for the project's next message, boot, settings change or
-// take-over, which makes it once it is due, as R3 makes every failed read. So each message holds
-// the durable's ack floor below it for about 11 minutes at the most, however many take-overs and
-// writes of the setting there are, and a take-over replays at most that long of messages
-// (consumerConfig).
+// take-over's call for the read nor a settings change's makes a read while the message holds it,
+// a starting read's included, and neither defers a call for it (cursor.readFor,
+// Intake.startingPoint), so neither adds a read to the hold. A write of the setting that names the
+// URL the setting named already leaves the holder and its count as they are, whether the cursor
+// follows that URL or no daemon yet, and one that names another URL ends the hold: the message is
+// acknowledged unapplied at its next delivery (settingWritten, cursor.releasedHolder,
+// outcomeReleased), and a message of the newly named daemon may hold the read from a count of 1.
+// A holder that has gone back stateMaxHolds times holds the read no more: that delivery is
+// acknowledged, the cursor names no holder from then on (readAnswer.release), and the read stays
+// owed (ReadReasonRetry) for the project's next message, boot, settings change or take-over, which
+// makes it once it is due, as R3 makes every failed read. So each message holds the durable's ack
+// floor below it for about 11 minutes at the most, however many take-overs and writes of the
+// setting there are, and a take-over replays at most that long of messages (consumerConfig).
 const stateMaxHolds = 10
 
 // owedRead is a whole read to make: the setting whose daemon it reads, the reason its legion_reads
@@ -132,7 +133,7 @@ type cursor struct {
 	// the stream until the read is due, and again after each read it makes that fails,
 	// stateMaxHolds times at the most (readFor), and nil where no message holds it. readHolds is
 	// how many times that message has gone back holding the read, which neither a take-over nor a
-	// write of the setting that names the same daemon resets, and 0 where no message holds it.
+	// write of the URL the setting named already resets, and 0 where no message holds it.
 	readReasons       []string
 	lastReadStartedAt *time.Time
 	readHolder        *int64
@@ -167,8 +168,9 @@ type cursor struct {
 	previousStateURL *string
 	foreignStateIDs  []string
 	// releasedHolder is the stream sequence of the message that held the owed read when a write of
-	// the setting reset a cursor that followed another daemon (settingWritten), nil for none: that
-	// message is finished unapplied at its next delivery, which clears it (releases, endHold).
+	// the setting that named another URL reset the cursor (settingWritten), whatever daemon the
+	// cursor followed, none included, and nil for none: that message is finished unapplied at its
+	// next delivery, which clears it (releases, endHold).
 	releasedHolder *int64
 }
 
@@ -274,17 +276,18 @@ func (a readAnswer) of(setting Settings) owedRead {
 // after the start of the read in flight.
 //
 //   - ReadReasonStart is made now and alone where it is due and the delivery has made no read
-//     yet: each reason its cursor owes is for a daemon the setting no longer names, or for events
-//     the read's snapshot holds, if it has a cursor at all. A call no message makes makes it too
-//     where the cursor names a holder, as a holder's redelivery would. Where it is not due, the
-//     project's newest whole read, of any kind, began less than ReadRetryAfter ago
-//     (read-rule-cases v11, row 3.2): the starting read is owed and held as every read below.
+//     yet, but for a call no message makes where the cursor names a holder (below): each reason
+//     its cursor owes is for a daemon the setting no longer names, or for events the read's
+//     snapshot holds, if it has a cursor at all. Where it is not due, the project's newest whole
+//     read, of any kind, began less than ReadRetryAfter ago (read-rule-cases v11, row 3.2): the
+//     starting read is owed and held as every read below.
 //   - A call with no reason, where no read is owed, makes no read and owes none.
-//   - A call no message makes, where the cursor names a holder, makes no read, due or not: it
-//     joins the holder's read, which the holder's redelivery makes, the cursor counting its
-//     hand-backs on from readHolds. So neither a take-over nor a settings change (startingPoint)
-//     adds a read to the hold, and the hold's bound (stateMaxHolds) stands however many of them
-//     come.
+//   - A call no message makes, where the cursor names a holder, makes no read, due or not,
+//     whatever its reason, ReadReasonStart included: it joins the holder's read, which the
+//     holder's redelivery makes, the cursor counting its hand-backs on from readHolds. So neither
+//     a take-over nor a settings change (startingPoint) adds a read to the hold, whether the
+//     cursor follows the setting's daemon or no daemon yet, and the hold's bound (stateMaxHolds)
+//     stands however many of them come.
 //   - A read that is due is made now, for every reason the cursor owes it for, in the order they
 //     called for it, then for reason where it is not among them. It is recorded under the first.
 //     Its record clears the reasons the cursor owes now (readAnswer.clears). A reason that a
@@ -317,24 +320,26 @@ func (a readAnswer) of(setting Settings) owedRead {
 // read that no message holds, a starting point's or one whose message went back stateMaxHolds
 // times, is made at the project's next message, boot, settings change or take-over, once it is
 // due: the next message to call holds it. A starting read that a write's wake or a take-over finds
-// not due is made when it is due by one deferred call (startingPoint). A message of a store the
-// cursor drops neither makes nor holds that read unless the cursor names it as the holder:
-// whatever store the cursor holds, it queues a call for it on the project's runner, which makes it
-// as a call no message makes (callRead).
+// not due, and that no message holds, is made when it is due by one deferred call (startingPoint).
+// A message of a store the cursor drops neither makes nor holds that read unless the cursor names
+// it as the holder: whatever store the cursor holds, it queues a call for it on the project's
+// runner, which makes it as a call no message makes (callRead).
 func (c cursor) readFor(reason string, now time.Time, seq int64, made bool, flight *readInFlight) readAnswer {
 	dueIn := c.readDueIn(now)
 	if flight != nil {
 		dueIn = dueAfter(flight.started, now)
 	}
+	// A call no message makes joins the read a holder holds rather than making it, a starting
+	// read included: the holder's redelivery makes it.
+	reads := dueIn == 0 && !made && (seq != 0 || c.readHolder == nil)
 	switch {
-	case reason == ReadReasonStart && dueIn == 0 && !made:
+	case reason == ReadReasonStart && reads:
 		return readAnswer{read: true, reason: ReadReasonStart, joined: []string{ReadReasonStart}, clears: c.readReasons}
 	case reason == "" && !c.readOwed():
 		return readAnswer{}
-	case dueIn == 0 && !made && (seq != 0 || c.readHolder == nil):
-		// A call no message makes joins the read a holder holds rather than making it. A call
-		// with no reason reaches here only where a read is owed, so the read has a reason to be
-		// recorded under: the first it was owed for, or the call's own.
+	case reads:
+		// A call with no reason reaches here only where a read is owed, so the read has a reason
+		// to be recorded under: the first it was owed for, or the call's own.
 		answer := readAnswer{read: true, reason: reason, joined: []string{reason}, clears: c.readReasons}
 		if c.readOwed() {
 			answer.reason, answer.joined = c.readReasons[0], c.readReasons
@@ -576,13 +581,17 @@ func writeCursor(ctx context.Context, tx pgx.Tx, project string, c cursor) error
 	return err
 }
 
-// resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx:
-// it locks the cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor)
-// and deletes the parts held for it. It writes nothing for a project with no cursor, or for a
-// write that names the daemon the cursor follows while a message holds the owed read.
-func resetCursor(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
+// resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx,
+// where before is the URL the setting named before the write ("" for a new setting): it locks the
+// cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor) and deletes the
+// parts held for it. It writes nothing for a project with no cursor, or for a write of the URL the
+// setting named already (before) while a message holds the owed read, whether the cursor follows
+// that URL or no daemon yet: that cursor keeps its holder, its count of hand-backs, its reasons,
+// its skipped record and its held parts, so the holder's redelivery makes the read and the hold's
+// bound (stateMaxHolds) stands. A write of the same URL that finds no holder resets the cursor too.
+func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL string) error {
 	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
-	if err != nil || !current.exists || (current.stateURL == stateURL && current.readHolder != nil) {
+	if err != nil || !current.exists || (before == stateURL && current.readHolder != nil) {
 		return err
 	}
 	if err := writeCursor(ctx, tx, project, current.reset(stateURL)); err != nil {
@@ -595,16 +604,16 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, stateURL string) error
 // reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
 // cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
 //   - lastReadStartedAt is c's.
-//   - releasedHolder is c's readHolder where c followed another daemon (a stateURL that is
-//     neither empty nor the write's URL) and a message held the read, and c's releasedHolder
-//     otherwise.
+//   - releasedHolder is c's readHolder where a message held the read, and c's releasedHolder
+//     otherwise. resetCursor resets a cursor that names a holder only for a write of another URL
+//     than the setting named, which ends that hold whatever daemon c followed, none included.
 //   - previousStateID and previousStateURL are none where the write names the URL recorded there.
 //     They are c's store and URL where c followed a URL other than the write's and held a store,
 //     and c's own pair otherwise.
 func (c cursor) reset(stateURL string) cursor {
 	next := emptyCursor()
 	next.exists, next.lastReadStartedAt, next.releasedHolder = true, c.lastReadStartedAt, c.releasedHolder
-	if c.stateURL != "" && c.stateURL != stateURL && c.readHolder != nil {
+	if c.readHolder != nil {
 		next.releasedHolder = c.readHolder
 	}
 	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL

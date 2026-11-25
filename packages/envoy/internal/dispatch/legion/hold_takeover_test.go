@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,6 +207,291 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 					len(handBacks), handBacks, held.Round(time.Second), len(test.writes), stateMaxHolds, reads+time.Minute, failures)
 			}
 		})
+	}
+}
+
+// startingReadHeld brings INFRA to a cursor that follows no daemon yet and whose starting read a
+// message holds (read-rule-cases S0h), on a rig whose client window is 200 ms, and answers the rig,
+// INFRA's daemon, the holder's stream sequence, the intake's clock as the holder was published, and
+// the moment the starting read is due on that clock. INFRA's take-over read is good at 10. A write
+// of INFRA's own URL a moment later finds no message holding a read, so it resets the cursor (row
+// 6.2), and its wake finds the starting read not due: the good read began less than a minute
+// before. From then on the daemon stalls every read, moving the intake's clock RequestTimeout on at
+// each, as in TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes. With left of that minute to
+// go, INFRA's message at 12 calls for the starting read, which is not due (row 3.2): it holds the
+// read and goes back to the stream for what is left of the minute. startingReadHeld fails unless
+// the message went back so, once, and the cursor then follows no daemon, owes the starting read
+// alone and names that message as the holder, gone back once.
+func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon *fakeDaemon, holder uint64, from, due time.Time) {
+	t.Helper()
+	windowed(t, 200*time.Millisecond)
+	rig = newIntakeRig(t)
+	daemon = newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitWholeReads(1)
+	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, true)
+	due = lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
+
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("write INFRA's setting again with its own URL: %v", err)
+	}
+	rig.wake <- struct{}{}
+	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
+		t.Fatalf("INFRA's cursor after a write of its own URL that found no holder is %s, want it reset: no sequence, no store, nothing owed and no holder", c)
+	}
+
+	daemon.stalls(func() { rig.clock.advance(RequestTimeout) })
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
+	from = rig.clock.now()
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	holder = rig.lastStreamSeq()
+	held := rig.awaitLogRecords(heldLine, 1)[0]
+	if delay, _ := held["delay"].(float64); held["streamSeq"] != float64(holder) || held["reason"] != ReadReasonStart || held["handBack"] != float64(1) ||
+		time.Duration(delay) > left || time.Duration(delay) < left-5*time.Second {
+		t.Fatalf("the message sent back = %v, want the message at 12 (stream sequence %d) holding the starting read once, for the %s or so left of the minute", held, holder, left)
+	}
+	if requireStartingReadHeld(t, rig, holder, 1, "its message held the starting read"); t.Failed() {
+		t.FailNow()
+	}
+	return rig, daemon, holder, from, due
+}
+
+// requireStartingReadHeld fails the test unless INFRA's cursor follows no daemon yet, owes the
+// starting read alone and names the message at stream sequence holder as its holder, gone back
+// holds times, as a message that holds the starting read leaves it (read-rule-cases S0h). after
+// names the step the cursor is read after.
+func requireStartingReadHeld(t *testing.T, rig *intakeRig, holder uint64, holds int, after string) {
+	t.Helper()
+	var stateURL string
+	if err := rig.database.Pool.QueryRow(t.Context(), `select state_url from legion_event_cursors where project = 'INFRA'`).Scan(&stateURL); err != nil {
+		t.Fatalf("read the URL INFRA's cursor follows: %v", err)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); stateURL != "" || c.readHolder == nil || *c.readHolder != int64(holder) || c.readHolds != holds ||
+		!slices.Equal(c.readReasons, []string{ReadReasonStart}) || c.lastSeq != nil || c.stateID != nil {
+		t.Errorf("INFRA's cursor after %s follows %q and is %s, want it to follow no daemon yet, owe the starting read alone and name the message at stream sequence %d as its holder, gone back %d times",
+			after, stateURL, c, holder, holds)
+	}
+}
+
+// TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes: R3 bounds
+// the time a held message holds the durable's ack floor at about 11 minutes, 10 hand-backs, and
+// says that the redelivery of the message that holds an owed read makes it and that a reason that
+// arrives while a read is owed joins it, a starting read included (read-rule-cases rows 3.2 and
+// 6.1, and S0 with a holder: the architect's rulings of 2026-11-24T23:29Z and 2026-11-25T00:15Z).
+// INFRA's message holds its starting read while the cursor follows no daemon yet
+// (startingReadHeld), and the daemon stalls every read. A person writes INFRA's setting with its
+// own URL again, each write with its wake:
+//   - once, a second after the starting read became due on the intake's clock, while the message
+//     waits out its hand-back and before its redelivery first makes the read;
+//   - in the second case also once before the starting read is due, and twice once the message's
+//     redeliveries have made reads that failed, as in
+//     TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes.
+//
+// Each write leaves the cursor as it was, so the holder and its count go on, and no wake makes a
+// read of its own: each joins the held read. The message's next delivery makes the starting read,
+// each delivery after it makes one more, and the message is acknowledged after stateMaxHolds
+// hand-backs, counted 1 to 10 with no restart. On the intake's clock it held the floor for less
+// than its stateMaxHolds+1 reads of RequestTimeout and a minute, and INFRA's daemon served the good
+// starting read and the message's stateMaxHolds reads, and no other.
+//
+// The test catches a revert of the rule that a write of the same URL keeps the hold
+// (settingWritten, resetCursor), which fails at the first write of the test, and a revert of the
+// rule that a call no message makes joins a held starting read (cursor.readFor): the wake of the
+// write made once the read is due runs on the project's runner while the message waits out the
+// rest of its hand-back, left in the rig, so that wake, or the call that the wake of
+// startingReadHeld's write deferred to the same moment (a call of the same kind), reads the daemon
+// first, and the daemon serves one read too many. A revert of the rule that such a call defers no
+// call (Intake.startingPoint) alone only adds a deferred call for the write made before the read is
+// due, which then joins the held read too: this test does not catch it.
+//
+// At 0a0ea48a a write of the same URL reset the cursor that followed no daemon yet, dropping the
+// holder and its count (resetCursor kept the cursor only where it followed the write's URL), so the
+// message's next delivery held the read again from a count of 1, 11 hand-backs and more in all. The
+// seeded model test found it on 8 seeds at 0dc86e28: "the message at stream sequence N went back to
+// the stream as hand-back 1 after hand-back M, and nothing ended its hold between". And a wake's
+// call read the daemon while the message held the starting read, since readFor made a due starting
+// read for any call no message makes, so the hold took one more read.
+func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// early writes the setting once more before the starting read is due.
+		early bool
+		// later lists, for each write after the message first made the read, how many hand-backs
+		// it has made at the least before it.
+		later []int
+	}{
+		{"once while the starting read is held", false, nil},
+		{"twice while the starting read is held and twice after it was made", true, []int{4, 6}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const left = 10 * time.Second
+			rig, daemon, holder, from, due := startingReadHeld(t, left)
+			write := func() {
+				t.Helper()
+				if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+					t.Fatalf("write INFRA's setting again with its own URL: %v", err)
+				}
+			}
+			if test.early {
+				write()
+				requireStartingReadHeld(t, rig, holder, 1, "a write of its own URL before the starting read was due")
+				rig.wake <- struct{}{}
+			}
+			rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
+			write()
+			requireStartingReadHeld(t, rig, holder, 1, "a write of its own URL once the starting read was due")
+			rig.wake <- struct{}{}
+			for i, at := range test.later {
+				rig.waitFor(time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= at }, func() string {
+					return fmt.Sprintf("the message went back %d times, want %d before write %d after the starting read was made", len(rig.logRecords(heldLine)), at, i+1)
+				})
+				write()
+				if c := cursorOf(t, rig.database, "INFRA"); c.readHolder == nil || *c.readHolder != int64(holder) || c.readHolds < at {
+					t.Errorf("INFRA's cursor after write %d of its own URL after the starting read was made is %s, want the message at stream sequence %d still its holder, gone back %d times at the least",
+						i+1, c, holder, at)
+				}
+				rig.wake <- struct{}{}
+			}
+
+			var info *natsgo.ConsumerInfo
+			rig.waitFor(2*time.Minute, func() bool {
+				info = rig.consumerInfo()
+				return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+			}, func() string {
+				return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
+			})
+			held := rig.clock.now().Sub(from)
+			if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(stateMaxHolds)) {
+				t.Errorf("the cursor counted the hand-backs %v, want %v: no write of the same URL starts the count again", got, oneTo(stateMaxHolds))
+			}
+			reads := time.Duration(stateMaxHolds+1) * RequestTimeout
+			if held >= reads+time.Minute {
+				t.Errorf("on the intake's clock the message held the ack floor for %s, want less than %s, its %d reads and a minute",
+					held.Round(time.Second), reads+time.Minute, stateMaxHolds+1)
+			}
+			if served := daemon.served(); served != 1+stateMaxHolds {
+				t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: a wake read while the message held the starting read",
+					served, stateMaxHolds)
+			}
+		})
+	}
+}
+
+// TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes: R3 bounds the
+// time a held message holds the durable's ack floor at about 11 minutes, 10 hand-backs, and says
+// that the redelivery of the message that holds an owed read makes it and that a reason that
+// arrives while a read is owed joins it (read-rule-cases row 7.3, which holds while the cursor
+// follows no daemon yet too: the architect's ruling of 2026-11-24T23:29Z). INFRA's message holds
+// its starting read while the cursor follows no daemon yet (startingReadHeld), and the daemon
+// stalls every read. The intake stops, the intake's clock moves a second past the moment the
+// starting read is due, and a second intake takes the durable over. The take-over redelivers the
+// message at once, and the message goes back once more (see below). The take-over's starting point
+// makes no read: it joins the held read. The message's next delivery makes the starting read, each
+// delivery after it makes one more, and the message is acknowledged after stateMaxHolds
+// hand-backs, counted 1 to 10 across the take-over. On the intake's clock it held the floor for
+// less than its stateMaxHolds+1 reads of RequestTimeout and a minute, and INFRA's daemon served
+// the good starting read and the message's stateMaxHolds-1 reads (its first two deliveries found
+// the starting read not due), and no other.
+//
+// The order on the project's runner is forced, not left to the race the fix would win by chance.
+// The take-over's starting point (takenOver, SettingsChanged) and the message's redelivery reach the
+// runner in no fixed order, and where the redelivery came first and made the read, the starting
+// point would find a cursor that follows the daemon and join the read whatever the rule. So the
+// test holds legion_settings locked (access exclusive) while the second intake takes the durable
+// over. The redelivery waits for that lock on the project's runner (lockPosition), and the
+// take-over's settings read (ListSettings) waits for it before it queues the starting point. Once
+// both wait, the test lets the lock go, and the starting point queues behind the redelivery. And
+// the second intake's clock stands still clamp before the read is due until the redelivery has
+// gone back (heldLine), as it would where the redelivery came a moment before the minute ended: the
+// redelivery finds the read not due and goes back for clamp, and the starting point, which runs
+// right after it, finds the read due while the holder waits out its hand-back.
+//
+// The test catches a revert of the rule that a call no message makes joins a held starting read
+// (cursor.readFor): the take-over's starting point then reads the daemon, at once, and the daemon
+// serves one read too many. A revert of the rule that such a call defers no call
+// (Intake.startingPoint) alone changes nothing here: the take-over's call finds the starting read
+// due, and that rule only keeps a call that finds it held and not due from deferring one more call,
+// which would join the held read too.
+//
+// At 0a0ea48a the take-over's starting point read the daemon while the message held the starting
+// read, since readFor made a due starting read for any call no message makes: the hold took one
+// more read of RequestTimeout, and the message's next delivery made a read of its own after it.
+func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	const left, clamp = 10 * time.Second, 5 * time.Second
+	rig, daemon, holder, from, due := startingReadHeld(t, left)
+
+	rig.stop()
+	rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
+	lock, err := rig.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("open the transaction that locks legion_settings: %v", err)
+	}
+	defer func() { _ = lock.Rollback(context.Background()) }()
+	if _, err := lock.Exec(t.Context(), `lock table legion_settings in access exclusive mode`); err != nil {
+		t.Fatalf("lock legion_settings: %v", err)
+	}
+	away := len(rig.logRecords(heldLine))
+	var back atomic.Bool
+	rig.startOn(func() time.Time {
+		now := rig.clock.now()
+		if !back.Load() && len(rig.logRecords(heldLine)) == away {
+			if still := due.Add(-clamp); now.After(still) {
+				return still
+			}
+			return now
+		}
+		back.Store(true)
+		return now
+	})
+	var readers, lister int
+	rig.waitFor(10*time.Second, func() bool {
+		if err := rig.database.Pool.QueryRow(t.Context(), `
+			select count(*) filter (where mode = 'RowShareLock'), count(*) filter (where mode = 'AccessShareLock')
+			from pg_locks
+			where relation = 'legion_settings'::regclass and not granted
+				and database = (select oid from pg_database where datname = current_database())
+		`).Scan(&readers, &lister); err != nil {
+			t.Fatalf("read the waits on legion_settings: %v", err)
+		}
+		return readers >= 1 && lister >= 1
+	}, func() string {
+		return fmt.Sprintf("%d statements wait for legion_settings for share and %d to read it, want the redelivery's and the take-over's settings read", readers, lister)
+	})
+	before := daemon.served()
+	if err := lock.Commit(t.Context()); err != nil {
+		t.Fatalf("let legion_settings go: %v", err)
+	}
+
+	held := rig.awaitLogRecords(heldLine, away+1)[away]
+	if delay, _ := held["delay"].(float64); held["streamSeq"] != float64(holder) || held["reason"] != ReadReasonStart || held["handBack"] != float64(2) ||
+		time.Duration(delay) != clamp {
+		t.Fatalf("the take-over's redelivery went back as %v, want the message at stream sequence %d holding the starting read for its second hand-back, for %s", held, holder, clamp)
+	}
+	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > before }) {
+		t.Errorf("INFRA's daemon served %d reads from the take-over on, before the message came back from its hand-back of %s: the take-over's starting point read while the message held the starting read",
+			daemon.served()-before, clamp)
+	}
+
+	var info *natsgo.ConsumerInfo
+	rig.waitFor(2*time.Minute, func() bool {
+		info = rig.consumerInfo()
+		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
+	})
+	elapsed := rig.clock.now().Sub(from)
+	if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(stateMaxHolds)) {
+		t.Errorf("the cursor counted the hand-backs %v, want %v across the take-over", got, oneTo(stateMaxHolds))
+	}
+	reads := time.Duration(stateMaxHolds+1) * RequestTimeout
+	if elapsed >= reads+time.Minute {
+		t.Errorf("on the intake's clock the message held the ack floor for %s, want less than %s, its %d reads and a minute",
+			elapsed.Round(time.Second), reads+time.Minute, stateMaxHolds+1)
+	}
+	if served := daemon.served(); served != stateMaxHolds {
+		t.Errorf("INFRA's daemon served %d reads, want the good starting read and the message's %d: the take-over's starting point read while the message held the starting read",
+			served, stateMaxHolds-1)
 	}
 }
 

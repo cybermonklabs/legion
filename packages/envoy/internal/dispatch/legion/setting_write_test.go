@@ -647,49 +647,91 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 	}
 }
 
-// TestAWriteRecordsTheReleasedHolderOnlyWhereTheCursorFollowedAnotherDaemon: a write of the
-// setting that resets the cursor records the message that held the owed read as released
-// (released_holder) only where the cursor followed another daemon (settingWritten). While a
-// starting read is in flight, a message past stateMaxWaiting can hold the read after it on a
-// cursor that follows no daemon yet, the one judgeCrowded gives a project with no cursor
-// (lockCursor). The test writes INFRA's cursor so by hand: it owes the gap read and names stream
-// sequence 42 as the holder, gone back once. A write of the setting's own URL then resets the
-// cursor and ends the hold. It records no released holder: 42 is not finished at its next
-// delivery as a message whose hold a write of another daemon ended (endHold), and its store, which
-// may be the setting's own daemon's, is not marked as no daemon of INFRA. The control: where the
-// cursor followed another daemon, the same write records 42 as released.
-func TestAWriteRecordsTheReleasedHolderOnlyWhereTheCursorFollowedAnotherDaemon(t *testing.T) {
+// TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease: R3 says a reason that
+// arrives while a read is owed joins it, the message that holds the owed read makes it at its
+// redelivery, and that message goes back to the stream stateMaxHolds times at the most, so it
+// holds the durable's ack floor for about 11 minutes at the most (read-rule-cases rows 6.1 and
+// 6.3b, the architect's rulings of 2026-11-24T23:29Z and 2026-11-25T00:15Z: a write of the same
+// URL keeps the hold's count; a write of another URL records the release). The test writes INFRA's
+// cursor by hand: it owes a read, names stream sequence 42 as the holder, gone back 3 times, keeps
+// a sequence skipped past the cap and one held part, and follows either the setting's URL (S1h,
+// after a failed read) or no daemon yet (S0h, a message that holds the starting read, which was not
+// due when it came). A write of the setting's own URL leaves that cursor exactly as it was, every
+// column, and keeps the held part. A write of another URL, made on that same cursor written again,
+// resets it, deletes the held part and records 42 as released (released_holder), in both cases, so
+// 42 is finished unapplied at its next delivery.
+//
+// At 0a0ea48a the write of the same URL reset the cursor that followed no daemon yet, dropping 42
+// and its count, so 42's next delivery took the hold again from a count of 1. And a write of
+// another URL recorded no release for such a cursor, so 42's next delivery was judged as any
+// message's.
+func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t *testing.T) {
+	const settingURL, anotherURL = "http://127.0.0.1:1", "http://another-daemon.example"
 	for _, tc := range []struct {
 		name    string
 		follows string
-		// released is the holder the write records, 0 for none.
-		released int64
+		reason  string
 	}{
-		{name: "a cursor that follows no daemon", follows: ""},
-		{name: "a cursor that follows another daemon", follows: "http://another-daemon.example", released: 42},
+		{name: "a cursor that follows the setting's URL", follows: settingURL, reason: ReadReasonRetry},
+		{name: "a cursor that follows no daemon yet", follows: "", reason: ReadReasonStart},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			database, setting := configured(t, "http://127.0.0.1:1")
-			if _, err := database.Pool.Exec(t.Context(), `
-				insert into legion_event_cursors (project, state_url, read_reasons, read_holder, read_holds)
-				values ('INFRA', $1, '{gap}', 42, 1)
-			`, tc.follows); err != nil {
-				t.Fatalf("write INFRA's cursor: %v", err)
+			database, _ := configured(t, settingURL)
+			// columns is INFRA's cursor row whole, every column, as JSON text.
+			columns := func() string {
+				t.Helper()
+				var row string
+				if err := database.Pool.QueryRow(t.Context(), `select to_jsonb(c)::text from legion_event_cursors c where project = 'INFRA'`).Scan(&row); err != nil {
+					t.Fatalf("read INFRA's cursor: %v", err)
+				}
+				return row
 			}
-			if _, err := PutSettings(t.Context(), database.Pool, "INFRA", setting.StateURL,
-				model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
-				t.Fatalf("write INFRA's setting again with its own URL: %v", err)
+			// held writes INFRA's cursor holding the read, as the test's doc says, and answers its
+			// columns.
+			held := func() string {
+				t.Helper()
+				if _, err := database.Pool.Exec(t.Context(), `delete from legion_event_cursors where project = 'INFRA'`); err != nil {
+					t.Fatalf("delete INFRA's cursor: %v", err)
+				}
+				if _, err := database.Pool.Exec(t.Context(), `
+					insert into legion_event_cursors (project, state_url, read_reasons, last_read_started_at, read_holder, read_holds,
+						skipped_state_ids, skipped_seqs)
+					values ('INFRA', $1, array[$2], now() - interval '10 seconds', 42, 3, array[$3], '{12}')
+				`, tc.follows, tc.reason, rigStateID); err != nil {
+					t.Fatalf("write INFRA's cursor: %v", err)
+				}
+				if _, err := database.Pool.Exec(t.Context(), `
+					insert into legion_event_parts (project, first_seq, last_seq, run, state_id, at, bytes, events)
+					values ('INFRA', 11, 11, $1, $2, now(), 2, '[]')
+				`, rigRun, rigStateID); err != nil {
+					t.Fatalf("hold a part of INFRA's: %v", err)
+				}
+				return columns()
 			}
+			write := func(stateURL string) {
+				t.Helper()
+				if _, err := PutSettings(t.Context(), database.Pool, "INFRA", stateURL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+					t.Fatalf("write INFRA's setting naming %s: %v", stateURL, err)
+				}
+			}
+
+			before := held()
+			write(settingURL)
+			if after := columns(); after != before {
+				t.Errorf("INFRA's cursor after a write of the setting's own URL is %s, want it as it was, %s: the holder 42, its 3 hand-backs, the reason %s and the skipped sequence", after, before, tc.reason)
+			}
+			if parts := heldPartCount(t, database, "INFRA"); parts != 1 {
+				t.Errorf("%d parts held after a write of the setting's own URL, want the one held before it", parts)
+			}
+
+			held()
+			write(anotherURL)
 			c := cursorOf(t, database, "INFRA")
-			if c.readOwed || c.readHolder != nil || c.readHolds != 0 {
-				t.Errorf("INFRA's cursor after the write is %s, want it reset: nothing owed, no holder and no hand-back counted", c)
+			if c.readOwed || c.readHolder != nil || c.readHolds != 0 || c.releasedHolder == nil || *c.releasedHolder != 42 {
+				t.Errorf("INFRA's cursor after a write of another URL is %s, want it reset, nothing owed, no holder and no hand-back counted, with 42 recorded as released", c)
 			}
-			var released int64
-			if c.releasedHolder != nil {
-				released = *c.releasedHolder
-			}
-			if released != tc.released {
-				t.Errorf("INFRA's cursor after the write is %s, want the released holder %d (0 for none)", c, tc.released)
+			if parts := heldPartCount(t, database, "INFRA"); parts != 0 {
+				t.Errorf("%d parts held after a write of another URL, want none", parts)
 			}
 		})
 	}

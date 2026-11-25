@@ -40,9 +40,10 @@
 --   setting names, and every column below but last_read_started_at, previous_state_id,
 --   previous_state_url and released_holder to its empty value: that is what makes a PUT of the
 --   same URL a fresh whole read, made once a minute has passed since the project's newest whole
---   read began. A write of the URL the row follows while a message holds the owed read
---   (read_holder) leaves the row as it is instead: that message's read, a whole read, is the read
---   the write calls for. A delete of the setting deletes the row (legion.DeleteSettings).
+--   read began. A write of the URL the setting names already while a message holds the owed read
+--   (read_holder) leaves the row as it is instead, whether the row follows that URL or '': that
+--   message's read, a whole read, is the read the write calls for. A delete of the setting deletes
+--   the row (legion.DeleteSettings).
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -83,9 +84,9 @@
 --   it, and 0 where no message holds it. The intake acknowledges the holder once it has gone back
 --   10 times (legion's stateMaxHolds) and clears both columns. A lease take-over creates the
 --   intake's durable again, which starts the message's own delivery count again, and keeps this
---   count, and so does a write of the setting that names the daemon the row follows, so the holder
---   goes back 10 times at the most in all and holds the durable's ack floor for about 11 minutes at
---   the most.
+--   count, and so does a write of the URL the setting names already, whether the row follows that
+--   URL or '', so the holder goes back 10 times at the most in all and holds the durable's ack
+--   floor for about 11 minutes at the most.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
 --   message carries as stateId): a successful whole read sets it, a write of the setting that sets
 --   state_url to '' clears it, and nothing else writes it. The intake applies no message of another
@@ -130,8 +131,8 @@
 --   started behind that URL in such a store is found again. A read that finds the row's store
 --   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
 -- - released_holder is the stream sequence of the state message that held the owed read when a
---   write of the setting reset a row that followed another daemon: a state_url that is neither ''
---   nor the write's URL. Such a write sets it to read_holder where read_holder is set, and every
+--   write of the setting that names another URL reset the row, whatever state_url the row held, ''
+--   included. Such a write sets it to read_holder where read_holder is set, and every
 --   other write keeps it. At that message's next delivery the intake acknowledges it unapplied, it
 --   holds no read, its store goes into foreign_state_ids as above, and the intake clears this
 --   column. So a write that names another daemon ends the hold of the message before it within one

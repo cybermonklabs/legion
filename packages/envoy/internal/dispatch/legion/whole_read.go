@@ -40,9 +40,9 @@ import (
 // a read in flight, as every message does, and is judged against the cursor that read leaves: it
 // queues a call for a read that is due and that no message holds behind itself, whatever store the
 // cursor holds, which the runner makes after the message is acknowledged (callRead). No recurring
-// timer makes a read. A starting read that a write's wake or a take-over finds not due is made when
-// the minute ends, by one deferred call of that wake or take-over (startingPoint). A project with
-// no read yet has no read to wait after.
+// timer makes a read. A starting read that a write's wake or a take-over finds not due, and that no
+// message holds, is made when the minute ends, by one deferred call of that wake or take-over
+// (startingPoint). A project with no read yet has no read to wait after.
 const ReadRetryAfter = time.Minute
 
 // The reasons a whole read is made, which legion_reads.reason records and the whole read's log
@@ -55,8 +55,9 @@ const (
 	// leaves it (settingWritten). It is read at the intake's take-over (which covers the durable's
 	// first creation), on a settings change, and at the project's next message if neither has read
 	// it yet, and at none of them while a Dispatch process of an earlier build is in the fleet
-	// (processes.EarlierLegionIntake). It is due ReadRetryAfter after the project's newest whole
-	// read began, as every read is (cursor.readFor).
+	// (processes.EarlierLegionIntake). Where a message holds it, the redelivery of that message
+	// makes it, and neither a take-over nor a settings change does (cursor.readFor). It is due
+	// ReadRetryAfter after the project's newest whole read began, as every read is.
 	ReadReasonStart = "start"
 	// ReadReasonBoot is a boot event that does not follow the cursor: its sequence is not the next
 	// one, or it is at or below the cursor under another run (a daemon whose counter went back).
