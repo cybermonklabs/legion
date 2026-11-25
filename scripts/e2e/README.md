@@ -5677,7 +5677,7 @@ Its inputs are the fixtures of `scripts/e2e/lib/testdata/step-models/`, whose RE
 Each fault above has its row, `--lower-one` fails both comparisons, and two issues each answer their own records.
 One row renders the made records through the real `dispatch steps` code and holds the text to the fixture.
 Three rows read what the whole-chain test captured in CI: a Claude Code session, and both issues' records, read lines and transcripts.
-The other rows read made records and read lines.
+The other rows read made read lines, or none.
 
 ## review-range.sh
 

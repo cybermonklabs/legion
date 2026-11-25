@@ -62,7 +62,8 @@ function answer(issue: string, runs: string[]): string {
 const agentsFile = (name: string) => join(dir, `agents-${name}.json`);
 const agentsJson = join(data, "agents.json");
 const daemonLog = join(data, "daemon-log-reads.jsonl");
-// The read lines of LEGION-3552's records, D1 to D9, T1 and S1.
+// The read lines of LEGION-3552's records, D1 to D10, T1 and S1, and the start read of the step
+// after D10.
 const completionLog = join(data, "daemon-log-reads-completion.jsonl");
 // The same log with line 6, A2's end read, cut to its first 200 bytes, as a copy made while the
 // daemon writes may be. The cut line still holds the read line's message.
