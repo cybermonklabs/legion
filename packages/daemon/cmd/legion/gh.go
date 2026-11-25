@@ -934,38 +934,17 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if name := ghCallerToken(env); name != "" {
 		return ghTarget{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
 	}
+	// `--version` and `-h` are gh's two print-only words that stand alone: `gh --version` prints
+	// gh's version, and `gh -h` alone names no command and prints gh's help.
+	if len(argv) == 1 && (argv[0] == "--version" || argv[0] == "-h") {
+		return ghPrintsOnly(), nil
+	}
 	walk := ghWalk{help: help}
 	var rest []string
 	var cmd *ghCommand
 	for i := 0; i < len(argv) && cmd == nil; i++ {
 		arg := argv[i]
 		switch {
-		case len(walk.path) == 0 && arg == "--version":
-			if len(argv) == 1 {
-				return ghPrintsOnly(), nil
-			}
-			// gh reads a word after it as a command, an alias's or an extension's among them.
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh's version is `gh --version` alone)", false)
-		case arg == "-h":
-			// cobra v1.10.2, the one gh 2.98.0 pins (command.go), finds the command before it
-			// adds a help flag (InitDefaultHelpFlag runs in execute, after Find, and adds none to
-			// gh, whose root defines --help itself, a persistent boolean with no -h), and neither
-			// gh's root nor any of its groups defines a -h. Find strips each command's options on
-			// the way with stripFlags, which reads a two-letter option the command does not define
-			// as a boolean (shortHasNoOptDefVal) as one whose value is the next word, but only
-			// when two or more words follow it (`if len(args) <= 1 { break Loop }`). So with two
-			// or more words after it, gh takes the first as the -h's value and runs the command
-			// the later words name, whose own -h, where it has one (--hostname, --host,
-			// --homepage), reads a later -h: `gh -h status config set -h github.com editor x` runs
-			// `gh config set`. With one word after it, stripFlags stops there, Find goes no
-			// deeper, and pflag answers the undefined -h with the help of the command found so
-			// far. Either way the walk refuses it, since gh's contract (docs/deployment.md) admits
-			// only -R/--repo and --help before the command; --help, a boolean, takes no word.
-			// `gh -h` alone names no command and prints gh's help.
-			if len(argv) == 1 {
-				return ghPrintsOnly(), nil
-			}
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value and run another command; ask for help with --help)", false)
 		case len(walk.path) == 0 && arg == "help":
 			if err := ghHelpTarget(argv[i+1:], help); err != nil {
 				return ghTarget{}, err
@@ -982,7 +961,30 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 			// The leaf reads these as its own, in order with the rest of its arguments.
 			rest = append(rest, arg)
 		case strings.HasPrefix(arg, "-"):
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may", false)
+			why := "comes before the command's name, and only -R/--repo and --help may"
+			switch {
+			case len(walk.path) == 0 && arg == "--version":
+				// gh reads a word after it as a command, an alias's or an extension's among them.
+				why += " (gh's version is `gh --version` alone)"
+			case arg == "-h":
+				// cobra v1.10.2, the one gh 2.98.0 pins (command.go), finds the command before it
+				// adds a help flag (InitDefaultHelpFlag runs in execute, after Find, and adds none
+				// to gh, whose root defines --help itself, a persistent boolean with no -h), and
+				// neither gh's root nor any of its groups defines a -h. Find strips each command's
+				// options on the way with stripFlags, which reads a two-letter option the command
+				// does not define as a boolean (shortHasNoOptDefVal) as one whose value is the next
+				// word, but only when two or more words follow it
+				// (`if len(args) <= 1 { break Loop }`). So with two or more words after it, gh
+				// takes the first as the -h's value and runs the command the later words name,
+				// whose own -h, where it has one (--hostname, --host, --homepage), reads a later
+				// -h: `gh -h status config set -h github.com editor x` runs `gh config set`. With
+				// one word after it, stripFlags stops there, Find goes no deeper, and pflag answers
+				// the undefined -h with the help of the command found so far. Either way the walk
+				// refuses it, since gh's contract (docs/deployment.md) admits only -R/--repo and
+				// --help before the command; --help, a boolean, takes no word.
+				why += " (gh can take the word after such a -h as its value and run another command; ask for help with --help)"
+			}
+			return ghTarget{}, cannotPlace(arg, why, false)
 		default:
 			if err := walk.check(arg); err != nil {
 				return ghTarget{}, err

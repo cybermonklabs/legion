@@ -229,7 +229,7 @@ that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `lab
 `release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
 `repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
 command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
-command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command whose last `--help` is true, and `gh --version` and `gh -h`, each alone, only print. It fails closed: a
 command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and

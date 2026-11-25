@@ -4556,7 +4556,7 @@ A gh call has these records:
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
   A call that only prints, such as gh's help of a command (`--help`, or a `-h` that no option of the command takes), sends nothing beside its arguments, so the guard opens no file its options name: `legion gh pr comment 1 --body-file <file> --help` passes where no file is at `<file>`, and its arguments are read as any call's are.
-  A `-h` counts as help only after the command's name, where no option of the command takes it; before the command's name only `gh -h` alone passes, and a `-h` there with words after it is refused, since gh can take the next word as its value and run another command (`gh -h status config set -h github.com editor x` runs `gh config set`, whose own `-h` is `--host`).
+  A `-h` counts as help only after the command's name, where no option of the command takes it; before the command's name, a `-h` passes only as the whole argv, `gh -h`; any other `-h` there is refused, such as `gh pr -h`, `gh -R acme/widgets -h` or one with words after it, since gh can take the next word as its value and run another command (`gh -h status config set -h github.com editor x` runs `gh config set`, whose own `-h` is `--host`).
 
 - Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
