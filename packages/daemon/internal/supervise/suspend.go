@@ -293,13 +293,13 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // outranks the one that holds it (suspensionRank): an operator's suspend of a claim the daemon
 // suspended, so the rule resumes it no more until the operator does; a daemon's or an operator's
 // suspend of a claim whose idle pod was released, or that the work hold stopped, so the linger,
-// park, close or hand-over that asked for it owns the claim and neither a wake nor the hold's end
-// acts on it; and the work hold's stop of a released claim, a pause's stop among them, so no wake
-// resumes it while the hold stands and it keeps its session and its pending task. Anything else
-// changes nothing, and an operator's suspension is never taken over. Once the work hold's
-// takeover is written, the tree's work hold row is read again (holdReadAfterStop). The hold's stop
-// asked again of a claim the hold already stopped changes nothing here, by the rank, and so writes
-// nothing and reads nothing.
+// move out of the workflow, close or hand-over that asked for it owns the claim and neither a wake
+// nor the hold's end acts on it; and the work hold's stop of a released claim, a pause's stop
+// among them, so no wake resumes it while the hold stands and it keeps its session and its pending
+// task. Anything else changes nothing, and an operator's suspension is never taken over. Once the
+// work hold's takeover is written, the tree's work hold row is read again (holdReadAfterStop). The
+// hold's stop asked again of a claim the hold already stopped changes nothing here, by the rank,
+// and so writes nothing and reads nothing.
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -321,10 +321,10 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 // claim's suspension is the weakest, because the release ended no phase and every wake may
 // resume it; the work hold's is stronger, since it holds a claim no wake may resume while its
 // tree's standing design gate is closed; the daemon's is stronger again, since it is a linger, a
-// park or a close, which ends the claim's phase whatever the gate says; the operator's is
-// strongest and nothing takes it over. An exit's is the root's own and is left where it is, and an
-// unknown one is the daemon's own that 0038 found unrecorded (SuspendedByUnknown), so both rank
-// with the daemon's.
+// move out of the workflow or a close, which ends the claim's phase whatever the gate says; the
+// operator's is strongest and nothing takes it over. An exit's is the root's own and is left where
+// it is, and an unknown one is the daemon's own that 0038 found unrecorded (SuspendedByUnknown), so
+// both rank with the daemon's.
 func suspensionRank(source SuspendSource) int {
 	switch source {
 	case SuspendedByReleased:

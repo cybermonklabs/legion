@@ -126,8 +126,8 @@ const (
 	// rule resumes it — no start row, task delivery, notice, wake, CI settlement, Envoy message, the
 	// boot's resume by rule, admission's slot repair nor a pause's resume (Machine.fence, turnDoor):
 	// only the hold's end starts it, with one task (Machine.EndHold), or an operator's own resume or
-	// retry. An operator's suspension and the daemon's own (a close, a linger, a park) take it over,
-	// and it takes over a released claim and a pause's stop (suspensionRank).
+	// retry. An operator's suspension and the daemon's own (a close, a linger, a move out of the
+	// workflow) take it over, and it takes over a released claim and a pause's stop (suspensionRank).
 	SuspendedByHold SuspendSource = "hold"
 )
 

@@ -1168,9 +1168,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, an issue whose start waits for a free
-slot has that start queued already, and a claim the work hold stopped waits for its tree's design
-gate to open ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)). A root in
+comes, the claims of a tree whose root is out of the workflow (`backlog`, `icebox` or `triage`)
+wait for its re-admission, an issue whose start waits for a free slot has that start queued
+already, and a claim the work hold stopped waits for its tree's design gate to open ([A tree's
+work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)). A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's

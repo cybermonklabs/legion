@@ -121,10 +121,11 @@ var approvalPaths = []approvalPath{
 		r.wantCarried(carriedRoot, otherRoot, otherDocument, 12)
 		return r.noticeEntry(carriedRoot, "carried-gate-opened")
 	}},
-	// Path 2 and 6: the same opening of the copy a parked carried root holds. Its architect stopped
-	// with its tree, so the outbox relays the notice's decision (record.SpecDecision's
-	// carried-gate-opened) and keeps it for the root's next start or catch-up, which names it.
-	{name: "task-carried-gate-opened-kept-for-a-parked-carried-root", drive: func(r *pathRig) string {
+	// Path 2 and 6: the same opening of the copy a carried root holds while it is out of the workflow
+	// in the backlog. Its architect stopped with its tree, so the outbox relays the notice's decision
+	// (record.SpecDecision's carried-gate-opened) and keeps it for the root's next start or catch-up,
+	// which names it.
+	{name: "task-carried-gate-opened-kept-for-a-carried-root-out-of-the-workflow", drive: func(r *pathRig) string {
 		r.carried(record.DesignGate{LatestVersion: 12})
 		r.lingering(carriedRoot, "backlog")
 		r.review(otherRoot, otherDocument, intake.DispatchArtifactApproved, 12)
@@ -225,7 +226,7 @@ var approvalPaths = []approvalPath{
 	// Path 6: a person's approval of the spec of a root whose tree closed: nobody in the tree hears
 	// the design-approved notice, so the outbox relays it and keeps the decision for the root's next
 	// start (record.RelayParkedDecision), which names it (KeptDecisionsTask).
-	{name: "task-design-approved-kept-for-a-parked-root", drive: func(r *pathRig) string {
+	{name: "task-design-approved-kept-for-a-root-out-of-the-workflow", drive: func(r *pathRig) string {
 		r.closedRoot()
 		r.relay(ownRoot, "design-approved")
 		r.wantOwn(ownRoot, ownDocument, 2)
@@ -620,8 +621,8 @@ func (r *pathRig) lingering(key, status string) {
 // closedRoot is ownRoot as a root whose tree ran and closed as done: its run stood in a phase of
 // its own (record.Issue.TakenBack, which its re-admission keeps), and its spec row holds version
 // 2 as its run registered it. Then a person approves version 2: the gate of a closed tree takes
-// it (a root closed as done is not parked, so the approval queues no handover), and the
-// design-approved notice it writes finds no architect to hear it.
+// it (a root closed as done is in neither the backlog nor the icebox, so the approval queues no
+// handover), and the design-approved notice it writes finds no architect to hear it.
 func (r *pathRig) closedRoot() {
 	r.t.Helper()
 	ran := rootIssue(ownRoot)

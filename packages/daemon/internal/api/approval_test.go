@@ -218,9 +218,9 @@ func (r *approvalRig) lingering(key, status string) {
 	r.recordIssue(issue)
 }
 
-// parked records ownRoot as a root a person parked after its run, whose spec row holds document's
-// version latest as its earlier run registered it.
-func (r *approvalRig) parked(latest int) {
+// outOfWorkflow records ownRoot as a root a person moved to the backlog after its run, out of the
+// workflow, whose spec row holds document's version latest as its earlier run registered it.
+func (r *approvalRig) outOfWorkflow(latest int) {
 	r.t.Helper()
 	r.lingering(ownRoot, "backlog")
 	r.write(func(tx pgx.Tx) error {
@@ -228,9 +228,10 @@ func (r *approvalRig) parked(latest int) {
 	})
 }
 
-// parkedApproval is a person's approval of the parked ownRoot's spec at version, prepared with
-// Dispatch's view of the root as the daemon reads it for a person's approval: its handover.
-func (r *approvalRig) parkedApproval(version int) {
+// outOfWorkflowApproval is a person's approval of ownRoot's spec at version while the root is out
+// of the workflow in the backlog, prepared with Dispatch's view of the root as the daemon reads it
+// for a person's approval: its handover.
+func (r *approvalRig) outOfWorkflowApproval(version int) {
 	r.t.Helper()
 	r.apply(intake.DispatchArtifact{Key: ownRoot, ArtifactID: ownDocument, Kind: intake.DispatchArtifactApproved, Version: version,
 		Mark: mark(r.next()), Actor: approvalPerson, Issue: &dispatch.Issue{Key: ownRoot, Project: approvalProject, Title: ownRoot,
@@ -512,17 +513,17 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 			r.wantNone(r.architect(carriedRoot))
 		})
 	})
-	t.Run("A10 a root approved at its latest version while parked, re-admitted, before its registration", func(t *testing.T) {
+	t.Run("A10 a root approved at its latest version while out of the workflow, re-admitted, before its registration", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		r.todo(ownRoot)
 		r.wantApproval(r.architect(ownRoot), "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
 	})
 	t.Run("A11 the same after its start task is told and a compaction", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.tellStartAndCompact(architect)
@@ -530,8 +531,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A12 the same after a changes request on its document", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.wantApproval(architect, "dispatch://ACME-2694/spec", 2, ownWords(ownRoot, 2))
@@ -540,8 +541,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A13 the same after its registration", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
@@ -556,8 +557,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A14 a root approved below its latest version, re-admitted, after its registration of the latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -574,8 +575,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A15 a root re-admitted, then approved at a later version before its registration", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
@@ -586,9 +587,9 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A16 a re-admitted root's changes requests on its document, older and newer than its approval", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
+		r.outOfWorkflow(2)
 		older := r.next()
-		r.parkedApproval(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
@@ -605,8 +606,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A17 A15 after a registration whose read predates the later approval", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		r.todo(ownRoot)
 		architect := r.architect(ownRoot)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
@@ -625,8 +626,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A18 a re-admitted root's changes request on a version older than its latest", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -642,8 +643,8 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 	})
 	t.Run("A19 A18 after a registration whose read predates the record's latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -746,8 +747,8 @@ func carriedApproval(t *testing.T) intake.Fact {
 func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	t.Run("approved at its latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.todo(ownRoot)
 		r.wantRecord(record.ClearedSpecApproval{Issue: ownRoot, ArtifactID: ownDocument, Version: 2, LatestVersion: 2, Mark: mark(approved)})
@@ -755,8 +756,8 @@ func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	})
 	t.Run("approved below its latest version", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
-		r.parkedApproval(2)
+		r.outOfWorkflow(2)
+		r.outOfWorkflowApproval(2)
 		approved := r.seq
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 3)
 		r.todo(ownRoot)
@@ -765,7 +766,7 @@ func TestApprovalRouteReadmissionRecordsTheSpecRowAtAnyVersion(t *testing.T) {
 	})
 	t.Run("a changes request on its spec", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)
-		r.parked(2)
+		r.outOfWorkflow(2)
 		r.review(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 2)
 		r.todo(ownRoot)
 		if kept := r.clearedSpecApproval(ownRoot); kept != nil {

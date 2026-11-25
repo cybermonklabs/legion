@@ -1674,11 +1674,12 @@ func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t 
 // A decision of another source that calls the runtime while the opening runs holds no lock on the
 // tree's work hold row. The close's stop is held for the turn its message starts in the ready
 // implementer, so each decision of the implementer reads the tree's work hold row (supervise's
-// readHoldForStop). The daemon's own suspension of the implementer, as a linger or a park asks it,
-// stops the implementer's process, and the runtime holds that stop. The opening commits meanwhile
-// and waits for no lock: the decision's read ended with its own transaction. The opening takes the
-// row for update under the lock every fact takes, so a decision that held the row across the
-// runtime's stop would hold every fact of the daemon until the stop returned.
+// readHoldForStop). The daemon's own suspension of the implementer, as a linger or a move out of
+// the workflow asks it, stops the implementer's process, and the runtime holds that stop. The
+// opening commits meanwhile and waits for no lock: the decision's read ended with its own
+// transaction. The opening takes the row for update under the lock every fact takes, so a decision
+// that held the row across the runtime's stop would hold every fact of the daemon until the stop
+// returned.
 func TestWorkHoldOpeningWaitsForNoRuntimeCallOfAnotherDecision(t *testing.T) {
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	token := r.token(claim.RoleImplementer)

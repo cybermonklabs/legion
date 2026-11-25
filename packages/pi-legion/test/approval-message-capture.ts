@@ -216,7 +216,7 @@ const ENTRY_FILES: readonly Entry[] = [
   { name: "notice-design-approved-from-gate-above-dispatch", path: 1, approval: own(4) },
   { name: "notice-carried-gate-opened", path: 2, approval: carried(12) },
   {
-    name: "task-carried-gate-opened-kept-for-a-parked-carried-root",
+    name: "task-carried-gate-opened-kept-for-a-carried-root-out-of-the-workflow",
     path: 2,
     approval: carried(12),
   },
@@ -230,7 +230,7 @@ const ENTRY_FILES: readonly Entry[] = [
   { name: "task-start-of-the-readmitted-root", path: 5, approval: own(2) },
   { name: "notice-catch-up-at-a-launch", path: 6, approval: own(3) },
   { name: "notice-catch-up-of-a-carried-root", path: 6, approval: carried(12) },
-  { name: "task-design-approved-kept-for-a-parked-root", path: 6, approval: own(2) },
+  { name: "task-design-approved-kept-for-a-root-out-of-the-workflow", path: 6, approval: own(2) },
 ];
 
 function entryFile(name: string): Entry {

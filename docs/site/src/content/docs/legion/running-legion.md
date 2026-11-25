@@ -1419,9 +1419,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`,
    `released`, `hold`, or `unknown` for one suspended before this release). A daemon suspension of
    a claim whose issue left the workflow waits for its current turn to finish, with no stop
-   timeout: a child parked in Dispatch (`backlog` or `icebox`) stops its worker only once the
-   worker's current turn ends, and a lingering tree's claims stay suspended until the tree is
-   re-admitted.
+   timeout: a child out of the workflow (`backlog`, `icebox` or `triage`) stops its worker only
+   once the worker's current turn ends, and a lingering tree's claims stay suspended until the
+   tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
    suspended reads `unknown`. The next phase start, re-admission and the controller keeper

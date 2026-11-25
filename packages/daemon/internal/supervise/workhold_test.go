@@ -589,9 +589,9 @@ func TestWorkHoldStartsOnTheOperatorsResumeOrRetry(t *testing.T) {
 	}
 }
 
-// M8: the daemon's own suspension (a close, a linger, a park) takes a held claim over: the claim
-// is the daemon's from then on, and the daemon's suspension ends its phase, so the task the hold
-// kept goes with it.
+// M8: the daemon's own suspension (a close, a linger, a move out of the workflow) takes a held
+// claim over: the claim is the daemon's from then on, and the daemon's suspension ends its phase,
+// so the task the hold kept goes with it.
 func TestWorkHoldGivesWayToADaemonSuspension(t *testing.T) {
 	daemon := func(h *harness) RequestSuspend {
 		return RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "LEGION-209 left the workflow"}
