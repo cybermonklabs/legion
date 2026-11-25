@@ -341,7 +341,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// so it writes that node for the run (planCommentChangedForRun). The node write is queued after
 	// the row's update, its references and its mark, and what it states right after comment.edited
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
-	// (patchIssue).
+	// (writeIssue).
 	var commentNode graphstore.Uncaused
 	if previousBody != comment.Body {
 		if commentNode, err = planCommentChangedForRun(r.Context(), tx, comment, editedAt, actor); err != nil {
