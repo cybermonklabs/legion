@@ -180,7 +180,7 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
 		Now:       clock.now,

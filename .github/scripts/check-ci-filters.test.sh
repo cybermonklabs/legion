@@ -4954,6 +4954,8 @@ READS = (
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
      "(thirdPartyNotices over the font file's path)"),
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
+    ("dispatch_browser", "packages/contracts/fixtures/priority-ids.json",
+     "`packages/dispatch/e2e/priorities.e2e.ts#idFixture`"),
 )
 
 # Every JSON file a test of one of these packages imports from outside the package by a

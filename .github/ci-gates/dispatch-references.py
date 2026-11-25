@@ -52,7 +52,6 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx',
     'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx',
     'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx',
-    'packages/dispatch/web/src/features/priorities/useInPlaceDraft.ts',
     'packages/contracts/src/dispatch-text-references*.ts',
     'packages/contracts/src/reference-spans.ts',
     'packages/contracts/src/dispatch-writing-boxes.ts',
