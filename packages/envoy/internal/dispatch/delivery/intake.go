@@ -98,7 +98,10 @@ type PushImports interface {
 // request's head row (recordPullRequestHead) and a push of a branch (handlePushEnvelope) read no
 // setting, and a deployment with none still compares its check results with pull request heads
 // (api/results_ci.go, NewestPullRequestHead). Only the delivery timeline's own work reads the
-// settings (route).
+// settings (route). It binds nothing before the settings cache's first read has answered
+// (SettingsCache.Read), whatever that read found: until then the cache holds nil, and a deployment
+// with settings would route a merge, a workflow run and the event freshness by no settings and drop
+// them. A Run whose ctx ends before that read returns at once, having bound and held nothing.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
@@ -122,6 +125,11 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
+	select {
+	case <-in.settings.Read():
+	case <-ctx.Done():
+		return
+	}
 	in.run(ctx)
 }
 
