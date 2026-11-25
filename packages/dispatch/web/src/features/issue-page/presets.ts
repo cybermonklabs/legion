@@ -194,9 +194,7 @@ export function presetView(
     const view = heldFilterView(root, preset, held, wanted, named);
     return { ...view, root: closeOvertaken(view.root, held, root) };
   }
-  return held === undefined
-    ? filterView(root, preset, wanted, named)
-    : heldFilterView(root, preset, held, wanted, named);
+  return filterView(root, preset, wanted, named);
 }
 
 /** The page with no filter on: the whole tree but the memo, or under a words filter each match

@@ -39,7 +39,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * read's `parent` chain reaches it, so an open ask or a decision there is not counted. A proposed
  * one still is: no node took its place yet. A question written as a block of a document is
  * overtaken where its ask's node is, and never by a state its block's node holds (`ownStatesOf`),
- * as the tree draws it.
+ * as the tree draws it: the tree draws the block and its ask as one row, which takes the ask's
+ * state, so where the ask's node is overtaken the block is closed too, and every node under it.
+ * Which block a question is written as is read from the issue's open asks (`open_asks`), so a
+ * question that is no longer open closes its block only through its own node's parent chain.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -61,16 +64,11 @@ export function waitingOnReader(
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
   // Each open ask and node of the tree at or under an overtaken node taken out, the decisions
-  // among those nodes with them, and the count made of what is left: that tree holds no
-  // overtaken node, so the count is made once more and no further.
-  const closed = closedKeys(tree);
+  // among those nodes with them, and the count made of what is left.
+  const closed = closedKeys(tree, issue.open_asks ?? []);
   if (tree !== undefined && closed.size > 0) {
-    return waitingOnReader(
-      { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) },
-      viewer,
-      isCoverageStatement,
-      { ...tree, nodes: (tree.nodes ?? []).filter((node) => !closed.has(nodeKey(node))) }
-    );
+    issue = { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) };
+    tree = { ...tree, nodes: (tree.nodes ?? []).filter((node) => !closed.has(nodeKey(node))) };
   }
   const open =
     viewer === undefined
@@ -100,6 +98,12 @@ export function waitingOnReader(
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }
 
+/** One node of the tree read. */
+type AnswerNode = NonNullable<TreeAnswer["nodes"]>[number];
+
+/** One open ask of the issue, as the issue read carries it. */
+type OpenAsk = NonNullable<IssueDetails["open_asks"]>[number];
+
 /** One key for block `blockId` of the document `documentId`. */
 function blockKey(documentId: string, blockId: string): string {
   return `${documentId}#${blockId}`;
@@ -108,42 +112,73 @@ function blockKey(documentId: string, blockId: string): string {
 /** A node of the tree read by where it stands: a typed block by its document and its block id
  *  (`block_id`), since the read names a block by its id within its document, and any other node
  *  by its own id. */
-function nodeKey(node: NonNullable<TreeAnswer["nodes"]>[number]): string {
+function nodeKey(node: AnswerNode): string {
   return node.document === undefined
     ? node.id
     : blockKey(node.document.artifact_id, node.block_id ?? node.id);
 }
 
 /**
- * The key (`nodeKey`) of each node of `tree` at or under an overtaken one: an overtaken node, and
- * each node whose `parent` is one of these. A question's block takes no state of its own here
- * (`ownStatesOf`), so it is one of them only under an overtaken node. The read answers a parent
- * before its children (`TreeAnswer.nodes`), so one pass in its order finds them all. None while
- * the tree read has not answered.
+ * The key (`nodeKey`) of each node of `tree` at or under an overtaken one: an overtaken node, the
+ * block an open question of `asks` is written as where that question's ask's node is overtaken,
+ * and each node whose `parent` is one of these. A question's block takes no state of its own here
+ * (`ownStatesOf`): the tree draws the block and its ask as one row, which takes the ask's state
+ * (`node-states.ts`' `stateIdOf`), so the block is closed with its ask's node. The read need not
+ * answer an ask's node before its block, so the overtaken nodes are all found before any node is
+ * closed, and each closed node's children are then closed under it, wherever the read answers
+ * them. None while the tree read has not answered.
  */
-function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
+function closedKeys(tree: TreeAnswer | undefined, asks: readonly OpenAsk[]): ReadonlySet<string> {
+  const nodes = tree?.nodes ?? [];
+  const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
+  // The read's own id of each, which an ask's node of the conversation shares with its ask.
+  const overtakenIds = new Set(overtaken.map((node) => node.id));
+  // The key of each block an open question is written as whose ask's node is overtaken.
+  const blocks = new Set(
+    asks.flatMap((ask) => {
+      const block = askBlockKey(ask);
+      return block !== undefined && overtakenIds.has(ask.id) ? [block] : [];
+    })
+  );
+  // Each node's children, by the read's own id of the parent, which is what `parent` names.
+  const children = new Map<string, AnswerNode[]>();
+  for (const node of nodes) {
+    if (node.parent === null) continue;
+    const named = children.get(node.parent.id);
+    if (named === undefined) children.set(node.parent.id, [node]);
+    else named.push(node);
+  }
+  const closing = [
+    ...overtaken,
+    ...nodes.filter(
+      (node) => node.supertag === "ask" && node.document !== undefined && blocks.has(nodeKey(node))
+    ),
+  ];
   const closed = new Set<string>();
-  // The read's own id of each, which is what a child's `parent` names.
+  // The read's own id of each node closed so far, whose children are closed with it.
   const parents = new Set<string>();
-  for (const node of tree?.nodes ?? []) {
-    const under = node.parent !== null && parents.has(node.parent.id);
-    if (!under && !isOvertaken(ownStatesOf(node))) continue;
-    parents.add(node.id);
+  for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
     closed.add(nodeKey(node));
+    if (parents.has(node.id)) continue;
+    parents.add(node.id);
+    closing.push(...(children.get(node.id) ?? []));
   }
   return closed;
 }
 
 /** Whether the open `ask` is a node `closed` holds: an ask node of the conversation by the ask's
- *  own id, or the block it was indexed from, in the document that holds that block, as the
- *  tree read answers an ask either way (`decision-nodes.ts`' `askOf`). */
-function askIn(
-  closed: ReadonlySet<string>,
-  ask: NonNullable<IssueDetails["open_asks"]>[number]
-): boolean {
-  if (closed.has(ask.id)) return true;
+ *  own id, or the block it was indexed from (`askBlockKey`), as the tree read answers an ask
+ *  either way (`decision-nodes.ts`' `askOfNode`). */
+function askIn(closed: ReadonlySet<string>, ask: OpenAsk): boolean {
+  const block = askBlockKey(ask);
+  return closed.has(ask.id) || (block !== undefined && closed.has(block));
+}
+
+/** The key (`nodeKey`) of the block the open `ask` was indexed from, in the document that holds
+ *  that block; undefined for an ask that names no block. */
+function askBlockKey(ask: OpenAsk): string | undefined {
   const document = ask.block_artifact?.id ?? ask.artifact_id;
-  return document !== null && ask.block_id !== null && closed.has(blockKey(document, ask.block_id));
+  return document === null || ask.block_id === null ? undefined : blockKey(document, ask.block_id);
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

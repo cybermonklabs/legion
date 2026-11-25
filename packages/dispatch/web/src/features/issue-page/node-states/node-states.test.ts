@@ -19,11 +19,13 @@ import type {
   IssueDetails,
   IssueTreeParent,
 } from "../../../api/types";
+import { pageStateText } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { contentsEntries } from "../contents-entries";
+import { rowActionSelector } from "../DecisionActions";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import {
   answeredAsk,
@@ -2467,7 +2469,6 @@ test("a view's row under an overtaken question drawn from a block and its ask is
     readId: BLOCK_ASK,
   });
   expect(overtaken.row?.closed).toBe(true);
-  expect(overtaken.row?.closedBy).toBe("spec#b-q1");
   expect(overtaken.row?.gaps).toEqual([]);
   expect(overtaken.row === undefined ? false : outOfCounts(overtaken.row)).toBe(true);
 
@@ -2578,6 +2579,55 @@ test("Decisions draws an overtaken review row without counting it in the to-revi
     expect(textOf(row.container, '[data-preset-flag="to_review"]')).toBe("· 1 to review");
   } finally {
     row.unmount();
+  }
+});
+
+// An overtaken decision that waited for review keeps its part, its words and its mark under
+// Decisions, but nothing there waits on the reader: its row draws no Keep, no Change and no
+// waiting colour, as its row in the outline draws none. The live decision beside it draws all
+// three.
+test("an overtaken decision in the review part draws no Keep, no Change and no waiting colour", () => {
+  const old = decisionNode("old", { waiting: true });
+  const live = decisionNode("live", { waiting: true });
+  const root = stamped(node(KEY, "issue", [specStatement("s1"), old, live]), {
+    [old.id]: { life: "overtaken" },
+  });
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const view = drawDecisions(root, [decision("old", tied), decision("live", tied)]);
+  // What the row of `id` draws: its part, its words and its marks, whether it offers Keep and
+  // Change, and whether its state is drawn in the decisions' violet, which says it waits.
+  const drawn = (id: string) => {
+    const row = rowOf(view.container, id);
+    if (row === null) throw new Error(`the view draws no row of ${id}`);
+    const state = row.querySelector("[data-node-margin] [data-node-state]")?.parentElement;
+    return {
+      change: row.querySelector(rowActionSelector("change")) !== null,
+      keep: row.querySelector(rowActionSelector("keep")) !== null,
+      marks: marksIn(row),
+      part: row.closest("[data-decisions-part]")?.getAttribute("data-decisions-part"),
+      waiting: state?.classList.contains(pageStateText.decision),
+      words: textOf(row, "[data-node-words]"),
+    };
+  };
+  try {
+    expect(drawn(old.id)).toEqual({
+      change: false,
+      keep: false,
+      marks: ["overtaken"],
+      part: "review",
+      waiting: false,
+      words: "The decision old.",
+    });
+    expect(drawn(live.id)).toEqual({
+      change: true,
+      keep: true,
+      marks: [],
+      part: "review",
+      waiting: true,
+      words: "The decision live.",
+    });
+  } finally {
+    view.unmount();
   }
 });
 

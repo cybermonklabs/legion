@@ -214,12 +214,6 @@ export interface TreeNode {
   /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
    *  every chip and parent line naming it after its name. */
   readonly life?: NodeLife;
-  /** The id of the topmost overtaken node this one stands at or under (`closed`), its own id
-   *  where it is that node: by it a view's tree tells a parent the outline holds under an
-   *  overtaken node from one that is overtaken itself (`node-states.ts`'s `closeOvertaken`). A
-   *  view's row takes it from the view's own tree, and from the outline's above a parent the view
-   *  draws as its parent line. Absent on every node that is not closed. */
-  readonly closedBy?: string;
   /** Whether this node waited on the reader (`waiting`) before it was closed (`closed`), which
    *  leaves `waiting` false: what the fold reads, so a closed node arrives as open as its live self
    *  (`tree-fold.ts`'s `unanswered`). Only the fold reads it, so no count, first focus or waiting

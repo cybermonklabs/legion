@@ -661,8 +661,10 @@ function inSpecAsk(extra: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
 // No reader is waited on for an open question at or under an overtaken node, since a later node
 // took its place: the count leaves it out, as the tree draws it in no waiting tone.
 // That holds for a question that is itself overtaken, for one the read hangs under an overtaken
-// decision, and for one asked in a block of the spec whose ask's node is overtaken. The approval
-// request, which is no node of the tree, still waits, and so does each question nothing overtook.
+// decision, for one asked in a block of the spec whose ask's node is overtaken, and for one the
+// read hangs under that block, whatever order the read answers the ask, its block and what
+// stands under the block in. The approval request, which is no node of the tree, still waits,
+// and so does each question nothing overtook.
 test("no reader is waited on for an overtaken ask", () => {
   const mine = (extra: Partial<TreeAnswerNode>) =>
     askNodes.map((node) => (node.id === "mine" ? { ...node, ...extra } : node));
@@ -700,6 +702,15 @@ test("no reader is waited on for an overtaken ask", () => {
     counted: { approvals: [spec.id], asks: 1, decisions: 0, total: 2 },
     drawn: ["mine"],
   });
+  for (const order of [
+    [...mine({ parent: parentNamed("q1") }), askBlock(), inSpecAsk({ state: "overtaken" })],
+    [inSpecAsk({ state: "overtaken" }), askBlock(), ...mine({ parent: parentNamed("q1") })],
+  ]) {
+    expect(countedAndDrawn(answerOf([statement, ...order]), asking)).toEqual({
+      counted: { approvals: [spec.id], asks: 0, decisions: 0, total: 1 },
+      drawn: [],
+    });
+  }
 });
 
 // A question asked in a block of the spec is its ask's node, and the block only its place in the

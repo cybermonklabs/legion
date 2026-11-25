@@ -15,7 +15,6 @@ import {
 } from "../issue-tree";
 import { marksOf } from "../node-states/node-states";
 import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
-import { inCounts } from "../verification-filter/statement-state";
 
 /**
  * The Decisions filter's parts, read from the tree, its decision nodes, the issue's asks and its
@@ -215,13 +214,7 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
  * leaves it out.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
-  if (parts.review.some((entry) => entry.node.closed === true)) {
-    // Leave those review entries out, so the same walk below reads the ones that wait.
-    return waitingOrder({
-      ...parts,
-      review: parts.review.filter((entry) => entry.node.closed !== true),
-    });
-  }
+  parts = { ...parts, review: parts.review.filter((entry) => entry.node.closed !== true) };
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
     ...parts.review.map((entry) => entry.node.id),
@@ -230,14 +223,13 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
 
 /**
  * How many entries the heading of `part` counts. In the two parts that wait on the reader, the
- * open questions and the decisions waiting for review, it is the entries a count reads
- * (`inCounts`): of asks and decisions, every entry but those at or under an overtaken node
- * (`TreeNode.closed`), which stand in the part and are drawn there though nothing waits on them;
- * in every other part, every entry.
+ * open questions and the decisions waiting for review, it is every entry but those at or under
+ * an overtaken node (`TreeNode.closed`), which stand in the part and are drawn there though
+ * nothing waits on them; in every other part, every entry.
  */
 export function headingCount(part: DecisionsPart, entries: readonly DecisionsEntry[]): number {
   if (part !== "open_questions" && part !== "review") return entries.length;
-  return inCounts(entries).length;
+  return entries.filter((entry) => entry.node.closed !== true).length;
 }
 
 /**

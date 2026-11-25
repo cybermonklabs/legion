@@ -74,9 +74,8 @@ function carriesMarks(root: TreeNode): boolean {
  * is every node under it in `root`. So is a node drawn under its parent's line rather than under
  * its parent's row - a view's row whose parent the view draws no row for - where that parent is
  * overtaken, or is one of `closedAbove`, the read ids of the parents that stand at or under an
- * overtaken node themselves, each with the id of the topmost such node: the node stands under
- * that parent all the same. Each closed node carries the id of the topmost overtaken node it
- * stands at or under as its `closedBy`, its own where it is that node. No other node is closed.
+ * overtaken node themselves: the node stands under that parent all the same. No other node is
+ * closed.
  * A proposed node and a closed one draw no gap, the page's own included: a gap says what
  * the issue's work still lacks, and neither is part of that work. No reader is waited on for a
  * closed node either: a later node took its place, so the page opens on none of them and draws
@@ -93,7 +92,7 @@ function carriesMarks(root: TreeNode): boolean {
 export function stampStates(
   root: TreeNode,
   states: ReadonlyMap<string, NodeStates>,
-  closedAbove?: ReadonlyMap<string, string>
+  closedAbove?: ReadonlySet<string>
 ): TreeNode {
   if (states.size === 0 && closedAbove === undefined && !carriesMarks(root)) return root;
   const statesOf = (readId: string | undefined): NodeStates | undefined =>
@@ -112,37 +111,32 @@ export function stampStates(
     const target = withoutVersion(chip.ref);
     return named.has(target) ? withMarks(chip, named.get(target)) : chip;
   };
-  // `above` is the topmost overtaken node the parent of `node` stands at or under, if any.
-  const stamp = (node: TreeNode, above: string | undefined): TreeNode => {
-    const {
-      closed: _closed,
-      closedBy: _closedBy,
-      ...own
-    } = withMarks(node, statesOf(stateIdOf(node)));
+  // `above` is whether the parent of `node` stands at or under an overtaken node.
+  const stamp = (node: TreeNode, above: boolean): TreeNode => {
+    const { closed: _closed, ...own } = withMarks(node, statesOf(stateIdOf(node)));
     const line =
       own.parentLine === undefined
         ? undefined
         : withMarks(own.parentLine, statesOf(own.parentLine.readId));
-    // The topmost first: the node the parent stands under, the one above the parent line's
-    // node, that node itself, and last this node.
-    const top =
-      above ??
-      (line?.readId === undefined ? undefined : closedAbove?.get(line.readId)) ??
-      (line !== undefined && isOvertaken(line) ? line.id : undefined) ??
-      (isOvertaken(own) ? own.id : undefined);
-    const children = own.children.map((child) => stamp(child, top));
+    // Under the parent, under the parent line's node or a node above it, or overtaken itself.
+    const closed =
+      above ||
+      (line?.readId !== undefined && closedAbove?.has(line.readId) === true) ||
+      (line !== undefined && isOvertaken(line)) ||
+      isOvertaken(own);
+    const children = own.children.map((child) => stamp(child, closed));
     return {
       ...own,
       alsoUnder: own.alsoUnder.map(chipWith),
       children,
       chips: own.chips.map(chipWith),
-      ...(top === undefined ? {} : { closed: true, closedBy: top, waiting: false }),
-      ...(top !== undefined && own.waiting ? { liveWaiting: true } : {}),
-      gaps: top !== undefined || isProposed(own) ? [] : own.gaps,
+      ...(closed ? { closed: true, waiting: false } : {}),
+      ...(closed && own.waiting ? { liveWaiting: true } : {}),
+      gaps: closed || isProposed(own) ? [] : own.gaps,
       ...(line === undefined ? {} : { parentLine: line }),
     };
   };
-  return stamp(root, undefined);
+  return stamp(root, false);
 }
 
 /**
@@ -188,23 +182,23 @@ export function closeOvertaken(root: TreeNode, answer: TreeAnswer, outline?: Tre
   // its id alone (`source`): a question written as an `ask` block is the block and the ask indexed
   // from it, one row that carries the block's read id. Each line whose node the outline holds at
   // or under an overtaken node - above it, for a node the view holds - closes the rows drawn under
-  // it, under the topmost such node of the first place the outline holds it closed at.
+  // it.
   const merged = new Map(states);
-  const closedAbove = new Map<string, string>();
-  const take = (node: TreeNode, readId: string): void => {
+  const closedAbove = new Set<string>();
+  // `under` is whether `node` stands under a closed node of the outline.
+  const take = (node: TreeNode, readId: string, under: boolean): void => {
     const marks = marksOf(node);
     if (marks !== undefined && missing.has(readId)) merged.set(readId, marks);
-    const top = node.closed === true ? (node.closedBy ?? node.id) : undefined;
-    const closes = missing.has(readId) || (lines.has(readId) && top !== node.id);
-    if (top !== undefined && closes && !closedAbove.has(readId)) closedAbove.set(readId, top);
+    const closes = missing.has(readId) || (lines.has(readId) && under);
+    if (node.closed === true && closes) closedAbove.add(readId);
   };
-  const indexOutline = (node: TreeNode): void => {
-    if (node.readId !== undefined) take(node, node.readId);
+  const indexOutline = (node: TreeNode, under: boolean): void => {
+    if (node.readId !== undefined) take(node, node.readId, under);
     const own = stateIdOf(node);
-    if (own !== undefined && own !== node.readId) take(node, own);
-    for (const child of node.children) indexOutline(child);
+    if (own !== undefined && own !== node.readId) take(node, own, under);
+    for (const child of node.children) indexOutline(child, node.closed === true);
   };
-  indexOutline(outline);
+  indexOutline(outline, false);
   return stampStates(root, merged, closedAbove);
 }
 

@@ -733,6 +733,10 @@ export function DecisionsFilterBody({
         reader={reader}
         {...(report !== undefined && (report.row ?? tabStop) === id ? { report: report.line } : {})}
         review={part === "review"}
+        // An overtaken decision stands in the review part with its words and its mark, but
+        // nothing at or under an overtaken node waits on the reader, so its row draws no Keep, no
+        // Change and no waiting colour, as its row in the outline draws none.
+        {...(node.closed === true ? { review: false } : undefined)}
         statementNames={statementNames}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
