@@ -62,6 +62,7 @@ export function DraftOffer({
         <blockquote
           className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
         >
+          {/* The reader's own text as the field holds it: the reading list's `kept-draft`. */}
           {body}
         </blockquote>
         {replacement === "" ? null : (
@@ -214,6 +215,7 @@ export function KeptDraftOffers({
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: onDropOffered }}
+          // The words the draft was written for, as the document has them: `anchor-quote`.
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}

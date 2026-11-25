@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts/dispatch-api-constants";
 import { itemFromSearch } from "@legion/contracts/dispatch-href";
 import type { QueryClient } from "@tanstack/react-query";
@@ -25,7 +25,14 @@ import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, SelectedItemLabel, specArtifact } from "../margin/margin-fixture";
 import type { MarginOwner } from "../margin/useMarginItems";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ArtifactDocument } from "./ArtifactDocument";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 

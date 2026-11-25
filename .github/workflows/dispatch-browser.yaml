@@ -2,37 +2,45 @@ name: Dispatch browser suite
 
 # why: .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
 # why: .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
+# why: .github/ci-notes/dispatch-browser.md#the-third-lane-references
 on:
   workflow_call:
     inputs:
       lane:
         description: >-
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
-          and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
-          project, the `-alone` ones and the two-process job among them, over every row. Each
-          caller passes it as a literal: ci.yaml's dispatch-browser-pr job `pull-request`, its
-          dispatch-browser job and the nightly's `full`. The shard job reads it for the projects
-          it runs, and the binaries job reads it for whether to build the second rollout
-          bundle, which the full lane alone needs; no job reads it for a browser to install any
-          more, since the image the shard and alone jobs run in carries all three engines. Any
-          other value fails the shard job's browser step by name, before it starts a row.
+          and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
+          project, the `-alone` ones and the two-process job among them, over every row; or
+          `references` for `chromium` alone, over every row of the twenty-one spec files the
+          `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, with the
+          binaries, shard and merge jobs alone. Each caller passes it as a literal: ci.yaml's
+          dispatch-browser-pr job `pull-request`, its dispatch-browser job and the nightly's
+          `full`, and its dispatch-references job `references`. The shard job reads it for the
+          projects it runs, and the binaries job reads it for whether to build the second
+          rollout bundle, which the full lane alone needs; no job reads it for a browser to
+          install any more, since the image the shard and alone jobs run in carries all three
+          engines. Any other value fails the shard job's browser step by name, before it starts
+          a row.
         type: string
         required: true
       job:
         description: >-
-          The id of the job that calls this file: dispatch-browser or dispatch-browser-pr of
-          ci.yaml, or dispatch-browser of the nightly. GitHub names each job of this file
-          `<that id> / <job>`, so the merge job reads only the jobs under it; every artifact name
-          starts with it, so ci.yaml's two callers, which a pull request labelled full-ci runs in
-          one run, upload and download none of each other's; and the merge job's ci-ok report
-          names it.
+          The id of the job that calls this file: dispatch-browser, dispatch-browser-pr or
+          dispatch-references of ci.yaml, or dispatch-browser of the nightly. GitHub names each
+          job of this file `<that id> / <job>`, so the merge job reads only the jobs under it;
+          every artifact name starts with it, so ci.yaml's callers that share a run - a pull
+          request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that
+          changes what the reference rows test runs dispatch-references beside it - upload and
+          download none of each other's; and the merge job's ci-ok report, where its caller asks
+          for one, names it.
         type: string
         required: true
       ci-ok-changes:
         description: >-
           `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the merge job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for the job that calls
-          this file. Empty for the nightly workflow, which reports no check.
+          this file. Empty for the nightly workflow and for ci.yaml's dispatch-references job,
+          neither of which reports a check.
         type: string
         default: ""
 
@@ -382,6 +390,7 @@ jobs:
   # 8 min plus 94 s and 120 s = 11 min 34 s -> 12 min.
   embedder:
     needs: binaries
+    if: inputs.lane == 'pull-request' || inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -564,7 +573,7 @@ jobs:
         run: .github/scripts/dispatch-browser-reading-row-durations.sh
       # why: .github/ci-notes/dispatch-browser.md#what-reading-five-sums-and-why-it-fails-the-job
       - name: Reading five, the lane's machine time
-        if: always()
+        if: always() && inputs.lane != 'references'
         run: .github/scripts/dispatch-browser-run-reads.sh machine-time "$RUNNER_TEMP/jobs.json" "${{ inputs.lane }}"
       # why: .github/ci-notes/dispatch-browser.md#what-the-verdict-step-fails-on
       - name: Fail when a leg failed or the merged report holds a failed row

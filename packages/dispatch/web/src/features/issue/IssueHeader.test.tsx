@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -16,9 +16,16 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { patchAnswer } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The issue the header draws: unclaimed, at the root of its project, with no document. */
 const issue: IssueDetails = {

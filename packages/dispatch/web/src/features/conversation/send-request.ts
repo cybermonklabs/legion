@@ -9,20 +9,15 @@ import type {
   EditCommentInput,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
+import { draftParties } from "../refs/party-references";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import type {
-  AcceptedMention,
-  ComposerAnchor,
-  ComposerKind,
-  ComposerOwner,
-  ReplyTarget,
-} from "./composer-model";
+import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
- *  what a refusal hands back. Mentions are offsets into that exact text. */
+ *  what a refusal hands back. Who it addresses is in its text, written there as a reference
+ *  (R4), so there is nothing beside the words to keep in step with them. */
 export interface SentDraft {
   readonly body: string;
-  readonly mentions: readonly AcceptedMention[];
   readonly replacement: string;
 }
 
@@ -127,34 +122,6 @@ export function deliveryPlan(
     body: inherited === undefined || !hasCommand ? body : parsed.body,
     delivery: inherited === undefined ? undefined : hasCommand ? parsed.delivery : inherited,
   };
-}
-
-export function mentionText(text: string): string {
-  return `@${text}`;
-}
-
-/** The accepted mentions the body still carries: each target once, and only while its span reads
- *  exactly as it was accepted. A span the reader edited is their prose, not a mention. */
-export function survivingMentions(
-  body: string,
-  mentions: readonly AcceptedMention[]
-): AcceptedMention[] {
-  const seen = new Set<string>();
-  const surviving: AcceptedMention[] = [];
-  for (const mention of mentions) {
-    if (
-      seen.has(mention.target) ||
-      mention.start < 0 ||
-      mention.end > body.length ||
-      mention.start >= mention.end ||
-      body.slice(mention.start, mention.end) !== mentionText(mention.text)
-    ) {
-      continue;
-    }
-    seen.add(mention.target);
-    surviving.push(mention);
-  }
-  return surviving;
 }
 
 /** What a send says once it is past `SEND_DEADLINE_MS`: still the server's, as any late send is,
@@ -292,15 +259,14 @@ export class SendMovedError extends SendStoppedError {
   }
 }
 
-/** Whether `next` is the refused send unedited: the same draft - its text, accepted mentions and a
- *  suggestion's replacement, and an ask's fields - to the same place, in the same kind. */
+/** Whether `next` is the refused send unedited: the same draft - its text and a suggestion's
+ *  replacement, and an ask's fields - to the same place, in the same kind. */
 export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey">): boolean {
   return (
     refused.kind === next.kind &&
     sameAddress(refused, next) &&
     refused.draft.body === next.draft.body &&
     refused.draft.replacement === next.draft.replacement &&
-    JSON.stringify(refused.draft.mentions) === JSON.stringify(next.draft.mentions) &&
     (next.kind !== "ask" || JSON.stringify(refused.ask) === JSON.stringify(next.ask))
   );
 }
@@ -347,7 +313,7 @@ function attempt(
   bounds: WriteBounds
 ): Promise<unknown> {
   const { anchor, ask, draft, kind, owner, plainDelivery, replyTo } = sent;
-  const { body, mentions, replacement } = draft;
+  const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
   // and occurrence, where the server writes the mark.
   const selection: AnchorInput | undefined =
@@ -382,9 +348,12 @@ function attempt(
       bounds
     );
   }
-  const targets = survivingMentions(body, mentions).map((mention) => mention.target);
+  // Who this comment addresses is in its own words (`draftParties`), so nothing names them
+  // beside the body: the request carries the mode they are told in and no `mentions` array. A
+  // draft that names nobody leaves a typed `/btw` the reader's own first word.
+  const parties = draftParties(body);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
-  const plan = deliveryPlan(baseBody, targets.length === 0 ? undefined : plainDelivery);
+  const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
   // A reply under an ask names the ask (`ask_id`), and a reply to a comment names the comment
   // (`reply_to`): the server reads `reply_to` as a comment's id alone.
   const comment: CreateCommentInput = {
@@ -395,12 +364,7 @@ function attempt(
         ? { ask_id: replyTo.id }
         : { reply_to: replyTo.id }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
-    ...(targets.length === 0
-      ? {}
-      : {
-          delivery: plan.delivery ?? plainDelivery,
-          mentions: targets.map((target) => ({ target })),
-        }),
+    ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };
   const input = replyTo === null ? { ...comment, anchor: selection } : comment;
   return owner.kind === "issue"

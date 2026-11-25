@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -24,6 +24,13 @@ import "../features/margin/Margin";
 // download, and a row on a held clock runs its waits out in a few real milliseconds while
 // `test:web:cold` holds the chunk for a real second. So the kinds are loaded here too.
 import "../features/writes/kinds";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: IssueDetails = {
   route_status: null,

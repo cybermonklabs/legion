@@ -46,7 +46,7 @@
  * in `draft-matrix.issue-page.coverage.ts`, which holds each census item this file answers for to
  * a test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -83,9 +83,16 @@ import {
   specArtifact,
   stubViewport,
 } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/page-routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import type { SentRequest } from "./send-request";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The docked composer's send name (`ConversationTab`'s `sendKey`), and the phone thread
  *  composer's (`usePhoneThread`'s `composerKey`). */

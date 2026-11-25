@@ -11,7 +11,6 @@ import {
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
-import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
@@ -204,9 +203,8 @@ export function useDecisionsEntries({
     [decisions, comments, issue.artifacts, documents]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
-  // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   // From the model's inputs alone: how a read stands is no input of the model, so while only
   // that changes the parts keep their identity and nothing the body works out from them is
   // worked out again.

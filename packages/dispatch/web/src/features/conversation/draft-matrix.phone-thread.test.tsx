@@ -59,7 +59,7 @@
  * `draft-matrix.phone-thread.coverage.ts`, which holds each census item this file answers for to
  * a test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -91,7 +91,14 @@ import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import { ownerCommentsQuery } from "../../api/queries";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const HOST = "phone thread";
 

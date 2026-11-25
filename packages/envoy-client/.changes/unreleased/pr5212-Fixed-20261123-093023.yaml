@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    `dispatch login --device` now polls again when the broker, or a proxy before it, answers a poll
+    408, 429 or 5xx, whatever OAuth error the body names. Before, a 408 or 429 naming
+    `access_denied` ended the login as a denial, one naming `expired_token` or `invalid_grant` as an
+    expiry, and a 408 with no OAuth error stopped the poll. A deciding OAuth error now counts only
+    in another 4xx, as the Go helper's poll reads it, and the broker's own 403 `access_denied` is
+    still a denial; a `slow_down` adds its 5 s at whatever status it comes, as RFC 8628 has it. A
+    device login's refresh now ends the login only on a 400 or 401 `invalid_grant`; one answered
+    403 or 429 is a broker refusal like any other, and a later refresh gets past a 429. Before,
+    `invalid_grant` at any status ended the login, and it had to be made again. A trade, or a
+    refresh, the broker answers 408 with an OAuth error is no longer a final refusal: the token in
+    hand stays and the next trade is tried, as after a 429. Before, it dropped the token, and the
+    broker credential remembered the sign-in as refused for good.
+time: 2026-11-23T09:30:23Z
+custom:
+    Issue: pr5212

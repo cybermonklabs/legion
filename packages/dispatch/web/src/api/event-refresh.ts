@@ -713,12 +713,8 @@ function issueWriteTargets(
   if (titleOrStatus) {
     targets.push(issueSummaryOf(key, event));
   }
-  // The Reference picker's project list and the Agents page's open-issue picker list titles and
-  // whether an issue is open.
+  // The Agents page's open-issue picker lists titles and whether an issue is open.
   if (created || closed || titleOrStatus) {
-    if (project !== undefined) {
-      targets.push({ exact: true, queryKey: ["issues", project] });
-    }
     targets.push({ exact: true, queryKey: ["agents", "issue-picker"] });
   }
   if (!created && titleOrStatus) {

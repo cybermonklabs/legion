@@ -358,7 +358,7 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 	case landingPageBoard:
 		answer.Page.Board = s.landingBoardPage(ctx, caller, read.project, trees)
 	case landingPageInbox:
-		answer.Page.Inbox = s.landingInboxPage(ctx, caller)
+		answer.Page.Inbox = s.landingInboxPage(ctx, caller, trees)
 	case landingPageDocument:
 		answer.Page.Document = s.landingDocumentPage(ctx, caller, read.project, read.slug, trees)
 	}
@@ -793,10 +793,11 @@ func (s *server) landingBoardPage(ctx context.Context, caller model.Actor, proje
 }
 
 // landingInboxPage reads what the Inbox page draws: every thread of its two kinds, unpaged, as
-// the page itself asks for them.
-func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *landingInboxPage {
+// the page itself asks for them, each row carrying its subject's tree where the request asked for
+// trees, as the route's rows do.
+func (s *server) landingInboxPage(ctx context.Context, caller model.Actor, trees bool) *landingInboxPage {
 	threads, err := s.loadMyReplies(ctx, caller, myRepliesRead{
-		wantReply: true, wantAgent: true, state: myRepliesStateInbox,
+		wantReply: true, wantAgent: true, state: myRepliesStateInbox, trees: trees,
 	})
 	page := &landingInboxPage{}
 	page.Threads = landingPart(ctx, "inbox.threads", &threads, err)

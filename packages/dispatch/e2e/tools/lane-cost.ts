@@ -18,12 +18,16 @@
  *  lane's jobs are named `dispatch-browser / …`, as those of ci.yaml's full-lane caller are, and
  *  pass the filter, and its `re-record` job does not.
  *
- *  A reading reads one lane. ci.yaml calls dispatch-browser.yaml from two jobs, dispatch-browser
- *  (the full lane) and dispatch-browser-pr (the pull-request lane), and a pull request labelled
- *  full-ci runs both in one run, whose jobs carry the same names after the caller's. So a run
- *  whose counted jobs are of more than one caller is refused, naming the callers it found, rather
- *  than summed as one lane; a run of one caller is read, its jobs named `dispatch-browser / …` or
- *  `dispatch-browser-pr / …`.
+ *  A reading reads one lane. ci.yaml calls dispatch-browser.yaml from three jobs,
+ *  dispatch-browser (the full lane), dispatch-browser-pr (the pull-request lane) and
+ *  dispatch-references (the references lane), and a pull request labelled full-ci runs the
+ *  first two in one run, whose jobs carry the same names after the caller's. So a run whose
+ *  counted jobs are of more than one caller is refused, naming the callers it found, rather than
+ *  summed as one lane; a run of one caller is read, its jobs named `dispatch-browser / …` or
+ *  `dispatch-browser-pr / …`. The references lane's jobs are named `dispatch-references / …`,
+ *  which the `dispatch-browser` filter above does not count: a run of that lane alone is refused
+ *  as one with no dispatch-browser job, and a run that holds it beside another lane is read as
+ *  that other lane.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
  *    holds each job's, under its name after its caller's (`dispatch-browser / `, say);

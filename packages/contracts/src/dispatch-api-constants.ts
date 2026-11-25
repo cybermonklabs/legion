@@ -34,12 +34,15 @@ import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
  *  `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 
-/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
- *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
- *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
- *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
- *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
- *  `ActorActSchema` keep `person` and `approve` alone. */
+/** The scope words a personal token can carry, which the agent token list names and `scopes` in
+ *  `GET /api/v1/whoami` names for it: the two of `DISPATCH_SCOPES` and `read`. A token that holds
+ *  `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or beside
+ *  `person`, never beside `approve`. `read` is a mark on the token and not a scope a credential
+ *  acts under, so no act records it, and `DISPATCH_SCOPES` and `ActorActSchema` keep `person` and
+ *  `approve` alone. `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
+ *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
+ *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
+ *  records it either, and no personal token can hold it. */
 export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
 
 /**
@@ -256,6 +259,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
  * the server's are one number.
  */
 export const MAX_BROADCAST_RECIPIENTS = 100;
+
+/**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
 
 /**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the

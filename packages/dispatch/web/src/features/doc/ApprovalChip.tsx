@@ -1,5 +1,6 @@
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -14,7 +15,6 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
@@ -35,6 +35,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -48,10 +49,11 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
  * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
  * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
- * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
- * the quiet grey, a refusal the failed red; Approve and the dialog's Request changes are filled
- * with the ink, as the header's one filled control is, and the other actions are the header's
- * control. The reason box keeps `main`'s focus rule, the application's one focus indicator.
+ * review are the ink, the reviewer's reason and a label the muted grey, Close, a pending read and
+ * the line under the reason box the quiet grey, a refusal the failed red; Approve and the
+ * dialog's Request changes are filled with the ink, as the header's one filled control is, and
+ * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
+ * application's one focus indicator.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -67,6 +69,7 @@ const ON_PAGE = {
   failure: pageFailedText,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   heading: pageInkText,
+  hint: pageQuietText,
   label: pageMutedText,
   pending: pageQuietText,
   reason: pageMutedText,
@@ -120,9 +123,12 @@ function approvalScope(approval: ArtifactApproval): string {
 
 function ReviewsDialog({
   artifactId,
+  issueKey,
   onClose,
 }: {
   artifactId: string;
+  /** The issue the document is on, which each review's reason is a text of. */
+  issueKey: string | null;
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
@@ -190,7 +196,8 @@ function ReviewsDialog({
                     >
                       <MarkdownBody
                         markdown={review.reason}
-                        source={textSourceOf("artifact", artifactId)}
+                        source={textSourceOf("artifact", artifactId, issueKey)}
+                        surface="approval-review-reason"
                         tree={review.reason_tree}
                       />
                     </div>
@@ -207,18 +214,26 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
+  /** The issue the document under review belongs to, where it has one: the picker offers that
+   *  issue's people. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
+  /** The document's project, whose components the picker offers. */
+  project: string;
   saving: boolean;
 }): ReactNode {
   const [reason, setReason] = useState("");
-  const reasonId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
@@ -244,34 +259,38 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          <label
-            className={`block text-sm font-medium ${page === null ? textSecondaryOnSurface : ON_PAGE.label}`}
-            htmlFor={reasonId}
-          >
-            Reason
-            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
-                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
-                the body in a browser, and Tab would then leave the dialog. Outside both are
-                `disabled` while the write is out, as on `main`. */}
-            <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
-              disabled={page === null && saving}
-              id={reasonId}
-              onChange={(event) => setReason(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (trimmed !== "" && !saving) {
-                      onSubmit(trimmed);
-                    }
-                  },
-                })
-              }
-              readOnly={page !== null && saving}
-              ref={textareaRef}
-              value={reason}
-            />
-          </label>
+          {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+              submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+              the body in a browser, and Tab would then leave the dialog. Outside both are
+              `disabled` while the write is out, as on `main`. */}
+          <MentionField
+            className="text-sm"
+            body={reason}
+            disabled={page === null && saving}
+            fieldClassName={page === null ? undefined : ON_PAGE.reasonBox}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            hintClassName={page === null ? undefined : `text-xs ${ON_PAGE.hint}`}
+            issueKey={issueKey}
+            label="Reason"
+            labelClassName={
+              page === null ? undefined : `block text-sm font-medium ${ON_PAGE.label}`
+            }
+            onChange={(change) => setReason(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (trimmed !== "" && !saving) {
+                    onSubmit(trimmed);
+                  }
+                },
+              })
+            }
+            project={project}
+            readOnly={page !== null && saving}
+            writing={dispatchWritingBox("approval-reason", "approval-reason")}
+          />
           {error === null ? null : (
             <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
@@ -575,11 +594,16 @@ export function ApprovalChip({
         </ActionsGroup>
       ) : null}
       {reviewsOpen ? (
-        <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
+        <ReviewsDialog
+          artifactId={artifact.id}
+          issueKey={artifact.issue_key}
+          onClose={() => setReviewsOpen(false)}
+        />
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
+          issueKey={artifact.issue_key ?? undefined}
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel
@@ -600,6 +624,7 @@ export function ApprovalChip({
               review.mutate({ artifact, input: { reason, state: "changes_requested" } });
             })
           }
+          project={artifact.project}
           saving={review.isPending}
         />
       ) : null}

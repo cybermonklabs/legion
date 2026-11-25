@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -518,6 +518,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	response, err := s.loadMyReplies(r.Context(), caller, myRepliesRead{
 		wantReply: wantReply, wantAgent: wantAgent, state: state,
 		limit: limit, offset: offset, from: from, issue: issue, artifact: artifact,
+		trees: wantsDisplayTrees(r),
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -527,10 +528,11 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 }
 
 // myRepliesRead is one read of the caller's Inbox threads as GET /api/v1/me/replies's query
-// parses it: which kinds it lists, in which state, which page of them, and which owner it is
-// narrowed to. It is one value rather than eight parameters because GET /api/v1/landing reads
-// the same list twice - the unread count of its shell, and the Inbox page's own rows - and both
-// must reach the loader the same way the route does.
+// parses it: which kinds it lists, in which state, which page of them, which owner it is
+// narrowed to, and whether its rows carry their subject's display tree. It is one value rather
+// than nine parameters because GET /api/v1/landing reads the same list twice - the unread count
+// of its shell, and the Inbox page's own rows - and both must reach the loader the same way the
+// route does.
 type myRepliesRead struct {
 	// wantReply and wantAgent are the kinds ?kind= names: the threads the caller wrote in, the
 	// caller's one-off messages to a session, or both.
@@ -546,6 +548,9 @@ type myRepliesRead struct {
 	// issue and artifact narrow the read to one owner, "" and nil for no narrowing.
 	issue    string
 	artifact *string
+	// trees is whether each row carries the reading of its subject line (wantsDisplayTrees), as
+	// a caller that sends `Dispatch-Trees: 1` asks.
+	trees bool
 }
 
 // loadMyReplies is the read behind GET /api/v1/me/replies, which listMyReplies answers and GET
@@ -655,6 +660,17 @@ func (s *server) loadMyReplies(ctx context.Context, caller model.Actor, read myR
 		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
 	response.Rows = append(response.Rows, rows...)
+	// Each row's subject carries the reading of its own line, for the caller that asked for the
+	// trees. The Inbox draws that line through the one renderer every body is drawn with
+	// (web/src/features/inbox/ThreadTitle.tsx), so the reading goes out beside it and no browser
+	// parses it. A subject is the thread root's first line cut by refs.FirstLine, which no writer
+	// stores a tree of, so each is read where it stands (shapeBuilt), neither asked of the table nor
+	// stored in it.
+	shapeBuilt(read.trees, func(reader *displayTreeReader) {
+		for index := range response.Rows {
+			reader.text(&response.Rows[index].SubjectTree, response.Rows[index].Subject)
+		}
+	})
 	return response, nil
 }
 
@@ -752,7 +768,7 @@ func (s *server) readMyReplyRows(
 		row.Project = &projectKey
 		row.ReadThrough = &readThrough
 		row.Version = &version
-		row.Subject = contracts.OneLineSummary(subject)
+		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
 		if replyID != nil {
 			row.Reply.ID = *replyID
 		}
@@ -768,7 +784,7 @@ func (s *server) readMyReplyRows(
 			}
 			row.Anchor = &value
 		}
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {

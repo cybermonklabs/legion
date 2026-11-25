@@ -18,13 +18,14 @@ import { buildIssuePath } from "../refs/page-routes";
 import { buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
-import { askIssueKey, controlName } from "./ask-name";
+import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
+import { useControlName } from "./useControlName";
 
 /** What names an issue document in an address: its slug, and whether it is the issue's primary
  *  document, which opens as its spec. Each document field of an ask row carries both. */
@@ -158,7 +159,7 @@ export function ReadingPaneHead({
   // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
   const [assignLive, setAssignLive] = useState(false);
   const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
-  const name = controlName(ask, undefined);
+  const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
   const approval = ask.kind === "approval" ? ask.approval : undefined;
@@ -184,6 +185,7 @@ export function ReadingPaneHead({
       (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
         <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
       ) : null}
+      {reads}
       <SnoozeControl
         askId={ask.id}
         label={name}

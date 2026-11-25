@@ -64,6 +64,7 @@ export function agentReplyTo(agent: Agent, read: MessageRead, node: MessageWithT
     target: {
       actor: node.author,
       excerpt: node.body,
+      excerptTree: node.body_tree,
       id: node.id,
       parentKind: "message",
       thread: exchangeDelivery(agent, read),

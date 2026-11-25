@@ -47,7 +47,8 @@ export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
  *
- *  `scopes` is the set that credential held at the act, recorded with it and never read back
+ *  `scopes` is the set of `DISPATCH_SCOPES` that credential held at the act (a Legion daemon's
+ *  `legion-status` is never recorded), recorded with it and never read back
  *  from the token: a person who narrows a token afterwards narrows what it may do next, and
  *  does not un-approve what it approved while it held `approve`.
  *

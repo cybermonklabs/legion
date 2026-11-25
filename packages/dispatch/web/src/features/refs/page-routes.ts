@@ -13,6 +13,7 @@
  * comes into the entry.
  */
 import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
+import { PLAIN_ISSUE_TABS } from "@legion/contracts/dispatch-text-rules";
 import { matchPath } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
@@ -102,23 +103,14 @@ export type IssueTab =
   | "decisions"
   | "collaborators";
 
-/** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
- *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains here and in `routes.ts` hold the seven in one
- *  arm rather than one apiece and an eighth tab is this list. The spec, the conversation and the
- *  decisions stay out of it: a spec route carries a block, the conversation is written `log` in
- *  a reference and `conversation` in a path, and the Decisions tab is a view of the issue's
- *  `decisions.md`, which a reference names as that document. */
-const PLAIN_ISSUE_TABS = [
-  "verification",
-  "plan",
-  "steps",
-  "activity",
-  "children",
-  "artifacts",
-  "collaborators",
-] as const;
-
+/** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
+ *  which the server reads the same way): no block, no slug, no id. Each one is parsed from the
+ *  segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>` and is the tab of
+ *  its own name, so the chains here and in `routes.ts` hold the seven in one arm rather than one
+ *  apiece and an eighth tab is that list. The spec, the conversation and the decisions stay out
+ *  of it: a spec route carries a block, the conversation is written `log` in a reference and
+ *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`,
+ *  which a reference names as that document. */
 type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
 
 /** The plain tab a path segment names, or `undefined` for anything else. */
@@ -336,7 +328,11 @@ export function routeProjectOf(pathname: string): string | undefined {
 }
 
 export function buildIssuePath(route: IssueRoute): string {
-  const issue = `/issues/${route.key}`;
+  // Encoded although an issue key is `[A-Z][A-Z0-9]{1,9}-<digits>` and so already a path
+  // segment: a key that reached this builder out of a reference a person typed has been read
+  // by a pattern, never trusted, and encoding says so where the path is built rather than at
+  // each of the places one is written into an `href`.
+  const issue = `/issues/${encodeURIComponent(route.key)}`;
   if (route.kind === "issue") {
     return issue;
   }
@@ -362,7 +358,10 @@ export function buildIssuePath(route: IssueRoute): string {
 }
 
 export function buildProjectPath(route: ProjectRoute): string {
-  const project = `/projects/${route.project}`;
+  // Encoded for the reason `buildIssuePath` gives: a project key is `[A-Z][A-Z0-9]{1,9}`, so
+  // this is identity for every key the server makes, and the path carries no caller's
+  // characters whatever reached it.
+  const project = `/projects/${encodeURIComponent(route.project)}`;
   if (route.kind === "project") {
     return project;
   }

@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
@@ -6,6 +6,7 @@ import { keptWrites } from "./__tests__/kept-sends-harness";
 import { wholeText } from "./__tests__/whole-text";
 import { ApiError } from "./api/client";
 import { aliceWrite, otherTab, renderApp } from "./app-sign-out-fixture";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
 import { writesOf } from "./features/writes/write-store";
 // The Inbox the app draws at `/` is a chunk of its own (`features/inbox/InboxHost.tsx`), and the
@@ -22,6 +23,12 @@ import "./features/margin/Margin";
 // So the indicator is loaded here, with the test file, and no row waits for it; the kinds of
 // write come with the fixture (`app-sign-out-fixture.tsx`).
 import "./features/writes/PendingWritesIndicator";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The sign-out rows of another tab's sign-out, which holds this tab's writes for the person it
 // signs out until that tab says how it ended, or goes: the writes are discarded once Dispatch has

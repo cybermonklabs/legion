@@ -38,6 +38,7 @@ import {
 } from "./ask-thread-freshness";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -66,9 +67,11 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
-/** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
+/** One press of the answer: the ask it is of (`AskPress`), what it sends, and its question as the
+ *  label names it (`questionWords`). */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
+  readonly questionWords: string;
 }
 
 /** Whether a press changes an answer the server has already recorded, which its input names by
@@ -77,8 +80,10 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+/** One press of a question back: the ask it is of (`AskPress`), the text it posts, and its
+ *  question as the label names it (`questionWords`). */
 interface ClarificationPress extends AskPress {
+  readonly questionWords: string;
   readonly text: string;
 }
 
@@ -240,6 +245,11 @@ export function useAskAnswerForm({
     if (askId === ask.id) setAnswerText(next);
     else setAnswerDraft(askId, next);
   };
+  // The question as the labels of this form's two writes read it: its plain-text projection,
+  // the words the card draws (`useQuestionLabel`). A label is its press's ask's, so each press
+  // carries the line as it reads at the press, while the form is drawn for that ask: a Retry
+  // made once a host has drawn the form for the next one names the question it answers.
+  const question = useQuestionLabel(ask);
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
@@ -249,7 +259,9 @@ export function useAskAnswerForm({
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
+    // A write's label is one line the Writes indicator reads as text, so it holds the question's
+    // plain-text projection: the reading list's `write-label` (`DISPATCH_READING_SURFACES`).
+    label: (press: AnswerPress) => `Answer to “${press.questionWords}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
@@ -320,7 +332,8 @@ export function useAskAnswerForm({
   // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
+    // The same line of the Writes indicator: `write-label` again (see above).
+    label: (press: ClarificationPress) => `Question back on “${press.questionWords}”`,
     method: "POST",
     write: (press: ClarificationPress, bounds) => {
       if (press.ask.issue_key === null) {
@@ -432,6 +445,7 @@ export function useAskAnswerForm({
       mutation.mutate({
         ask,
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+        questionWords: question.line(),
       });
     });
   };
@@ -483,7 +497,7 @@ export function useAskAnswerForm({
   const sendClarification = () => {
     const text = answerText.trim();
     if (text === "") return;
-    submitGuard.guard(() => clarification.mutate({ ask, text }));
+    submitGuard.guard(() => clarification.mutate({ ask, questionWords: question.line(), text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -512,6 +526,9 @@ export function useAskAnswerForm({
     mutation,
     otherSelected,
     questionChoice,
+    /** Reads the names of the references the question's projection holds, for the labels of
+     *  this form's writes; the card mounts it wherever it draws. */
+    questionReads: question.reads,
     reasonRequired,
     requiresReason,
     selectRealOption,

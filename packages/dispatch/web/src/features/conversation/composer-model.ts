@@ -1,4 +1,4 @@
-import type { Actor, DeliveryCapability } from "../../api/types";
+import type { Actor, DeliveryCapability, DisplayTree } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
 import type { DeletablePost } from "../refs/post-marks";
 
@@ -54,6 +54,9 @@ export interface ReplyTarget {
   /** The parent's author, which the Replying-to chip draws through `AgentName`. */
   readonly actor: Actor;
   readonly excerpt: string;
+  /** The reading Go made of `excerpt`, which the Replying-to chip draws (`ReplyQuote`); absent
+   *  where the reply's host read the parent with no tree, and for a parent of no text. */
+  readonly excerptTree?: DisplayTree;
   readonly id: string;
   /** What the reply answers: a comment (`reply_to`), a message (`in_reply_to`), or an ask, whose
    *  reply is a comment naming it (`ask_id`) - an open ask's question back, or a word under an
@@ -127,14 +130,6 @@ export type ListedReply = "deleted" | "standing";
  *  or no longer listed (`"gone"`). A host that passes no list lists every reply as standing. */
 export type ReplyListing = ListedReply | "gone";
 
-/** One accepted mention: the target, and the span of the body that names it. */
-export interface AcceptedMention {
-  readonly end: number;
-  readonly start: number;
-  readonly target: string;
-  readonly text: string;
-}
-
 /** A composer's field as its host reaches it with another composer's control, or with a control
  *  the host draws for this composer's draft out of its sight (`MentionComposer`'s `intake`). The
  *  draft and the address are a send's own shapes (`send-request.ts`'s `SentDraft` and
@@ -150,11 +145,7 @@ export interface DraftIntake {
    *  composer takes it only while it shows `to`, and only while it holds nothing of its own - a
    *  draft typed, or a send out or refused - which it never writes over. */
   readonly take: (
-    draft: {
-      readonly body: string;
-      readonly mentions: readonly AcceptedMention[];
-      readonly replacement: string;
-    },
+    draft: { readonly body: string; readonly replacement: string },
     to: { readonly owner: ComposerOwner; readonly replyTo: ReplyTarget | null }
   ) => boolean;
 }

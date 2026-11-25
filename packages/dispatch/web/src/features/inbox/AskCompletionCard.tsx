@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts/actor-label";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type {
@@ -56,11 +56,16 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
                 <div className={`font-medium ${textPrimaryOnSurface}`}>
                   <MarkdownBody
                     markdown={edit.previous.question}
-                    source={textSourceOf("ask", ask.id)}
+                    source={textSourceOf("ask", ask.id, ask.issue_key)}
+                    surface="ask-edit-history"
                     tree={edit.previous.question_tree}
                   />
                 </div>
-                <AskOptionList options={edit.previous.options ?? []} selected={[]} />
+                <AskOptionList
+                  options={edit.previous.options ?? []}
+                  selected={[]}
+                  source={textSourceOf("ask", ask.id, ask.issue_key)}
+                />
                 <p className="mt-1">
                   Reworded by <AgentName actor={edit.edited_by} inline /> ·{" "}
                   <Timestamp at={edit.at} />
@@ -74,8 +79,20 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
   );
 }
 
-/** Earlier answers to an ask whose answer was changed, oldest first. */
-export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] }): ReactNode {
+/** Earlier answers to an ask whose answer was changed, oldest first. Every text here is the
+ *  ask's own (`refs.ScopeOf`), answer and question alike, so each is drawn as a record of that
+ *  ask. A chosen option's label is drawn from the tree the answer carries beside it
+ *  (`selected_trees`), which is the label's own whether or not the ask still holds that option. */
+export function AskAnswerHistory({
+  answers,
+  askId,
+  issue,
+}: {
+  answers: AskAnswerWithTrees[];
+  askId: string;
+  /** The issue the ask is on, none for a project document's ask. */
+  issue: string | null;
+}): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
   if (earlier.length === 0 || latest === undefined) return null;
@@ -95,9 +112,32 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
             const selected = previous.selected ?? [];
             return (
               <div key={previous.at}>
-                {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
+                {selected.length === 0 ? null : (
+                  <p>
+                    {selected.map((label, index) => (
+                      <Fragment key={label}>
+                        {index === 0 ? null : ", "}
+                        {/* Only a server older than `selected_trees` answers a label with no
+                            tree, and the renderer then parses it, as it parses every stored
+                            text of that server's answers. */}
+                        <MarkdownBody
+                          markdown={label}
+                          source={textSourceOf("ask", askId, issue)}
+                          surface="earlier-chosen-option"
+                          tree={previous.selected_trees?.[index]}
+                          variant="inline"
+                        />
+                      </Fragment>
+                    ))}
+                  </p>
+                )}
                 {previous.text === null || previous.text === "" ? null : (
-                  <MarkdownBody markdown={previous.text} tree={previous.text_tree} />
+                  <MarkdownBody
+                    markdown={previous.text}
+                    source={textSourceOf("ask", askId, issue)}
+                    surface="ask-answer-history"
+                    tree={previous.text_tree}
+                  />
                 )}
                 <p className="mt-1">
                   {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
@@ -182,7 +222,8 @@ function AnsweredAsk({
         <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
           <MarkdownBody
             markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="answered-ask"
             tree={ask.question_tree}
           />
         </div>
@@ -196,14 +237,19 @@ function AnsweredAsk({
         </p>
       ) : null}
       <AskEditHistory ask={ask} edits={edits} />
-      <AskOptionList options={ask.options ?? []} selected={answer?.selected ?? []} />
+      <AskOptionList
+        options={ask.options ?? []}
+        selected={answer?.selected ?? []}
+        source={textSourceOf("ask", ask.id, ask.issue_key)}
+      />
       {otherText !== null && otherText !== "" ? (
         <div className="mt-2">
           <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
           <div className="mt-1">
             <MarkdownBody
               markdown={otherText}
-              source={textSourceOf("ask", ask.id)}
+              source={textSourceOf("ask", ask.id, ask.issue_key)}
+              surface="answered-ask"
               tree={answer?.text_tree}
             />
           </div>
@@ -212,7 +258,8 @@ function AnsweredAsk({
         <div className="mt-1">
           <MarkdownBody
             markdown={answer.text}
-            source={textSourceOf("ask", ask.id)}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="answered-ask"
             tree={answer.text_tree}
           />
         </div>
@@ -228,7 +275,7 @@ function AnsweredAsk({
           <Timestamp at={answer.at} />
         </p>
       )}
-      <AskAnswerHistory answers={answers} />
+      <AskAnswerHistory answers={answers} askId={ask.id} issue={ask.issue_key} />
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
@@ -265,7 +312,8 @@ function ResolvedAsk({
         <div className={`font-medium ${textPrimaryOnSurface}`}>
           <MarkdownBody
             markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="resolved-ask"
             tree={ask.question_tree}
           />
         </div>
@@ -284,7 +332,11 @@ function ResolvedAsk({
           <AskApprovalLink ask={ask} />
         </p>
       ) : null}
-      <AskOptionList options={ask.options ?? []} selected={[]} />
+      <AskOptionList
+        options={ask.options ?? []}
+        selected={[]}
+        source={textSourceOf("ask", ask.id, ask.issue_key)}
+      />
       <AskEditHistory ask={ask} edits={edits} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Asked <Timestamp at={ask.created_at} /> · <AskResolutionLine resolution={resolution} />
@@ -294,7 +346,8 @@ function ResolvedAsk({
             -{" "}
             <MarkdownBody
               markdown={reason}
-              source={textSourceOf("ask", ask.id)}
+              source={textSourceOf("ask", ask.id, ask.issue_key)}
+              surface="resolved-ask"
               tree={ask.resolution.reason_tree}
               variant="inline"
             />

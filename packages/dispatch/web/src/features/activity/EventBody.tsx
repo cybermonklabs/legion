@@ -1,20 +1,22 @@
 import { actorActText } from "@legion/contracts/actor-label";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { linkText, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { eventDescription } from "../issue/event-description";
-import { AgentParts, AskResolutionLine } from "../refs/AgentName";
+import { AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { EditedMark, PostBody } from "../refs/PostBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
 import { buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { SentenceParts } from "./SentenceParts";
 
 type AskEvent = Extract<DispatchEvent, { type: "ask.opened" | "ask.answered" | "ask.resolved" }>;
 
@@ -40,12 +42,14 @@ function AskEventBody({
   event: AskEvent;
   onRendered?: () => void;
 }): ReactNode {
-  const source = textSourceOf("ask", event.payload.id);
+  const source = textSourceOf("ask", event.payload.id, event.issue_key);
   const { answer, question, options, resolution, created_at } = event.payload;
   const resolutionReason = resolution === undefined ? undefined : askResolutionReason(resolution);
   // A changed answer names the one it replaced; the first answer's event carries none. An event
   // written before answers stored an empty list holds null for either's selected: no option.
   const previous = event.type === "ask.answered" ? event.payload.previous_answer : undefined;
+  const wasSelected = previous?.selected ?? [];
+  const wasText = previous?.text ?? "";
   // An option's two texts are keyed by its place in the payload's own list, so the trees pair
   // with the options by index, never by label.
   const optionsWithTrees = options.map((option, index) => ({
@@ -62,9 +66,10 @@ function AskEventBody({
         markdown={question}
         onRendered={onRendered}
         source={source}
+        surface="activity-event-body"
         tree={payloadTree(event, "payload.question")}
       />
-      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} />
+      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} source={source} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Opened <Timestamp at={created_at} />
       </p>
@@ -79,6 +84,7 @@ function AskEventBody({
                 markdown={answer.text}
                 onRendered={onRendered}
                 source={source}
+                surface="activity-event-body"
                 tree={payloadTree(event, "payload.answer.text")}
               />
             </div>
@@ -87,9 +93,35 @@ function AskEventBody({
             <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
               <s>
                 was:{" "}
-                {[(previous.selected ?? []).join(", "), previous.text ?? ""]
-                  .filter((part) => part !== "")
-                  .join(" - ")}
+                {wasSelected.map((label, index) => (
+                  <Fragment key={label}>
+                    {index === 0 ? null : ", "}
+                    {/* A label the replaced answer chose is drawn from its own tree, which the
+                        event carries by the label's place in that answer's list: it can name an
+                        option the ask no longer holds. Only a server older than those trees
+                        sends a label with none, and the renderer then parses it, as it parses
+                        every stored text of that server's events. */}
+                    <MarkdownBody
+                      markdown={label}
+                      onRendered={onRendered}
+                      source={source}
+                      surface="earlier-chosen-option"
+                      tree={payloadTree(event, `payload.previous_answer.selected.${index}`)}
+                      variant="inline"
+                    />
+                  </Fragment>
+                ))}
+                {wasSelected.length === 0 || wasText === "" ? null : " - "}
+                {wasText === "" ? null : (
+                  <MarkdownBody
+                    markdown={wasText}
+                    onRendered={onRendered}
+                    source={source}
+                    surface="activity-event-body"
+                    tree={payloadTree(event, "payload.previous_answer.text")}
+                    variant="inline"
+                  />
+                )}
               </s>
             </p>
           )}
@@ -106,6 +138,7 @@ function AskEventBody({
                 markdown={resolutionReason}
                 onRendered={onRendered}
                 source={source}
+                surface="activity-event-body"
                 tree={payloadTree(event, "payload.resolution.reason")}
                 variant="inline"
               />
@@ -192,7 +225,8 @@ export function EventBody({
           deleted={deleted}
           markdown={event.payload.body ?? ""}
           onRendered={onRendered}
-          source={textSourceOf(message ? "message" : "comment", event.payload.id)}
+          source={textSourceOf(message ? "message" : "comment", event.payload.id, event.issue_key)}
+          surface="activity-event-body"
           tree={payloadTree(event, "payload.body")}
         />
         {whole === undefined ? null : (
@@ -207,7 +241,7 @@ export function EventBody({
   }
   return (
     <p className={`font-medium ${textPrimaryOnSurface}`}>
-      <AgentParts parts={eventDescription(event)} />
+      <SentenceParts parts={eventDescription(event)} />
     </p>
   );
 }

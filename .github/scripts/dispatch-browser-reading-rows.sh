@@ -99,15 +99,18 @@ how_ended() {
 # The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
-# This run's attempt's jobs, read once here and read again by readings three and
-# five below. The call writes $RUNNER_TEMP/jobs.json: the array of
-# {id, name, conclusion, started_at, completed_at, leg} that the three readings take
-# - the two timestamps are what reading five sums, and the jobs API answers them
-# whether or not anything asks, so they cost this read nothing. The jobs API lists
-# the caller's jobs too, and on a pull request labelled full-ci the jobs of ci.yaml's
-# other caller of this workflow, so the script holds the name to `<caller> / ` and one
-# of this workflow's seven - binaries, shard, alone, multiprocess, embedder, visual and
-# merge - with a shard leg's number in brackets after it.
+# This run's attempt's jobs, read once here and read again by reading three below
+# and, on the pull-request and full lanes, by reading five. The call writes
+# $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, started_at,
+# completed_at, leg} that those readings take - the two timestamps are what reading
+# five sums, and the jobs API answers them whether or not anything asks, so they
+# cost this read nothing. The jobs API lists the caller's jobs too, and the jobs of
+# ci.yaml's other callers of this workflow that share the run - dispatch-browser
+# beside dispatch-browser-pr on a pull request labelled full-ci, dispatch-references
+# beside dispatch-browser-pr on one that changes what the reference rows test - so
+# the script holds the name to `<caller> / ` and one of this workflow's seven -
+# binaries, shard, alone, multiprocess, embedder, visual and merge - with a shard
+# leg's number in brackets after it.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
@@ -144,8 +147,9 @@ how_ended() {
 .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs" "$caller"
 # The legs this lane owed, read from those jobs rather than written out a second time
 # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
-# before it could upload is in the list and still owes its blob.
+# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
+# visual job on the references lane - and owes nothing. A leg that failed before it
+# could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |

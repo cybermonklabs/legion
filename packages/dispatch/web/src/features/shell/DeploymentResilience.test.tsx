@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the window focus events below have no user-event form - the deployment check runs on the tab regaining focus, not on any element.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,6 +13,12 @@ import {
   installChunkFailureRecovery,
   spendChunkReload,
 } from "./DeploymentResilience";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await markdownEngine.warmMarkdownRenderer();
+});
 
 /** A stand-in for the Navigation API's `navigate` event: whether it stays in this document, the
  *  file name a link with `download` asks for, empty when the attribute names none (null for every

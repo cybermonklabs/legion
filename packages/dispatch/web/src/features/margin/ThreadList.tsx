@@ -1,6 +1,7 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 
 import type { SaveCommentEdit } from "../conversation/send-request";
+import { useCardStack } from "./card-stack";
 import { marginReplySendKey } from "./margin-context";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
@@ -78,23 +79,8 @@ function anchorElementFor(thread: Thread): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-id="${CSS.escape(thread.anchor.mark_id)}"]`);
 }
 
-/**
- * Where the anchored region's own content starts, in viewport terms, with the margin's scroll
- * taken back out. A card's `top` is an offset inside that content, so measuring a mark against
- * the region's *current* box folds the margin's scroll into the placement: the margin scrolls a
- * linked card into view, the next relayout places the card that much lower, the column grows,
- * and the correction scrolls further still. Subtracting the scroll of every scrollport above the
- * region leaves the mark's offset in the document's own layout, which is all a placement may
- * depend on. One read per layout pass: the answer is the same for every thread in it.
- */
-export function regionOrigin(region: HTMLElement): number {
-  let scrolled = 0;
-  const root = region.ownerDocument.documentElement;
-  for (let node = region.parentElement; node !== null && node !== root; node = node.parentElement) {
-    scrolled += node.scrollTop;
-  }
-  return region.getBoundingClientRect().top + scrolled;
-}
+/** A thread's key in the anchored region's stack (`useCardStack`). */
+const threadKey = (thread: Thread): string => thread.key;
 
 export function ThreadList({
   actionFailure,
@@ -123,15 +109,12 @@ export function ThreadList({
   threads,
   viewerLogin,
 }: ThreadListProps): ReactNode {
-  const anchoredRegion = useRef<HTMLElement>(null);
-  const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  const [layoutTops, setLayoutTops] = useState<ReadonlyMap<string, number>>(() => new Map());
   // Which section a thread lives in is a property of its data - it has a live (non-orphaned)
   // anchor or it does not - never of whether its mark has been measured yet. Placements arrive
   // after the document renders; deciding membership by them moved a card from Discussion into
   // Anchored once its placement landed, and React remounts a card that changes parents, dropping
   // its open editor's draft. An anchored thread without a placement yet stacks below the previous
-  // card (`measure`) until its mark can be located.
+  // card (`useCardStack`) until its mark can be located.
   const { anchored, discussion } = useMemo(
     () => ({
       anchored: threads.filter((thread) => isAnchoredThread(thread)),
@@ -139,49 +122,23 @@ export function ThreadList({
     }),
     [threads]
   );
-  const topFor = useCallback(
-    (thread: Thread, origin: number | undefined) => {
+  // A thread wants its mark's height in the document, or its block's for one whose mark is
+  // gone; one whose placement has not been measured yet stacks below the card before it.
+  const wantedTop = useCallback(
+    (thread: Thread, origin: number) => {
       const placement = placementFor(thread, markPlacements, blockPlacements);
       if (placement === undefined) {
-        return 0;
+        return undefined;
       }
       const mark = anchorElementFor(thread);
-      if (mark === null || origin === undefined) {
+      if (mark === null) {
         return placement.top;
       }
       return mark.getBoundingClientRect().top - origin;
     },
     [blockPlacements, markPlacements]
   );
-  const measure = useCallback(() => {
-    const next = new Map<string, number>();
-    let previousBottom = 0;
-    const region = anchoredRegion.current;
-    const origin = region === null ? undefined : regionOrigin(region);
-    for (const thread of anchored) {
-      const top = Math.max(topFor(thread, origin), previousBottom);
-      next.set(thread.key, top);
-      previousBottom = top + (cardRefs.current.get(thread.key)?.offsetHeight ?? 0) + 8;
-    }
-    setLayoutTops((current) => {
-      if (current.size === next.size && [...next].every(([key, top]) => current.get(key) === top)) {
-        return current;
-      }
-      return next;
-    });
-  }, [anchored, topFor]);
-
-  useLayoutEffect(() => {
-    measure();
-  }, [measure]);
-
-  useLayoutEffect(() => {
-    const observer = new ResizeObserver(measure);
-    for (const card of cardRefs.current.values()) {
-      observer.observe(card);
-    }
-    return () => observer.disconnect();
-  }, [measure]);
+  const { cardRef, height, region, topOf } = useCardStack(anchored, threadKey, wantedTop);
 
   const card = (thread: Thread, composerClassName?: string) => (
     <ThreadCard
@@ -209,43 +166,26 @@ export function ThreadList({
     />
   );
 
-  // One origin for the whole pass: `topFor`'s fallback runs for a thread whose placement has not
-  // been measured into `layoutTops` yet, and every such thread shares the same region.
-  const renderRegion = anchoredRegion.current;
-  const renderOrigin =
-    anchored.length === 0 || renderRegion === null ? undefined : regionOrigin(renderRegion);
-
   return (
     <div className="space-y-3">
       {anchored.length === 0 ? null : (
         <section
           aria-label="Anchored comments"
           className="relative"
-          ref={anchoredRegion}
+          ref={region}
           style={{
-            minHeight: Math.max(
-              ...anchored.map((thread) => {
-                const top = layoutTops.get(thread.key) ?? topFor(thread, renderOrigin);
-                return top + (cardRefs.current.get(thread.key)?.offsetHeight ?? 0) + 8;
-              })
-            ),
+            minHeight: height,
           }}
         >
           {anchored.map((thread) => (
             <div
               key={thread.key}
-              ref={(element) => {
-                if (element === null) {
-                  cardRefs.current.delete(thread.key);
-                } else {
-                  cardRefs.current.set(thread.key, element);
-                }
-              }}
+              ref={cardRef(thread.key)}
               style={{
                 left: 0,
                 position: "absolute",
                 right: 0,
-                top: layoutTops.get(thread.key) ?? topFor(thread, renderOrigin),
+                top: topOf(thread.key),
               }}
             >
               {card(thread)}

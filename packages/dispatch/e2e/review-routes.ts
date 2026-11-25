@@ -332,13 +332,20 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-artifact",
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
-    // The document's connection dot, as the issue-spec row reads it and for the same reason:
-    // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    //
+    // Three facts. The document's connection dot, as the issue-spec row reads it and for the same
+    // reason: `artifact-header` is drawn while the editor still says "Connecting to the
+    // document…", and `ArtifactHeader.tsx` draws the dot inside that header. The header with its
+    // arrival ring gone: `ArtifactRoutePanel.tsx` opens every document of this route
+    // highlighted, and the ring (`highlightRing`) stays for 2 s after the header mounts, so a page
+    // that connected inside those 2 s was shot with the ring and one that connected later
+    // without it (CI run 44032912332, dark: the header's border drawn as the ring's sky blue).
     // And the margin's card for the issue's open ask, for the reason the issue-plan row gives:
     // the margin comes in after the document, and the dot is drawn before it.
-    ready: (page) => [page.getByRole("status", { name: "connected" }), ...heldMargin(page)],
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
+      ...heldMargin(page),
+    ],
   },
   // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
   // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The

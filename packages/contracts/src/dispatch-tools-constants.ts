@@ -1,7 +1,8 @@
 /**
  * The constants of Dispatch's tool contract that are not a schema: the issue statuses, the ask
- * urgencies, the block units and the two limits a caller is held to, the step and plan writes'
- * codes and forms, and the artifact command's rule wordings, with the small functions over them.
+ * urgencies, the block units and the two limits a caller is held to, the kinds a search ranks,
+ * the step and plan writes' codes and forms, and the artifact command's rule wordings, with the
+ * small functions over them.
  *
  * Why they are a module of their own, beside `dispatch-tools.ts` rather than inside it. That
  * module builds the tool schemas at its top level, and a bundler may drop none of them: a value
@@ -21,6 +22,11 @@
  * `@legion/contracts/dispatch-tools-constants`, never through `@legion/contracts/dispatch-tools`
  * or the package index: either would bring the schema modules with the value.
  */
+
+// The route table is read for a type alone, which the compiler erases, so it builds no edge a
+// bundler would follow; the API's constants module builds no schema either.
+import type { paths } from "./dispatch-api.generated";
+import { SEARCH_RESULT_KINDS } from "./dispatch-api-constants";
 
 /** Ask urgency levels the Dispatch server accepts, in ascending order. */
 export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
@@ -45,14 +51,39 @@ export const DISPATCH_EVENT_BODY_MAX = 32000;
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units.
  * Generated into Go as `contracts.SearchQueryMax`, which the server enforces.
  *
- * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `project`,
- * `limit` and `offset`), and the load balancer in front of Dispatch answers a path and query over
- * 16,369 bytes with a bare `414` before the server runs. This limit and `PROJECT_KEY_PATTERN` (at
- * most 10 characters) keep the largest call the tool accepts at a 9,069-byte path and query, since
- * percent-encoding costs at most 9 bytes a unit. Raising either, or adding a parameter, means
- * redoing that sum.
+ * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `kind`,
+ * `project`, `limit` and `offset`), and the load balancer in front of Dispatch answers a path and
+ * query over 16,369 bytes with a bare `414` before the server runs. This limit and
+ * `PROJECT_KEY_PATTERN` (at most 10 characters) keep the largest call the tool accepts at a
+ * 9,147-byte path and query, since percent-encoding costs at most 9 bytes a unit: a call carrying
+ * `kind` goes to `GET /api/v1/search/results`, 8 bytes longer, and repeats `&kind=` at most
+ * `SEARCH_KINDS.length` (5) times, at most 14 bytes each, over the 9,069 bytes a call without it
+ * takes. Raising either, or adding a parameter, means redoing that sum.
  */
 export const SEARCH_QUERY_MAX = 1000;
+
+/** One value of the repeated `kind` parameter, read off the route table itself rather than
+ *  written out a second time: the parameter is optional, so both the parameter object and
+ *  `kind` are unwrapped before the array's element is taken. It is read from
+ *  `GET /api/v1/search/results`, the route that declares every member the handler reads;
+ *  `GET /api/v1/search` reads `kind` too and declares it nowhere, as it does the other five a
+ *  build released before them does not serve (`SEARCH_MEMBERS_EVERY_BUILD_READS`). */
+type SearchKindParameter = NonNullable<
+  NonNullable<paths["/api/v1/search/results"]["get"]["parameters"]["query"]>["kind"]
+>[number];
+
+/**
+ * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
+ * search index holds, in the order the answer's fusion lists them. A party, a component or any
+ * other node is read from its own route, so the search refuses a kind outside these rather than
+ * answering an empty page.
+ *
+ * It is the list a result's own kind is read as (`SEARCH_RESULT_KINDS` in
+ * `dispatch-api-constants.ts`), named once: what the route ranks and what it answers with are one
+ * vocabulary. The `satisfies` is the route table's own, so a kind the CLI offers that the route
+ * would refuse does not compile.
+ */
+export const SEARCH_KINDS = SEARCH_RESULT_KINDS satisfies readonly SearchKindParameter[];
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [

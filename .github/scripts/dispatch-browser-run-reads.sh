@@ -14,9 +14,9 @@
 # reading one for the legs that owed a blob report, reading three for the legs that did not
 # succeed, and reading five for the machine time this run has cost. <job> is the id of the job
 # that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names each job of
-# a called workflow `<caller> / <job>`, and a pull request labelled full-ci runs ci.yaml's two
-# callers of this workflow in one run, so only the jobs named under this caller are this lane's,
-# and reading five sums that lane's jobs alone.
+# a called workflow `<caller> / <job>`, and one run of a pull request can run several of ci.yaml's
+# three callers of this workflow, so only the jobs named under this caller are this lane's, and
+# reading five sums that lane's jobs alone.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
@@ -279,8 +279,10 @@ case "$mode" in
     # readings take it rather than each parsing the job name again.
     #
     # Only the jobs named `<caller> / <job>` are this lane's: the jobs API lists every job of the
-    # run, ci.yaml's own and, on a pull request labelled full-ci, those of ci.yaml's other caller
-    # of this workflow, whose legs carry the same names after a prefix of their own
+    # run, ci.yaml's own and those of ci.yaml's other callers of this workflow that share the run -
+    # dispatch-browser beside dispatch-browser-pr on a pull request labelled full-ci,
+    # dispatch-references beside dispatch-browser-pr on one that changes what the reference rows
+    # test - whose legs carry the same names after a prefix of their own
     # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
     # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
     # and reading one would count rows no blob of this lane holds. After the prefix, the name
@@ -355,9 +357,10 @@ case "$mode" in
     #
     # WHAT IT SUMS. Every job of this workflow that has concluded, this merge job apart. The
     # file holds the jobs of this merge job's caller and no other's (the `jobs` mode's filter,
-    # above), so on a pull request labelled full-ci, which runs ci.yaml's two callers in one run,
-    # each merge job sums its own lane: dispatch-browser's against the full lane's budget below
-    # and dispatch-browser-pr's against the pull-request lane's.
+    # above), so where one run holds several of ci.yaml's callers - a pull request labelled
+    # full-ci runs dispatch-browser beside dispatch-browser-pr - each merge job sums its own lane:
+    # dispatch-browser's against the full lane's budget below and dispatch-browser-pr's against
+    # the pull-request lane's.
     #
     # - This job is left out because it cannot read its own seconds: its `completed_at` is null
     #   while it runs, which is the same null a job still running has, and a sum that waited
@@ -459,6 +462,13 @@ case "$mode" in
     #
     # This reading is what refuses the growth before the run ends; what the run is held to
     # afterwards, against the day's own base, is R5's and R4's.
+    #
+    # WHICH LANES. The full and the pull-request lane, the two R5 bounds. The references lane,
+    # ci.yaml's dispatch-references, never reaches this mode: the merge job's step skips it on
+    # that lane by its own `if:`, since that lane is a preview that gates nothing, R5 bounds no
+    # such lane, and no run of it has been read to set a budget from
+    # (.github/ci-notes/dispatch-browser.md#the-third-lane-references). Any other lane is refused
+    # below, by name.
     #
     # WHY AN UNREADABLE LIST REFUSES. A budget that passes when it cannot read its number is
     # the defect this mode exists against, so a jobs file that is not there, that no job of

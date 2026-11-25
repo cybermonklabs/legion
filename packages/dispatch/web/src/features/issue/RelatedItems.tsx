@@ -13,6 +13,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
+import { textSourceOf } from "../refs/text-references";
 import { AskHitStatus } from "../search/AskHitStatus";
 import { kindLabel, searchResultKind } from "../search/search-model";
 import { RELATED_DEBOUNCE_MS, RELATED_TITLE_MIN } from "./related-timing";
@@ -126,7 +127,18 @@ function RelatedForm({
           {check.related.map((item) => (
             <RelatedItemRow item={item} key={`${item.kind}:${item.id}`}>
               {item.kind === "ask" && item.ask !== undefined ? (
-                <AskHitStatus ask={item.ask} muted={false} />
+                // The ask is the record its answer's text and the labels it chose belong to, and
+                // its issue is the item's owner, so a `#id` in them resolves as it does on the
+                // ask's own card (`refs.ScopeOf`).
+                <AskHitStatus
+                  ask={item.ask}
+                  muted={false}
+                  source={textSourceOf(
+                    "ask",
+                    item.id,
+                    item.owner.kind === "issue" ? item.owner.key : undefined
+                  )}
+                />
               ) : null}
             </RelatedItemRow>
           ))}

@@ -34,7 +34,7 @@ set -euo pipefail
 
 usage() {
   echo "::error::dispatch-browser-build-dashboards.sh takes the run's lane:" \
-    ".github/scripts/dispatch-browser-build-dashboards.sh <pull-request|full>. It was given: $*"
+    ".github/scripts/dispatch-browser-build-dashboards.sh <pull-request|full|references>. It was given: $*"
   exit 1
 }
 

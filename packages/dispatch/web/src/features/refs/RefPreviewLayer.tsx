@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import { type ReactNode, useEffect, useReducer, useState } from "react";
 
 import { ChunkBoundary } from "../shell/ChunkBoundary";
@@ -48,7 +49,9 @@ import { caretRefPreviewTrigger, focusAsksForCard, pointerAsksForCard } from "./
 // keeps the rejection of its one import for the life of the page, so a layer drawn again behind
 // it would only throw the same failure again, where `chunk` keeps no failed download.
 const RefPreviewHost = chunkComponent(
-  chunk<object>(() => import("./RefPreview").then((module) => module.RefPreviewHost)),
+  chunk<{ surface?: DispatchReadingSurface }>(() =>
+    import("./RefPreview").then((module) => module.RefPreviewHost)
+  ),
   null
 );
 
@@ -118,7 +121,7 @@ export function RefPreviewLayer(): ReactNode {
   // A render that threw is drawn again for the next card too, as a chunk that did not load is.
   return (
     <ChunkBoundary fallback={<CardAsked ask={ask} />} reset={asks}>
-      <RefPreviewHost />
+      <RefPreviewHost surface="reference-hover-card" />
     </ChunkBoundary>
   );
 }

@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, describe, expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  type Mock,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
@@ -40,6 +50,12 @@ import { closeRefPreview, RefPreviewHost } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { referenceTriggerProps } from "./reference-trigger";
 import { Unfurl } from "./Unfurl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** One marked snippet of the display-tree fixture, by name: the reading the server made of
  *  that text as a search hit, with the words it matched marked. */
@@ -200,9 +216,10 @@ function expectFormatted(element: HTMLElement): void {
   ]);
 }
 
-/** A one-line preview whose host is a toggle, not a navigation (the margin's collapsed card):
- *  the words and formatting of `expectFormatted`, with its links kept real, so a click on a
- *  reference is the way out of the card to its target. */
+/** A one-line preview whose host is a toggle, not a navigation (the collapsed thread card the
+ *  margin and the Conversation tab both draw): the words and formatting of `expectFormatted`,
+ *  with its links kept real, so a click on a reference is the way out of the card to its
+ *  target. */
 function expectFormattedWithLiveLinks(element: HTMLElement): void {
   expectNoSyntax(element);
   expect(element.textContent ?? "").toMatch(RENDERED);
@@ -452,29 +469,40 @@ test("the unfurl card under a bare reference renders the target's text formatted
     // The same card over the fixture from its heading on. A title is cut at 60 characters
     // (`reference-target.ts`'s `TITLE_HEADLINE_MAX`), which the fixture's opening paragraph fills
     // by itself, so this is the body whose title reaches the markup: a link's text can hold no
-    // formatting or nested link, so the markup is dropped and the reference reads as its short
-    // form, as a body's reference link does before its title resolves.
-    getComment.mockResolvedValue({
-      comment: { ...comment, body: long.slice(long.indexOf("## ")) },
-      replies: [],
-    });
-    const titled = render(
-      <Providers>
-        <Unfurl body="dispatch://CORE-1/comment/comment-1" />
-      </Providers>
-    );
-    try {
-      const card = await within(titled.container).findByRole("link", { name: /^Heading Bold/ });
-      const title = card.firstElementChild?.textContent ?? "";
-      expect(title).toStartWith(
-        `Heading ${BODY.replace("dispatch://CORE-1", "CORE-1")} ${FIRST} ${SECOND}`
+    // formatting or nested link, so the markup is dropped, and the reference reads as its short
+    // form, since a name inside a name resolves nothing and a title never shows the scheme. The
+    // title reads so from the tree the server sends under `Dispatch-Trees: 1` and from the body
+    // alone, which is what a server older than the trees sends and the page parses.
+    const head = long.slice(long.indexOf("## "));
+    const prefix = `Heading ${BODY.replace("dispatch://CORE-1", "CORE-1")} ${FIRST} ${SECOND}`;
+    for (const { answer, read } of [
+      {
+        answer: "the server's tree",
+        read: { ...comment, body: head, body_tree: displayTree(head) },
+      },
+      { answer: "the body alone", read: { ...comment, body: head } },
+    ]) {
+      getComment.mockResolvedValue({ comment: read, replies: [] });
+      const titled = render(
+        <Providers>
+          <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+        </Providers>
       );
-      expect(title).toEndWith("…");
-      for (const syntax of LITERAL_SYNTAX) {
-        expect(title).not.toContain(syntax);
+      try {
+        const card = await within(titled.container).findByRole("link", { name: /^Heading Bold/ });
+        const title = card.firstElementChild?.textContent ?? "";
+        // Each check names the answer it read, so a failure says which of the two it was.
+        expect({ answer, title }).toEqual({
+          answer,
+          title: expect.stringMatching(new RegExp(`^${quoted(prefix)}.*…$`)),
+        });
+        expect({
+          answer,
+          syntax: LITERAL_SYNTAX.filter((syntax) => title.includes(syntax)),
+        }).toEqual({ answer, syntax: [] });
+      } finally {
+        titled.unmount();
       }
-    } finally {
-      titled.unmount();
     }
   } finally {
     getComment.mockRestore();
@@ -922,6 +950,9 @@ describe("a Dispatch picture on every surface", () => {
       const card = await within(view.container).findByTestId(`margin-comment-${comment.id}`);
       const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
       if (body === null) throw new Error("the collapsed preview is not a MarkdownPreview");
+      // The collapsed card is a record a reader reads - the Conversation tab's whole default
+      // view of a turn - so its picture links to its own page, as it did before a host decided
+      // a surface's links.
       await expectThumbnail(body, "live");
       expectOneLine(body);
     } finally {
