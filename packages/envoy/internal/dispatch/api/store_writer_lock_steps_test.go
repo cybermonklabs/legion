@@ -1383,11 +1383,23 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 // that takes it: the second node write of a path shows graph_nodes again and says nothing about
 // where the write is, which the statement the write waits at says. A later step is read by its
 // rows (rowsLocked) and by its table locks of every mode but the two a batch's preparation takes
-// (parseTimeMode).
+// (parseTimeMode). A table whose rows a step before the held one locks - a row lock shows the row
+// share mode - holds those rows locked whatever a later step of it has done, so its rows say
+// nothing of the later step, which is read by its other locks and by where the write waits: a
+// session's reply takes its thread's root before the attempt it answers and then writes its own
+// row of messages (sessionReply).
 func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *storeWriterRig, writer storeWriter) {
 	t.Helper()
 	first := firstTakers(writer.steps)
 	for index, step := range writer.steps {
+		rowLocked := map[string]bool{}
+		for _, earlier := range writer.steps[:index] {
+			for _, lock := range earlier.takes {
+				if lock.mode == rowShareMode {
+					rowLocked[lock.table] = true
+				}
+			}
+		}
 		run := writer.ready(t, ctx)
 		holder, release := rig.beginHolder(t, ctx)
 		step.hold(t, ctx, holder, run)
@@ -1417,6 +1429,9 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 					if !parseTimeMode(lock.mode) && slices.Contains(held, lock) {
 						t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
 							writer.name, step.name, lock, other.name, other.name, step.name, held)
+					}
+					if rowLocked[lock.table] {
+						continue
 					}
 					if locked := rig.rowsLocked(t, ctx, backend, lock.table); len(locked) > 0 {
 						t.Errorf("%s held at %s has locked rows %v of %s, which %s takes, a later step: it took %s before %s",
