@@ -22,7 +22,7 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 	launchers := testLaunchers()
 	serve := func(token claim.Token, hello shimwire.LauncherHello) (*launcherSession, net.Conn) {
 		t.Helper()
-		session := launchers.accept(token, testTree, hello)
+		session := launchers.accept(token, testTree, time.Time{}, hello)
 		server, peer := net.Pipe()
 		t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 		go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -103,7 +103,7 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			launchers := testLaunchers()
-			session := launchers.accept(claim.Token("legion-legion-legion-208-planner"), testTree,
+			session := launchers.accept(claim.Token("legion-legion-legion-208-planner"), testTree, time.Time{},
 				shimwire.LauncherHello{PodUID: "pod-a", LauncherID: "reader", ReadsWorkspace: true})
 			server, peer := net.Pipe()
 			t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
