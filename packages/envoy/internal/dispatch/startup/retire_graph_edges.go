@@ -25,12 +25,14 @@ var (
 // build of the release before writes during a roll and after a rollback, and joined the tuple arm
 // to that table, answering a tuple only while the row that names it carries its node, which a
 // build of the release before deletes with no retraction. Both test the row's marker, its node
-// columns (store.GraphEdgesView). Once the build a rollback reaches writes the relation's kinds as
-// tuples, no row is written without its marker and none deleted without its retraction any more,
-// and the step deletes that child's arms and probes, each child apart from the others, since each
-// child's release is announced on its own: dispatch://INFRA-1150's (AsksArmsRetirement) and
-// dispatch://INFRA-1253's (IssueTreeArmsRetirement). dispatch://INFRA-1152's arms and the arms
-// over the kinds dispatch://INFRA-1149 moved are not among them.
+// columns (store.GraphEdgesView). Once the build a rollback reaches writes everything a child's
+// arms answer into the store, no row is written without its marker and none deleted without its
+// retraction any more, and the step deletes that child's arms and probes, each child apart from the
+// others, each under its own guard: dispatch://INFRA-1150's (AsksArmsRetirement) once that build
+// writes the relation's kinds as tuples, and dispatch://INFRA-1253's (IssueTreeArmsRetirement) once
+// it also writes a document's row values on its node and no reference past the store's bound.
+// dispatch://INFRA-1152's arms and the arms over the kinds dispatch://INFRA-1149 moved are not
+// among them.
 //
 // Each restates the view from its one source (store.GraphEdgesViewRetired), without its own arms
 // and without those of every child whose arms the view no longer holds, so the two entries delete
@@ -70,8 +72,17 @@ var AsksArmsRetirement = Retirement{
 // tuple arm's probes of those five tables, whose classes then consult no projection row, and the
 // artifact half of the arm over refs, a document's references while its row names no node and a
 // far end past the store's bound, with the tuple arm's reads of the artifacts row and the refs row
-// behind a document's mentions and its attached_to (store.GraphEdgesIssueTreeRetired). Its kinds
-// are that release's (IssueTreeKinds).
+// behind a document's mentions and its attached_to (store.GraphEdgesIssueTreeRetired).
+//
+// Its guard is StoresMovedKinds, the list of this release (dispatch://INFRA-1098), and not that
+// release's own (IssueTreeKinds): the release before this one (dispatch://INFRA-1253's, at
+// 810aa47bac) lists those kinds, but its upload writes a document's node with no row values
+// (graphstore.ArtifactRow first appears in this release), and its refs writer still writes a far end
+// past the store's bound, which only the deleted branch of the arm over refs answers. Deleted under
+// that release's list, the view would answer no mentions and no attached_to of a document that
+// release writes after a rollback. A build of this release or a later one writes both, and only
+// such a build announces stores_moved, so the first boot of a build after this one deletes them.
+// store.GraphEdgesIssueTreeRetired is one bit, so the whole entry waits.
 //
 // Once it has run, the tuple arm reads a document's uuid and its row's created_at off the
 // document's node (graphstore.ArtifactRow) and a mention's date off its tuple, so beside the rows
@@ -86,7 +97,7 @@ var AsksArmsRetirement = Retirement{
 // refs for every source but a document stays, which is dispatch://INFRA-1152's half of that arm.
 var IssueTreeArmsRetirement = Retirement{
 	Name:     "the issue tree's old arms of graph_edges",
-	Kinds:    IssueTreeKinds,
+	Kinds:    StoresMovedKinds,
 	Stands:   graphEdgesChildStands(store.GraphEdgesIssueTreeRetired),
 	Backfill: graphStoreBackfill,
 	Holds:    issueTreeHolds,

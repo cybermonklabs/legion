@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
@@ -65,9 +66,14 @@ const (
 //
 // The stored objects go in a step of every boot (startup.AsksArmsRetirement,
 // startup.IssueTreeArmsRetirement), over these databases:
-//   - released: its newest announcement of another build lists every kind, and every row the arms
-//     read carries its marker: the arms and the joins go, and every read of graph_edges and
-//     refs.BacklinkCounts equals the read before;
+//   - released: its newest announcement of another build lists every kind this build lists,
+//     stores_moved among them, and every row the arms read carries its marker: the arms and the
+//     joins go, and every read of graph_edges and refs.BacklinkCounts equals the read before;
+//   - children's release: the same, but the announcement is of the release before this one, which
+//     lists every kind of both children and no stores_moved: INFRA-1150's arms go, INFRA-1253's
+//     arms and joins stay, since that release writes a document's node with no row values, the log
+//     names the announcement and stores_moved as what it lacks, and every read equals the read
+//     before;
 //   - roll window: a build of the release before wrote an issue link with no marker and a reply the
 //     comment writer marked as INFRA-1149's writer marks every comment: the step's backfill brings
 //     the link in, then the arms go, and every read equals the read before;
@@ -106,6 +112,7 @@ func TestGraphEdgesEndsAsOneSelectOverTheTuples(t *testing.T) {
 	t.Run("roll window", func(t *testing.T) { requireTheRollWindowIsBroughtIn(t, rootBuild) })
 	t.Run("deleted rows", func(t *testing.T) { requireDeletedRowsKeepTheArms(t, rootBuild) })
 	t.Run("past bound", func(t *testing.T) { requireAReferencePastTheBoundKeepsTheArms(t, rootBuild) })
+	t.Run("children's release", func(t *testing.T) { requireTheChildrensReleaseKeepsTheIssueTreeArms(t, rootBuild) })
 	t.Run("release before", func(t *testing.T) { requireTheReleaseBeforeKeepsTheArms(t, rootBuild, laterBuild) })
 	t.Run("rolled back", func(t *testing.T) { requireARollbackKeepsTheArms(t, rootBuild) })
 	t.Run("from empty", func(t *testing.T) { requireAnEmptyDatabaseLosesTheArmsAtOnce(t, rootBuild) })
@@ -824,6 +831,37 @@ func requireAReferencePastTheBoundKeepsTheArms(t *testing.T, rootBuild string) {
 	requireLogged(t, output, "past_bound_reference=artifact:"+seed.notes, "length=1025", deletedLine(startup.AsksArmsRetirement))
 	if strings.Contains(output, deletedLine(startup.IssueTreeArmsRetirement)) {
 		t.Errorf("the step deleted INFRA-1253's arms, the arm over refs' branch past the bound among them, over a reference past the bound:\n%s", output)
+	}
+	requireChildrenArms(t, d, false, true)
+	requireReadsEqual(t, before, readView(t, database, before.targets))
+	requireServes(t, d.process)
+}
+
+// requireTheChildrensReleaseKeepsTheIssueTreeArms boots the root's build over the released
+// database announced by the release before this one, dispatch://INFRA-1253's, which lists every
+// kind this build lists but stores_moved: the step deletes INFRA-1150's arms and keeps
+// INFRA-1253's, whose guard is stores_moved (startup.StoresMovedKinds), and logs why.
+func requireTheChildrensReleaseKeepsTheIssueTreeArms(t *testing.T, rootBuild string) {
+	d, seed := releasedDatabase(t)
+	warmUp(t, d, rootBuild, seed)
+	announceBuild(t, d, oneSelectChildrenRelease, slices.DeleteFunc(slices.Clone(refs.TupleKinds()), func(kind string) bool {
+		return kind == processes.CapabilityStoresMoved
+	}))
+	database := openStore(t, d)
+	before := readView(t, database, nil)
+	d.process = startBuild(t, d, rootBuild, 30*time.Second)
+	output := d.process.Output.String()
+	requireLogged(t, output, deletedLine(startup.AsksArmsRetirement))
+	if strings.Contains(output, deletedLine(startup.IssueTreeArmsRetirement)) {
+		t.Errorf("the step deleted INFRA-1253's arms under an announcement of the release before, which lists no %s:\n%s",
+			processes.CapabilityStoresMoved, output)
+	}
+	if !slices.ContainsFunc(strings.Split(output, "\n"), func(line string) bool {
+		return strings.Contains(line, "kept its objects") && strings.Contains(line, `retirement="`+startup.IssueTreeArmsRetirement.Name+`"`) &&
+			strings.Contains(line, "announcement_commit="+oneSelectChildrenRelease) && strings.Contains(line, "missing=["+processes.CapabilityStoresMoved+"]")
+	}) {
+		t.Errorf("the log names no announcement %s lacking %s for the kept %s:\n%s", oneSelectChildrenRelease,
+			processes.CapabilityStoresMoved, startup.IssueTreeArmsRetirement.Name, output)
 	}
 	requireChildrenArms(t, d, false, true)
 	requireReadsEqual(t, before, readView(t, database, before.targets))

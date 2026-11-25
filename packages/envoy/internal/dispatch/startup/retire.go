@@ -34,11 +34,13 @@ import (
 type Retirement struct {
 	// Name names the objects in every line the step logs about them.
 	Name string
-	// Kinds are the relation kinds of the first release no build of which reads or writes the
-	// objects: the kinds it moved into the store, which every build of it and after it announces
-	// (refs.TupleKinds). That is the release that kept the objects where its own build reads them
-	// no more, and a later one where a build of it still does, as the decisions document's
-	// (decisionsDocumentRetirement). It is one of the lists below, one per release.
+	// Kinds are the relation kinds of the first release no build of which needs the objects: none
+	// reads them, and none writes a row that only they answer. They are the kinds that release
+	// moved into the store, which every build of it and after it announces (refs.TupleKinds). That
+	// is the release that kept the objects where its own build needs them no more, and a later one
+	// where a build of it still does, as the decisions document's (decisionsDocumentRetirement) and
+	// the issue tree's arms of graph_edges (IssueTreeArmsRetirement). It is one of the lists below,
+	// one per release.
 	Kinds []string
 	// Stands reports whether the objects still stand. An entry whose objects are gone does nothing
 	// more, so a boot after the one that deleted them reads one probe and changes nothing.
@@ -62,7 +64,7 @@ type Retirement struct {
 // and followed_by, and a decision block's from_ask and decided_by. Every build of that release and
 // after it announces them, and a build of a release before it announces none of followed_by,
 // from_ask and decided_by. Every entry that deletes what that release kept, and that no build of
-// it reads, reads this one list.
+// it needs, reads this one list.
 var AsksKinds = []string{
 	graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleFollowedBy,
 	refs.TupleFromAsk, graphstore.TupleDecidedBy,
@@ -75,7 +77,7 @@ var AsksKinds = []string{
 // build of that release or a later one announces. A document's mentions, which that release
 // states out of the document's node too, is no member: dispatch://INFRA-1149's build announces it
 // already, for a block's mentions, so it tells no build of that release from one before it. Every
-// entry that deletes what that release kept reads this one list.
+// entry that deletes what that release kept, and that no build of it needs, reads this one list.
 var IssueTreeKinds = []string{
 	graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
 	refs.TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,

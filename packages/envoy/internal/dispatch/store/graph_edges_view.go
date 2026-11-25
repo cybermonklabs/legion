@@ -133,8 +133,10 @@ const graphEdgesRetirementsForgotten = `delete from graph_edges_retirements;
 // GraphEdgesRetired names the children whose old arms of graph_edges the boot step has deleted
 // (startup's retirements of the arms), one bit each: no migration states the view without them,
 // because a migration runs whatever build a rollback would reach, while the step deletes a
-// child's arms only once the build a rollback reaches writes that child's kinds as tuples and the
-// store is proven to answer every edge those arms answered (dispatch://INFRA-1098's T7b).
+// child's arms only once the build a rollback reaches writes everything those arms answer into the
+// store - that child's kinds as tuples and, for dispatch://INFRA-1253's, a document's row values on
+// its node - and the store is proven to answer every edge those arms answered
+// (dispatch://INFRA-1098's T7b).
 type GraphEdgesRetired uint8
 
 const (

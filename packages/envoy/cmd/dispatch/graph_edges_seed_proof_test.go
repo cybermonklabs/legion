@@ -34,7 +34,8 @@ const seedWaitEnv = "DISPATCH_SEED_WAIT"
 // (nameDefaultAssignees), the root's build boots, migrating it to this head; the test waits until its
 // backfills owe nothing - the boot's own run, then graphcensus.Backfill until every pass is
 // complete, and the block index owed by no document - and reads graph_edges. It then announces a
-// build that lists every relation kind the children moved, as their release's fleet would, boots
+// build that lists every kind this build lists, stores_moved among them, as a fleet of a build of
+// this release would (the guard of dispatch://INFRA-1253's arms, startup.StoresMovedKinds), boots
 // the root's build again, whose step deletes dispatch://INFRA-1150's and dispatch://INFRA-1253's
 // arms and the tuple arm's reads of a document's artifacts and refs rows, and reads graph_edges
 // again: each read EXCEPT ALL the other is empty, both ways. It prints both counts and every line
