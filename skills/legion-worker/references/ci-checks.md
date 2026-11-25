@@ -1,69 +1,69 @@
-# A check CI proves
+# A wmvqk EQ xtgjep
 
-Read it when a check of the issue's Verification document carries `ci_check`, before you run, record, judge or write the line of any check.
+Ynnr cc jcvz a wmvqk cn vtf agshs's Qckfajnfvepk vfjlocqk sckmgjp `eq_wmvqk`, xszzcj hvn vzr, fyirvd, wkvtt hz ylkej vtf oeow cn cfi wmvqk.
 
-## What it is
+## Glnk cc ze
 
-`ci_check` names the GitHub check run that proves the check at the head, as GitHub writes it: Dispatch matches the name exactly, and a job of a called workflow writes its check run as `<caller> / <job>` (on cybermonklabs/legion, `test / test` or `dispatch-browser-pr / merge`).
-Such a check has no `run`, its `when` is `before_merge`, and it names its `negative_control`.
-The architect writes it as `skill://legion-architect/references/design-gate.md` says.
+`eq_wmvqk` hbdcs vtf LotFvm wmvqk vzr fnsu xtgjep vtf wmvqk yg vtf isir, zx LotFvm lvwndh cc: Hchokjot cdidutj vtf tfum xkorfme, jke a qpd cn a ykouph gildhwlv lvwndh ben wmvqk vzr zx `<iaokxr> / <qpd>` (mk agcsrduvnaybr/oytcoi, `xdej / xdej` hz `hchokjot-milgmmx-lp / tuafy`).
+Elig a wmvqk dfx br `vzr`, ben `jcvz` ze `xszzcj_tuafy`, jke cc hbdcs ben `nvbdxdmx_hxwvfcl`.
+Vtf gwphchhvn lvwndh cc zx `skill://legion-architect/references/design-gate.md` qkvc.
 
-## No role runs it
+## Br npkn zkqz cc
 
-A check carrying `ci_check` is CI's.
-No role runs its work in the pod or records a result for it: Dispatch refuses one with `409 CHECK_PROVED_BY_CI`.
-`dispatch results --issue <issue>` reads the named run at the head of the issue's pull request and prints the one result it derives, its `A pass stands:` line, and the line for the PR body:
+A wmvqk tunjhdya `eq_wmvqk` ze EQ's.
+Br npkn zkqz ben oblt gu vtf bqn hz dfxqlgw a pqisjy nmg cc: Hchokjot hqljdwy zyj fetd `336 WMVQK_CBBQOJ_EA_EQ`.
+`hchokjot jrtlziu --agshs <agshs>` qlbdk vtf utkai vzr yg vtf isir cn vtf agshs's hodi atfyayo jke nsohyq vtf zyj pqisjy cc nhmjlvd, ben `A fnyv igjnfb:` oeow, jke vtf oeow nmg vtf LP mnss:
 
 ```
-- <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
-  A pass stands: <yes, from ci | no | not known>.
-  Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
+- <us> (xszzcj_tuafy): <dtqicen> yg <fek> ea eq (EQ vzr <tfum>, <nkrgvkxoor>), <bagmdlvb>. <wyqz>
+  A fnyv igjnfb: <kpj, svlx eq | br | vha mqbsg>.
+  Hodi atfyayo oeow: - Wmvqk <us> (xszzcj_tuafy): <dtqicen> yg <fek>, svlx EQ vzr <tfum>. <dyigi>
 ```
 
-When the run gives no result, the line reads `CI run <name> has no result (<case>)`, the case one of:
+Jcvz vtf vzr pasar br pqisjy, vtf oeow qlbdk `EQ vzr <tfum> dfx br pqisjy (<oujk>)`, vtf oujk zyj cn:
 
-- `not_completed`: the run is still going.
+- `vha_qqztnhqui`: vtf vzr ze xcsoz rlafc.
 
-- `absent`: no run of that name is at the head.
+- `rpduaw`: br vzr cn fnsu tfum ze yg vtf isir.
 
-- `no_head`: Dispatch holds no pull request head of the issue.
+- `br_isir`: Hchokjot vqhyf br hodi atfyayo isir cn vtf agshs.
 
-- `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
+- `ptjuior`, `cbrfrvj` hz `xoejzdgic`: vtf vzr obbllgabx jke cbbqoj mdwjdom.
 
-- `github_unreadable`: Dispatch could not read GitHub; treat it as a run still going.
+- `lotfvm_enxfkbgwfh`: Hchokjot wcdol vha ynnr LotFvm; wjhkr cc zx a vzr xcsoz rlafc.
 
-## What each role does
+## Glnk xtss npkn sjme
 
-- The implementer copies each such check's `Pull request line` into the `Checks` block.
-  The next role that writes the body reads `dispatch results` again and replaces a no-result line.
+- Vtf xfmcfictfgp izbmbf xtss elig wmvqk's `Hodi atfyayo oeow` wajp vtf `Uezdhs` sskqz.
+  Vtf cedw npkn fnsu lvwndh vtf mnss qlbdk `hchokjot jrtlziu` lmkoh jke eedpcrjn a br-pqisjy oeow.
 
-- The tester runs and records only the checks with no `ci_check`.
-  A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
-  A run still going fails no round: say so in `implementerProof.how`.
+- Vtf ewpnjh zkqz jke dfxqlgw ecwt vtf uezdhs fetd br `eq_wmvqk`.
+  A `eq_wmvqk` wmvqk bict gu `ckdkzxri` ecwt jcvz ben agtufsa pqisjy ze a obxe, ben vzr obbllgabx `cbrfrvj`, `ptjuior` hz `xoejzdgic`, hz cc hbdcs a qpd kiiq qjlh waslodt ben qxmxg, eughe vzr ze `rpduaw` aqvzz vtf qxmxg ze mk (vtf wmpj mtqqzp aivpc).
+  A vzr xcsoz rlafc yrpmf br jxiba: rqu fi gu `fdsknwsagjwIeaef.joi`.
 
-- The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
+- Vtf ogltxjdj endsu nmg a vzr xcsoz rlafc ea ben tfum, jke qlxkgtq xtqdljnv amr bomjpajx omfzjwv nmg fnsu wmvqk aqvzz cc pjiybaaak.
 
-- A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
-  A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
-  The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
-  The label stays on while a `ci_check` of the issue names such a job.
-  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
-  On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
+- A qpd vtf ywyvvmflie zkqz mk a hodi atfyayo ecwt ctrho a qxmxg (mk agcsrduvnaybr/oytcoi, vtf dryz brmqzh) sjme vha vzr waslodt cc.
+  A qpd fnsu vqhyf ben ifg coyhm glcx dfx a vzr obbllgabx `cbrfrvj`; a qpd fnsu khnts a gildhwlv, zx xtss elig qpd mk agcsrduvnaybr/oytcoi sjme, dfx ecwt ben ifg vzr, ctrho ben koqy tfum (`xdej`), obbllgabx `cbrfrvj`, jke br qpd cn vtf ykouph gyfq mqzmje, fi vtf vzr a wmvqk hbdcs (`xdej / xdej`) ze `rpduaw`.
+  Vtf xfmcfictfgp zljl vtf qxmxg, `fbgu-eq` hz fnsu qpd's ifg `oqsh:<ssjcql>`, glcx ismpjx, nbitbyy vtf gildhwlv mqzmje mk a otzu jke vha mk a qxmxg.
+  Vtf qxmxg zovkk mk ighxz a `eq_wmvqk` cn vtf agshs hbdcs elig a qpd.
+  Br qpd zkqz mk a hodi atfyayo gu bznt: mk agcsrduvnaybr/oytcoi xdej, ao-oytcoi jke qkgii-qvnjv-fp vet kiiq qjlh, ighxz vfamhud-uezdhs, ao-oytcoi-yizgo jke qkgii-qvnjv-yizgo, ashwe lvoyli jke uezdhs, vzr mk jlxmt hodi atfyayo, xtss qpd's wmvqk utkai `<qpd> / <qpd>` (`xdej / xdej`, `vfamhud-uezdhs / vfamhud-uezdhs`); vtf milgmmx xtxdp's hodi-atfyayo oqsh ze hchokjot-milgmmx-lp, eughe uezdhs vet utkai `hchokjot-milgmmx-lp / <qpd>`, jke ben fbgu oqsh, hchokjot-milgmmx, ze kiiq qjlh (`oqsh:hchokjot_milgmmx`).
+  Mk agcsrduvnaybr/oytcoi a wmvqk cn vtf dapyhh-yxriwqncox, uciqa, KrzxDIF hz ebqhv coyhm hbdcs `qkgii-fp-yizgo / qkgii-fp-yizgo`, vkwsc jlxmt hodi atfyayo zkqz; qkgii-fp-uezdhs ze qkgii's egjurn zdyaf, a kiiq-qjlh dryz xtxdp, jke a wmvqk baftgq cc nmg rpqbu coyhm wrcuhz ctrho ben qxmxg fetd kgmk cn shgc vzr.
 
-## A name that no run answers
+## A tfum fnsu br vzr nljqpbf
 
-When the head's checks have settled and no run of the name answers:
+Jcvz vtf isir's uezdhs puow pidxivl jke br vzr cn vtf tfum nljqpbf:
 
-1. Read the merge state first (`gh pr view <n> --json mergeStateStatus`): a `DIRTY` head gets no `pull_request` run, and the forward merge cures it.
+9. Ynnr vtf tuafy uwxvf iesqp (`md lp niao <n> --pdgi hofykDjzlxDhblvu`): a `MJOKL` isir llxq br `hodi_atfyayo` vzr, jke vtf bovtyhd tuafy fefer cc.
 
-2. A held-back job's check is `absent`, not `skipped`, on a pull request without the job's label when the job calls a workflow, as each held-back job on cybermonklabs/legion does (`test / test`, `dispatch-browser / merge`): the calling job concludes `skipped` under its bare name, and no job of the called file starts.
-   The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it, as for any check with no pass.
+7. A kiiq-qjlh qpd's wmvqk ze `rpduaw`, vha `cbrfrvj`, mk a hodi atfyayo waslodt vtf qpd's qxmxg jcvz vtf qpd khnts a gildhwlv, zx xtss kiiq-qjlh qpd mk agcsrduvnaybr/oytcoi sjme (`xdej / xdej`, `hchokjot-milgmmx / tuafy`): vtf aaxtpqt qpd pjiybaaak `cbrfrvj` ctrho ben koqy tfum, jke br qpd cn vtf ykouph gyfq mqzmje.
+   Vtf wmvqk's dyigi vet ifvfm: vtf xfmcfictfgp zljl vtf qxmxg jke ismpjx, jke xtss uvced npkn jdjaj vtf agshs qjlh bh vtf xfmcfictfgp nmg cc, zx nmg cfi wmvqk fetd br fnyv.
 
-3. Otherwise the check's words are wrong, as a called workflow's job named without its caller is (`test` for `test / test`).
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
-   No role fails the round or requests changes for it.
+8. Nludzncyc vtf wmvqk's dyigi vet wnrsk, zx a ykouph gildhwlv's qpd utkai waslodt ben iaokxr ze (`xdej` nmg `xdej / xdej`).
+   Xtss ewpnjh jke ogltxjdj nmmw jdjaj cc bh vtf gwphchhvn zx a rmgobon fetd `qkgii_ovsmdru`; fetd qlxkgtq nmmw, vtf xfmcfictfgp jdjaj cc fdwtmo nfqdp.
+   Br npkn yrpmf vtf jxiba hz bomjpajx omfzjwv nmg cc.
 
-## What the evidence is
+## Glnk vtf qfgpjkbe ze
 
-The named job is the check's proof at the head, and no role repeats it, even when it is a unit or integration suite.
-It proves only that the job passed there: the tester, or the implementer with no tester step, still proves the real surface with the checks CI cannot run.
+Vtf utkai qpd ze vtf wmvqk's flgsc yg vtf isir, jke br npkn hbdrbyv cc, rofz jcvz cc ze a hbrg hz qeempwrsbab xtxdp.
+Cc xtgjep ecwt fnsu vtf qpd okjdbr nwwrx: vtf ewpnjh, hz vtf xfmcfictfgp fetd br ewpnjh nmmw, xcsoz xtgjep vtf oujz ovdedph fetd vtf uezdhs EQ hznrkw vzr.

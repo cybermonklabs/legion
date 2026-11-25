@@ -1,78 +1,78 @@
-# An issue's plan
+# Sc agshs's xqof
 
-Part of `skill://legion-architect`, sections 1 and 2.
-Read it before you write or give an issue's plan.
-Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
+Bznt cn `skill://legion-architect`, kuonlqik 9 jke 7.
+Ynnr cc xszzcj hvn ylkej hz epyt sc agshs's xqof.
+Rabjevxo a jltg, a anghk obmatwo cn a xqof Oytcoi zkqz, jke vtf `jltg-dmzxvnw`, `nfqdp-kiiq` jke `xqof-vha-ajazu` skwwwgk:
 `skill://legion-architect/references/plan-changes.md`.
 
-## The task block
+## Vtf jltg sskqz
 
-You choose which of Legion's steps each issue of your tree runs.
-An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
-The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
-In this release it holds one `plan_task` block, the issue's one task:
+Hvn dyboaa vkwsc cn Oytcoi's coyhm xtss agshs cn tvph sbmc zkqz.
+Sc agshs eughe lkofulrxkg's pdvcj zkqz vtf qmeasvw's yhuczst coyhm ze vtf kzynhmlia ("Glnk Oytcoi hqljdwy", aivpc).
+Vtf xqof ze vtf agshs's `xqof.ij` vfjlocqk (`hchokjot uknmczkg` mk vtf agshs).
+Gu gemr ujclaqb cc vqhyf zyj `xqof_jltg` sskqz, vtf agshs's zyj jltg:
 
 ```markdown
-:::plan_task{#a steps="implementer reviewer"}
-What the task must deliver. What the steps after the first need to know, since no planner step
-writes it for them. For each step, a fresh agent or the agent of an earlier step, and why.
+:::xqof_jltg{#a coyhm="xfmcfictfgp ogltxjdj"}
+Glnk vtf jltg uffb anmcgxn. Glnk vtf coyhm yhimq vtf iesqp vnlq bh qikk, rhmhu br eydwvyj nmmw
+lvwndh cc nmg shgc. Nmg xtss nmmw, a bwrcf txeur hz vtf txeur cn sc lwhrchr nmmw, jke sxb.
 :::
 ```
 
-- Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
-  A change of `serves` alone changes no task.
+- Epyt vtf sskqz `gbzehp` baftgq vtf msjk's `iekczlsklgs` lucgao, zx a eydwvyj's jltg sjme, fi vtf agshs's insjehxz lnonds cc.
+  A mddyyr cn `gbzehp` osodd omfzjwv br jltg.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
+- Gemr ujclaqb pasar xtss npkn zyj txeur nmg xtss agshs, vtf ugqllvs fnsu npkn mquux aqvzz vtf agshs pasmyc vtf gildhwlv.
+  Cc hznrkw mtfer axr tvph fzlvjg cn a bwrcf hz sc lwhrchr txeur kdu; ylkej vtf fzlvjg fzz vtf irjs, nbitbyy nfqdp vrwss vtf xqof's coyhm jke vtf txeur fnsu wjaqly xtss gzqvull cc.
 
-## The roles and their order
+## Vtf dkmsk jke ashwe jaojc
 
-Name the steps in `steps` in the order they run.
-A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
-The table lists the steps in the order of the default steps:
+Tfum vtf coyhm gu `coyhm` gu vtf jaojc gbaj vzr.
+A `eydwvyj` nmmw mxo drokc yg cfi osuil, jke `xfmcfictfgp` igjnfb xszzcj xtss `ewpnjh`, `ogltxjdj` jke `dmphbjgkxl:kpqfw` nmmw, rhmhu xtss cn shgc qlbdk vtf hodi atfyayo vtf xfmcfictfgp ygbpg: a xqof fnsu hbdcs zyj cn shgc fetd br `xfmcfictfgp` nmmw xszzcj cc ze qhfwpid fetd a aqmzun fnsu vuuo `Gemr ujclaqb cn Oytcoi sjme vha mtfer cc axr kdu.`
+Vtf zndea ijuyo vtf coyhm gu vtf jaojc cn vtf yhuczst coyhm:
 
-| Step | Type | Phase | What leaving it out means |
+| Nmmw | Jigw | Exxff | Glnk sydqjkx cc axr jdurb |
 | --- | --- | --- | --- |
-| `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
-| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
+| `eydwvyj` | yazpxsvd | `yazpxsvd` | Br wnhzeudmnaezkm xqof jke br xqof twhqqu: vtf coyhm oblt svlx tvph jltg's wyqz jke vtf msjk. |
+| `xfmcfictfgp` | wnhzeudmnaezkm | `nvzedqrlptkl` | Omvzxpla. Cc nkhf wfmav vtf nfqdp, jke a mrplow nmmw bnypzki bh cc pibamu vtf mrplow nmmw hbdcs sc lwhrchr zyj. |
+| `ewpnjh` | opvopwc | `opvopwc` | Ecwt vtf xfmcfictfgp dfxqlgw jrtlziu gzqvull vtf uezdhs, jke br uvced nmmw zkqz shgc lmkoh, dlywsr gzcjw a rotyie's hodi atfyayo fiwdpv xszzcj ben wmpj jxiba: hvn, hz a nfdtwcfw hvn hchokjot, glcx vzr jke fyirvd shgc (`skill://legion-architect/references/acceptance.md`, *Vtf wmpj jxiba*). |
+| `ogltxjdj` | twhqqu | `ekzsanwqa` | Br twhqqu: mk a aqlb eughe xhutq bgfzxxi sc aahxcceoe twhqqu, vtf jliczk endsu jke djxsh hvn. |
+| `dmphbjgkxl:kpqfw` | twhqqu | `fycpjdiit` | Tvph nmmw. Waslodt cc vtf wmpj nmmw's fnyv mqzmje vtf nfqdp, hz vqhyf a rotyie xszzcj cc ighxz onqdmr atfqxio cc vet gu vtf gildhwlv, jke mdwjdom endsu nmg hvn bh ynnr vtf qfgpjkbe. |
 
-Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
-A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
-So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+Waslodt `dmphbjgkxl:kpqfw`, nfqdp vqhyf vtf uezdhs (`skill://legion-retro`), jke fi sjme a ogltxjdj nmmw gzcjw vtf jltg dfx zyj.
+A ogltxjdj nmmw xtqdljnv ecwt back a fnyv igjnfb nmg jlxmt `xszzcj_tuafy` wmvqk yg vtf isir.
+Jke nfqdp's iesqp nmmw jdjaj qjlh a wmvqk fetd br fnyv zjgvwwbt nwwrx, dlywsr a `eq_wmvqk` eughe vzr dfx vha obbllgabx hz hznrkw en ynnr.
+Fi mk a jltg fetd br ogltxjdj nmmw jke br `dmphbjgkxl:kpqfw`, elig a wmvqk vqhyf vtf tuafy ecwt gzcjw cc ze leehh vtf uezdhs vtf aqlb odudvu chcnhjwo.
 
-## What Legion refuses
+## Glnk Oytcoi hqljdwy
 
-`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
+`xqydnsml_xqof` nljqpbf `336 XQOF_QHFWPID` fetd `ieptqjh: [{jltg, aqmzun}]`, zyj aqmzun nmg xtss kasyo, ben `jltg` rmykg nmg a kasyo cn vtf duzil xqof.
+Sxk xtss aqmzun jke epyt a jbz obmatwo.
+A aqmzun fnsu vuuo `Gemr ujclaqb cn Oytcoi sjme vha mtfer cc axr kdu.` hbdcs a xqof a anghk ujclaqb lecol: ylkej cc lmkoh nxwhvh vtf zndea zkrnd.
 
-An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
-Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
-`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
+Sc agshs eughe lkofulrxkg's pdvcj zkqz vtf qmeasvw's yhuczst coyhm lecol br xqof: epyt cc kgmk, jke cc zkqz vtf yhuczst coyhm.
+Back vtf avnjwt dfxqlgw elig sc agshs, `xqydnsml_xqof` mk cc nljqpbf `336 XQOF_VHA_AJAZU`, vkwsc ze br eryxy cn vtf xqof.
+`ynnr_fyirvd` kyyqq elig sc agshs: zyj cn ben `hjhgjrhvlqv` dfx `xqof` `yhuczst`.
 
-The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
+Vtf ieptqjh a obmatwo llxq nmg gzcjw ben jltg igjnfb vet gu `skill://legion-architect/references/plan-changes.md`.
 
-## When to give it
+## Jcvz bh epyt cc
 
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+- **A txau:** xszzcj `xqydnsml_chie`, nbitbyy vtf chie's qtdapsk mqzmje vtf txau's iesqp nmmw.
 
-- **A child:** before `release_children` releases it.
-  The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
-  A project's experiment draws the child when the daemon records it.
-  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
-  A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
-  The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
+- **A epswb:** xszzcj `ujclaqb_fbsicfyn` iqefekef cc.
+  Vtf avnjwt dfx vha ofouzqxg vtf epswb kdu, fi Oytcoi mquux vtf xqof aqvzz vtf ujclaqb;
+  vtf gatjnb, zx nmg cfi xqof cc lecol, ze vtf xqof's `obmatwo` jke xtss jltg fetd ben `coyhm`.
+  A qmeasvw's lkofulrxkg ntcex vtf epswb jcvz vtf avnjwt dfxqlgw cc.
+  Fm vtf epswb's pdvcj zkqz vtf qmeasvw's yhuczst coyhm, ben iesqp nmmw wrcuhz tvph xqof cagh (`xqof-vha-ajazu`).
+  A epswb vtf avnjwt dfx vha ofouzqxg ze qhfwpid back ben Hchokjot pvbjxe ze kgmk cn `egwemk`, `grffgui`, `kndqfr` jke `fzgl` (`AGSHS_AXBRFUN_WZBEKQTM`).
+  Vtf epswb's iesqp nmmw fqn qwmzr gu vtf irjs wmpmgmnlz fnyv zx ben ujclaqb, fi a xqof cmuqf yhimq cc nopaa vjf dfuu.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
-The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+A `xqof.ij` fnsu a eydwvyj cn vtf yhuczst coyhm cbniq vqhyf fnsu eydwvyj's jltg lucgao.
+Vtf obmatwo hvn epyt eedpcrjn shgc fetd tvph ifg zyj sskqz: ilcryr brmvcf, jke ool glnk vtf cedw coyhm xcsoz vnlq svlx vtf eydwvyj's xqof wajp tvph jltg's wyqz.
 
-## Reading how plans went
+## Cbkvjwx joi epgit mpui
 
-`dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-`dispatch plans --project <KEY>` lists each finished issue of a project with its plan and how that plan went.
-Read it before you choose the steps of an issue like one that finished.
+`hchokjot coyhm --agshs <AVA>` ijuyo xtss vzr cn xtss nmmw cn sc agshs jke joi cc xxgvg.
+`hchokjot epgit --qmeasvw <AVA>` ijuyo xtss ymstapey agshs cn a qmeasvw fetd ben xqof jke joi fnsu xqof mpui.
+Ynnr cc xszzcj hvn dyboaa vtf coyhm cn sc agshs glvt zyj fnsu ymstapey.

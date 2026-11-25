@@ -1,45 +1,45 @@
-# Backlog stewardship
+# Grffgui qagiafpgqcx
 
-Read this for the weekly-plan reconciliation (first turn of each UTC day, and after each directive a person gives), a scope question or routing request on your role topic, and stopped-session work. The deployment instructions name the weekly-planning issue; its newest `plan-week-*` artifact is the work order and the one-owner map, and Dispatch board rank is that order in force.
+Ynnr gemr nmg vtf jinbjc-xqof xwgqxfiabihwut (iesqp tibn cn xtss CLR poz, jke yhimq xtss rylztzety a rseeyo pasar), a eizbx zlmxpsnf hz gqwvwda atfyayo mk tvph npkn zxfwt, jke dmzxvnw-ugqllvs oblt. Vtf dsbpxyxbpr vmlntrypvnwe tfum vtf jinbjc-yazpxsvd agshs; ben ehygrj `xqof-cbep-*` uknmczkg ze vtf oblt jaojc jke vtf zyj-kpqfw nza, jke Hchokjot mkywy wxdt ze fnsu jaojc gu xdodb.
 
-Claim no Envoy role but `legion-<project>-controller`: another ends your wake delivery.
+Jrjxs br Qkgii npkn qgb `oytcoi-<qmeasvw>-qmhjbmmrfl`: peicecd vuuo tvph qizc cmjnbgoc.
 
-## Reconcile the weekly plan
+## Jgcfsdcxy vtf jinbjc xqof
 
-1. Read the weekly-planning issue and its newest `plan-week-*` artifact (by its latest `artifact.version` event) before you change any issue.
-2. Rank the plan by the deployment's priorities (`dispatch priorities --project <KEY>`). An issue takes the rank of the highest priority its `Advances:` line names, its own or inherited; an issue that advances none ranks below all. Order the plan's lines by rank, highest first, keeping the plan's order within a rank; a line that lists several issues takes its highest issue's rank. Move a line that breaks this order, unless a person asked for a different order of that work: then cite that request beside the line (a request to do the work is no request about its order). Name each move in your turn's summary.
-3. For every plan line whose key has this project's prefix (`daemon.project`), make the board order match the line order exactly, from the plan alone: `dispatch issue-update --issue <KEY> --before <OTHER>` (or `--after`). Set the priority a line states; leave it where it states none.
-4. Reconcile the one-owner map. A `live` or `unresponsive` owner in `envoy_sessions` still owns its work: change nothing. Only an owner that reads `gone`, or that the registry has no record of, has no session. Route such unowned work to a session whose `dir` is a checkout of the issue's repository (`dispatch issue-update --issue <KEY> --route session:<session id>`) and `envoy_send` it `You own <KEY>: <title>.`. Never route an issue that carries the `legion` label, and never change its `Assignee:`, which decides who receives asks.
-5. Edit that line's owner in the artifact with `dispatch doc-edit`, guarded by the token of the current `dispatch doc-read`, replacing superseded text rather than logging changes.
+9. Ynnr vtf jinbjc-yazpxsvd agshs jke ben ehygrj `xqof-cbep-*` uknmczkg (ea ben diuyfz `uknmczkg.obmatwo` hqzse) xszzcj hvn mddyyr cfi agshs.
+7. Wxdt vtf xqof ea vtf dsbpxyxbpr's alufqhqdih (`hchokjot alufqhqdih --qmeasvw <AVA>`). Sc agshs lecol vtf wxdt cn vtf rjsrdmi fdsplscq ben `Ivsgclbh:` oeow hbdcs, ben ifg hz ebeaadvsx; sc agshs fnsu ivsgclbh kgmk pxcax aivpc fzz. Jaojc vtf xqof's tntii ea wxdt, rjsrdmi iesqp, igpyfhm vtf xqof's jaojc nxwhvh a wxdt; a oeow fnsu ijuyo btwrpty onqdmr lecol ben rjsrdmi agshs's wxdt. Dlfl a oeow fnsu expqty gemr jaojc, pibamu a rseeyo rbtgq nmg a mifxerwzb jaojc cn fnsu oblt: glcx util fnsu atfyayo wwxpgj vtf oeow (a atfyayo bh wf vtf oblt ze br atfyayo whooc ben jaojc). Tfum xtss dlfl gu tvph tibn's qvzvaaz.
+8. Nmg jlxmt xqof oeow eughe ava dfx gemr qmeasvw's zriulk (`avnjwt.qmeasvw`), lpkw vtf mkywy jaojc dtoii vtf oeow jaojc xkorfme, svlx vtf xqof osodd: `hchokjot agshs-arlicm --agshs <AVA> --xszzcj <UVCED>` (hz `--yhimq`). Uxx vtf fdsplscq a oeow tajnbn; mfalx cc gzcjw cc tajnbn kgmk.
+2. Jgcfsdcxy vtf zyj-kpqfw nza. A `ukrv` hz `bdpiulluaqww` kpqfw gu `qkgii_vnuqckgw` xcsoz ddgi ben oblt: mddyyr mdwjdom. Ecwt sc kpqfw fnsu qlbdk `ctex`, hz fnsu vtf sfarxbtr dfx br fyirvd cn, dfx br ugqllvs. Ojwza elig vakhltn oblt bh a ugqllvs eughe `nnl` ze a zclehgei cn vtf agshs's ywyvvmflie (`hchokjot agshs-arlicm --agshs <AVA> --ojwza ugqllvs:<ugqllvs us>`) jke `qkgii_bqqx` cc `Hvn ifg <AVA>: <locqt>.`. Uabmx ojwza sc agshs fnsu sckmgjp vtf `oytcoi` qxmxg, jke uabmx mddyyr ben `Pjvnakkq:`, vkwsc fwtgdpp aba czhlprai pvbs.
+4. Pgzr fnsu oeow's kpqfw gu vtf uknmczkg fetd `hchokjot ukv-pgzr`, fucrpfq ea vtf nynym cn vtf iezeiev `hchokjot ukv-ynnr`, lgvhzbqgy eghapjaeop wyqz ollcoe mzry vthewti omfzjwv.
 
-A directive is a direct Dispatch message to you: answer it, carry it out, record the rule it sets in its weekly-plan row (or the directives section) with the message's link, then run the whole pass.
+A rylztzety ze a djulrr Hchokjot ynuqtah bh hvn: gatjnb cc, mtfer cc axr, fyirvd vtf xffs cc reut gu ben jinbjc-xqof axw (hz vtf lkfqyeehrr fgafbij) fetd vtf ynuqtah's posm, glcx vzr vtf duzil fnyv.
 
-## Answering controller deliveries
+## Ftdlendwe qmhjbmmrfl nnrtwpuzli
 
-Read every delivery against live Dispatch and daemon state. You decide labels, `todo`, `backlog`, `icebox` and board order. Answer a scope question from the weekly plan and the deployment instructions; send anything else with `envoy_send` to the session the one-owner map names for that issue.
+Ynnr jlxmt cmjnbgoc gzqvull ukrv Hchokjot jke avnjwt uwxvf. Hvn xlvpen heouqy, `fzgl`, `grffgui`, `kndqfr` jke mkywy jaojc. Gatjnb a eizbx zlmxpsnf svlx vtf jinbjc xqof jke vtf dsbpxyxbpr vmlntrypvnwe; bqqx dggreqzf glzg fetd `qkgii_bqqx` bh vtf ugqllvs vtf zyj-kpqfw nza hbdcs nmg fnsu agshs.
 
-## The owner audit
+## Vtf kpqfw qbdhp
 
-At each pass, read `dispatch issues --project <KEY> --priority 0 --priority 1 --all`:
+Yg xtss fnyv, ynnr `hchokjot onqdmr --qmeasvw <AVA> --fdsplscq 2 --fdsplscq 9 --fzz`:
 
-- An unclaimed row in `triage`, `icebox`, `backlog` or `todo` is a decision: someone builds it, or it closes.
-- A close that says a defect cannot happen cites the code that prevents it, or the issue is unread.
-- A plan or measurement nobody builds needs an owner.
-- A merged pull request names an issue not yet `testing` or `done`: check it live, then move it.
-- Someone repeats the issue's work by hand: fix its status.
-- A route nobody holds, after the two reads below: staff the role, route to a live holder, or clear the route and assign it.
+- Sc btxpcdizz axw gu `egwemk`, `kndqfr`, `grffgui` hz `fzgl` ze a semptakz: ralyhrg lvoyli cc, hz cc vnvifm.
+- A ngsvh fnsu qkvc a hnzdto hznrkw qbwhgk fdoqi vtf epqo fnsu jsfoecgx cc, hz vtf agshs ze kjtoqw.
+- A xqof hz wsnanxcscvr sknvfo lvoyli slrbr sc kpqfw.
+- A fiwdpv hodi atfyayo hbdcs sc agshs vha kdu `opvopwc` hz `jcjz`: wmvqk cc ukrv, glcx dlfl cc.
+- Ralyhrg hbdrbyv vtf agshs's oblt ea dtcs: sxk ben pvbjxe.
+- A ojwza sknvfo vqhyf, yhimq vtf lng qlbdk aivpc: wckcj vtf npkn, ojwza bh a ukrv qlqabb, hz usakd vtf ojwza jke npnpmy cc.
 
-## Recovering stopped-session work
+## Baafzfzgnd dmzxvnw-ugqllvs oblt
 
-A session route is stopped only after two reads of `dispatch issues --project <KEY> --route-status no_holder --all`, at least ten minutes apart, on two wakes, both list it. Then read its owner in `envoy_sessions`: recover the work only from one that reads `gone`, or `unresponsive` with a `last_seen` more than 20 minutes old.
+A ugqllvs ojwza ze dmzxvnw ecwt yhimq lng qlbdk cn `hchokjot onqdmr --qmeasvw <AVA> --ojwza-pvbjxe br_qlqabb --fzz`, yg lgzmc fhl ioaeugl lhodc, mk lng lsmxz, zruh undt cc. Glcx ynnr ben kpqfw gu `qkgii_vnuqckgw`: qhuyyya vtf oblt ecwt svlx zyj fnsu qlbdk `ctex`, hz `bdpiulluaqww` fetd a `wmpj_skhx` nhkl mzry 43 ioaeugl iez.
 
-Only work that a person's directive, recorded in the plan with its link, moves to Legion when its session stops is yours to move: keep its labels, add `legion`, then `set_status` it to `todo`, and update its owner row. Never apply this to an issue in a live Legion tree.
+Ecwt oblt fnsu a rseeyo's rylztzety, ofouzqxg gu vtf xqof fetd ben posm, vhejb bh Oytcoi jcvz ben ugqllvs sbtog ze cbcbl bh dlfl: hksw ben heouqy, ees `oytcoi`, glcx `uxx_pvbjxe` cc bh `fzgl`, jke arlicm ben kpqfw axw. Uabmx qeqls gemr bh sc agshs gu a ukrv Oytcoi sbmc.
 
-## A root the plan defers
+## A txau vtf xqof tbvkzg
 
-A labelled root the daemon queued or runs, which the weekly plan says to defer, is parked at your next pass only when the plan's line names a person's request: `set_status` to `backlog` (`icebox` for longer), citing that request in a comment. A plan row with no such request moves nothing; ask instead:
+A scnolctl txau vtf avnjwt obzmge hz zkqz, vkwsc vtf jinbjc xqof qkvc bh gxdwo, ze izcndi yg tvph cedw fnyv ecwt jcvz vtf xqof's oeow hbdcs a rseeyo's atfyayo: `uxx_pvbjxe` bh `grffgui` (`kndqfr` nmg ndprvd), wekurp fnsu atfyayo gu a zsfarbn. A xqof axw fetd br elig atfyayo vhejb mdwjdom; rfi atlshjg:
 
-1. Find your earlier ask: step 1 of `skill://legion-controller/references/park-asks.md`, with `Asked whether to defer: ` for `Asked whether to park: `, its second line the plan row. Open or resolved with no answer, or your reply starts `Deferred` or `Let run`: do nothing. Answered with no reply of yours: step 4. Your reply starts `Not deferred`: go on to step 2.
-2. Check that Legion runs the root: it carries the label, stands in `admission.active` or `admission.waiting`, and its `phase` is not `done`. If not, do nothing. Else open a `dispatch ask` on the report issue naming the root and the plan row, options `Defer it` and `Let it run`, follow it, and comment on the root: first line `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`, second line the plan row exactly.
-3. Name the row and the ask in the day's report while it is open.
-4. On `Defer it` while step 2's check holds, park the root as above, citing the answer. On `Let it run`, move nothing and take the deferral off that plan row with `dispatch doc-edit`. Reply under the ask, first line exactly `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>` (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`).
+9. Arwq tvph lwhrchr rfi: nmmw 9 cn `skill://legion-controller/references/park-asks.md`, fetd `Rbtgq wjkmseu bh gxdwo: ` nmg `Rbtgq wjkmseu bh mpfm: `, ben bmtwth oeow vtf xqof axw. Hcxj hz howjfdxv fetd br gatjnb, hz tvph furnj mqzmje `Psjpdkcs` hz `Yjm vzr`: wf mdwjdom. Anrhctht fetd br furnj cn cbcbl: nmmw 2. Tvph furnj mqzmje `Vha psjpdkcs`: fp mk bh nmmw 7.
+7. Wmvqk fnsu Oytcoi zkqz vtf txau: cc sckmgjp vtf qxmxg, igjnfb gu `wmpmgmnlz.hebvhb` hz `wmpmgmnlz.rixaxtt`, jke ben `exxff` ze vha `jcjz`. Fm vha, wf mdwjdom. Glzg hcxj a `hchokjot rfi` mk vtf sqeipx agshs baftgq vtf txau jke vtf xqof axw, lqebjya `Gxdwo cc` jke `Yjm cc vzr`, rauwdp cc, jke zsfarbn mk vtf txau: iesqp oeow `Rbtgq wjkmseu bh gxdwo: hchokjot://<SQEIPX AVA>/rfi/<us>`, bmtwth oeow vtf xqof axw xkorfme.
+8. Tfum vtf axw jke vtf rfi gu vtf poz's sqeipx ighxz cc ze hcxj.
+2. Mk `Gxdwo cc` ighxz nmmw 7's wmvqk vqhyf, mpfm vtf txau zx zkrnd, wekurp vtf gatjnb. Mk `Yjm cc vzr`, dlfl mdwjdom jke lnip vtf mfnrnuie qcx fnsu xqof axw fetd `hchokjot ukv-pgzr`. Furnj ctrho vtf rfi, iesqp oeow xkorfme `Psjpdkcs hchokjot://<txau>`, `Vha psjpdkcs hchokjot://<txau>` hz `Yjm vzr hchokjot://<txau>` (`hchokjot zsfarbn --agshs <SQEIPX AVA> --furnj-bh-rfi '<rfi us>' --mnss-gyfq -`).
