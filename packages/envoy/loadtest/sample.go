@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // clkTck is the kernel's USER_HZ, the unit of /proc/<pid>/stat CPU times.
@@ -574,6 +575,19 @@ func (s *sampler) all() []sample {
 
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
+// routeURL is route, a path with or without its own query, joined onto base, an endpoint's URL
+// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to
+// the URL's text would sit inside a query or a fragment and the endpoint would be asked another
+// path. A base that does not join is refused in fixed words that name the route: url.Parse's
+// error quotes the URL whole, user information and query included.
+func routeURL(base, route string) (string, error) {
+	joined, err := urljoin.Join(base, route)
+	if err != nil {
+		return "", fmt.Errorf("GET %s: the URL it is joined onto is not an absolute URL with a host (it is not printed)", route)
+	}
+	return joined.String(), nil
+}
+
 // getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
 // printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
 // which closing the stream closes. url is a route joined onto an endpoint's URL; one that does not
@@ -598,10 +612,13 @@ func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser,
 }
 
 // goroutineCounts reads Dispatch's goroutine total and how many wait in pgx's pool Acquire
-// (puddle frames) from /debug/pprof/goroutine?debug=1; an error when the read fails or the
-// profile names no total.
+// (puddle frames) from /debug/pprof/goroutine?debug=1, joined onto pprof (routeURL); an error when
+// the read fails or the profile names no total.
 func goroutineCounts(pprof string) (total, poolWait int, err error) {
-	url := pprof + "/debug/pprof/goroutine?debug=1"
+	url, err := routeURL(pprof, "/debug/pprof/goroutine?debug=1")
+	if err != nil {
+		return 0, 0, err
+	}
 	body, err := getOK(context.Background(), shortClient, url)
 	if err != nil {
 		return 0, 0, err
@@ -649,16 +666,20 @@ func goroutineCounts(pprof string) (total, poolWait int, err error) {
 	return total, poolWait, nil
 }
 
-// heapLive reads Dispatch's live heap from /debug/pprof/heap, the binary profile, within
-// heapReadTimeout and until ctx ends: the sums of its inuse_space and inuse_objects samples, which
-// the runtime has already scaled from its sampled records to estimates of the whole heap. It never
-// reads ?debug=1: that text formats every heap record, grew past 500 MB, and its reads took 29% of
-// Dispatch's CPU in the r16 replay. An error when the read fails, the profile does not parse, or it
-// has no inuse_space or inuse_objects. The profile is the profiler's words, or the words of
-// whatever answers in its place: the parser's error can quote a line of it (a legacy text
-// profile's attribute) and its sample types are its own names, so an error names neither.
+// heapLive reads Dispatch's live heap from /debug/pprof/heap, joined onto pprof (routeURL), the
+// binary profile, within heapReadTimeout and until ctx ends: the sums of its inuse_space and
+// inuse_objects samples, which the runtime has already scaled from its sampled records to estimates
+// of the whole heap. It never reads ?debug=1: that text formats every heap record, grew past 500
+// MB, and its reads took 29% of Dispatch's CPU in the r16 replay. An error when the read fails, the
+// profile does not parse, or it has no inuse_space or inuse_objects. The profile is the profiler's
+// words, or the words of whatever answers in its place: the parser's error can quote a line of it
+// (a legacy text profile's attribute) and its sample types are its own names, so an error names
+// neither.
 func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err error) {
-	url := pprof + "/debug/pprof/heap"
+	url, err := routeURL(pprof, "/debug/pprof/heap")
+	if err != nil {
+		return 0, 0, err
+	}
 	body, err := getOK(ctx, &http.Client{Timeout: heapReadTimeout}, url)
 	if err != nil {
 		return 0, 0, err
@@ -686,9 +707,13 @@ func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err er
 }
 
 // natsVarz reads NATS's CPU, memory, connections, message counts, slow consumers and subscriptions
-// from /varz; an error when the GET fails, answers other than 200 or holds no JSON.
+// from /varz, joined onto mon (routeURL); an error when the GET fails, answers other than 200 or
+// holds no JSON.
 func natsVarz(mon string) (map[string]float64, error) {
-	url := mon + "/varz"
+	url, err := routeURL(mon, "/varz")
+	if err != nil {
+		return nil, err
+	}
 	body, err := getOK(context.Background(), shortClient, url)
 	if err != nil {
 		return nil, err
@@ -709,10 +734,14 @@ func natsVarz(mon string) (map[string]float64, error) {
 	return map[string]float64{"cpu_pct": v.CPU, "mem": v.Mem, "connections": v.Connections, "in_msgs": v.InMsgs, "out_msgs": v.OutMsgs, "slow_consumers": v.SlowCons, "subscriptions": v.Subs}, nil
 }
 
-// natsJsz reads NATS /jsz: the JetStream consumers, streams and messages, and the JetStream API
-// requests and errors; nil when the read fails.
+// natsJsz reads NATS /jsz, joined onto mon (routeURL): the JetStream consumers, streams and
+// messages, and the JetStream API requests and errors; nil when the read fails.
 func natsJsz(mon string) map[string]float64 {
-	resp, err := shortClient.Get(mon + "/jsz")
+	url, err := routeURL(mon, "/jsz")
+	if err != nil {
+		return nil
+	}
+	resp, err := shortClient.Get(url)
 	if err != nil {
 		return nil
 	}
