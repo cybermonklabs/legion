@@ -2067,6 +2067,52 @@ test.each(
   }
 });
 
+// Each Escape the comment box takes is marked taken (`defaultPrevented`) beside what it does: the
+// mention list's close, the reference picker's close and the `Discard draft?` over a draft. The
+// rest of the page and the key registry read the mark, which keeps a held Escape's repeats from the
+// page where their press was taken (`keymap.ts`): unmarked, each repeat of the press that closed
+// the list asked `Discard draft?`.
+test("the Escape that closes the mention list or the reference picker, or asks Discard draft?, is marked taken", async () => {
+  const user = userEvent.setup();
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ project: "CORE" } as never);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    { key: "CORE-1", title: "Core issue" },
+  ] as never);
+  const { view } = renderComposer({ agents: [planner, worker] });
+  const escapes: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") escapes.push(event);
+  };
+  document.addEventListener("keydown", record, true);
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("a draft @");
+    await screen.findByRole("option", { name: "Planner" });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("option", { name: "Planner" }), "the mention list").toBeNull();
+    expect(screen.queryByRole("button", { name: "Discard" }), "the list's Escape").toBeNull();
+
+    await user.keyboard("{Control>}k{/Control}");
+    await screen.findByRole("dialog", { name: "Reference picker" });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Reference picker" }), "the picker").toBeNull();
+    expect(screen.queryByRole("button", { name: "Discard" }), "the picker's Escape").toBeNull();
+
+    act(() => field.focus());
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Discard" }), "Discard draft?").toBeTruthy();
+    expect(field).toHaveValue("a draft @");
+    expect(escapes.map((press) => press.defaultPrevented)).toEqual([true, true, true]);
+  } finally {
+    document.removeEventListener("keydown", record, true);
+    view.unmount();
+    getIssue.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
   // The quote is read in the commit that mounts the composer, which only a loaded engine draws
   // (`MarkdownPreview`): the first body of a file takes the asynchronous path.

@@ -427,6 +427,34 @@ test("Escape closes the open card", async () => {
   }
 });
 
+// The card takes the Escape that closes it: it is the topmost layer, so the press is marked taken
+// (`defaultPrevented`) as it is stopped, for a listener on `document` that passes over a press
+// already taken and for the key registry, which keeps a held Escape's repeats from the page where
+// their press was taken (`keymap.ts`).
+test("the Escape that closes the open card is marked taken", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    const press = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" });
+    act(() => {
+      document.dispatchEvent(press);
+    });
+    expect(screen.queryByRole("tooltip"), "the Escape closed the card").not.toBeInTheDocument();
+    expect(press.defaultPrevented, "the card took the Escape").toBe(true);
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
 // The Escape that ends an IME composition is the composition's (decision 325): the open card stays
 // open and the key goes on to the page, which the card's capture listener on `document` would
 // stop. An Escape after the composition closes the card and stops there. Chromium and Firefox mark

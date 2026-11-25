@@ -288,8 +288,11 @@ export function IssueTitleRow({
             // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
             if (inputMethodKey(event.nativeEvent)) return;
             if (event.key === "Escape") {
-              // Puts back the issue's title, or while a write is out the title it carries, which
-              // the issue is about to hold (decision 316).
+              // The press is the editor's: marked taken, so Details' own Escape and the key
+              // registry pass over it and a held Escape's repeats are kept from the page
+              // (`shell/keymap.ts`). Puts back the issue's title, or while a write is out the
+              // title it carries, which the issue is about to hold (decision 316).
+              event.preventDefault();
               drafts.discardTitle();
               returning.current = true;
               setEditing(false);

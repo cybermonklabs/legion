@@ -300,6 +300,40 @@ test("an Escape that ends an IME composition in Safari, at keyCode 229, keeps th
   }
 });
 
+// Each editor of the header that closes on Escape takes the press and marks it taken
+// (`defaultPrevented`) beside what it does: the title's, the message route's and the parent's. The
+// rest of the page and the key registry read the mark, which keeps a held Escape's repeats from
+// the page where their press was taken (`keymap.ts`).
+test("the Escape that closes the title's, the message route's or the parent's editor is marked taken, and drops its draft", async () => {
+  const { patches, unmount, user } = header();
+  const escapes: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") escapes.push(event);
+  };
+  document.addEventListener("keydown", record, true);
+  try {
+    const title = await editTitle(user, "Renamed");
+    await user.keyboard("{Escape}");
+    expect(title, "the title's editor").not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: base.title })).toBeInTheDocument();
+    for (const [opener, box, draft] of [
+      ["Messages default to no route", "Message route", "role:reviewer"],
+      ["None, set parent issue", "Parent", "CORE-2"],
+    ] as const) {
+      await user.click(await screen.findByRole("button", { name: opener }));
+      await user.type(screen.getByRole("textbox", { name: box }), draft);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("textbox", { name: box }), `${box}'s editor`).toBeNull();
+      expect(screen.getByRole("button", { name: opener }), `${box} dropped`).toBeInTheDocument();
+    }
+    expect(escapes.map((press) => press.defaultPrevented)).toEqual([true, true, true]);
+    expect(patches).not.toHaveBeenCalled();
+  } finally {
+    document.removeEventListener("keydown", record, true);
+    unmount();
+  }
+});
+
 // Safari sends the Enter and the Escape that end an input method's composition in the title's
 // editor the same way, unmarked with keyCode 229: that Enter saves nothing and that Escape
 // discards nothing, and the editor stays open on what the reader wrote. The plain Enter after

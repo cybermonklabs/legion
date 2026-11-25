@@ -460,15 +460,17 @@ export interface Keymap {
    * Reads a keydown in the window's capture phase, before every control and every other listener
    * of the page hears it (`KeymapProvider`): notes each press of a key until the key is let go
    * (`handleKeyUp`, `releaseKeys`), and keeps from the whole page each repeat of a held key that
-   * would act, and no other (`repeatGoesOn`). Each key that acts - opens a field, opens or closes
-   * a layer, presses a button, sends, picks, ticks - acts once for each press however long it is
-   * held, but for a binding that steps (`KeyBinding.repeats`), and its repeats type nothing in a
-   * field its press moved the focus to, and press nothing on a control there. Every other repeat
-   * reaches the browser untouched: a key that moves, typing in the field that had the focus
-   * before the press, and a key that no binding names and nothing took, such as the browser's
-   * zoom or a character typed with AltGr. A press itself goes on untouched, so a control still
-   * takes its own keys before the registry reads them (`handleKeyDown`), and so does an input
-   * method's key.
+   * would act, and each repeat of Escape, and no other (`repeatGoesOn`). Each key that acts -
+   * opens a field, opens or closes a layer, presses a button, sends, picks, ticks - acts once for
+   * each press however long it is held, but for a binding that steps (`KeyBinding.repeats`), and
+   * its repeats type nothing in a field its press moved the focus to, and press nothing on a
+   * control there. A held Escape closes one layer, whether or not the handler that took its press
+   * marked it taken. Every other repeat reaches the browser untouched: a key that moves, typing in
+   * the field that had the focus before the press, and a key that no binding names and nothing
+   * took, such as the browser's zoom or a character typed with AltGr. A press itself goes on
+   * untouched, so a control still takes its own keys before the registry reads them
+   * (`handleKeyDown`), and so does an input method's key, a repeat or not, the Escape that ends a
+   * composition included (`inputMethodKey`), which is read before any repeat is.
    */
   captureKeyDown(event: KeyboardEvent): void;
   /** The unfinished chord, or one with no keys; the same object until the chord changes. */
@@ -672,11 +674,11 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
 
   /**
    * Whether a repeat of a held key goes on to the page. A held key's repeats are no presses (R5,
-   * R8), so a repeat is kept from the page only where it would act there, but for a binding that
-   * repeats by design (`KeyBinding.repeats`), and for a text field's own Backspace and Delete and
-   * a multi-line field's or an editor's Enter, held with no Ctrl or Cmd (no Alt for Enter), on the
-   * element the press was made in, which repeat as typing does. `press` is the key's held press
-   * (`captureKeyDown`), none once the page has lost its release.
+   * R8), so a repeat is kept from the page where it would act there, and an Escape's everywhere,
+   * but for a binding that repeats by design (`KeyBinding.repeats`), and for a text field's own
+   * Backspace and Delete and a multi-line field's or an editor's Enter, held with no Ctrl or Cmd
+   * (no Alt for Enter), on the element the press was made in, which repeat as typing does.
+   * `press` is the key's held press (`captureKeyDown`), none once the page has lost its release.
    *
    * Tab is kept, so that a fresh press is needed to leave the next layer, and a key that moves
    * goes on to whatever has the focus now (`MOVING_KEYS`). A key a binding names goes on only to
@@ -688,8 +690,14 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
    *   Delete and an editor's Enter of a field the press was made in, which repeat as typing does;
    * - its press moved the focus, or the page holds no press of it, and it would type or delete in
    *   the field it lands in (`editsText`);
-   * - it is an Enter anywhere but a field of several lines, where it would press a button, follow a
-   *   link or send a form again, on its press's own element too.
+   * - it is an Enter anywhere but a field of several lines or an editor, where it would press a
+   *   button, follow a link or send a form again, on its press's own element too;
+   * - it is an Escape, anywhere: a held Escape closes one list or panel, and a handler that took
+   *   its press without marking it (`defaultPrevented`), or moved the focus to a layer whose own
+   *   Escape acts, would leave its repeat to close the next one. The browser's own Escape -
+   *   leaving full screen, stopping a load - needs no repeat, and the page cannot keep it anyway.
+   *   The Escape that ends an input method's composition never reaches this rule
+   *   (`captureKeyDown`).
    * Every other repeat reaches the browser untouched: its zoom, a Mac text field's Control keys, a
    * character typed with AltGr or with no modifier in the field that had the focus before the
    * press, and Space where nothing took its press, which scrolls the page.
@@ -701,6 +709,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     if (exact !== undefined || partial) {
       return exact?.binding.repeats === true && exact.binding.id === press?.steps;
     }
+    if (event.key === "Escape") return false;
     const { target } = event;
     const field = target instanceof Element && takesText(target);
     const editor = target instanceof HTMLElement && target.isContentEditable;

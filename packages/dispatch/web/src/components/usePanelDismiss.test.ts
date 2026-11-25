@@ -56,3 +56,36 @@ test.each(
     panel.remove();
   }
 });
+
+// The panel's Escape is the panel's alone while it stands open, so the press is marked taken
+// (`defaultPrevented`) as it is stopped: a listener beside it on `document` that passes over a
+// press already taken - Details' own Escape (`Margin.tsx`) - and a held Escape's repeats, which the
+// key registry keeps from the page where their press was taken (`keymap.ts`), read the mark.
+test("an Escape that closes the open panel is marked taken, closes it and puts the focus back on the trigger", () => {
+  const trigger = document.createElement("button");
+  const panel = document.createElement("div");
+  const field = document.createElement("input");
+  panel.append(field);
+  document.body.append(trigger, panel);
+  const changes: boolean[] = [];
+  const view = renderHook(() =>
+    usePanelDismiss({
+      onOpenChange: (open) => changes.push(open),
+      open: true,
+      panelRef: { current: panel },
+      triggerRef: { current: trigger },
+    })
+  );
+  try {
+    field.focus();
+    const press = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" });
+    field.dispatchEvent(press);
+    expect(changes, "the Escape closed the panel").toEqual([false]);
+    expect(document.activeElement, "the Escape put the focus back on the trigger").toBe(trigger);
+    expect(press.defaultPrevented, "the panel took the Escape").toBe(true);
+  } finally {
+    view.unmount();
+    trigger.remove();
+    panel.remove();
+  }
+});

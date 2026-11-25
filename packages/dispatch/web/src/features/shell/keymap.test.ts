@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react";
 import { createElement } from "react";
 
 import { MENU_TRIGGER_ATTRIBUTE, PANEL_ATTRIBUTE } from "../../components/key-targets";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { KeymapProvider } from "./KeymapProvider";
 import {
   actionBinding,
@@ -944,9 +945,9 @@ function heldPage(bindings: readonly KeyBinding[], elements: readonly Element[])
 // control hears a key (`Keymap.captureKeyDown`): a repeat of a key that acts - one whose press put
 // the caret in a field, an Enter on a button, an Escape a panel took - reaches nothing of the page
 // and is left to no action of the browser's. It types nothing in the field the press focused,
-// presses the button no second time, and closes no panel around a list an Escape closed. The
-// ruling of 2026-11-25T09:24Z keeps a repeat only where it would act: an Escape on a panel's field
-// that nothing took acts on nothing, and its repeats go on.
+// presses the button no second time, and closes no panel around a list an Escape closed. By the
+// ruling of 2026-11-25T13:45Z, every held Escape acts once, whether or not a handler marked its
+// press taken.
 test("a held key that acts reaches nothing with its repeats: none types in the field its press focused, presses the focused button again, or closes the panel around it", () => {
   const row = document.createElement("button");
   const field = document.createElement("input");
@@ -976,7 +977,7 @@ test("a held key that acts reaches nothing with its repeats: none types in the f
     act(() => row.focus());
     expect(hold("Enter", 3), "Enter on a focused button").toEqual({ acted: 0, reached: 0 });
     act(() => trigger.focus());
-    expect(hold("Escape", 3), "Escape on a panel's field").toEqual({ acted: 3, reached: 3 });
+    expect(hold("Escape", 3), "Escape on a panel's field").toEqual({ acted: 0, reached: 0 });
     // The panel's own Escape (`AnchoredPanel`'s `dismissOnEscape`) takes the press.
     const dismiss = (event: KeyboardEvent) => {
       if (event.key === "Escape") event.preventDefault();
@@ -1038,11 +1039,10 @@ test("a held key that moves repeats wherever the focus has gone: a binding that 
 
 // The same rule's typing: in the field that had the focus before the press, a held key that types
 // repeats - a character, Space, Backspace and Delete, and Enter in a field of lines - and so does a
-// key that nothing took and that acts on nothing there, Escape and Ctrl+Z among them (the ruling of
-// 2026-11-25T09:24Z, which ended the rule's stop of both), but Tab, Enter in a field of one line,
-// which sends its form, and a character a control took (a menu's digit, which writes its choice)
-// act once.
-test("in a field that had the focus before the press, a held key that writes repeats, and so do Escape and a Ctrl key that nothing took, and an Enter that sends and a character a control took act once", () => {
+// Ctrl key that nothing took (the ruling of 2026-11-25T09:24Z), while Escape (the ruling of
+// 2026-11-25T13:45Z), Tab, Enter in a field of one line, which sends its form, and a character a
+// control took (a menu's digit, which writes its choice) act once.
+test("in a field that had the focus before the press, a held key that writes repeats, and so does a Ctrl key that nothing took, while Escape, Tab, an Enter that sends and a character a control took act once", () => {
   const input = document.createElement("input");
   const lines = document.createElement("textarea");
   const menuBox = document.createElement("input");
@@ -1056,7 +1056,7 @@ test("in a field that had the focus before the press, a held key that writes rep
       expect(hold(key, 3), key).toEqual({ acted: 3, reached: 3 });
     }
     for (const [key, init, acted] of [
-      ["Escape", {}, 3],
+      ["Escape", {}, 0],
       ["Tab", {}, 0],
       ["Enter", {}, 0],
       ["z", { ctrlKey: true }, 3],
@@ -1072,6 +1072,76 @@ test("in a field that had the focus before the press, a held key that writes rep
     expect(hold("2", 3), "a digit the menu's box took").toEqual({ acted: 0, reached: 0 });
     expect(hold("w", 3), "a letter the menu's box typed").toEqual({ acted: 3, reached: 3 });
   } finally {
+    release();
+  }
+});
+
+// The architect's ruling of 2026-11-25T13:45Z (the tester's rows at d157bf7c): a held Escape acts
+// once wherever its press landed, so each of its repeats is kept from the page, whether or not a
+// handler marked its press taken (`defaultPrevented`). The comment box's mention list took its
+// Escape with `stopPropagation` alone, and each repeat reached the box's next Escape, which asks
+// to discard the draft. The Escape that ends an input method's composition stays the input
+// method's, a repeat or not (`inputMethodKey`).
+test("a held Escape that a field's handler took unmarked acts once, its repeats reaching nothing, while an input method's Escape repeat there goes on untouched", () => {
+  const field = document.createElement("input");
+  let listOpen = true;
+  let asked = 0;
+  field.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || inputMethodKey(event)) return;
+    if (listOpen) {
+      // The list's own Escape, which stops the press and marks nothing.
+      event.stopPropagation();
+      listOpen = false;
+      return;
+    }
+    asked += 1;
+  });
+  const release = heldPage([], [field]);
+  try {
+    act(() => field.focus());
+    expect(hold("Escape", 3), "Escape in the field").toEqual({ acted: 0, reached: 0 });
+    expect(listOpen, "the press closed the list").toBe(false);
+    expect(asked, "no repeat asked to discard the draft").toBe(0);
+    for (const [init, mark] of [
+      [{ isComposing: true }, "isComposing"],
+      [{ keyCode: 229 }, "keyCode 229"],
+    ] as const) {
+      expect(hold("Escape", 3, init), `an input method's Escape, marked by ${mark}`).toEqual({
+        acted: 3,
+        reached: 3,
+      });
+    }
+    expect(asked, "an input method's Escape asked nothing").toBe(0);
+  } finally {
+    release();
+  }
+});
+
+// The same ruling's Escape that moves the focus: the new issue page's title editor ended its edit
+// and put the focus back on the title with the press unmarked, and each repeat reached Details'
+// Escape on the title (`Margin.tsx`), which closed Details.
+test("a held Escape whose press moved the focus unmarked acts once, its repeats reaching nothing on the element the press moved the focus to", () => {
+  const editor = document.createElement("input");
+  const title = document.createElement("button");
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") title.focus();
+  });
+  let closed = 0;
+  // Details' Escape: a press that no handler marked taken and that no field holds closes it.
+  const closeDetails = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (event.target instanceof HTMLInputElement) return;
+    closed += 1;
+  };
+  document.addEventListener("keydown", closeDetails);
+  const release = heldPage([], [editor, title]);
+  try {
+    act(() => editor.focus());
+    expect(hold("Escape", 3), "Escape in the editor").toEqual({ acted: 0, reached: 0 });
+    expect(document.activeElement, "the press put the focus on the title").toBe(title);
+    expect(closed, "no repeat closed Details").toBe(0);
+  } finally {
+    document.removeEventListener("keydown", closeDetails);
     release();
   }
 });

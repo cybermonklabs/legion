@@ -892,9 +892,13 @@ export function MentionComposer({
   useEffect(() => {
     const form = formRef.current;
     if (form === null || dormant) return;
+    // Each Escape the composer takes is marked taken beside what it does, so the rest of the page
+    // and the key registry pass over it, and a held Escape's repeats are kept from the page where
+    // their press was taken (`shell/keymap.ts`).
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       // An Escape that ends an input method's composition is the input method's.
       if (event.key !== "Escape" || inputMethodKey(event)) return;
+      event.preventDefault();
       if (autocomplete !== undefined) {
         event.stopPropagation();
         setAutocomplete(undefined);
@@ -906,7 +910,6 @@ export function MentionComposer({
         return;
       }
       if (replyTo !== null) {
-        event.preventDefault();
         cancelReplyNow.current();
         return;
       }

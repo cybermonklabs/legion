@@ -578,6 +578,9 @@ export function IssueHeader({
                   // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
                   if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
+                    // The press is the editor's: marked taken, so the key registry passes over it
+                    // and a held Escape's repeats are kept from the page (`shell/keymap.ts`).
+                    event.preventDefault();
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
@@ -926,8 +929,10 @@ export function IssueHeader({
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
               // An Escape that ends an input method's composition is the composition's
-              // (`inputMethodKey`).
+              // (`inputMethodKey`). Any other is the editor's, and marked taken
+              // (`shell/keymap.ts`).
               if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
+                event.preventDefault();
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -978,8 +983,10 @@ export function IssueHeader({
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
               // An Escape that ends an input method's composition is the composition's
-              // (`inputMethodKey`).
+              // (`inputMethodKey`). Any other is the editor's, and marked taken
+              // (`shell/keymap.ts`).
               if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
+                event.preventDefault();
                 drafts.discardParent();
                 setParentEditing(false);
               }

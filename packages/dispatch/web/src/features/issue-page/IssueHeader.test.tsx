@@ -1701,6 +1701,35 @@ test("the title's heading takes no Tab stop, and the button inside it, named by 
   }
 });
 
+// The title's editor takes the Escape that ends the edit: the press puts the title back and gives
+// the focus to the title's button, and is marked taken (`defaultPrevented`). Details' own Escape
+// (`Margin.tsx`) passes over a press already taken, and the key registry keeps a held Escape's
+// repeats from the page where their press was taken (`keymap.ts`): unmarked, each repeat reached
+// Details on the button the press had focused, and closed it.
+test("the Escape that ends the title's edit is marked taken, puts the title back and gives the focus to its button", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const escapes: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") escapes.push(event);
+  };
+  document.addEventListener("keydown", record, true);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(titleButton(heading)).toHaveFocus());
+    expect(editor).not.toBeInTheDocument();
+    expect(heading).toHaveTextContent(issue.title);
+    expect(escapes.map((press) => press.defaultPrevented)).toEqual([true]);
+  } finally {
+    document.removeEventListener("keydown", record, true);
+    view.unmount();
+    restore();
+  }
+});
+
 // A press of the primary button that the browser turns into a drag, as when the reader drags the
 // words they selected in the editor, sends no mouseup: Chromium sends dragstart, pointercancel and
 // dragend, and no mouseup and no click. Nothing waits on such a press, so an edit a key then ends
