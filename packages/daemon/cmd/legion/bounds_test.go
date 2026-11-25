@@ -18,18 +18,15 @@ const testDeadlineEnv = "LEGION_CMD_TEST_DEADLINE"
 // test's alarm panics the binary. It is testwait.Receive's, and programbound's.
 const testBoundMargin = 30 * time.Second
 
-// boundByTheDeadline gives every bound legion registers on a program it starts and waits for
-// (programbound: `legion gh`'s git reads, its read of gh's help and its answer to the shared
-// check's visibility read, the credential helper's fork read, the leak guard's gh, curl and git
-// ls-remote reads, the worker shim's grace for its agent and for a CodeGraph warm-up, and
-// workspace-init's command budget) what is left of deadline less 30 s when its wait starts, in
-// this process and in each run of this binary as `legion` whose environment is this process's own
-// (testDeadlineEnv), which legionBuild also links into the `legion` it builds. TestMain passes it
-// this binary's own deadline (testwait.BinaryDeadline). Each product bound fits the real program,
-// and none is what a test here reads: each is all the time a stand-in has to start and answer,
-// and a loaded machine makes starts slow. At a box load of about 1,100 a git behind a one-line
-// script ran out ghroute.GitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit,
-// and at a load average of 744 a run of this binary as `legion gh` reached the stand-in gh after
+// boundByTheDeadline gives every bound legion registers with programbound, each beside its
+// declaration, what is left of deadline less 30 s when its wait starts, in this process and in
+// each run of this binary as `legion` whose environment is this process's own (testDeadlineEnv),
+// which legionBuild also links into the `legion` it builds. TestMain passes it this binary's own
+// deadline (testwait.BinaryDeadline). Each product bound fits the real program or service, and
+// none is what a test here reads: each is all the time a stand-in has to start and answer, and a
+// loaded machine makes starts slow. At a box load of about 1,100 a git behind a one-line script
+// ran out ghroute.GitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit, and at a
+// load average of 744 a run of this binary as `legion gh` reached the stand-in gh after
 // visibilityAnswerBound's 15 s in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. A program
 // that never answers still fails its row by name before the binary's deadline, however late in
 // the run its wait starts. A test that reads a bound's own stop sets that bound itself, and a

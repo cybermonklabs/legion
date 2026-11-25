@@ -24,6 +24,10 @@ import (
 // shorten it, and give it their own deadline otherwise (programbound).
 var forkReadBound = 10 * time.Second
 
+func init() {
+	programbound.Register(&forkReadBound)
+}
+
 // forkUpstreamDir is the gh directory that answers for repo, a repository of an owner the bundle
 // under ownersDir holds no directory for (ghroute.ForkRepository), where GitHub says repo is a
 // fork of a repository the bundle serves. Such a fork is where an outside author's pull request to

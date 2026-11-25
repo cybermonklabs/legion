@@ -10,8 +10,18 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// recordsChild is a stand-in's line of shell that starts `sleep <seconds>` in the background and
+// writes its pid to pidFile whole, by a rename, so a reader polling pidFile
+// (ghroutetest.RecordedHelper) sees no pid or the whole one. The child inherits the stand-in's
+// descriptors, its output pipe among them. It ends with no separator, so a caller adds its own
+// next command after "\n" or "; ". Each path is one literal shell word (shellprefix.Literal).
+func recordsChild(pidFile, seconds string) string {
+	return "sleep " + seconds + " & echo $! >" + shellprefix.Literal(pidFile+".new") + "; mv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile)
+}
 
 // signalWhileHeld starts command, the `legion` command name names, as the leader of a process
 // group of its own, the way a shell's job control starts a command, waits for the stand-in that
@@ -68,6 +78,12 @@ func signalWhileHeld(t *testing.T, command *exec.Cmd, name, pidFile, seconds, wh
 		pid, running = ghroutetest.RecordedHelper(pidFile, seconds)
 		return running
 	})
+	// The signal must come while the stand-in holds the work: with no running pid recorded, the
+	// end check below would pass a signal that came before the work was ever held (a pid of 0 is
+	// never running), so the row fails here by name instead.
+	if pid <= 0 || !ghroutetest.HelperRunning(pid, seconds) {
+		t.Fatalf("the stand-in holding %s had recorded no running pid (%d) in %s when the signal was to be sent: want the signal while %s is held", what, pid, pidFile, what)
+	}
 	if err := syscall.Kill(-command.Process.Pid, sig); err != nil {
 		t.Fatal(err)
 	}

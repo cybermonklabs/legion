@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // HelperRunning says whether pid is still a row's helper: a process whose command line is `sleep
@@ -36,9 +38,10 @@ func RecordedHelper(pidFile, seconds string) (pid int, running bool) {
 // written whole by a rename, and becomes `sleep <seconds>` under that pid, with a command line
 // HelperRunning tells from a pid the kernel has reused. Each row gives its stand-in a sleep of its
 // own, of about a day: longer than any test binary's deadline, so that the rows' waits, which the
-// deadline alone bounds, never see the stand-in end by itself and read that as the stop.
+// deadline alone bounds, never see the stand-in end by itself and read that as the stop. Each
+// path is one literal shell word (shellprefix.Literal), whatever the temporary directory holds.
 func HoldsStandIn(pidFile, seconds string) string {
-	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
+	return "echo $$ >" + shellprefix.Literal(pidFile+".new") + "\nmv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile) + "\nexec sleep " + seconds + "\n"
 }
 
 // KillRecordedHelper registers a cleanup that kills the helper pidFile names if it is still

@@ -505,15 +505,12 @@ var refusedOptions = map[string]string{
 // gh prints it from its own binary in well under a second; a gh that has not in 30 s is hung, and
 // the person running `legion gh`, or the answer loop's gh tool (internal/ghtool), gets a refusal
 // that names the wait rather than a call that never returns. A test shortens it to read that the
-// stop comes.
+// stop comes. It is a variable so that a test binary can give it its own deadline otherwise
+// (programbound); ReadHelp reads it through programbound.Of.
 var helpTimeout = 30 * time.Second
 
-// The bounds this package sets on a program it starts and waits for, which a test binary gives its
-// own deadline through programbound: the read of gh's help (helpTimeout, ReadHelp) and the git
-// reads of `legion gh` (GitReadBound: gitLines here, and cmd/legion's ghRepoGitConfigRefusal).
-// Each wait reads its bound through programbound.Of.
 func init() {
-	programbound.Register(&helpTimeout, &GitReadBound)
+	programbound.Register(&helpTimeout)
 }
 
 // ReadHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -42,6 +45,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		wantDup      bool
 		wantFailure  bool
 		wantQueued   bool
+		late         bool
 	}{
 		{name: "the target did not resolve", target: ResolvedMention{Target: "role:planner", Delivery: "steer", ResolveError: "no live holder for role planner"}, wantFailure: true},
 		{name: "no live session", target: ResolvedMention{Target: "session:s9", Delivery: "steer"}, wantFailure: true},
@@ -55,11 +59,15 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener answered something unreadable", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":`))
 		}, wantFailure: true},
-		// The send lands and its answer, envelope and all, misses the client's window.
-		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(400 * time.Millisecond)
+		// The send lands and its answer, envelope and all, misses the client's window: the listener
+		// answers only once the request's context has ended, which the client's window, the one
+		// case marked late, ends. The body is read first, because net/http watches a request's
+		// connection for the caller going away only once its body has been read.
+		{name: "the listener answered too late", target: live, answer: func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
 			_, _ = w.Write([]byte(`{"event_id":"envelope-late","recipient":"s1"}`))
-		}, wantFailure: true},
+		}, late: true, wantFailure: true},
 		{name: "the listener published the send", target: live, answer: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		}, wantEnvelope: true},
@@ -82,22 +90,48 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		{name: "the listener kept nothing of the publish", target: kept,
 			answer:      published(http.StatusNotFound, `{"error":"no holder for role planner","reason":"unclaimed"}`),
 			wantFailure: true},
-		{name: "the listener answered the publish too late", target: kept, answer: func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(400 * time.Millisecond)
+		// The publish lands and its answer misses the client's window as the send's does above:
+		// the listener answers only once the request's context has ended, its body read first.
+		{name: "the listener answered the publish too late", target: kept, answer: func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"event_id":"envelope-late","kept":true}`))
-		}, wantFailure: true},
+		}, late: true, wantFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			url := "http://127.0.0.1:1"
+			// A listener that is not there: a port the test holds and nothing listens on, so a
+			// dial to it is refused and no other program can answer it (testport.Refused).
+			url := "http://" + testport.Refused(t)
 			if tc.answer != nil {
 				listener := httptest.NewServer(tc.answer)
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
-			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			// A listener that answers gets a window past the run (pastTheRun), so a loaded machine
+			// that carries a send or its answer slowly never turns the answer into a receipt timeout.
+			window := pastTheRun
+			if tc.late {
+				// The late listener answers only once the client has given up, so this window
+				// ends the call however long a loaded machine takes to end it.
+				window = 150 * time.Millisecond
+			}
+			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(window))}}
+			ctx, cancel := context.WithCancel(context.Background())
+			answered, returned := make(chan sendOutcome, 1), make(chan struct{})
+			// Registered after the listener's Close, so it runs before it: the call's context ends,
+			// which ends its request, before the listener waits out its handlers, and the worker has
+			// returned before the subtest ends, whatever ended it.
+			t.Cleanup(func() {
+				cancel()
+				testwait.Receive(t, "sendResolvedDelivery's worker to return once its context ended", returned)
+			})
+			go func() {
+				defer close(returned)
+				answered <- s.sendResolvedDelivery(
+					ctx, tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			}()
+			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
 				outcome.queued != tc.wantQueued || (outcome.failure != "") != tc.wantFailure {
 				t.Fatalf("sendResolvedDelivery = %+v, want envelope %v, duplicate %v, queued %v, failure %v",
@@ -123,21 +157,25 @@ func keptForPlanner() ResolvedMention {
 // A role kept for its next holder is published with the failures a send's are worded with: the
 // listener's own text for a publish it kept nothing of, the receipt-timeout cause for one whose
 // answer missed the window, since the listener keeps the copy before it answers, and the
-// unconfirmed-store cause for a 503 coded maybe_stored (listenerwire.CodeMaybeStored).
+// unconfirmed-store cause for a 503 coded maybe_stored (listenerwire.CodeMaybeStored). A listener
+// that answers at once gets a window past the run (pastTheRun), and the late one answers only once
+// the client's short window has ended its request, as in the table above.
 func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		answer  http.HandlerFunc
 		failure string
+		late    bool
 	}{
 		{name: "nothing kept", answer: func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role planner","reason":"unclaimed"}`))
 		}, failure: "no holder for role planner"},
-		{name: "answered too late", answer: func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(400 * time.Millisecond)
+		{name: "answered too late", answer: func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
 			w.WriteHeader(http.StatusAccepted)
-		}, failure: receiptTimeoutText},
+		}, failure: receiptTimeoutText, late: true},
 		{name: "a listener that is starting", answer: func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"service starting"}`))
@@ -151,7 +189,11 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := httptest.NewServer(tc.answer)
 			t.Cleanup(listener.Close)
-			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(150*time.Millisecond))}}
+			window := pastTheRun
+			if tc.late {
+				window = 150 * time.Millisecond
+			}
+			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(window))}}
 			outcome := s.sendResolvedDelivery(
 				context.Background(), keptForPlanner(), "role:planner", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
@@ -268,7 +310,9 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+		// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
+		// that carries that answer slowly must not turn it into a receipt timeout.
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

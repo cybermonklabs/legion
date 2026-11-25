@@ -803,9 +803,9 @@ var ghRemoteLine = regexp.MustCompile(`(.+)\s+(.+)\s+\((push|fetch)\)`)
 // git runs, since gh then reads none either. A URL line is read only when it has git's shape
 // (gitRemoteLine, a filter on a fetch line alone) and gh's own reading of it (ghRemoteLine) names
 // the same remote, URL and kind; any other line is refused, since gh could act on a repository
-// this reading never counted.
-func ReadGitRemotes(env []string) ([]Remote, error) {
-	lines, err := gitLines(env, "remote", "-v")
+// this reading never counted. Both reads run under ctx (gitLines).
+func ReadGitRemotes(ctx context.Context, env []string) ([]Remote, error) {
+	lines, err := gitLines(ctx, env, "remote", "-v")
 	if err != nil {
 		return nil, err
 	}
@@ -822,7 +822,7 @@ func ReadGitRemotes(env []string) ([]Remote, error) {
 	if lines == nil {
 		return nil, nil
 	}
-	resolved, err := gitLines(env, "config", "--get-regexp", `^remote\..*\.gh-resolved$`)
+	resolved, err := gitLines(ctx, env, "config", "--get-regexp", `^remote\..*\.gh-resolved$`)
 	if err != nil {
 		return nil, err
 	}
@@ -842,23 +842,35 @@ func ReadGitRemotes(env []string) ([]Remote, error) {
 // (programbound), and exported so that both reads take this one bound.
 var GitReadBound = 30 * time.Second
 
+func init() {
+	programbound.Register(&GitReadBound)
+}
+
 // gitLines runs git with args in the working directory, under env, and answers the lines it
 // prints: none for a directory that is no git repository, where no git runs, or, for `git config
 // --get-regexp`, where nothing matches.
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
-// nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
-// dispatch://INFRA-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
-// stop to the two command runners of internal/workspace, whose git and jj do take locks, and
-// leaves a read that takes none as it is: this child needs neither the group nor the grace.
-func gitLines(env []string, args ...string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&GitReadBound))
+// nothing, so neither can leave a lock file behind for the next reader of the repository. It runs
+// under ctx, `legion gh`'s signal context (cmd/legion's runGh, beforeGh), in a process group of
+// its own that its bound or the end of ctx stops whole (procgroup.Configure): a git, or a wrapper
+// of it, whose child holds the output pipe would otherwise keep the call waiting past the bound
+// for as long as that child lives, since a stop of git alone leaves the pipe open, and the
+// terminal's signals reach that group only through ctx (runGh's rule). A git that exits while a
+// child still holds the pipe is waited for no longer than procgroup's WaitDelay, and its read is
+// then refused, since a remote list cut short could route the call to another owner's directory.
+func gitLines(ctx context.Context, env []string, args ...string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&GitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
+	procgroup.Configure(cmd)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return nil, fmt.Errorf("git %s exited, but something it started still held its output %s later, so what was read may be cut short", strings.Join(args, " "), procgroup.WaitDelayNow())
+	}
 	end := procgroup.Ended(err)
 	switch {
 	case errors.Is(err, exec.ErrNotFound):

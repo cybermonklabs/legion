@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
-	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -113,14 +112,15 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // gh under the variable again, so a real gh that leads back is still refused one start later, with
 // or without a caller's GH_TOKEN.
 //
-// Everything this command starts before gh — the help reads (ghroute.ReadHelp), and the leak guard's
-// children, the shared check and the visibility reads, which the guard starts under the context
-// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
-// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
-// cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
-// hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
-// 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
-// runGhChild's forwarding.
+// Everything this command starts before gh — the git reads of the repository's configuration and
+// remotes (ghRepoGitConfigRefusal, ghroute.ReadGitRemotes), the help reads (ghroute.ReadHelp), and
+// the leak guard's children, the shared check and the visibility reads, which the guard starts
+// under the context it is given (leakguard's Guard.run) — runs in a process group of its own,
+// which none of the terminal's signals reach. So this command stops them itself: on a SIGINT or a
+// SIGTERM, which cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it
+// catches until it hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends
+// the command with 128+<signal> (endedBySignal), and gh is never started, as for a signal that
+// came before runGhChild's forwarding.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -184,7 +184,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// The two exact reads run `gh api` on an endpoint with no placeholder, which starts no git at
 	// all, so they read none: each stays the one gh process the guard counts on.
 	if !rateLimitRead && !isVisibilityRead {
-		if err := ghRepoGitConfigRefusal(helpEnv); err != nil {
+		err := ghRepoGitConfigRefusal(beforeGh, helpEnv)
+		if status, ok := signalled(beforeGh); ok {
+			return status
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
@@ -230,8 +234,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// binary and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
 		// The git that reads the working directory's remotes runs with gh's own environment, so
-		// it routes by the repository and the configuration gh's git reads (ghChildEnviron).
-		remotes := func() ([]ghroute.Remote, error) { return ghroute.ReadGitRemotes(ghChildEnviron(os.Environ(), nil)) }
+		// it routes by the repository and the configuration gh's git reads (ghChildEnviron), and
+		// under beforeGh, so a signal stops it with its process group.
+		remotes := func() ([]ghroute.Remote, error) {
+			return ghroute.ReadGitRemotes(beforeGh, ghChildEnviron(os.Environ(), nil))
+		}
 		target, err = ghroute.TargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, remotes,
 			func(owner, name string) (string, error) { return ghroute.DirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
@@ -742,22 +749,6 @@ func refuseLegionGhAsRealGh(gh string) error {
 		return fmt.Errorf("LEGION_GH_PATH %s is a wrapper that runs `legion gh`, not the real gh; set LEGION_GH_PATH to the real gh's install path", gh)
 	}
 	return nil
-}
-
-// The bounds legion sets on a program it starts and waits for, which this package's tests give
-// their own deadline through programbound. Four live in this package, and this init registers
-// three of them: `legion gh`'s answer to the shared check's own visibility read
-// (visibilityAnswerBound, gh_visibility.go), the credential helper's fork read (forkReadBound,
-// gitcredential_fork.go), and the worker shim's grace for its agent (workerShimGrace,
-// worker_shim.go). The fourth, the command budget of workspace-init's provision, fetch and cache
-// (commandBudget), is registered where it lives, in workspace_init.go. The git reads of `legion
-// gh` (ghroute.GitReadBound, which ghRepoGitConfigRefusal here reads too) and its read of gh's
-// help (ghroute.ReadHelp's helpTimeout) live in internal/ghroute, which registers both; the leak
-// guard's gh, curl and git ls-remote reads (ghReadBound, curlBound, lsRemoteBound) and the shim's
-// warm-up floor (warmUpDrainFloor) live in internal/leakguard and internal/shim, which register
-// their own. Each wait reads its bound through programbound.Of.
-func init() {
-	programbound.Register(&visibilityAnswerBound, &forkReadBound, &workerShimGrace)
 }
 
 // ghRoutingKeys are the keys of a gh directory's files that send gh's requests, with the
