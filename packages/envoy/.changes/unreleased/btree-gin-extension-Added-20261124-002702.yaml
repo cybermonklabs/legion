@@ -2,11 +2,17 @@ kind: Added
 body: |-
   Migration `20261125125703_btree_gin` creates the Postgres extension `btree_gin` and does nothing
   else. A later migration needs its operator classes to build a GIN index that holds a btree column
-  beside an array. `btree_gin` is a contrib extension that PostgreSQL includes, and Postgres marks
-  it trusted, so a login with `CREATE` on the database can create it. Where the extension already
-  exists, the migration leaves it as it is, at its version. If the login that runs the migrations
-  may not create it, the boot stops at this migration; create the extension by hand with a login
-  that may, and the migration then passes.
+  beside an array. `btree_gin` is a contrib extension that PostgreSQL includes. Where the extension
+  already exists, the migration leaves it as it is, at its version.
+
+  On Cloud SQL, only a member of the role `cloudsqlsuperuser` can create an extension, trusted or
+  not, so a grant of `CREATE` on the database is not enough there. The login `dispatch` is a
+  member: `packages/envoy/infra/gcp/dispatch_cloud.go` makes it with `sql.NewUser` and no database
+  roles, and Cloud SQL puts such a login in `cloudsqlsuperuser`. On plain Postgres, `btree_gin` is
+  trusted, so a login with `CREATE` on the database can create it. If the login that runs the
+  migrations cannot create the extension, the boot stops at this migration. On Cloud SQL, a member
+  of `cloudsqlsuperuser`, such as `postgres`, then creates it by hand with
+  `create extension if not exists btree_gin`, and the migration passes at the next boot.
 
   Apply the first release that holds this migration before the release that holds that index. The
   pre-deploy census of the deploy that first carries this migration refuses every later pending
