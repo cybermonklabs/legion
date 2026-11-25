@@ -338,7 +338,7 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 }
 
 // gcloudSignalAt is the variable that makes TestGcloudSignInSignalHelper interrupt itself at one
-// moment of its gcloud call (onGcloudStep): gcloudStarted or gcloudWaited.
+// moment of its gcloud call (onChildStep): childStarted or childWaited.
 const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 
 // gcloudSignInDeadline is the variable that sets TestGcloudSignInSignalHelper's deadline on each
@@ -362,9 +362,9 @@ const gcloudPidName = "gcloud.pid"
 // form return. Without gcloudSignalAt the stub never answers, so the call ends only at the deadline
 // on each store call (gcloudSignInDeadline) or by a signal, and
 // TestGcloudSignInEndedByASignalKillsGcloudsChild's signal comes while the call runs. With
-// gcloudSignalAt set, it sends SIGINT to the thread that runs onGcloudStep at that
+// gcloudSignalAt set, it sends SIGINT to the thread that runs onChildStep at that
 // step, once the stub's child has named itself, so the signal is handled on that thread before
-// runRecorded goes on; at gcloudWaited the stub exits at once, leaving its child holding its
+// runChild goes on; at childWaited the stub exits at once, leaving its child holding its
 // output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_linux_test.go:408); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (onGcloudStep set at secret_gcp_linux_test.go:395).
@@ -384,7 +384,7 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	useNoADC(t)
 	at := os.Getenv(gcloudSignalAt)
 	last := "wait"
-	if at == gcloudWaited {
+	if at == childWaited {
 		last = "exit 0"
 	}
 	if os.Getenv(gcloudExecs) != "" {
@@ -392,9 +392,9 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	}
 	gcloud, child := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	if at != "" {
-		restore := onGcloudStep
-		t.Cleanup(func() { onGcloudStep = restore })
-		onGcloudStep = func(step string) {
+		restore := onChildStep
+		t.Cleanup(func() { onChildStep = restore })
+		onChildStep = func(step string) {
 			if step != at {
 				return
 			}
@@ -578,13 +578,13 @@ func TestGcloudEndsWhenAgentSecretsIsKilled(t *testing.T) {
 // TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild: an interrupt that comes at
 // either edge of a gcloud call still ends agent-secrets by SIGINT and kills gcloud's group, the
 // child that holds gcloud's output among them: the moment gcloud has started, before
-// agent-secrets has recorded it (gcloudStarted), and the moment a gcloud that exited leaving that
-// child has been waited for, before the child is killed (gcloudWaited). The helper sends the
-// interrupt to itself from onGcloudStep once the stub's child has named itself, so it lands in
+// agent-secrets has recorded it (childStarted), and the moment a gcloud that exited leaving that
+// child has been waited for, before the child is killed (childWaited). The helper sends the
+// interrupt to itself from onChildStep once the stub's child has named itself, so it lands in
 // that moment on every run, whatever the machine's load.
 func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T) {
 	t.Parallel()
-	for _, step := range []string{gcloudStarted, gcloudWaited} {
+	for _, step := range []string{childStarted, childWaited} {
 		t.Run(step, func(t *testing.T) {
 			child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
 			t.Cleanup(func() { child.cleanUp(t) })
@@ -592,7 +592,7 @@ func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T)
 			testwait.Receive(t, "agent-secrets' end by the interrupt it sent itself once gcloud had "+step, helper.waited)
 			helper.requireEndedByInterrupt(t)
 			if child.pid() == 0 {
-				t.Fatalf("the stub gcloud's child never named itself, so no interrupt came from onGcloudStep; the helper said %q", helper.out.String())
+				t.Fatalf("the stub gcloud's child never named itself, so no interrupt came from onChildStep; the helper said %q", helper.out.String())
 			}
 			child.requireGone(t)
 		})
@@ -600,7 +600,7 @@ func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T)
 }
 
 // TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves
-// a child holding its output, which gcloudWaitDelay stops the wait for but does not kill, has
+// a child holding its output, which childWaitDelay stops the wait for but does not kill, has
 // that child killed once runGcloud has waited for gcloud, whatever the call's outcome. The stub
 // exits once the test, having seen the child running, writes its go-ahead file (callEnds).
 func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
@@ -616,7 +616,7 @@ func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_ = child.callEnds(t, "a gcloud that exited leaving its child", gcloudWaitDelay, release, func() error {
+	_ = child.callEnds(t, "a gcloud that exited leaving its child", childWaitDelay, release, func() error {
 		_, err := runGcloud(context.Background(), gcloud, "auth", "list", "--format=json")
 		return err
 	})
@@ -645,13 +645,13 @@ func TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 	child.requireGone(t)
 }
 
-// TestGcloudCancelOfAGroupGoneAlreadyAnswersProcessDone: the kill at the end of a gcloud's
-// context (killGroupOnCancel) answers os.ErrProcessDone where the kernel says the group is gone
+// TestChildCancelOfAGroupGoneAlreadyAnswersProcessDone: the kill at the end of a child's
+// context (runChild) answers os.ErrProcessDone where the kernel says the group is gone
 // already (ESRCH), as exec.Cmd's own kill does for a process that is done, so a gcloud that ended
 // by itself keeps its own exit status; any other answer is returned as it came. signalGroup is
 // replaced, so no signal reaches any process: a real kill of a reaped gcloud's pid could reach
 // another process given that pid since. The live tests above drive the real kill.
-func TestGcloudCancelOfAGroupGoneAlreadyAnswersProcessDone(t *testing.T) {
+func TestChildCancelOfAGroupGoneAlreadyAnswersProcessDone(t *testing.T) {
 	// Not parallel: it sets a package variable the package's other tests read (signalGroup set at secret_gcp_linux_test.go:656).
 	restore := signalGroup
 	t.Cleanup(func() { signalGroup = restore })
