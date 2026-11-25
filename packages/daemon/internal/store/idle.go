@@ -34,13 +34,19 @@ import (
 // Dispatch status, its messages on the
 // Dispatch issue — reach no session and hold no pod. The same set is what the release's boundary
 // is read over (IssueRelease), so the rule that holds a pod and the rule that cancels its release
-// never disagree about which row speaks to a role. Every kind of the role-message lane belongs
-// here: one left out lets the daemon release the
-// issue's pod out from under the row that was just written for one of its roles, and that role
-// never reads it. An update ask holds the pod only while its row is pending, which is one attempt
-// where the publish goes through or finds no holder.
-var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
+// never disagree about which row speaks to a role. Every kind of the role-message lane that speaks
+// to a role belongs here, a task's CI news (record.CINews) among them: one left out lets the daemon
+// release the issue's pod out from under the row that was just written for one of its roles, and
+// that role never reads it. The deletion of the branches beside a fix (record.BesideBranchesDelete)
+// runs on that lane and speaks to no role: the daemon deletes them on GitHub itself, so it holds no
+// pod (idleFreeRoleMessageKinds). An update ask holds the pod only while its row is pending, which
+// is one attempt where the publish goes through or finds no holder.
+var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "ci_news", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward", "fix_job_read"}
+
+// idleFreeRoleMessageKinds is each kind of the role-message lane that speaks to no role of the
+// pod, and so is in no idleWaitingKinds.
+var idleFreeRoleMessageKinds = []string{"beside_branches_delete"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
