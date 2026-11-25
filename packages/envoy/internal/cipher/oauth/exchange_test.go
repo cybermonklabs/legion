@@ -374,10 +374,10 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 // the person and the machine; a machine login's names its approver; and each fixed-session
 // entry's names the session it fixes. None holds a scope but the read entry's, and each is bound
 // to its DPoP proof's key. TestAPodExchangesItsTokenForOneThatIntrospects holds the named pod's
-// answer the same way. The machine login's token, the one of them that acts as its person by its
-// own credential, also answers when its machine login was made (CredentialCreatedAt, which
-// Dispatch holds a token recording no account to): that is a time of the broker's clock within
-// this test, not a value the literal can name, so it is read back and held to the last minute.
+// answer the same way. The two kinds that act as their person by a credential of their own also
+// answer what that credential records (withRecordedAccount): a person sign-in's token its Google
+// account, and a machine login's token when its machine login was made. Neither is a value the
+// literal can name, so each is read back and held to what the trade made.
 func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	named := oauthwire.Introspection{Active: true, Person: person, ProjectScope: oauthwire.ProjectScopeNamed, Projects: []string{project}, ClientID: oauthwire.ExchangeClientID}
@@ -403,13 +403,7 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 			answer := f.introspected(t, accessTokenOf(t, status, body))
 			want := today[kind]
 			want.Session, want.Thumbprint, want.ExpiresAt = tr.session, thumbprint(t, tr.key), answer.ExpiresAt
-			if kind == "machine-login" {
-				made := time.Unix(answer.CredentialCreatedAt, 0)
-				if since := time.Since(made); since < -time.Minute || since > time.Minute {
-					t.Errorf("the token answers its credential was made at %s, %s from now; want within a minute of now", made, since)
-				}
-				want.CredentialCreatedAt = answer.CredentialCreatedAt
-			}
+			withRecordedAccount(t, f, kind, answer, &want)
 			if !reflect.DeepEqual(answer, want) {
 				t.Errorf("Introspect = %+v, want %+v", answer, want)
 			}
