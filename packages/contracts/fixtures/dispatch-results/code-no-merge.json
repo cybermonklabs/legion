@@ -1,0 +1,26 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k5",
+      "compared_nothing": "not_merged",
+      "compared_with": [],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "reason": "no_result"
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k5",
+      "results": [],
+      "run": "",
+      "sha256": "8aa2d726fa4ca4eba8b0303eed67ab98fa242ee44faa002e423d8c4c181ccd0e",
+      "surface": "",
+      "text": "Production answers at the merged commit.",
+      "version": 1,
+      "when": "after_merge"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}

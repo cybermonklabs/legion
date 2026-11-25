@@ -33,9 +33,10 @@ const liveRepo = "acme/widgets"
 // session alone, as Dispatch's routes take them, and refuses a write whose id names another issue's
 // record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
 // does, keeping nothing of it. It keeps no document: the read of close-wait.md's token answers a
-// missing document's 404, and an upload of close-wait.md answers the slug Dispatch files it under,
-// keeping nothing (takeCloseWait). Anything else is a call a live proof does not expect, and
-// fails the test as workflowConfig's stand-in does.
+// missing document's 404, an upload of close-wait.md answers the slug Dispatch files it under,
+// keeping nothing (takeCloseWait), and the results read answers an issue with no Verification
+// document, so no check, with or without ?at=. Anything else is a call a live proof does not
+// expect, and fails the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -150,6 +151,13 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case req.Method == http.MethodGet && key != "" && path == "/api/v1/issues/"+key+"/artifacts/"+record.CloseWaitDocumentSlug+"/text":
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"document \"`+record.CloseWaitDocumentSlug+`\" not found by slug"}`)
+	// The read of an issue's checks for its close (dispatch.Client's IssueResults and
+	// IssueResultsAt): this board holds no Verification document, so the issue has no check, as
+	// Dispatch answers for such an issue.
+	case req.Method == http.MethodGet && key != "" && path == "/api/v1/issues/"+key+"/results":
+		if err := json.NewEncoder(w).Encode(map[string]any{"checks": []any{}, "issue": key, "verification_artifact_id": ""}); err != nil {
+			b.t.Errorf("write the Dispatch results of %s: %v", key, err)
+		}
 	case req.Method == http.MethodPost && key != "" && path == "/api/v1/issues/"+key+"/artifacts":
 		b.takeCloseWait(key, req, w)
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/messages"):
