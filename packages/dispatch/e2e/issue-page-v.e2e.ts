@@ -608,9 +608,6 @@ test("the Verification view draws a check's links, its agent's role and a child'
   test.setTimeout(180_000);
   await phase(browser, seedLinkedChecks, async (page, seeded) => {
     const { a, b, c, check } = seeded.nodes;
-    // The same 200 words `seedLinkedChecks` writes for statement A (`issue-page-v.ts`), read
-    // with whitespace collapsed as the page lays its paragraphs out.
-    const statementAWords = longWords("stated", 200).replace(/\s+/g, " ").trim();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
@@ -643,10 +640,10 @@ test("the Verification view draws a check's links, its agent's role and a child'
       const more = rowMore(statementA);
       await statementA.scrollIntoViewIfNeeded();
       await expect(more, `statement A draws a "more" control at ${width} px`).toHaveCount(0);
-      expect(
-        (await words.innerText()).replace(/\s+/g, " ").trim(),
+      await expect(
+        words,
         `statement A does not hold its whole seeded words at ${width} px`
-      ).toBe(statementAWords);
+      ).toHaveText(longWords("stated", 200), { useInnerText: true });
       const link = statementA.locator(`[data-verification-check-words] a[href="${RUNBOOK}"]`);
       expect(
         await words.evaluate(
@@ -1274,7 +1271,7 @@ test("the Verification view draws a long statement whole, and Tab reaches its la
     return await createIssue({
       force: true,
       project: PROJECT,
-      spec: `:::requirement{#r-cut}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
+      spec: `:::requirement{#r-long}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
       title: "A long statement draws its last link whole",
     });
   };
@@ -1319,13 +1316,10 @@ test("the Verification view draws a long statement whole, and Tab reaches its la
     // From the issue's row, where the view's own address leaves the focus, Tab reaches the link
     // where it is drawn.
     await expect(verificationIssueRow(page)).toBeFocused();
-    let reached = false;
-    for (let pressed = 0; pressed < 20 && !reached; pressed += 1) {
-      await page.keyboard.press("Tab");
-      // Tab moves the focus within the press itself, so this one reading of it is settled.
-      reached = await link.evaluate((element) => element === document.activeElement);
-    }
-    expect(reached, "Tab does not reach the long statement's last link in 20 presses").toBe(true);
+    await tabWalk(page, 20)(
+      link,
+      "Tab does not reach the long statement's last link in 20 presses"
+    );
     expect(await focusHidden(), "the long statement's last link is focused outside its words").toBe(
       null
     );

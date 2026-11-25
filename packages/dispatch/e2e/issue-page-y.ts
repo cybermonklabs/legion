@@ -400,15 +400,31 @@ async function awaitSpecText(
   }
 }
 
+/** A check block of these rows' own: `block` serving `serves`, run in the browser by this file
+ *  before merge, with its negative control and its words. */
+function browserCheck(
+  block: string,
+  serves: string,
+  negativeControl: string,
+  words: string
+): string {
+  return (
+    `:::check{#${block} serves="${serves}" surface="browser"` +
+    ' run="bun run e2e -- e2e/issue-page-y.e2e.ts" when="before_merge"' +
+    ` negative_control="${negativeControl}"}\n${words}\n:::\n`
+  );
+}
+
 /** The child's `verification.md`: one check, which serves the parent's statement 7. */
 function childVerification(parentKey: string): string {
-  const serves = specBlockRef(parentKey, requirementBlockId(7));
   return (
     "How the child is proved.\n\n" +
-    `:::check{#${BLOCKS.check} serves="${serves}" surface="browser"` +
-    ' run="bun run e2e -- e2e/issue-page-y.e2e.ts" when="before_merge"' +
-    ' negative_control="Draw the check under the child\'s row and the row fails."}\n' +
-    `${MODEL_WORDS.check}: the parent's seventh statement holds on the child's page.\n:::\n`
+    browserCheck(
+      BLOCKS.check,
+      specBlockRef(parentKey, requirementBlockId(7)),
+      "Draw the check under the child's row and the row fails.",
+      `${MODEL_WORDS.check}: the parent's seventh statement holds on the child's page.`
+    )
   );
 }
 
@@ -646,10 +662,10 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
 // The seed of row 5: a 200-word statement and a 200-word check that serves it.
 // ---------------------------------------------------------------------------------------------
 
-/** One long block `seedLongWords` wrote: the node id the tree and the Verification view draw
- *  its row under (`blockNode`), and the 200 words written into it. */
+/** One long block `seedLongWords` wrote: the id the outline and the Verification view draw its
+ *  row under (`data-node-id`, `blockNode`), and the 200 words written into it. */
 export interface LongNode {
-  readonly id: string;
+  readonly row: string;
   readonly words: string;
 }
 
@@ -675,13 +691,13 @@ export async function seedLongWords(): Promise<LongWordsSeed> {
   ]);
   const statementWords = longWords("stated", 200);
   const checkWords = longWords("checked", 200);
-  const serves = specBlockRef(key, BLOCKS.longStatement);
   const statementBlock = `:::requirement{#${BLOCKS.longStatement}}\n${statementWords}\n:::\n`;
-  const checkBlock =
-    `:::check{#${BLOCKS.longCheck} serves="${serves}" surface="browser"` +
-    ' run="bun run e2e -- e2e/issue-page-y.e2e.ts" when="before_merge"' +
-    ' negative_control="Cut either long block at six lines and the row fails."}\n' +
-    `${checkWords}\n:::\n`;
+  const checkBlock = browserCheck(
+    BLOCKS.longCheck,
+    specBlockRef(key, BLOCKS.longStatement),
+    "Cut either long block at six lines and the row fails.",
+    checkWords
+  );
 
   // Write the statement first, so the check names a block that has already been written.
   await editArtifact(
@@ -715,11 +731,11 @@ export async function seedLongWords(): Promise<LongWordsSeed> {
   return {
     ...seeded,
     longCheck: {
-      id: blockNode(verificationSlug, BLOCKS.longCheck),
+      row: blockNode(verificationSlug, BLOCKS.longCheck),
       words: checkWords,
     },
     longStatement: {
-      id: blockNode(specSlug, BLOCKS.longStatement),
+      row: blockNode(specSlug, BLOCKS.longStatement),
       words: statementWords,
     },
   };

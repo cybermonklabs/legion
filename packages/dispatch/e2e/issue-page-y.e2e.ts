@@ -101,7 +101,7 @@ const WRITTEN = {
   refused: "Jasperfell",
 } as const;
 
-/** One word each row 3 types at the start of a node's words. */
+/** One word each rows 3 and 4 type at the start of a node's words. */
 const TYPED = {
   check: "Nettlecombe",
   criterion: "Oakhurst",
@@ -277,8 +277,9 @@ function plainWordsOffences(page: Page): Promise<string[]> {
   );
 }
 
-/** Where `caretInto` puts the caret: the row's id, the artifact whose socket its editor opens,
- *  what a failure names the node by, and the message of the first assertion. */
+/** Where `caretBy` and `caretInto` put the caret: the id of the row that holds the focus once the
+ *  caret is in, the artifact whose socket its editor opens, what a failure names the node by, and
+ *  the message of the first assertion. */
 interface CaretTarget {
   readonly artifact: string;
   readonly id: string;
@@ -286,18 +287,19 @@ interface CaretTarget {
   readonly what: string;
 }
 
-/** Focus a filter row without requiring the outline's one body: a Verification statement
- * has none of its own, and a check can draw both its facts and its results' facts. */
-async function focusFilterRow(row: Locator): Promise<void> {
+/** Puts the focus on a filter's row and answers it, as `focusRow` does on the outline, without
+ *  waiting for the outline's one body: a Verification statement has none of its own, and a check
+ *  can draw both its facts and its results' facts. */
+async function focusFilterRow(row: Locator): Promise<Locator> {
   await row.focus();
   await expect(row).toBeFocused();
+  return row;
 }
 
-/** Puts the caret in the node of row `target.id` with Enter. If a filter row is given, it
- * need not draw an outline body. */
-async function caretInto(page: Page, target: CaretTarget, row?: Locator): Promise<void> {
-  if (row === undefined) await focusRow(page, target.id);
-  else await focusFilterRow(row);
+/** Puts the caret with Enter in the row the caller has focused, with `focusRow` on the outline
+ *  and `focusFilterRow` in a filter, so the sockets are counted after the focus and before the
+ *  press. */
+async function caretInto(page: Page, target: CaretTarget): Promise<void> {
   await caretBy(page, target, "Enter", () => page.keyboard.press("Enter"));
 }
 
@@ -324,16 +326,14 @@ async function caretBy(
   expect(all(), `${how} on ${target.what} opened more than one socket`).toBeLessThanOrEqual(1);
 }
 
-/** Fails unless Enter on row `id` puts no caret and the row says `report`. */
+/** Fails unless Enter on `row`, which the caller has focused, puts no caret, opens no document
+ *  socket, and the row says `report`. */
 async function expectNoCaret(
   page: Page,
-  id: string,
+  row: Locator,
   report: string,
-  what: string,
-  filterRow?: Locator
+  what: string
 ): Promise<void> {
-  const row = filterRow ?? (await focusRow(page, id));
-  if (filterRow !== undefined) await focusFilterRow(row);
   const sockets = countDocumentSockets(page);
   await page.keyboard.press("Enter");
   await expect(
@@ -351,12 +351,23 @@ async function escapeToRow(page: Page, row: Locator, what: string): Promise<void
   expect(await caretInNode(page), `Escape left the caret in ${what}`).toBe(false);
 }
 
-/** The check and its Facts button report the same state, and the check's own facts match it. */
-async function expectFacts(check: Locator, facts: Locator, open: boolean): Promise<void> {
+/** The check and its Facts control report the same state, and the check's own facts match it. */
+async function expectFacts(check: Locator, open: boolean): Promise<void> {
   await expect(check).toHaveAttribute("aria-expanded", String(open));
-  await expect(facts).toHaveAttribute("aria-expanded", String(open));
+  await expect(check.locator("[data-verification-facts]")).toHaveAttribute(
+    "aria-expanded",
+    String(open)
+  );
   if (open) await expect(rowBody(check).first()).toBeVisible();
   else await expect(rowBody(check)).toHaveCount(0);
+}
+
+/** The row of check `check` on the card of statement `statement`: the Verification view draws a
+ *  check once under each statement it serves, so its id alone can name more than one row. */
+function checkUnder(page: Page, statement: string, check: string): Locator {
+  return verificationCheck(page, check).and(
+    verificationCard(page, statement).locator("[data-verification-check]")
+  );
 }
 
 // c-write. On the seed's first comment thread, `f` reaches Write a criterion and Enter aims the
@@ -779,6 +790,7 @@ test("a node is edited where it lives", async ({ browser }) => {
       [seeded.statementOne, seeded.specArtifactId, TYPED.statement, "statement 1"],
       [seeded.checkOne, seeded.verificationArtifactId, TYPED.check, "check c1"],
     ] as const) {
+      await focusRow(page, node.row);
       await caretInto(page, {
         artifact,
         id: node.row,
@@ -795,6 +807,7 @@ test("a node is edited where it lives", async ({ browser }) => {
     // (2) The criterion: the caret in it, through the tree artifact's own socket, after one
     // artifact read of it; the two documents' rooms are the tree artifact.
     traffic.reset();
+    await focusRow(page, criterion);
     await caretInto(page, {
       artifact: seeded.tree,
       id: criterion,
@@ -854,11 +867,21 @@ test("a node is edited where it lives", async ({ browser }) => {
     // (3) A comment and the answered question take no caret; the child's check says it is edited
     // on its own issue.
     await unfoldEveryBranch(page);
-    await expectNoCaret(page, seeded.thread.row, KEY_REPORTS.no_text, "a comment");
-    await expectNoCaret(page, seeded.question.row, KEY_REPORTS.no_text, "the answered question");
     await expectNoCaret(
       page,
-      seeded.child.check.row,
+      await focusRow(page, seeded.thread.row),
+      KEY_REPORTS.no_text,
+      "a comment"
+    );
+    await expectNoCaret(
+      page,
+      await focusRow(page, seeded.question.row),
+      KEY_REPORTS.no_text,
+      "the answered question"
+    );
+    await expectNoCaret(
+      page,
+      await focusRow(page, seeded.child.check.row),
       KEY_REPORTS.issue_above,
       "the child's check under statement 7"
     );
@@ -884,19 +907,14 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     // from a press, and its facts are drawn while that caret holds the focus inside the row.
     const { statementOne, checkOne, statementSeven, child } = seeded;
     const statement = verificationCard(page, statementOne.row);
-    const check = verificationCheck(page, checkOne.row).and(
-      statement.locator("[data-verification-check]")
-    );
-    await caretInto(
-      page,
-      {
-        artifact: seeded.specArtifactId,
-        id: statementOne.row,
-        message: "Enter on statement 1 puts the caret in its text",
-        what: "statement 1",
-      },
-      statement
-    );
+    const check = checkUnder(page, statementOne.row, checkOne.row);
+    await focusFilterRow(statement);
+    await caretInto(page, {
+      artifact: seeded.specArtifactId,
+      id: statementOne.row,
+      message: "Enter on statement 1 does not put the caret in its text",
+      what: "statement 1",
+    });
     await page.keyboard.type(`${TYPED.statement} `);
     await escapeToRow(page, statement, "statement 1");
     await caretBy(
@@ -911,7 +929,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
       () => rowWords(check).click()
     );
     const facts = check.locator("[data-verification-facts]");
-    await expectFacts(check, facts, true);
+    await expectFacts(check, true);
     await page.keyboard.type(`${TYPED.check} `);
     await escapeToRow(page, check, "check c1");
     await page.keyboard.press("j");
@@ -921,15 +939,15 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     // them open even after `j` takes the focus out.
     await expect(facts).toHaveText(VERIFICATION_WORDS.facts);
     await facts.click();
-    await expectFacts(check, facts, true);
+    await expectFacts(check, true);
     await facts.click();
-    await expectFacts(check, facts, false);
+    await expectFacts(check, false);
     await expect(facts).toBeFocused();
     await page.keyboard.press("o");
     await page.keyboard.press("j");
     await expect(facts).not.toBeFocused();
     await expect(check).not.toBeFocused();
-    await expectFacts(check, facts, true);
+    await expectFacts(check, true);
 
     await page.reload();
     await issueRead(page);
@@ -943,27 +961,25 @@ test("a node is edited in place in each filter", async ({ browser }) => {
           ].map((text) => text.split(/\s+/, 1)[0]);
         },
         {
-          message: "after a reload the tree read holds the words typed at both nodes' starts",
+          message:
+            "after a reload the tree read does not hold the words typed at both nodes' starts",
           timeout: 20_000,
         }
       )
       .toEqual([TYPED.statement, TYPED.check]);
     for (const artifact of [seeded.specArtifactId, seeded.verificationArtifactId]) {
-      expect(await artifactRoomOf(artifact), "the document is edited in the issue's room").toBe(
+      expect(await artifactRoomOf(artifact), "the document is not edited in the issue's room").toBe(
         seeded.tree
       );
     }
 
     // The child's check under statement 7 can be read here but edited only on its own issue.
-    const childCheck = verificationCheck(page, child.check.row).and(
-      verificationCard(page, statementSeven.row).locator("[data-verification-check]")
-    );
+    const childCheck = checkUnder(page, statementSeven.row, child.check.row);
     await expectNoCaret(
       page,
-      child.check.row,
+      await focusFilterRow(childCheck),
       KEY_REPORTS.issue_above,
-      "the child's check",
-      childCheck
+      "the child's check"
     );
     const borrowedSockets = countDocumentSockets(page);
     await rowWords(childCheck).click();
@@ -971,27 +987,25 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     await expect.poll(() => focusedNodeId(page)).toBe(child.check.row);
     expect(borrowedSockets(), "a press on the child's check opened a document socket").toBe(0);
 
-    // The Spec step comes with the Spec view's own work.
-
     await pickPreset(page, PRESET_NAMES.decisions);
     const { decision, decisionReading, question } = seeded;
     const answered = nodeRow(page, question.row).first();
     await expect(answered).toBeVisible();
-    const foot = decisionsFoot(page);
-    if ((await foot.count()) > 0 && (await foot.getAttribute("aria-expanded")) === "false") {
-      await foot.click();
-    }
-    const reading = nodeRow(page, decisionReading.row).first();
-    await caretInto(
-      page,
-      {
-        artifact: seeded.specArtifactId,
-        id: decisionReading.row,
-        message: "Enter puts the caret in the agent decision's reading",
-        what: "the decision's reading",
-      },
-      reading
+    // The planner's decision shapes no statement, so the view draws it in its foot, which stays
+    // folded until it is pressed.
+    await decisionsFoot(page).click();
+    await expect(decisionsFoot(page), "Decisions does not unfold its foot").toHaveAttribute(
+      "aria-expanded",
+      "true"
     );
+    const reading = nodeRow(page, decisionReading.row).first();
+    await focusFilterRow(reading);
+    await caretInto(page, {
+      artifact: seeded.specArtifactId,
+      id: decisionReading.row,
+      message: "Enter on the decision's reading does not put the caret in it",
+      what: "the decision's reading",
+    });
     await escapeToRow(page, reading, "the decision's reading");
     const decisionRow = nodeRow(page, decision.row).first();
     await caretBy(
@@ -999,14 +1013,19 @@ test("a node is edited in place in each filter", async ({ browser }) => {
       {
         artifact: seeded.specArtifactId,
         id: decision.row,
-        message: "a press puts the caret in the agent decision's words",
+        message: "a press on the agent decision's words does not put the caret in them",
         what: "the agent decision",
       },
       "a press",
       () => rowWords(decisionRow).click()
     );
     await escapeToRow(page, decisionRow, "the agent decision");
-    await expectNoCaret(page, question.row, KEY_REPORTS.no_text, "the answered question", answered);
+    await expectNoCaret(
+      page,
+      await focusFilterRow(answered),
+      KEY_REPORTS.no_text,
+      "the answered question"
+    );
 
     // The ordered steps edit the task's text; the chart opens the same task in Conversation.
     await pickPreset(page, PRESET_NAMES.plan);
@@ -1017,10 +1036,11 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     const task = nodeRow(page, taskId).first();
     await planView(page, "steps").click();
     await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "true");
+    await focusRow(page, taskId);
     await caretInto(page, {
       artifact: seeded.planArtifactId,
       id: taskId,
-      message: "Enter puts the caret in the plan task under Steps",
+      message: "Enter on the plan task under Steps does not put the caret in it",
       what: "the plan task",
     });
     await escapeToRow(page, task, "the plan task");
@@ -1028,7 +1048,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     await focusFilterRow(task.and(planChart(page).locator("[data-plan-bar-row]")));
     const chartSockets = countDocumentSockets(page);
     await page.keyboard.press("Enter");
-    await expect(page, "Enter on the chart goes to the task in Conversation").toHaveURL(
+    await expect(page, "Enter on the chart does not go to the task in Conversation").toHaveURL(
       new RegExp(`/issues/${seeded.key}#b-${block}$`)
     );
     expect(chartSockets(), "Enter on the chart opened a document socket").toBe(0);
@@ -1046,29 +1066,26 @@ test("the Verification view draws a long statement and a long check whole @phone
   await phase(browser, seedLongWords, async (page, { key, longStatement, longCheck }) => {
     await page.setViewportSize(testInfo.project.name === "iphone" ? PHONE : DESKTOP);
     await openPreset(page, key, "verification");
-    const statement = verificationCard(page, longStatement.id);
-    const check = verificationCheck(page, longCheck.id).and(
-      statement.locator("[data-verification-check]")
-    );
+    const statement = verificationCard(page, longStatement.row);
+    const check = checkUnder(page, longStatement.row, longCheck.row);
     for (const [row, seeded, what] of [
       [statement, longStatement, "the statement"],
       [check, longCheck, "the check"],
     ] as const) {
       const words = rowWords(row);
       await expect(words).toBeVisible();
-      expect(laidOut(await words.innerText()), `${what} is drawn whole`).toBe(
-        laidOut(seeded.words)
-      );
+      await expect(words, `${what} is drawn whole`).toHaveText(seeded.words, {
+        useInnerText: true,
+      });
       expect(
-        await words.evaluate((element) =>
-          Math.abs(element.getBoundingClientRect().height - element.scrollHeight)
+        await words.evaluate(
+          (element) => element.scrollHeight - element.getBoundingClientRect().height
         ),
-        `${what}'s drawn height matches its scroll height`
+        `${what} is drawn shorter than its words`
       ).toBeLessThanOrEqual(1);
-      await expect(
-        rowMore(row),
-        `${what} draws no ${CONTROL_LABELS.read_more} control`
-      ).toHaveCount(0);
+      await expect(rowMore(row), `${what} draws a ${CONTROL_LABELS.read_more} control`).toHaveCount(
+        0
+      );
     }
   });
 });
