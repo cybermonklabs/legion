@@ -9,10 +9,14 @@
 -- suspension of the issue's Sandbox over the pod of that uid, which takes a disk that is the pod's
 -- own with it, or 'volume', the delete of the issue's Sandbox of that uid, which takes the kept
 -- volume it owns. A Suspended Sandbox shows the first made, and only a Sandbox of that uid gone
--- shows the second. The daemon writes the row before the runtime acts: an update round's
--- replacement before the call whose last word the runtime asks under the pod's launch turn, one
--- made at a launch as the launch's reading of the round answers it, and a launch's own replacement
--- before its suspension (R7 of #5285, GPT-6.1 Sol's points 1 and 2 on #5285).
+-- shows the second. with_pod is the act's WithPod (runtime.TakenPod.WithPod): a launch's delete of
+-- the issue's Sandbox and its kept volume over pod_uid, a live pod of that Sandbox, which takes
+-- that pod with the volume, so a record of the pod's own act is over with it (the Legion
+-- reviewer's Important on #5285 at 69e00593). The daemon writes the row before the runtime acts:
+-- an update round's replacement before the call whose last word the runtime asks under the pod's
+-- launch turn, one made at a launch as the launch's reading of the round answers it, and a
+-- launch's own replacement before its suspension (R7 of #5285, GPT-6.1 Sol's points 1 and 2 on
+-- #5285).
 -- record is the daemon's own encoding of the replacement: the round and its recorded reasons, or
 -- the launch's claim and why it replaced the pod, and the read of the workspace made before the
 -- act, what it found or the error it failed with. written_at is the moment the row was written, by
@@ -39,6 +43,7 @@ create table if not exists pod_replacements (
     pod_uid text not null,
     takes text not null check (takes in ('pod', 'volume')),
     target_uid text not null check (target_uid <> ''),
+    with_pod boolean not null default false,
     record jsonb not null,
     written_at timestamptz not null default now(),
     primary key (project, operation)

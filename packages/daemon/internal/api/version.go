@@ -3718,9 +3718,12 @@ package api
 // (22.16.2 and 22.14.1 by their registry tags, and one digest the registry's newest 6,000 versions
 // do not list), and no release carries the migration. The fix of the Legion reviewer's Important 1
 // at 7da847c0 (a finish takes every record of its target) is a store query, and moves no contract
-// either. The forward merge of 2026-11-25 gave both migrations new versions above main's newest,
-// 20261124143026, in place of 20261123231000 and 20261124041455, which no release carries and no
-// known database applied, for the reason above.
+// either. The fix of its Important at 69e00593 adds one column to the same unreleased migration,
+// in place and for the same reason: `with_pod`, the act's `runtime.TakenPod.WithPod`, whether a
+// launch's delete of the issue's Sandbox takes the live pod of that Sandbox with the volume, which
+// the finish of a record reads from the row. The forward merge of 2026-11-25 gave both migrations
+// new versions above main's newest, 20261124143026, in place of 20261123231000 and 20261124041455,
+// which no release carries and no known database applied, for the reason above.
 // (This entry took 238 at first, above main's 219 at 7cb1f229367c: a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 493 open pull requests of this
 // repository, made between 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237
