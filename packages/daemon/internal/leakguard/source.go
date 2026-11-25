@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // leakCheckReadBound is how long one read of the check's repository at a tag has: the mint of its
@@ -162,8 +163,17 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	// (https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar), which
 	// the read follows with no Authorization, and a renamed repository's with a 301 on the API's
 	// own origin, which it follows with its token (originToken).
-	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	//
+	// The tarball's path is joined onto the repository's REST base (urljoin.Join), so an API
+	// address configured with a path and a query asks that path with the tarball's under it and
+	// keeps the query: appended to the base's text, the tarball's path would sit inside the
+	// query's last value and the read would ask the base's own path. A base that cannot be read
+	// as an absolute URL with a host is refused in the join's fixed words, which print no URL.
+	target, err := urljoin.Join(githubrest.RepositoryAPI(s.API, s.Repository), "/tarball/"+tag)
+	if err != nil {
+		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err))
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), oauth2call.Unanswered(err, nil, "")))
 	}

@@ -2,6 +2,7 @@ package appauth
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -19,3 +20,17 @@ func AppRoleFor(role claim.Role) AppRole {
 	}
 	panic(fmt.Sprintf("AppRoleFor: unsupported claim role %q", role))
 }
+
+// botSuffix is what GitHub puts after an App's slug to name its bot account: the App whose slug
+// is `legion-reviewer` acts as the login `legion-reviewer[bot]`. It is written here once, and
+// botLogin and slugOfBotLogin are the only places this package puts it on a slug or takes it
+// off: a second spelling that drifted would read a login GitHub serves as no App's bot, and the
+// package would act as an account that is not its App's.
+const botSuffix = "[bot]"
+
+// botLogin is the login of the bot account of the App whose slug is slug.
+func botLogin(slug string) string { return slug + botSuffix }
+
+// slugOfBotLogin is the slug of the App whose bot account is login, and whether login is a bot
+// account's at all. A login that is not one comes back whole, with false.
+func slugOfBotLogin(login string) (string, bool) { return strings.CutSuffix(login, botSuffix) }

@@ -90,7 +90,7 @@ func (m *Manager) AppLogin(ctx context.Context, role AppRole) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read the %s App's login: %w", role, err)
 	}
-	return slug + "[bot]", nil
+	return botLogin(slug), nil
 }
 
 // InstalledOn reads GET /repos/{owner}/{repo}/installation under role's App JWT: GitHub answers
@@ -130,8 +130,8 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	if err != nil {
 		return false, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		m.baseURL+"/repos/"+url.PathEscape(repo.Owner())+"/"+url.PathEscape(repo.Name())+"/installation", nil)
+	request, err := m.newRequest(ctx, http.MethodGet,
+		"/repos/"+url.PathEscape(repo.Owner())+"/"+url.PathEscape(repo.Name())+"/installation", nil)
 	if err != nil {
 		return false, err
 	}

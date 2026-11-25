@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -397,6 +398,7 @@ func ghReadEnv(slug string) []string {
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	bounded, cancel := ghReadContext(ctx)
 	defer cancel()
+	tokens := g.readTokens()
 	status, printed, err := g.run(bounded, child{
 		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
 		env:  ghReadEnv(slug),
@@ -405,7 +407,7 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
 			return "", unreached
 		}
-		return "", procgroup.Said(err, printed)
+		return "", procgroup.Said(err, shownSaid(printed, tokens...))
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
@@ -420,7 +422,7 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if httpStatus, _ := responseHeaders(printed); httpStatus == http.StatusNotFound {
 			return "", &notFoundError{slug: slug}
 		}
-		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, said(printed, "", slug, tokens...))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(visibilityBody(printed)))); visibility {
 	case Public, Private, Internal:
@@ -517,15 +519,16 @@ func (e *notFoundError) Error() string {
 // read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
 	var stderr bytes.Buffer
+	tokens := g.readTokens()
 	status, printed, err := g.run(ctx, child{
 		argv:   append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
 		env:    ghReadEnv(slug),
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
+		return "", procgroup.Said(err, shownSaid(visibilityBody(printed)+"\n"+stderr.String(), tokens...))
 	}
-	return graphQLAnswer(status, printed, stderr.String(), slug)
+	return graphQLAnswer(status, printed, stderr.String(), slug, tokens...)
 }
 
 // graphQLAnswer is what the guard's GraphQL read of slug answered: status is gh's exit status,
@@ -549,7 +552,7 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 //     resolve a renamed or moved repository's old name to the repository under its new one,
 //     which is not the repository the push names;
 //   - and its visibility must be exactly PUBLIC, PRIVATE or INTERNAL.
-func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error) {
+func graphQLAnswer(status int, printed, stderr, slug string, tokens ...string) (Visibility, error) {
 	body := visibilityBody(printed)
 	var answer struct {
 		Data *struct {
@@ -571,7 +574,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		whole = errors.Is(err, io.EOF)
 	}
 	if !whole {
-		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", maskPath(slug), status, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", maskPath(slug), status, said(body, stderr, slug, tokens...))
 	}
 	httpStatus, headers := responseHeaders(printed)
 	if len(answer.Errors) > 0 {
@@ -579,7 +582,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		errs := make([]string, len(answer.Errors))
 		for i, e := range answer.Errors {
 			limitedOnly = limitedOnly && (e.Type == "RATE_LIMITED" || githubrest.NamesSecondaryLimit(e.Message))
-			errs[i] = strings.ReplaceAll(e.Message, slug, maskPath(slug))
+			errs[i] = shownSaid(strings.ReplaceAll(e.Message, slug, maskPath(slug)), tokens...)
 			if e.Type != "" {
 				errs[i] = e.Type + ": " + errs[i]
 			}
@@ -594,18 +597,18 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	}
 	switch {
 	case httpStatus == 0:
-		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said(body, stderr, slug, tokens...))
 	case httpStatus != 200:
-		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said(body, stderr, slug, tokens...))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", maskPath(slug), status, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", maskPath(slug), status, said(body, stderr, slug, tokens...))
 	}
 	if answer.Data == nil || answer.Data.Repository == nil {
-		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", maskPath(slug), said(body, stderr, slug))
+		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", maskPath(slug), said(body, stderr, slug, tokens...))
 	}
 	if answered := answer.Data.Repository.NameWithOwner; !strings.EqualFold(answered, slug) {
-		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", maskPath(answered), maskPath(slug))
+		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", shownSaid(maskPath(answered), tokens...), maskPath(slug))
 	}
 	switch answer.Data.Repository.Visibility {
 	case "PUBLIC":
@@ -615,15 +618,68 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	case "INTERNAL":
 		return Internal, nil
 	default:
-		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, maskPath(slug))
+		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", shownSaid(answer.Data.Repository.Visibility, tokens...), maskPath(slug))
 	}
 }
 
-// said is what a visibility read of slug printed, as a refusal quotes it: the body of its answer
-// and its standard error, each trimmed and joined by a space, with slug masked (maskPath). The
-// GraphQL read (graphQLAnswer) and the curl read (curlAnswer) quote it.
-func said(body, stderr, slug string) string {
-	return strings.ReplaceAll(strings.TrimSpace(strings.TrimSpace(body)+" "+strings.TrimSpace(stderr)), slug, maskPath(slug))
+// said is what a read of slug printed, as a refusal quotes it: the body of its answer, GitHub's
+// message alone where the body is GitHub's JSON refusal (refusalMessage), and its standard
+// error, each trimmed and joined by a space, read by the rule (shownSaid) over the tokens the
+// read carried, and with slug masked (maskPath) in what the rule answers. The mask goes on last
+// because it writes `<name>` where the repository stood, which the rule reads as no clean URL
+// wherever the repository's name is part of one, as it is in curl's own error line. The GraphQL
+// read (graphQLAnswer), the REST read (Guard.ghVisibility), the curl read (curlAnswer) and the
+// token read (Guard.ghToken) quote it.
+func said(body, stderr, slug string, tokens ...string) string {
+	text := strings.TrimSpace(refusalMessage(body)) + " " + strings.TrimSpace(stderr)
+	return strings.ReplaceAll(shownSaid(text, tokens...), slug, maskPath(slug))
+}
+
+// shownSaid is text another party wrote - the body of a read's answer, what gh or curl printed
+// on its standard error, a member of a GraphQL answer - as a refusal of this package quotes it:
+// on one line (oneLine, as a cause sentence is written), with every run of the tokens the read
+// carried redacted (oauth2call.Tokens), since whatever answers in GitHub's place can echo the
+// request's token back and the programs print what it answered, and then the whole read by the
+// fail-closed rule (oauth2call.Field), which prints WordsNotReadable where it cannot read a URL
+// in the text as clean. It is the one place the reads this package makes through gh and curl
+// print another party's words; the daemon's own REST reads print GitHub's answers the same way
+// (githubrest.AnswerOf, through oauth2call.Answer.Words).
+func shownSaid(text string, tokens ...string) string {
+	return oauth2call.Field(oauth2call.Tokens(strings.TrimSpace(oneLine.Replace(text)), -1, tokens...))
+}
+
+// refusalMessage is GitHub's message alone where body is the JSON GitHub refuses a REST or a
+// GraphQL read with ({"message": ...}), and body whole otherwise. GitHub writes its
+// documentation URL into that JSON beside the message, and the rule reads no URL that stands
+// against a JSON quote as clean, so quoting the body whole would print every real refusal as
+// WordsNotReadable. The tarball read quotes the same member for the same reason (Source.read).
+// Nothing is decided on this: the readers decide on the answer as it came.
+func refusalMessage(body string) string {
+	var refusal struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(body), &refusal) == nil && strings.TrimSpace(refusal.Message) != "" {
+		return refusal.Message
+	}
+	return body
+}
+
+// readTokens are the GitHub tokens the guard's reads through gh carry, which a refusal quoting
+// what gh printed redacts every run of (said): the caller's GH_TOKEN and its GITHUB_TOKEN, which
+// gh sends in that order and which the environment of every child of this package carries
+// (Guard.env, the curl read aside). In a pod that gh is `legion gh`, which reads a token of its
+// own configuration where the environment names neither; a token this cannot name is still kept
+// out of a refusal by the rule the quote goes through (shownSaid), which prints no text it
+// cannot read as clean.
+func (g *Guard) readTokens() []string {
+	base := g.base()
+	var tokens []string
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if token := value(base, name); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 // gitHubResponse is the status line and the headers gh's --include output printed, as an answer

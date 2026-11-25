@@ -29,8 +29,12 @@ func ghFailsOn(cause string) string {
 var ghTLSTimeout = ghFailsOn("net/http: TLS handshake timeout")
 
 // theToken is the token the stand-in `gh auth git-credential get` answers. Each invented token here
-// says not-a-secret, which the shared leak check reads as no credential.
-const theToken = "invented-token-not-a-secret"
+// says not-a-secret, which the shared leak check reads as no credential. It shares no run of
+// oauth2call.TokenPiece characters with the invented repositories these tests read: a refusal
+// quoting what curl or gh printed redacts every run of the read's token (said), so a token
+// opening `invented-` would be redacted out of `invented-org/...` in curl's own error line, and
+// the rows that read the repository's name there would be reading the rule's answer instead.
+const theToken = "not-a-secret-token-the-helper-answered"
 
 // transportGh is a stand-in gh. Each REST read appends a line to reads and then does what rest
 // says. The GraphQL read does what graphql says. `gh auth git-credential get` writes its request to
@@ -750,21 +754,21 @@ func TestTransportFailuresMaskTheRepository(t *testing.T) {
 		{
 			name: "curl that could not connect",
 			read: func() error {
-				_, err := curlAnswer(7, "", "curl: (7) Failed to connect for https://api.github.com/repos/"+slug, slug)
+				_, err := curlAnswer(7, "", "curl: (7) Failed to connect for https://api.github.com/repos/"+slug, slug, theToken)
 				return err
 			},
 		},
 		{
 			name: "curl's error answer",
 			read: func() error {
-				_, err := curlAnswer(0, "HTTP/2 404\r\n\r\n"+`{"message":"Not Found: repos/`+slug+`"}`, "", slug)
+				_, err := curlAnswer(0, "HTTP/2 404\r\n\r\n"+`{"message":"Not Found: repos/`+slug+`"}`, "", slug, theToken)
 				return err
 			},
 		},
 		{
 			name: "curl's answer with no visibility",
 			read: func() error {
-				_, err := curlAnswer(0, "HTTP/2 200\r\n\r\n"+`{"full_name":"`+slug+`"}`, "", slug)
+				_, err := curlAnswer(0, "HTTP/2 200\r\n\r\n"+`{"full_name":"`+slug+`"}`, "", slug, theToken)
 				return err
 			},
 		},
