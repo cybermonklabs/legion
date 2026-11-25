@@ -336,8 +336,9 @@ interface KeySite {
 /** One property of an object literal that names `queryKey`, as TypeScript parses the source, so a
  *  `queryKey` inside a string, a template or a type is none: where its name starts, how it is
  *  spelled, and its value as written. `"C-Q1"` is the spelling C-Q1 reads (`queryKey:`, the colon
- *  at once after the name); `"other"` quotes the name or spaces it from its colon; a `"shorthand"`
- *  `{ queryKey }` reads the name it hands on, so its value is that name. */
+ *  at once after the name); `"other"` quotes the name, computes it from a string
+ *  (`["queryKey"]:`) or spaces it from its colon; a `"shorthand"` `{ queryKey }` reads the name it
+ *  hands on, so its value is that name. */
 interface KeyProperty {
   readonly at: number;
   readonly spelled: "C-Q1" | "other" | "shorthand";
@@ -355,11 +356,7 @@ function keyProperties({ path, text }: Source): KeyProperty[] {
   const visit = (node: ts.Node): void => {
     if (ts.isShorthandPropertyAssignment(node) && node.name.text === "queryKey") {
       properties.push({ at: node.name.getStart(file), spelled: "shorthand", value: "queryKey" });
-    } else if (
-      ts.isPropertyAssignment(node) &&
-      (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
-      node.name.text === "queryKey"
-    ) {
+    } else if (ts.isPropertyAssignment(node) && propertyName(node.name) === "queryKey") {
       const at = node.name.getStart(file);
       properties.push({
         at,
@@ -373,12 +370,22 @@ function keyProperties({ path, text }: Source): KeyProperty[] {
   return properties;
 }
 
+/** The name a property of an object literal is written under, where the source writes it out: an
+ *  identifier, a string, or a string computed name (`["queryKey"]`); undefined for any other. */
+function propertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) {
+    return name.expression.text;
+  }
+  return undefined;
+}
+
 /** Each `queryKey` property of `sources` that keys a query (`keyProperties`): C-Q1's literal
  *  families, and each computed key's (C-Q1's second command, `queryKey: *[^\[ ]`, and the keys
  *  neither of its commands reads: a literal spread from another key,
  *  `queryKey: [...myRepliesKey, "count"]`, one whose array opens on the next line, a shorthand
- *  `{ queryKey }`, and a name quoted or spaced from its colon). A key in a comment is no key: a
- *  source's comments are taken out (`sourceOf`). */
+ *  `{ queryKey }`, and a name quoted, computed from a string or spaced from its colon). A key in a
+ *  comment is no key: a source's comments are taken out (`sourceOf`). */
 function keySites(sources: readonly Source[]): {
   readonly sites: KeySite[];
   readonly unread: string[];
@@ -398,7 +405,8 @@ function keySites(sources: readonly Source[]): {
       }
       // A shorthand hands on the key its name holds. A name the file binds with no `const`, `let`
       // or `function` - a parameter, a loop variable, a field taken out of an object - holds a key
-      // made elsewhere, which the test reads where it is written as a `queryKey`.
+      // made elsewhere: the test reads it where that key is written as a `queryKey` property, and
+      // nowhere where a caller passes it in as a plain argument, as it reads no such argument.
       const own = (BINDINGS.get(value) ?? []).some((binding) => binding.path === path);
       if (spelled === "shorthand" && !own) continue;
       const resolved = keyFamilies(value, path, at);
@@ -442,19 +450,21 @@ test("a computed key after a string holding // on its line is a key site, and a 
   });
 });
 
-// A key is read however its property is spelled: a quoted name, or one spaced from its colon, keyed
-// a query the guard never read. A shorthand of a name the file does not bind hands on a key made
-// elsewhere, so it is no site and nothing unread.
-test("a queryKey property quoted or spaced from its colon is a key site, and a shorthand of an unbound name is none", () => {
+// A key is read however its property is spelled: a quoted name, one computed from a string, or one
+// spaced from its colon, keyed a query the guard never read. A shorthand of a name the file does
+// not bind hands on a key made elsewhere, so it is no site and nothing unread.
+test("a queryKey property quoted, computed from a string or spaced from its colon is a key site, and a shorthand of an unbound name is none", () => {
   const text = [
     'useQuery({ "queryKey": ["quoted", id] });',
     'useQuery({ queryKey : ["spaced"] });',
     "const cancel = (queryKey: QueryKey) => client.cancelQueries({ queryKey });",
+    'useQuery({ ["queryKey"]: ["computed"] });',
   ].join("\n");
   expect(keySites([sourceOf("probe.ts", text)])).toEqual({
     sites: [
       { families: ["quoted"], where: "probe.ts:1" },
       { families: ["spaced"], where: "probe.ts:2" },
+      { families: ["computed"], where: "probe.ts:4" },
     ],
     unread: [],
   });

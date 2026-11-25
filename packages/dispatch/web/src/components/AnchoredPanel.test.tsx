@@ -400,10 +400,13 @@ test("a control a pointer press focuses in a panel scrolls nothing while the pre
   }
 });
 
-// A press can end with no release: a context menu opened as the button goes down takes the
-// pointerup itself, a drag ends at its dragend, and the window can lose the focus mid-press. Each
-// ends the press, as `hearPresses` reads one, so a key's focus after it still shows its control.
+// A press can end with no release: the browser cancels a press it turns into a scroll or a drag,
+// a context menu opened as the button goes down takes the pointerup itself, a drag ends at its
+// dragend, and the window can lose the focus mid-press. Each ends the press, as `hearPresses`
+// reads one, so a key's focus after it still shows its control.
 for (const [ending, end] of [
+  // user-event has no form for a press the browser cancels.
+  ["its pointercancel", (target: HTMLElement) => fireEvent.pointerCancel(target)],
   // user-event has no form for a context menu that takes the press's release.
   ["its context menu", (target: HTMLElement) => fireEvent.contextMenu(target)],
   // user-event has no form for a drag, and so none for a drag's end.
