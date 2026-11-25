@@ -29,14 +29,21 @@ const (
 	Accepting      Phase = "accepting"
 	Retro          Phase = "retro"
 	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// Verifying is an issue whose pull request merged and whose close waits: for a check of its
+	// Verification document that Dispatch does not compute as a pass, for its production check,
+	// for a defect, for an open next change, or for an issue beneath it. No role works it
+	// (RoleFor), it holds no admission slot, and it is in the workflow, so a parent's close and a
+	// root's close wait for it. It stands after Merging in All and outside Order: no move back
+	// reaches it or leaves it, since the merged work never returns.
+	Verifying Phase = "verifying"
+	Done      Phase = "done"
+	Held      Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
 	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
-	Done, Held,
+	Verifying, Done, Held,
 }
 
 // Order is the line an issue of the default steps walks forward, and the phases a move back is

@@ -49,11 +49,11 @@ import (
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
 // dispatch://INFRA-175's design news (20261119203047) stands above those four and is named here
-// the same way. It is the last word of outbox_kind_check: the upgrade applies it last of the kind
-// lists, after 20261029120800 has deleted main's merge-lane rows, and it names every other kind
-// main's daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds,
-// role_holders_publish, step_record, plan_record, conflict_confirm, merge_forward and
-// design_changes besides, which main's daemon never writes.
+// the same way. It was the last word of outbox_kind_check until the done-by-checks migration
+// (20261125004932): the upgrade applies the design news's list after 20261029120800 has deleted
+// main's merge-lane rows, and it names every other kind main's daemon writes (mainsOutboxKinds),
+// with update_ask, the two merge-queue kinds, role_holders_publish, step_record, plan_record,
+// conflict_confirm, merge_forward and design_changes besides, which main's daemon never writes.
 // INFRA-3036's 20261111214351 and INFRA-3276's 20261113082415 each add one column, to issues and
 // to claims, and leave the check as it stands.
 // And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512), which stands
@@ -137,8 +137,8 @@ import (
 // pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
 // 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261123165139,
-// 20261123212127, 20261123224717, 20261124060500 and 20261124143026, is the last of them to
-// rewrite outbox_kind_check: it names those kinds and design_changes.
+// 20261123212127, 20261123224717, 20261124060500, 20261124143026 and 20261125004932, names those
+// kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
@@ -189,6 +189,12 @@ import (
 // touches no outbox_kind_check: it adds issue_releases.teardown at its default, `reached`, on every
 // mark it finds, and pod_releases.issue_release_id, null on every row it finds, under a unique
 // index of the rows that name a mark (migration_20261124143026_test.go).
+// The done-by-checks migration (20261125004932) is applied after all of these and is the last of
+// them to rewrite outbox_kind_check: it names the design news's kinds with close_read and
+// close_wait_publish, which main's daemon never writes. It adds verifying to issues_phase_check, the
+// issues columns of the merge snapshot and the close's wait at their defaults (merge_history null,
+// unclassified), tree_generation at each row's generation, and two production_checks columns at 0,
+// which every row it finds keeps (migration_20261125004932_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -201,7 +207,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
 	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
-	20261124073512, 20261124143026,
+	20261124073512, 20261124143026, 20261125004932,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

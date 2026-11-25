@@ -312,7 +312,79 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// Merge is the issue's newest merge, its merge snapshot: the pull request that merged, its final
+	// reviewed head, the merge commit, the base it merged into, the repository the merge fact named
+	// and GitHub's merged_at of that pull request. It is zero before the issue's first merge. One
+	// writer sets it, PutMergeSnapshot, and it replaces a snapshot only with a later merge. PutIssue
+	// neither writes nor clears it, and no clear of a generation touches it, so a copy of the issue
+	// read before a merge never writes that merge away, and a next change keeps the merge it
+	// continues.
+	Merge Merge
+	// MergeHistory is what the record holds as evidence of the issue's merges (MergeHistoryClass):
+	// ANSWERED where a merge stands on the record, PARTIAL where only rows that prove no merge stand,
+	// and NONE where nothing does. It is "" for a record no evidence pass has classified yet, which
+	// is every issue recorded before the column, until the pass writes its class. A record written
+	// after the column starts at NONE. PutMergeSnapshot writes ANSWERED with the snapshot. PutIssue
+	// neither writes nor clears it, and no clear of a generation touches it.
+	MergeHistory MergeHistoryClass
+	// CloseWaitSince is since when the issue's close waits: GitHub's merged_at at an entry from a
+	// merge, or the time the request applied for a change a request started. Nil for an issue
+	// whose close waits for nothing.
+	CloseWaitSince *time.Time
+	// CloseWait is the stored wait, the record close-wait.md renders: each item the close waits for
+	// with its state and since when it stands, the time of the issue's newest entry into
+	// verifying, and the time of the close once it closed. It is the workflow's JSON, kept as the
+	// workflow wrote it, and nil where no wait was stored.
+	CloseWait json.RawMessage
+	// ClosedOnChecksAt is when the issue closed because the checks of its goal passed, nil for
+	// every issue that closed otherwise or has not closed. A failed result on a closed issue
+	// tells the controller only where it is set.
+	ClosedOnChecksAt *time.Time
+	// NextChange is the generation of the next change of the issue that is open: one that started
+	// and has neither merged nor ended with no pull request. It is 0 while none is open.
+	NextChange uint64
+	// NextChanges counts the next changes the issue has started, over its whole life.
+	NextChanges int
+	// MergerCompletionOwed says that the merger's completion of the generation that merged has not
+	// landed yet. A next change waits for it, or for the hour after the merge.
+	MergerCompletionOwed bool
+	// StandingToldAt is when the owning architect was last told of the terms that still hold the
+	// close (the daily notice), nil for never.
+	StandingToldAt *time.Time
 }
+
+// Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
+// final head that was reviewed (Head), the merge commit (SHA), the base branch the pull request
+// merged into, the repository the merge fact named, and GitHub's merged_at of that pull request.
+// A field that was not read is empty, and no reader invents it: an older issue's snapshot that an
+// evidence pass copied can know its number and not its commit, its base or its time.
+type Merge struct {
+	Number   int
+	Head     string
+	SHA      string
+	Base     string
+	Repo     string
+	MergedAt time.Time
+}
+
+// Merged says whether the snapshot records a merge at all: it names the pull request that merged.
+func (m Merge) Merged() bool { return m.Number > 0 }
+
+// MergeHistoryClass is the evidence the record holds of an issue's merges. It has exactly three
+// values. None of PARTIAL and NONE proves that the issue's work never merged: each only says what
+// the record does not hold.
+type MergeHistoryClass string
+
+const (
+	// MergeHistoryAnswered is positive evidence of a merge: a merge snapshot, a retained merged pull
+	// request, or a production check that only a merge opens.
+	MergeHistoryAnswered MergeHistoryClass = "ANSWERED"
+	// MergeHistoryPartial is rows of the issue's merges that prove none: a pull request that did not
+	// merge, a cleared pull request's clock.
+	MergeHistoryPartial MergeHistoryClass = "PARTIAL"
+	// MergeHistoryNone is a record that holds nothing of the issue's merges.
+	MergeHistoryNone MergeHistoryClass = "NONE"
+)
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
 // every repository-dependent action of the issue works and mints for its owner.
@@ -1500,6 +1572,13 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	// RelookSeq is the Dispatch sequence of the event that opened the check's newest look after a
+	// close not_run, 0 for none: a redelivered event of that sequence opens no second look.
+	RelookSeq int64
+	// Generation is the issue generation the check is of, the one its merge closed or a next
+	// change ended in. 0 binds no generation: a check opened by a release before the column runs on
+	// as that release ran it, and never meets the close's production term.
+	Generation uint64
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -1514,11 +1593,16 @@ func (c ProductionCheck) Open() bool { return c.ClosedAt == nil }
 func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixMicro(), 10) }
 
 // NamedBy says whether openedAt names this check instance, as the rows and facts of a check carry
-// its OpenedAt: a zero openedAt names no instance — a row queued before the rows carried one — and
-// so names this one too; another instant names another check of the issue, one a later merge
-// replaced, whose looks count from one again, or the one that replaced this.
+// its OpenedAt. A zero openedAt names no instance — a row queued, or a fact made, before the rows
+// carried one — so it names only a check of generation 0, which a release before the generation
+// opened and which binds none: a legacy row changes nothing of a check bound to a generation.
+// Another instant names another check of the issue, one a later merge replaced, whose looks count
+// from one again, or the one that replaced this.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
-	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
+	if openedAt.IsZero() {
+		return c.Generation == 0
+	}
+	return openedAt.Equal(c.OpenedAt)
 }
 
 // CheckOutcome is how a production check closed; "" while it is open.
@@ -1920,6 +2004,8 @@ type Store interface {
 	// would give a recorded issue another of any of them. This release's rename pass writes a
 	// configured rename's new name on a recorded issue through RenameIssueRepository instead, the
 	// one writer that changes a recorded repository, which dispatch://INFRA-3532's own change removes.
+	// It neither writes nor clears the merge snapshot (Issue.Merge) or the merge history
+	// (Issue.MergeHistory): a whole new record of the issue keeps both.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
@@ -2240,6 +2326,40 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
+	// ClearChangeGeneration drops the facts one generation of one issue owns when a next change of
+	// it starts, and keeps the design gate: ClearGeneration's statements but the gate's and what its
+	// holders took of it. The merged pull request goes, with its clock kept in
+	// cleared_pull_requests, and each role's handoff, review rounds, verdict and summary go. For a
+	// tree root the tree's architect's phases row stays whole as well, since the tree's architect
+	// runs on the tree's generation, which a next change does not raise. No other issue's row is
+	// touched, and nothing of the gate is published.
+	ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	// PutMergeSnapshot records merge as issue's newest merge (Issue.Merge) and the issue's merge
+	// history as ANSWERED, in this transaction. It is the one writer of the snapshot. It replaces a
+	// snapshot only with a later merge: where one stands, merge replaces it only if its merged_at
+	// is known and later than the stored one, or the stored one is unknown. It answers whether the
+	// snapshot was written. A merge that names no pull request is refused.
+	PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error)
+	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
+	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
+	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
+	// oldest first.
+	OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
+	// WithdrawDefect ends the open reported defect id of issue with reason, at at. It answers false
+	// where issue holds no such defect: none of that id, one of another kind than a reported
+	// defect, one already withdrawn, or one a merged change carried. The reason is required.
+	WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error)
+	// CarryDefects marks each open defect of ids on issue as carried by generation: the change
+	// of that generation takes it, so its merge starts no second change for it.
+	CarryDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, ids []int64) error
+	// MergeDefects marks each open defect of issue that generation carries as merged at at: the
+	// change that carried it merged, so it holds the close no more.
+	MergeDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, at time.Time) error
+	// PutCheckRead stores read as the issue's newest read of the checks' states, where no read of a
+	// later moment stands. It answers whether it was stored.
+	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
+	// NewestCheckRead is the issue's newest stored read, nil where none is stored.
+	NewestCheckRead(ctx context.Context, tx pgx.Tx, issue string) (*CheckRead, error)
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
 	// the start of a step's record raises it in its own transaction (workflow's startStep), and
