@@ -706,18 +706,20 @@ func (tree searchPlanTree) describe(nodes []int) string {
 	return strings.Join(lines, "\n")
 }
 
-// meaningStatementPair is one of the nine meaning statements R2 changes the document arm of:
-// this build's text and main's at 497581c7 (search_oracle_test.go), with the arguments its caller
+// meaningStatementPair is one of the meaning statements R2 changes the document arm of: this
+// build's text and main's at 497581c7 (search_oracle_test.go), with the arguments its caller
 // binds over documentSearchFixture. Both texts take the same parameters.
 type meaningStatementPair struct {
 	name, live, main string
 	arguments        []any
 }
 
-// meaningStatementPairs is search's three meaning statements and the related-item check's six,
-// each bound as its caller binds it: an unscoped statement for a search or a check naming no
-// project, a scoped or joined one for the fixture's project, and an excluding one leaving the
-// fixture's issue out, as an issue create does.
+// meaningStatementPairs is search's three meaning statements in each of the 32 sets of kinds
+// searchKinds.statements builds them for, beside main's text of the same set
+// (mainAt4975Statements), and the related-item check's six, which take no set of kinds, each
+// bound as its caller binds it: an unscoped statement for a search or a check naming no project,
+// a scoped or joined one for the fixture's project, and an excluding one leaving the fixture's
+// issue out, as an issue create does.
 func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 	search := func(project string) []any {
 		return searchMeaningQueryArguments(searchParameters{text: documentSearchWord, project: project, limit: searchDefaultLimit},
@@ -733,10 +735,16 @@ func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 		}
 		return append(arguments, documentSearchSeen()...)
 	}
-	return []meaningStatementPair{
-		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, search("")},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, search(f.project)},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, search(f.project)},
+	var pairs []meaningStatementPair
+	for set := range searchKinds(len(searchStatementsByKinds)) {
+		live, main := set.statements(), mainAt4975Statements(uint8(set))
+		pairs = append(pairs,
+			meaningStatementPair{searchSetStatementName(set, "meaningEvery"), live.meaningEvery, main.meaningEvery, search("")},
+			meaningStatementPair{searchSetStatementName(set, "meaningScoped"), live.meaningScoped, main.meaningScoped, search(f.project)},
+			meaningStatementPair{searchSetStatementName(set, "meaningJoined"), live.meaningJoined, main.meaningJoined, search(f.project)},
+		)
+	}
+	return append(pairs, []meaningStatementPair{
 		{"relatedMeaningQuery", relatedMeaningQuery, mainAt4975RelatedMeaningQuery, related("", false)},
 		{"relatedMeaningScopedQuery", relatedMeaningScopedQuery, mainAt4975RelatedMeaningScopedQuery, related(f.project, false)},
 		{"relatedMeaningJoinedQuery", relatedMeaningJoinedQuery, mainAt4975RelatedMeaningJoinedQuery, related(f.project, false)},
@@ -745,21 +753,23 @@ func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 			related(f.project, true)},
 		{"relatedMeaningJoinedExcludingQuery", relatedMeaningJoinedExcludingQuery, mainAt4975RelatedMeaningJoinedExcludingQuery,
 			related(f.project, true)},
-	}
+	}...)
 }
 
 // TestNoMeaningDocumentArmReadsArtifactVersions holds R2b: the meaning document arm of each of
-// search's three meaning statements and of the related-item check's six reads its date from
-// document_search and reads no artifact_versions, in the generic plan a prepared statement
-// settles on and in the plan with its values. A plan without VERBOSE names no output, so the arm
-// is found by what it reads: the arm of the kinds CTE's union under which a scan of embeddings
-// tests the kind 'document_block' (meaningArms), and a plan holding no such arm fails, since it
-// says nothing of the arm.
+// search's three meaning statements, in each of the 32 sets of kinds searchKinds.statements builds
+// them for, and of the related-item check's six reads its date from document_search and reads no
+// artifact_versions, in the generic plan a prepared statement settles on and in the plan with its
+// values. A plan without VERBOSE names no output, so the arm is found by what it reads: the arm of
+// the kinds CTE's union under which a scan of embeddings tests the kind 'document_block'
+// (meaningArms), and a plan holding no such arm fails, since it says nothing of the arm. That
+// holds for a set that leaves documents out as well: the set drops the arm's rows above the
+// union, and the plan of every such set still holds the arm.
 //
-// main's text at 497581c7 is the negative control, read the same way over the same rows: its arm
-// reads the newest version's created_at through a lateral over artifact_versions, so the same
-// reading of its plans must find artifact_versions in the arm, or the assertion on this build's
-// text decides nothing.
+// main's text at 497581c7, of the same set, is the negative control, read the same way over the
+// same rows: its arm reads the newest version's created_at through a lateral over
+// artifact_versions, so the same reading of its plans must find artifact_versions in the arm, or
+// the assertion on this build's text decides nothing.
 func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
@@ -787,16 +797,16 @@ func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 					arms, found := tree.meaningArms(t, catalog)
 					arm, documents := arms["document_block"]
 					if !found || !documents {
-						t.Fatalf("%s text's %s plan has no arm of CTE kinds' Append under which a scan of embeddings tests 'document_block', so it says nothing of the meaning document arm:\n%s",
-							side.whose, plan.mode, tree.describe(explaintest.Subtree(tree.nodes, 0)))
+						t.Fatalf("%s, %s text's %s plan has no arm of CTE kinds' Append under which a scan of embeddings tests 'document_block', so it says nothing of the meaning document arm:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(explaintest.Subtree(tree.nodes, 0)))
 					}
 					switch reads := tree.reads(t, arm, "artifact_versions", catalog); {
 					case reads && !side.readsArtifactVersions:
-						t.Errorf("%s text's %s plan reads artifact_versions in its meaning document arm:\n%s",
-							side.whose, plan.mode, tree.describe(arm))
+						t.Errorf("%s, %s text's %s plan reads artifact_versions in its meaning document arm:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(arm))
 					case !reads && side.readsArtifactVersions:
-						t.Errorf("%s text's %s plan reads no artifact_versions in its meaning document arm, so the control decides nothing:\n%s",
-							side.whose, plan.mode, tree.describe(arm))
+						t.Errorf("%s, %s text's %s plan reads no artifact_versions in its meaning document arm, so the control decides nothing:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(arm))
 					}
 				}
 			}
@@ -809,11 +819,12 @@ func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
 var searchIndexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"}
 
 // TestEverySearchStatementReadsEachGrowingTableThroughAnIndex holds that each of the four
-// statements a search runs, in the generic plan a prepared statement settles on and in the plan
-// with the values the route binds, reads every table that grows with the data through an index
-// condition (explaintest.ScansWithoutIndexCond), and its meaning arms read no artifact_versions.
-// Every table the statements read grows with the data but projects, so the reads allowed without
-// an index condition are three: an HNSW Index Scan, which orders by a distance and takes no
+// statements a search runs, in each of the 32 sets of kinds searchKinds.statements builds them
+// for, in the generic plan a prepared statement settles on and in the plan with the values the
+// route binds, reads every table that grows with the data through an index condition
+// (explaintest.ScansWithoutIndexCond), and its meaning arms read no artifact_versions. Every
+// table the statements read grows with the data but projects, so the reads allowed without an
+// index condition are three: an HNSW Index Scan, which orders by a distance and takes no
 // condition (its "Order By" holds the distance); a Bitmap Index Scan of a GIN index, a keyword
 // arm's match; and a whole read of projects.
 //
@@ -824,9 +835,12 @@ var searchIndexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Ind
 // such a fixture says nothing of the statement.
 //
 // The keyword statement is read for a search of every project and of one; each meaning statement
-// for the project form meaningStatementFor picks it for. Its meaning arms are the five arms of
-// the kinds CTE that read embeddings (meaningArms), and a plan in which fewer are found fails,
-// since it would say nothing of the missing ones.
+// for the project form meaningStatementFor picks it for. Its meaning arms are the arms of the
+// kinds CTE that read embeddings (meaningArms), five in set 0, and a plan in which the arm of a
+// kind the set ranks is not found fails, since it would say nothing of that arm. The arm of a kind
+// the set leaves out may be in the plan or not - the set drops its rows above the union either
+// way - and is held to the same when it is. Each set's statements are prepared under names of
+// their own, and each failure names the set (`set 5 meaningScoped`).
 func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
@@ -845,60 +859,81 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 	meaning := func(project string) []any {
 		return searchMeaningQueryArguments(subject(project), queryVector(), fixture.embedder.Identity())
 	}
-	for number, statement := range []struct {
-		name, text string
-		arguments  []any
-		meaning    bool
-	}{
-		{"searchQuery, every project", searchQuery, searchQueryArguments(subject("")), false},
-		{"searchQuery, one project", searchQuery, searchQueryArguments(subject(fixture.project)), false},
-		{"searchQueryMeaning", searchQueryMeaning, meaning(""), true},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, meaning(fixture.project), true},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, meaning(fixture.project), true},
-	} {
-		t.Run(statement.name, func(t *testing.T) {
-			for _, plan := range searchStatementPlans(t, connection, fmt.Sprintf("growing_reads_%d", number), statement.text, statement.arguments) {
-				tree := newSearchPlanTree(t, plan.plan)
-				unkeyed := 0
-				for at, node := range tree.nodes {
-					if node.Type != "Seq Scan" && (!slices.Contains(searchIndexScanTypes, node.Type) || node.IndexCond != "") {
+	for set := range searchKinds(len(searchStatementsByKinds)) {
+		statements := set.statements()
+		var ranked []string
+		for _, kind := range searchKindsAsked(set) {
+			ranked = append(ranked, searchMeaningArmKinds[kind])
+		}
+		for number, statement := range []struct {
+			field, form string
+			text        string
+			arguments   []any
+			meaning     bool
+		}{
+			{"keyword", ", every project", statements.keyword, searchQueryArguments(subject("")), false},
+			{"keyword", ", one project", statements.keyword, searchQueryArguments(subject(fixture.project)), false},
+			{"meaningEvery", "", statements.meaningEvery, meaning(""), true},
+			{"meaningScoped", "", statements.meaningScoped, meaning(fixture.project), true},
+			{"meaningJoined", "", statements.meaningJoined, meaning(fixture.project), true},
+		} {
+			name := searchSetStatementName(set, statement.field) + statement.form
+			t.Run(name, func(t *testing.T) {
+				prepared := fmt.Sprintf("growing_reads_%d_%d", set, number)
+				for _, plan := range searchStatementPlans(t, connection, prepared, statement.text, statement.arguments) {
+					tree := newSearchPlanTree(t, plan.plan)
+					unkeyed := 0
+					for at, node := range tree.nodes {
+						if node.Type != "Seq Scan" && (!slices.Contains(searchIndexScanTypes, node.Type) || node.IndexCond != "") {
+							continue
+						}
+						unkeyed++
+						relation := tree.relationOf(t, at, catalog)
+						method := ""
+						if node.Index != "" {
+							_, method = catalog.of(t, node.Index)
+						}
+						switch {
+						case relation == "projects":
+						case node.Type == "Index Scan" && method == "hnsw" && strings.Contains(node.OrderBy, "<=>"):
+						case node.Type == "Bitmap Index Scan" && method == "gin":
+						default:
+							t.Errorf("%s, %s plan: %s reads %s with no index condition (under %q)",
+								name, plan.mode, node, relation, node.Subplan)
+						}
+					}
+					if listed := explaintest.ScansWithoutIndexCond(t, plan.plan); len(listed) != unkeyed {
+						t.Fatalf("%s, %s plan: explaintest.ScansWithoutIndexCond names %d scans (%s) and this walk met %d",
+							name, plan.mode, len(listed), strings.Join(listed, ", "), unkeyed)
+					}
+					if !statement.meaning {
 						continue
 					}
-					unkeyed++
-					relation := tree.relationOf(t, at, catalog)
-					method := ""
-					if node.Index != "" {
-						_, method = catalog.of(t, node.Index)
+					arms, _ := tree.meaningArms(t, catalog)
+					missing := slices.DeleteFunc(slices.Clone(ranked), func(kind string) bool {
+						_, planned := arms[kind]
+						return planned
+					})
+					if len(missing) > 0 {
+						t.Fatalf("%s, %s plan: found the meaning arms %v in the kinds CTE and none of %v, which the set ranks:\n%s",
+							name, plan.mode, slices.Sorted(maps.Keys(arms)), missing, tree.describe(explaintest.Subtree(tree.nodes, 0)))
 					}
-					switch {
-					case relation == "projects":
-					case node.Type == "Index Scan" && method == "hnsw" && strings.Contains(node.OrderBy, "<=>"):
-					case node.Type == "Bitmap Index Scan" && method == "gin":
-					default:
-						t.Errorf("%s, %s plan: %s reads %s with no index condition (under %q)",
-							statement.name, plan.mode, node, relation, node.Subplan)
-					}
-				}
-				if listed := explaintest.ScansWithoutIndexCond(t, plan.plan); len(listed) != unkeyed {
-					t.Fatalf("%s plan: explaintest.ScansWithoutIndexCond names %d scans (%s) and this walk met %d",
-						plan.mode, len(listed), strings.Join(listed, ", "), unkeyed)
-				}
-				if !statement.meaning {
-					continue
-				}
-				arms, found := tree.meaningArms(t, catalog)
-				if !found || len(arms) != 5 {
-					t.Fatalf("%s plan: found %d meaning arms in the kinds CTE, want five:\n%s", plan.mode, len(arms), tree.describe(explaintest.Subtree(tree.nodes, 0)))
-				}
-				for _, kind := range slices.Sorted(maps.Keys(arms)) {
-					if tree.reads(t, arms[kind], "artifact_versions", catalog) {
-						t.Errorf("%s, %s plan: the meaning arm of %s reads artifact_versions:\n%s",
-							statement.name, plan.mode, kind, tree.describe(arms[kind]))
+					for _, kind := range slices.Sorted(maps.Keys(arms)) {
+						if tree.reads(t, arms[kind], "artifact_versions", catalog) {
+							t.Errorf("%s, %s plan: the meaning arm of %s reads artifact_versions:\n%s",
+								name, plan.mode, kind, tree.describe(arms[kind]))
+						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
+}
+
+// searchMeaningArmKinds is the window kind the meaning arm of each of searchIndexedKinds tests on
+// embeddings, which is how meaningArms keys the arm.
+var searchMeaningArmKinds = map[string]string{
+	"issue": "issue", "document": "document_block", "comment": "comment_block", "ask": "ask_part", "message": "message_block",
 }
 
 // growWithTheData adds to fixture two thousand issues of its project and two thousand each of

@@ -85,7 +85,11 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 // holdKeywordStatements is holdMeaningStatements for the keyword statement: it locks messages,
 // which the statement's message arm reads (searchKeywordLegs). Nothing else on a keyword search's
 // path reads messages: search's own key and numnode reads read issues or nothing, and
-// attachAskStates runs only once the statement has answered.
+// attachAskStates runs only once the statement has answered. The keyword statement of a set of
+// kinds that leaves messages out, as a search naming only the issue's kind runs, waits for the
+// lock too: the set drops the arms' rows above their union (searchKinds.exclusion), so its text
+// still names messages, and Postgres locks every table a statement names before it plans or runs
+// it.
 func holdKeywordStatements(t *testing.T, database *store.Store) (release func()) {
 	t.Helper()
 	return holdLock(t, database, "lock table messages in access exclusive mode")
@@ -233,6 +237,10 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // over as a degraded result would serve a caller a page of keyword hits as though meaning search
 // had run.
 //
+// It holds for a search naming no kind, which runs searchQueryMeaning, and for one naming the
+// issue's kind, which runs the meaning statement of its own set of kinds (searchKinds.statements)
+// in a transaction beginMeaningScan opens the same way.
+//
 // The bounded search runs while embeddings is held (holdMeaningStatements), so its meaning
 // statement cannot answer before the shortened bound ends it. A server that held no bound on the
 // statement would wait for that lock until the test binary's deadline guard fails the case by
@@ -247,27 +255,37 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "BOUND", title, spec)
 	processAllPending(t, database, embedder)
 
-	// The query shares no word with the issue, so the hit below came from the meaning query
-	// alone: this server answered the same search before the bound was shortened, and what the
-	// 503 after it reports is the statement the server ended, not a broken fixture.
-	healthy := searchResponse(t, handler, "q=wibbleflorp")
-	if healthy.Degraded != "" || len(healthy.Results) != 1 || healthy.Results[0].ID != issue.Key {
-		t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by meaning", healthy, issue.Key)
-	}
+	for _, search := range []struct{ name, query string }{
+		{"no kind", "q=wibbleflorp"},
+		{"kind issue", "q=wibbleflorp&kind=issue"},
+	} {
+		t.Run(search.name, func(t *testing.T) {
+			// The query shares no word with the issue, so the hit below came from the meaning
+			// query alone: this server answered the same search before the bound was shortened,
+			// and what the 503 after it reports is the statement the server ended, not a broken
+			// fixture.
+			healthy := searchResponse(t, handler, search.query)
+			if healthy.Degraded != "" || len(healthy.Results) != 1 || healthy.Results[0].ID != issue.Key {
+				t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by meaning", healthy, issue.Key)
+			}
 
-	const bound = time.Millisecond
-	endSearchStatementsAt(t, bound)
-	release := holdMeaningStatements(t, database)
-	ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), "/api/v1/search", "q=wibbleflorp"))
-	release()
-	requireSearchTimedOut(t, ended, bound, issue.Key)
+			const bound = time.Millisecond
+			endSearchStatementsAt(t, bound)
+			release := holdMeaningStatements(t, database)
+			ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), "/api/v1/search", search.query))
+			release()
+			requireSearchTimedOut(t, ended, bound, issue.Key)
+		})
+	}
 }
 
 // The search route reports a keyword statement the server ended as it reports a meaning one: 503
 // SEARCH_TIMEOUT, naming the bound in force, and no result. It holds on both paths that run the
 // keyword statement: the bar's keystroke request (keywords_only), and a search answered by
-// keywords because no embedder is configured (degraded). Each search is first answered on this
-// server, so the 503 after it is the statement the server ended and not a broken fixture.
+// keywords because no embedder is configured (degraded); and on each for a search naming no kind,
+// which runs searchQuery, and for one naming the issue's kind, which runs the keyword statement of
+// its own set of kinds (searchKinds.statements). Each search is first answered on this server, so
+// the 503 after it is the statement the server ended and not a broken fixture.
 //
 // The bounded search runs while messages is held (holdKeywordStatements), so its keyword
 // statement cannot answer before the shortened bound ends it. A server that held no bound on the
@@ -281,7 +299,9 @@ func TestSearchReportsAKeywordStatementTheServerEnded(t *testing.T) {
 		degraded          bool
 	}{
 		{"keywords only", "/api/v1/search/results", "q=quillmotor&keywords_only=true", false},
+		{"keywords only, kind issue", "/api/v1/search/results", "q=quillmotor&keywords_only=true&kind=issue", false},
 		{"degraded because no embedder is configured", "/api/v1/search", "q=quillmotor", true},
+		{"degraded because no embedder is configured, kind issue", "/api/v1/search", "q=quillmotor&kind=issue", true},
 	} {
 		t.Run(path.name, func(t *testing.T) {
 			healthy := searchResponseOn(t, handler, path.path, path.query)
@@ -542,19 +562,66 @@ func (e refusingQueryEmbedder) Embed(ctx context.Context, texts []string, inputT
 	return e.fakeEmbedder.Embed(ctx, texts, inputType)
 }
 
-// TestEverySearchStatementRunsInsideItsBoundedTransaction holds R1 over its class. Each of the
-// four statements a search runs - searchQuery and the three meaning statements
-// meaningStatementFor picks from - runs inside a transaction that, after its begin, ran a
-// setting statement holding both the server's 15 s bound and the 1 s check that the client is
-// still connected. It holds that in one search of each shape a search takes: keywords only;
-// keywords because no embedder answered; meaning over every project; meaning over one project
-// once the embeddings project_key fill is done; meaning joined, for a filtered search; and a
-// broadened run of a keyword and of a meaning search, whose second statement is held to the
-// same as its first. Which transaction a statement ran in is a fact of the backend it ran on, so
-// the tracer records each statement's backend process, and each statement is read against what
-// its backend ran before it (unboundedBecause).
+// searchStatementFields names the four texts one set of kinds runs, by the field of
+// searchStatements that holds each, in the order it holds them (searchSetTexts).
+var searchStatementFields = [...]string{"keyword", "meaningEvery", "meaningScoped", "meaningJoined"}
+
+// searchSetTexts is the four texts set runs (searchKinds.statements), in the order
+// searchStatementFields names them.
+func searchSetTexts(set searchKinds) [len(searchStatementFields)]string {
+	statements := set.statements()
+	return [...]string{statements.keyword, statements.meaningEvery, statements.meaningScoped, statements.meaningJoined}
+}
+
+// searchSetStatementName is how a test names one of a set's four texts: `set 5 meaningScoped`.
+func searchSetStatementName(set searchKinds, field string) string {
+	return fmt.Sprintf("set %d %s", set, field)
+}
+
+// searchKindsAsked is the kinds set ranks - each of searchIndexedKinds whose bit it leaves
+// clear - as a request names them in its kind parameters. A request naming all five runs set 0,
+// as one naming none does, and searchNoKind ranks no kind, so no request runs it
+// (parseSearchKinds).
+func searchKindsAsked(set searchKinds) []string {
+	var asked []string
+	for index, kind := range searchIndexedKinds {
+		if set&(1<<index) == 0 {
+			asked = append(asked, kind)
+		}
+	}
+	return asked
+}
+
+// TestEverySearchStatementRunsInsideItsBoundedTransaction holds R1 over its class. Each text a
+// search runs - the keyword statement and the three meaning statements meaningStatementFor picks
+// from, in each of the 32 sets of kinds searchKinds.statements builds them for - runs inside a
+// transaction that, after its begin, ran a setting statement holding both the server's 15 s bound
+// and the 1 s check that the client is still connected. Which transaction a statement ran in is a
+// fact of the backend it ran on, so the tracer records each statement's backend process, and each
+// statement is read against what its backend ran before it (unboundedBecause).
 //
-// Each shape is also held to the statement it names and the number of times it runs it, and to
+// It holds that in one search of each shape a search takes: keywords only; keywords because no
+// embedder answered; meaning over every project; meaning over one project once the embeddings
+// project_key fill is done; meaning joined, for a filtered search; and a broadened run of a
+// keyword and of a meaning search, whose second statement is held to the same as its first.
+//
+// And it holds that for every set of kinds. The scan tests above
+// (TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction and
+// TestMeaningScanAppliesTheServersBoundToItsTransaction) read the settings of the transaction
+// beginKeywordScan and beginMeaningScan open, once each and not once per set: a scan takes no set
+// of kinds, so its settings are the same whichever set's statement then runs in it. Which
+// statement runs in it is what depends on the set, and the request's kind parameters alone choose
+// that (parseSearchKinds), so the proof for each set is this test's. It names each of the
+// 128 texts by its set and field (`set 5 meaningScoped`), and for every set runs a search of each
+// of the four statements naming the kinds that set ranks: one kind alone, two, three, four, or
+// all five, which is set 0 as naming none is. searchNoKind, which leaves every kind out, is a set
+// no request names, since naming a kind takes that kind's bit back out; its four searches run
+// through runSearch, the search route's own entry point, with that set in their parameters. The
+// searches of a set are of one word, so one whose kinds match no row of the fixture answers an
+// empty page without being broadened (searchRarestWords). The test ends by requiring that each of
+// the 128 texts ran inside its bounded transaction in one of its searches.
+//
+// Each search is also held to the statement it names and the number of times it runs it, and to
 // the answer that says which shape it was (degraded, broadened), so a fixture that stopped
 // reaching a shape fails rather than passing on statements it never ran.
 func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
@@ -569,44 +636,108 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 		refused:      degradedQuery,
 	}
 	statements := &backendStatements{}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, tracer: statements})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, tracer: statements})
 	issue := createInteractionIssue(t, handler, "BOUND", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
 	searchComment(t, handler, issue.Key, "alice", "The lighthouse keeper logs the tide at dawn.")
 	processAllPending(t, database, embedder)
 	RefreshEverySearchTermStats(context.Background(), database.Pool)
 	recordEmbeddingProjectKeyFill(t, database, true)
 
-	texts := map[string]string{
-		searchQuery:              "searchQuery",
-		searchQueryMeaning:       "searchQueryMeaning",
-		searchQueryMeaningScoped: "searchQueryMeaningScoped",
-		searchQueryMeaningJoined: "searchQueryMeaningJoined",
+	// texts names every text of every set. A text two statements shared would be named for one
+	// of them alone, so the count of distinct texts is held.
+	sets := len(searchStatementsByKinds)
+	texts := map[string]string{}
+	for set := range searchKinds(sets) {
+		for field, text := range searchSetTexts(set) {
+			texts[text] = searchSetStatementName(set, searchStatementFields[field])
+		}
 	}
-	for _, shape := range []struct {
-		name, path          string
-		query               url.Values
+	if want := sets * len(searchStatementFields); len(texts) != want {
+		t.Fatalf("the %d sets of kinds build %d distinct texts, want %d: a text two statements share is counted for one of them alone",
+			sets, len(texts), want)
+	}
+
+	// over is a search the route serves, on path with query, as alice. direct is a search of
+	// parameters through runSearch, the route's own entry point, which is how a set no request
+	// names is run.
+	over := func(path string, query url.Values) func(*testing.T) model.SearchResponse {
+		return func(t *testing.T) model.SearchResponse {
+			t.Helper()
+			return searchResponseOn(t, handler, path, query.Encode())
+		}
+	}
+	direct := func(parameters searchParameters) func(*testing.T) model.SearchResponse {
+		return func(t *testing.T) model.SearchResponse {
+			t.Helper()
+			response, err := directServer(deps).runSearch(context.Background(), parameters)
+			if err != nil {
+				t.Fatalf("run the search %+v: %v", parameters, err)
+			}
+			return response
+		}
+	}
+	type searchShape struct {
+		name                string
+		search              func(*testing.T) model.SearchResponse
 		statement           string
 		runs                int
 		degraded, broadened bool
-	}{
-		{"keyword, keywords only", "/api/v1/search/results",
-			url.Values{"q": {"lighthouse"}, "keywords_only": {"true"}}, searchQuery, 1, false, false},
-		{"keyword, degraded because no embedder answered", "/api/v1/search",
-			url.Values{"q": {degradedQuery}}, searchQuery, 1, true, false},
-		{"meaning, every project", "/api/v1/search",
-			url.Values{"q": {"lighthouse"}}, searchQueryMeaning, 1, false, false},
-		{"meaning, one project with the fill done", "/api/v1/search",
-			url.Values{"q": {"lighthouse"}, "project": {"BOUND"}}, searchQueryMeaningScoped, 1, false, false},
-		{"meaning, joined for a filtered search", "/api/v1/search/results",
-			url.Values{"q": {"lighthouse"}, "author": {"alice"}}, searchQueryMeaningJoined, 1, false, false},
-		{"keyword, broadened", "/api/v1/search/results",
-			url.Values{"q": {broadenedQuery}, "keywords_only": {"true"}}, searchQuery, 2, false, true},
-		{"meaning, broadened", "/api/v1/search",
-			url.Values{"q": {broadenedQuery}}, searchQueryMeaning, 2, false, true},
-	} {
+	}
+	shapes := []searchShape{
+		{"keyword, keywords only", over("/api/v1/search/results",
+			url.Values{"q": {"lighthouse"}, "keywords_only": {"true"}}), searchQuery, 1, false, false},
+		{"keyword, degraded because no embedder answered", over("/api/v1/search",
+			url.Values{"q": {degradedQuery}}), searchQuery, 1, true, false},
+		{"meaning, every project", over("/api/v1/search",
+			url.Values{"q": {"lighthouse"}}), searchQueryMeaning, 1, false, false},
+		{"meaning, one project with the fill done", over("/api/v1/search",
+			url.Values{"q": {"lighthouse"}, "project": {"BOUND"}}), searchQueryMeaningScoped, 1, false, false},
+		{"meaning, joined for a filtered search", over("/api/v1/search/results",
+			url.Values{"q": {"lighthouse"}, "author": {"alice"}}), searchQueryMeaningJoined, 1, false, false},
+		{"keyword, broadened", over("/api/v1/search/results",
+			url.Values{"q": {broadenedQuery}, "keywords_only": {"true"}}), searchQuery, 2, false, true},
+		{"meaning, broadened", over("/api/v1/search",
+			url.Values{"q": {broadenedQuery}}), searchQueryMeaning, 2, false, true},
+	}
+	for set := range searchKinds(sets) {
+		own := searchSetTexts(set)
+		if set == searchNoKind {
+			every := searchParameters{text: "lighthouse", kinds: set, limit: searchDefaultLimit}
+			keywords, scoped, joined := every, every, every
+			keywords.keywordsOnly, scoped.project, joined.author = true, "BOUND", "alice"
+			name := fmt.Sprintf("set %d, every kind left out, which no request names", set)
+			shapes = append(shapes,
+				searchShape{name + ", keyword, keywords only", direct(keywords), own[0], 1, false, false},
+				searchShape{name + ", meaning, every project", direct(every), own[1], 1, false, false},
+				searchShape{name + ", meaning, one project with the fill done", direct(scoped), own[2], 1, false, false},
+				searchShape{name + ", meaning, joined for a filtered search", direct(joined), own[3], 1, false, false},
+			)
+			continue
+		}
+		kinds := searchKindsAsked(set)
+		query := func(more url.Values) url.Values {
+			more["q"], more["kind"] = []string{"lighthouse"}, kinds
+			return more
+		}
+		name := fmt.Sprintf("set %d, kind %s", set, strings.Join(kinds, " and "))
+		shapes = append(shapes,
+			searchShape{name + ", keyword, keywords only",
+				over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), own[0], 1, false, false},
+			searchShape{name + ", meaning, every project",
+				over("/api/v1/search", query(url.Values{})), own[1], 1, false, false},
+			searchShape{name + ", meaning, one project with the fill done",
+				over("/api/v1/search", query(url.Values{"project": {"BOUND"}})), own[2], 1, false, false},
+			searchShape{name + ", meaning, joined for a filtered search",
+				over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), own[3], 1, false, false},
+		)
+	}
+
+	// covered is every text that ran inside its bounded transaction in one of the searches.
+	covered := map[string]bool{}
+	for _, shape := range shapes {
 		t.Run(shape.name, func(t *testing.T) {
 			mark := len(statements.statements())
-			response := searchResponseOn(t, handler, shape.path, shape.query.Encode())
+			response := shape.search(t)
 			if (response.Degraded != "") != shape.degraded || response.Query.Broadened != shape.broadened {
 				t.Fatalf("the search answered degraded=%q broadened=%v, want degraded %v and broadened %v: the fixture no longer reaches this shape",
 					response.Degraded, response.Query.Broadened, shape.degraded, shape.broadened)
@@ -621,11 +752,20 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 				ran[name]++
 				if why := unboundedBecause(seen, at); why != "" {
 					t.Errorf("%s, run %d of this search: %s", name, ran[name], why)
+				} else {
+					covered[name] = true
 				}
 			}
 			if want := map[string]int{texts[shape.statement]: shape.runs}; !maps.Equal(ran, want) {
-				t.Fatalf("the search ran %v of the four statements, want %v", ran, want)
+				t.Fatalf("the search ran %v of search's %d statements, want %v", ran, len(texts), want)
 			}
 		})
+	}
+	for set := range searchKinds(sets) {
+		for _, field := range searchStatementFields {
+			if name := searchSetStatementName(set, field); !covered[name] {
+				t.Errorf("%s ran inside its bounded transaction in none of this test's searches, so nothing here holds it to its bound", name)
+			}
+		}
 	}
 }
