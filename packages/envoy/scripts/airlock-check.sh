@@ -2677,7 +2677,12 @@ check_k47() {
 	expect "the rules test refuses the copy whose anthropic kind allows GET under /v1/organizations/ alone, and names each profile row its kind's allow does not hold, POST and DELETE under /v1/organizations/"
 	expect "the negative controls: a build whose proxy reads a profile's allow and not its kind's lets K's POST /v1/messages reach the stand-in API with the exchange's token; a build whose minter takes any lifetime lets the request after the 3601 answer reach it; a parent run with a grant of another kind keeps the NO_PROXY entry in the child, and the child's call does not reach the proxy; and the search for sk-ant-oat01- over the stand-in API's record of (a) finds the token"
 
-	start_stack
+	# One broker, not the stack's two, for the reason k5 gives: each pod mints and holds its own
+	# token for a grant, and the front gives each connection whichever pod it pleases, so with two
+	# the three allowed requests of one secret carry one token or two by where the front sent
+	# them. "One exchange serves the three allowed requests" is read on the pod that served them,
+	# and neither the check's words nor its controls name a second process.
+	start_stack --one-broker
 	stack_facts
 	local d="$WORK_DIR/k47"
 	mkdir -p "$d"
