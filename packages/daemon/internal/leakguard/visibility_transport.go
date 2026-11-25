@@ -3,7 +3,6 @@ package leakguard
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -483,8 +482,8 @@ func curlAnswer(status int, stdout, stderr, slug, token string) (Visibility, err
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
-	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %w", masked, oauth2call.DecodeError(err, []byte(body), &answer))
+	if err := oauth2call.UnmarshalData([]byte(body), &answer); err != nil {
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %w", masked, err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
