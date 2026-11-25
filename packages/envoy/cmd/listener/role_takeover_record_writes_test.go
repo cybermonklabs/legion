@@ -19,6 +19,7 @@ import (
 // last write is copied by the next pass, which writes the record at once with the sequence it
 // reached, young as the last write is.
 func TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_rw_a", "ses_rw_b", "rw"
 	rig.gone(a)

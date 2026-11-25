@@ -17,6 +17,7 @@ import (
 // the fourth message and none of the three A read. The fourth is the control: it shows the watch
 // sees the copies the passes make.
 func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, c, role = "ses_held_again_a", "ses_held_again_b", "ses_held_again_c", "held-again"
 	answerA := func(frame relayedFrame) []string {

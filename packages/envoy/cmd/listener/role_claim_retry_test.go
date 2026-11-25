@@ -136,6 +136,7 @@ func (r *roleClaimRetryRig) standingClaim(role string) store.RoleClaim {
 // the new revision would be refused the role as held; one that never tried again would answer the
 // revision mismatch. This claim lands, and the role ends up with the claimant.
 func TestARoleClaimWhoseRecordIsReplacedUnderItIsDecidedAgainOnTheRecordThatStands(t *testing.T) {
+	t.Parallel()
 	const (
 		claimant = "ses_retry_claimant"
 		lapsed   = "ses_retry_lapsed"
@@ -167,6 +168,7 @@ func TestARoleClaimWhoseRecordIsReplacedUnderItIsDecidedAgainOnTheRecordThatStan
 // again would take the role, since nothing is live under the session the winning claim names -
 // which is exactly the answer this caller did not ask for.
 func TestARoleClaimStatingItsOwnRevisionIsRefusedWhenItsRecordMovesAndIsNeverDecidedAgain(t *testing.T) {
+	t.Parallel()
 	const (
 		claimant = "ses_conditional_claimant"
 		seeded   = "ses_conditional_seeded"
