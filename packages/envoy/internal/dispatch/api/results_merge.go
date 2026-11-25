@@ -56,8 +56,8 @@ type mergeAnswer struct {
 // the read refreshes no row twice, whichever reader asked first.
 type mergeTimeFills struct {
 	refreshed map[mergeRow]refreshedMerge
-	readOnly bool
-	answers *delivery.HeadAnswers
+	readOnly  bool
+	answers   *delivery.HeadAnswers
 }
 
 // mergeRow is one pull request row's key in mergeTimeFills.

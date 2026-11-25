@@ -51,7 +51,7 @@ var resultsHeadsReads = []resultsHeadsRead{
 	{read: "MergeIn", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
 	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: landingQuery},
-	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestQuery", text: mergedPullRequestQuery},
+	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: mergedPullRequestOfQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's

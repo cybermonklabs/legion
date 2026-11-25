@@ -87,9 +87,9 @@ func (a *Attributor) MergeOfIssue(ctx context.Context, q refs.Queryer, issueKey 
 }
 
 var mergeOfIssueQuery = `
-	select `+mergedColumns+` from pull_request_heads
+	select ` + mergedColumns + ` from pull_request_heads
 	where issue_key = $1 and state = 'merged'
-	order by `+newestMergeFirst
+	order by ` + newestMergeFirst
 
 var mergeOfIssueRead = newHeadsStatement("", mergeOfIssueQuery, 1, "")
 
@@ -114,9 +114,9 @@ func LandingOf(ctx context.Context, q refs.Queryer, repo, branch string, answers
 }
 
 var landingQuery = `
-	select `+mergedColumns+` from pull_request_heads
+	select ` + mergedColumns + ` from pull_request_heads
 	where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
-	order by `+newestMergeFirst
+	order by ` + newestMergeFirst
 
 var landingRead = newHeadsStatement("", landingQuery, 2, "")
 
@@ -134,11 +134,11 @@ func MergedPullRequestOf(ctx context.Context, q refs.Queryer, repo string, numbe
 	return merged[0], true, nil
 }
 
-var mergedPullRequestQuery = `
-	select `+mergedColumns+` from pull_request_heads
+var mergedPullRequestOfQuery = `
+	select ` + mergedColumns + ` from pull_request_heads
 	where lower(repo) = lower($1) and number = $2 and state = 'merged'`
 
-var mergedPullRequestRead = newHeadsStatement("", mergedPullRequestQuery, 2, "")
+var mergedPullRequestRead = newHeadsStatement("", mergedPullRequestOfQuery, 2, "")
 
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.
 // HoldUnknown is that it cannot say now: the read failed, or the App cannot read the repository.

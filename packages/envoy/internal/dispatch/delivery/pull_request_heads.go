@@ -763,10 +763,10 @@ type pullRequestKey struct {
 // (answerArray.present).
 type answerColumns struct {
 	repo, headSHA, baseRef, state, headRef, mergeCommit []string
-	number, attributionRule []int32
-	issueKey, renamedFrom         []*string
-	complete, hasMerge []bool
-	eventAt, checkedAt, mergedAt moments
+	number, attributionRule                             []int32
+	issueKey, renamedFrom                               []*string
+	complete, hasMerge                                  []bool
+	eventAt, checkedAt, mergedAt                        moments
 }
 
 // answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
@@ -1121,7 +1121,6 @@ const headStoredAtAnswers = `lower(answer.repo) = lower($1) and answer.head_sha 
 // headsStoredAtCommit is the key of each row stored for repository $1, compared without case, whose
 // head is commit $2.
 const headsStoredAtCommit = `select repo, number from public.pull_request_heads where lower(repo) = lower($1) and head_sha = $2`
-
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again.

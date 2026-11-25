@@ -287,8 +287,8 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		merges:       map[[3]string]mergeAnswer{},
 		holdAnswers:  map[[3]string]delivery.HoldAnswer{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]delivery.BranchAnswer{},
-		fills:   &mergeTimeFills{},
+		commits:    map[[3]string]delivery.BranchAnswer{},
+		fills:      &mergeTimeFills{},
 		askedPulls: map[[2]string]struct{}{},
 	}
 	reader.fills.readOnly, reader.fills.answers = reader.readOnly, &reader.answers
