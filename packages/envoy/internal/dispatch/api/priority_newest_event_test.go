@@ -801,15 +801,47 @@ func requireWalkReadsIssuesOnce(t testing.TB, plan json.RawMessage, subject stri
 
 // requireWalkWithinMains holds the walk over the members in plan (newestEventWalk) to reading no
 // more shared buffers, hit plus read, than mainsWalk, those main's walk reads under the same plan
-// over the same scope.
+// over the same scope, beside the read of the relations the walk counts in its own
+// (newestEventWalkRelationsBuffers): main's walk reads its relations by the subscripts of two
+// arrays and so reads no relation.
 func requireWalkWithinMains(t testing.TB, plan json.RawMessage, subject string, mainsWalk float64) {
 	t.Helper()
-	walk := newestEventWalkBuffers(t, plan, subject)
-	t.Logf("%s reads %v shared buffers in its walk over the members, and main's walk %v", subject, walk, mainsWalk)
+	relations := newestEventWalkRelationsBuffers(t, plan, subject)
+	walk := newestEventWalkBuffers(t, plan, subject) - relations
+	t.Logf("%s reads %v shared buffers in its walk over the members beside %v in its read of the relations, and main's walk %v",
+		subject, walk, relations, mainsWalk)
 	if walk > mainsWalk {
-		t.Errorf("%s reads %v shared buffers in its walk over the members (%s), more than the %v of main's walk under the same plan, want at most main's:\n%s",
+		t.Errorf("%s reads %v shared buffers in its walk over the members (%s) beside its read of the relations, more than the %v of main's walk under the same plan, want at most main's:\n%s",
 			subject, walk, newestEventWalkCTE, mainsWalk, plan)
 	}
+}
+
+// newestEventWalkRelationsBuffers is the shared buffers, hit plus read, that the walk over the
+// members in plan counts in its own (newestEventWalk) for the read of the relations it is seeded
+// from. A node's buffers count every read made while it runs, so the walk counts the relations'
+// read wherever it runs it: the scans of priority_tuples inside it, where the planner folds the
+// relations' term (members_seed) into the walk, and, where the term is a CTE of its own, as it is
+// once the second fault's climb reads it too (priorityBacklogTerms), the buffers of that CTE's
+// plan, which the walk's scan of the CTE runs when it reads the CTE first. A scan of the CTE that
+// another node ran first counts none of the CTE's reads, so the walk's scan counts at most the
+// CTE's own buffers.
+func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
+	t.Helper()
+	seed := 0.0
+	if seeds := planSubplans(t, plan, "CTE members_seed", subject); len(seeds) == 1 {
+		top := explaintest.Nodes(t, seeds[0])[0]
+		seed = top.SharedHitBlocks + top.SharedReadBlocks
+	}
+	relations := 0.0
+	for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan, subject)) {
+		switch {
+		case node.Relation == "priority_tuples":
+			relations += node.SharedHitBlocks + node.SharedReadBlocks
+		case node.Type == "CTE Scan" && node.CTE == "members_seed":
+			relations += min(node.SharedHitBlocks+node.SharedReadBlocks, seed)
+		}
+	}
+	return relations
 }
 
 // requireEveryScanKeyed holds plan to reading every table through an index, the walk over the

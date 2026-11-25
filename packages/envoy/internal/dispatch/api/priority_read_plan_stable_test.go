@@ -189,14 +189,7 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 					subjects[mains], plan.plans[mains])
 			}
 			requireWalkReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
-			relations := newestEventWalkRelationsBuffers(t, plan.plans[statement], subjects[statement])
-			walk := newestEventWalkBuffers(t, plan.plans[statement], subjects[statement]) - relations
-			t.Logf("%s reads %v shared buffers in its walk over the members beside %v in its read of the relations, and main's walk %v",
-				subjects[statement], walk, relations, mainsWalk)
-			if walk > mainsWalk {
-				t.Errorf("%s reads %v shared buffers in its walk over the members beside its read of the relations, more than the %v of main's walk under the same plan, want at most main's:\n%s",
-					subjects[statement], walk, mainsWalk, plan.plans[statement])
-			}
+			requireWalkWithinMains(t, plan.plans[statement], subjects[statement], mainsWalk)
 			requireMemberIssueReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
 			requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], 0)
 			for _, control := range []struct {
@@ -217,32 +210,4 @@ func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
 			}
 		}
 	}
-}
-
-// newestEventWalkRelationsBuffers is the shared buffers, hit plus read, that the walk over the
-// members in plan counts in its own (newestEventWalk) for the read of the relations it is seeded
-// from. A node's buffers count every read made while it runs, so the walk counts the relations'
-// read wherever it runs it: the scans of priority_tuples inside it, where the planner folds the
-// relations' term (members_seed) into the walk, and, where the term is a CTE of its own, as it is
-// once the second fault's climb reads it too (priorityBacklogTerms), the buffers of that CTE's
-// plan, which the walk's scan of the CTE runs when it reads the CTE first. A scan of the CTE that
-// another node ran first counts none of the CTE's reads, so the walk's scan counts at most the
-// CTE's own buffers.
-func newestEventWalkRelationsBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
-	t.Helper()
-	seed := 0.0
-	if seeds := planSubplans(t, plan, "CTE members_seed", subject); len(seeds) == 1 {
-		top := explaintest.Nodes(t, seeds[0])[0]
-		seed = top.SharedHitBlocks + top.SharedReadBlocks
-	}
-	relations := 0.0
-	for _, node := range explaintest.Nodes(t, newestEventWalk(t, plan, subject)) {
-		switch {
-		case node.Relation == "priority_tuples":
-			relations += node.SharedHitBlocks + node.SharedReadBlocks
-		case node.Type == "CTE Scan" && node.CTE == "members_seed":
-			relations += min(node.SharedHitBlocks+node.SharedReadBlocks, seed)
-		}
-	}
-	return relations
 }
