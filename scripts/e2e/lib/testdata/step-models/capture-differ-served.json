@@ -1,0 +1,53 @@
+[
+  {
+    "claim": "capture-differ",
+    "id": "msg_standin_81",
+    "subagent": false,
+    "asked": "claude-model",
+    "model": "claude-served-model",
+    "endedAt": "2026-11-25T07:19:10.6870135Z",
+    "turn": "2 messages [user system] after the last answer, blocks [text text text], text \"\u003csystem-reminder\u003e\\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a…\"",
+    "step": 1,
+    "place": 1
+  },
+  {
+    "claim": "capture-differ",
+    "id": "msg_standin_82",
+    "subagent": false,
+    "asked": "claude-model",
+    "model": "claude-served-model",
+    "endedAt": "2026-11-25T07:19:13.822892127Z",
+    "turn": "1 messages [user] after the last answer, blocks [tool_result], text \"\"",
+    "step": 1,
+    "place": 2
+  },
+  {
+    "claim": "capture-differ",
+    "id": "msg_standin_84",
+    "subagent": true,
+    "asked": "claude-model",
+    "model": "claude-served-model",
+    "endedAt": "2026-11-25T07:19:16.867381453Z",
+    "turn": "2 messages [user system] after the last answer, blocks [text text text], text \"\u003csystem-reminder\u003e\\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a…\""
+  },
+  {
+    "claim": "capture-differ",
+    "id": "msg_standin_83",
+    "subagent": false,
+    "asked": "claude-model",
+    "model": "claude-served-model",
+    "endedAt": "2026-11-25T07:19:16.8674506Z",
+    "turn": "1 messages [user] after the last answer, blocks [tool_result], text \"\"",
+    "step": 1,
+    "place": 3
+  },
+  {
+    "claim": "capture-differ",
+    "id": "msg_standin_85",
+    "subagent": false,
+    "asked": "claude-model",
+    "model": "claude-served-model",
+    "endedAt": "2026-11-25T07:19:20.055309681Z",
+    "turn": "1 messages [user] after the last answer, blocks [text], text \"\u003csystem-reminder\u003e\\n[SYSTEM NOTIFICATION - NOT USER INPUT]\\nThis is an automated background-task event, NOT a message from the user.\\nDo NOT interpret this as user …\""
+  }
+]

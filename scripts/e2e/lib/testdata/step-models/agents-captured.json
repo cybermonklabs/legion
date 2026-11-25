@@ -1,0 +1,22 @@
+{
+  "legion-sm7dba47-sm7dba47-1-implementer": {
+    "harness": "omp",
+    "transcript": "omp-session-chain-A-implementer.jsonl",
+    "setModel": "smimplementera/smimplementera-model"
+  },
+  "legion-sm7dba47-sm7dba47-1-tester": {
+    "harness": "claude",
+    "transcript": "claude-session-chain-A-tester.jsonl",
+    "setModel": "anthropic/claude-model"
+  },
+  "legion-sm7dba47-sm7dba47-2-implementer": {
+    "harness": "omp",
+    "transcript": "omp-session-chain-B-implementer.jsonl",
+    "setModel": "smimplementerb/smimplementerb-model"
+  },
+  "legion-sm7dba47-sm7dba47-2-tester": {
+    "harness": "claude",
+    "transcript": "claude-session-chain-B-tester.jsonl",
+    "setModel": "anthropic/claude-model"
+  }
+}

@@ -14,9 +14,11 @@
 # Read it from those settings, never from a record, and keep a copy of the settings as evidence.
 #
 # For each harness of the agents file, c-real takes the first step that its agent ended. Both
-# reads of that step must lie more than 2 s from any response of the transcript. The step's set
-# model must be the settings'. Its counts must be known, at least 1, and equal to the transcript's
-# responses between the two reads. No record may name a model its transcript does not hold.
+# reads of that step must lie more than 2 s from any response of the transcript. The end read
+# leaves out the response of the step's completion call, a call of the legion tool with the op
+# handoff_complete or sign_off. The step's set model must be the settings'. Its counts must be
+# known, at least 1, and equal to the transcript's responses between the two reads, with the
+# completion's response. No record may name a model its transcript does not hold.
 # live-at-both-reads holds a step that another fact ended to the same four things. --lower-one
 # lowers the first count of each taken step by 1, the negative control. Both verdicts then FAIL.
 #
