@@ -464,7 +464,9 @@ function Facet({
  * on screen is the one for the window, filters and search the address names (`counted`): while a
  * new read is out the previous answer stays on screen, and its counts would be the last filter's.
  * Under Parent agent's old place, **Edit groups** opened the session-groups editor; it sits at
- * the foot of this panel now, since that facet is a column.
+ * the foot of this panel now, since that facet is a column. Its editor lists the sessions of the
+ * answer on screen, and draws each one's count under the same gate: where the address names
+ * another window, they are the previous window's.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
@@ -487,7 +489,7 @@ function DeliveryControls({
   /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
   columnsDrawn: boolean;
   /** Whether `data` is the answer for the window, filters and search the address names, the
-   *  page's own gate on its count. */
+   *  page's own gate on its count, and on the panel's and the session-groups editor's. */
   counted: boolean;
   /** The answer the panel counts and names values from; undefined until the first one. */
   data:
@@ -614,6 +616,7 @@ function DeliveryControls({
     >
       {editingGroups && data !== undefined ? (
         <SessionGroupsEditor
+          counted={counted}
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}
           onClose={() => setEditingGroups(false)}
@@ -795,8 +798,8 @@ export function DeliveryPage(): ReactNode {
   // only while the answer on screen is that one: not while a new filter's or a new window's read
   // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
   // reader is typing waits out its debounce before it is asked for. A value's count in the Filter
-  // panel, in the Own colour list and in a List column's header filter is drawn under the same
-  // gate.
+  // panel, in the Own colour list, in a List column's header filter and in the session-groups
+  // editor is drawn under the same gate.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
     // From `xl` the page is the window's height and the chart takes what its header leaves, never

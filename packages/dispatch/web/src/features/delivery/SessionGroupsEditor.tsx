@@ -177,19 +177,27 @@ function GroupCard({
  *  sessions with their titles, pull request counts and groups, to select and name as a new group,
  *  and every group, to rename, add the selected sessions to, remove members from, or delete. Every
  *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
- *  it reads by its registry title, else its short id. A save reaches the page's live views as
- *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
- *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
+ *  it reads by its registry title, else its short id. A session's count is drawn only while
+ *  `counted` holds, the page's word that `counts` is the answer for the window its address names:
+ *  while a new window's read is out the previous answer stays on screen, and its counts are the
+ *  previous window's, so each session is listed with its group alone. A save reaches the page's
+ *  live views as Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not
+ *  live (an open run's drill-down), and a refusal shows as the server wrote it, after the change
+ *  it refused. A dialog (`useDialog`), at the right edge as the drill-down is, open while it is
+ *  mounted. */
 export function SessionGroupsEditor({
   onClose,
   groups,
   titles,
+  counted = true,
   counts,
 }: {
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
+  /** Whether `counts` is the answer for the window the page's address names; an editor given
+   *  none counts. */
+  counted?: boolean;
   counts: Readonly<Record<string, number>>;
 }): ReactNode {
   const id = useId();
@@ -289,6 +297,10 @@ export function SessionGroupsEditor({
           {sessions.map((session) => {
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
+            // No count while `counts` may be another window's: the session's group alone.
+            const detail = [counted ? `${count} PR${count === 1 ? "" : "s"}` : undefined, inGroup]
+              .filter((part) => part !== undefined)
+              .join(" · ");
             return (
               <li className="flex items-center gap-2 text-sm" key={session}>
                 {/* The checkbox's label keeps the name; the agent's live link sits beside it. */}
@@ -308,10 +320,9 @@ export function SessionGroupsEditor({
                   sessionId={session}
                   storedTitle={storedTitle(session)}
                 />
-                <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
-                  {count} PR{count === 1 ? "" : "s"}
-                  {inGroup === undefined ? "" : ` · ${inGroup}`}
-                </span>
+                {detail === "" ? null : (
+                  <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>{detail}</span>
+                )}
               </li>
             );
           })}
