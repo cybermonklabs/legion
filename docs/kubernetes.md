@@ -71,12 +71,16 @@ It carries:
   The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
   A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
   It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It adds none when the caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
   The two lines record which session and which role made the commit, and they guard nothing.
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
   It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
+  Then it hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the line it read, but for a revision argument whose meaning the rewrite changed, which then names the commits it named before the step, as the step left them, and with `--ignore-working-copy` where the step took its one snapshot of the working copy, so the push takes no second one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The step gives each commit the push sends the author of the role its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (contract entry `20261125161436`, below), and prints one `legion jj:` line for each commit it rewrote.
+  It sets no author on an immutable commit, one a remote bookmark holds, one only a git tag names or one whose role has no identity, nor, but for an empty author, where it prints that it could not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
@@ -3717,6 +3721,21 @@ this release finds no row for that tree, runs it in no arm — so it too changes
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
+**The identities of an issue's roles in each role's process (contract entry `20261125161436`, `role-identities`).**
+A release that carries contract entry `20261125161436` tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
+Its value is one JSON object from each role to the `name` and `email` that role's App commits as, keys sorted.
+The daemon writes it from the identities it already resolves for each role.
+A launch whose other App's lease cannot be minted still happens: its table holds the roles of its own App alone, the daemon logs a warning naming the claim, that App and the error, and the step leaves the author of a commit whose trailer names a role left out as it is.
+The controller gets none, and `legion controller start` drops one it inherits.
+The push step of `legion jj` reads it before each `jj git push`, and gives a commit the push sends the author of the role that the commit's first `Legion-Role` trailer names, with the exceptions that [Worker image](#worker-image) names.
+The variable is the daemon's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and so is a provider key of that name.
+
+To roll this release back to a release without that entry, re-pin the earlier release, with no change to `legion.yaml`.
+There is no SQL to run and no column to drop: the change adds no store migration, and no record holds the table.
+What the rollback costs is the step:
+the earlier daemon tells no role the table, so the step does nothing, and a commit can again reach the remote with another role's App as its author.
+A tmux daemon rolled back leaves `<state_dir>/bin/jj`, which runs a `legion jj` command that the older `legion` does not have, so every pane's `jj` fails until the operator deletes that file (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+
 **An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract entry 20261125181104).**
 The release that adds the contract entry 20261125181104 (`packages/daemon/internal/api/contract_20261125181104_repository-correction.go`) carries three changes to what the daemon and its plugins exchange and store; `legion version --contracts` prints that entry's number in the build it runs from.
 
@@ -3786,7 +3805,9 @@ Every row already there takes the empty string, and such a row is asked of which
 A root architect's start and a catch-up that name a kept approval carry the document too, as `artifact` beside the approval's `step`, `approved` and `latest` (`kept.artifact` on a `supervise` start, `catch_up.kept.artifact` on a catch-up `notice`).
 
 To roll this release back, re-pin the earlier image: the release before this change, which is whichever release of `main` precedes this change's entry.
-This change merges `main` at 7102278681e2, where `main` holds no contract entry, so that image's contract is 275, the contract of cybermonklabs/legion#4392, the release in which a Legion daemon on Kubernetes writes to Dispatch as itself under `dispatch_token_broker`, which this release carries too; `legion version --contracts` of that image prints it.
+This change merges `main` at cd939dc4f32a, where `main` holds one contract entry, `20261125161436` (`role-identities`), so that image's contract is 276, the contract of cybermonklabs/legion#4580, the release that tells each role's process the git identity of every role of its issue (the paragraph above that opens **The identities of an issue's roles in each role's process**), which this release carries too; `legion version --contracts` of that image prints it.
+#4580 adds no store migration and no `legion.yaml` key, so a rollback to it takes none of its steps; a rollback below it takes the one step its paragraph names, the delete of `<state_dir>/bin/jj` under `runtime: tmux`, before the earlier image's panes start.
+Every image at contract 276 comes after cybermonklabs/legion#4392, the release at contract 275 in which a Legion daemon on Kubernetes writes to Dispatch as itself under `dispatch_token_broker`, which this release carries too.
 #4392 adds the store migration `20261124182040_issue_pod_disks` and the `legion.yaml` keys `dispatch_token_broker` and `dispatch_token_transition_file`.
 Every image at contract 275 comes after cybermonklabs/legion#5349, the release at contract 256 in which a claim's death and start failure carry their times, and after cybermonklabs/legion#5372, the release that records no release for a teardown that takes no Sandbox, which merged after #5349 at that contract, and this release carries both.
 #5349 adds the store migration `20261124073512_claim_cause_times`, #5372 adds `20261124143026_issue_release_teardown`, and neither adds a `legion.yaml` key.
@@ -3802,7 +3823,7 @@ Every image at contract 228 comes after cybermonklabs/legion#4930, the release a
 #4930 adds the store migration `20261123165139_experiment_assignment_plan` and the `legion.yaml` key `projects.<KEY>.experiments.<name>.variants[].plan`.
 Every image at contract 220 comes after the two releases that hold contract 219, which this release carries too, in this order: cybermonklabs/legion#4611, the release whose owner's plan picks the steps, whose store migration is `20261117034837_issue_plans`, and cybermonklabs/legion#5161, the release that runs a task's steps in any order, which merged after it and adds no store migration.
 Every image at contract 219 comes after cybermonklabs/legion#4273, the release at contract 217 that guards the controller's pod's memory and runs that pod in the project's sandbox, and after four releases that merged before #4611 as well, each named below: cybermonklabs/legion#4903, cybermonklabs/legion#3995, cybermonklabs/legion#4979 and cybermonklabs/legion#4550.
-So a rollback to a contract 275 image takes the steps of none of #4392, #5372, #5349, #5365, #4869, #4960, #5303, #5271, #4590, #4930, #5278, #4611, #5161, #4273 or those four, and the paragraphs below that name them are for a rollback below the contract each of them holds.
+So a rollback to a contract 276 image takes the steps of none of #4580, #4392, #5372, #5349, #5365, #4869, #4960, #5303, #5271, #4590, #4930, #5278, #4611, #5161, #4273 or those four, and the paragraphs below that name them are for a rollback below the contract each of them holds.
 #4273 adds no store migration, and its own section, [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), is for a rollback below it.
 Take the steps in this order.
 First, run the four reads of the first item of the list below until none returns a row, which leaves this release's daemon stopped.
@@ -3876,14 +3897,14 @@ The four reads come before #3995's statements because each start of this release
 Run after them, it meets only resume tasks this release has already written, each holding the resume text with the news after it, and the earlier release sends that text as it stands.
 The two sets of statements touch no row in common.
 
-This release adds no `legion.yaml` key, and the ones contracts 213, 217, 219, 220, 232 and 275 added, the decided capability name `repository-cache-room`, `runtime.kubernetes.memory_guard.controller_pod`, `projects.<KEY>.default_steps`, `projects.<KEY>.experiments.<name>.variants[].plan`, `github_graphql_share`, `dispatch_token_broker` and `dispatch_token_transition_file`, are ones the contract 275 image reads, as the contract 228, 246, 250 and 256 images added none, so a rollback to it puts no key back.
+This release adds no `legion.yaml` key, and the ones contracts 213, 217, 219, 220, 232 and 275 added, the decided capability name `repository-cache-room`, `runtime.kubernetes.memory_guard.controller_pod`, `projects.<KEY>.default_steps`, `projects.<KEY>.experiments.<name>.variants[].plan`, `github_graphql_share`, `dispatch_token_broker` and `dispatch_token_transition_file`, are ones the contract 276 image reads, as the contract 228, 246, 250, 256 and 276 images added none, so a rollback to it puts no key back.
 cybermonklabs/legion#5294, the release that reads the merge state of a base push's pull requests in one GraphQL query a page, added `github_graphql_share` at contract 232, after #5271 and before #5303, so a rollback to an image before #5294, the #5271 image and every image below contract 232 among them, takes `github_graphql_share` out of `legion.yaml` before that image is pinned, since such an image refuses the key by name and does not start.
 A rollback below contract 220 takes `plan` out of every arm of `legion.yaml` that names it before its earlier image is pinned, as #4930's section says, since a release before 220 refuses the key by name.
 A rollback below contract 219 takes `projects.<KEY>.default_steps` out of `legion.yaml` before its earlier image is pinned, as #4611's section says, since a release before 219 refuses the key by name.
 A rollback below contract 213 takes `capabilities.decided.repository-cache-room` out of `legion.yaml` after the steps here, before its earlier image is pinned, since a release before 213 refuses at load a decided name that is not one of its four ([The deployment's capability report](#the-deployments-capability-report)).
-A rollback to contract 275 needs none of the steps of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand), since that image carries that release, contract 205, which decodes the set-backs this one queues; a rollback below contract 205 takes them after the steps here, before its earlier image is pinned.
+A rollback to contract 276 needs none of the steps of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand), since that image carries that release, contract 205, which decodes the set-backs this one queues; a rollback below contract 205 takes them after the steps here, before its earlier image is pinned.
 That image runs the same Oh My Pi, so the session store's leases and the busy code are as they were, and the rollback asks nothing of the pods for them.
-The release at contract 275 keeps the project pause, which contract 178 added, so a rollback to it takes none of the steps of [Rolling back the project pause](#rolling-back-the-project-pause); a rollback below contract 178 takes them after the steps here.
+The release at contract 276 keeps the project pause, which contract 178 added, so a rollback to it takes none of the steps of [Rolling back the project pause](#rolling-back-the-project-pause); a rollback below contract 178 takes them after the steps here.
 Every image at contract 219 comes after cybermonklabs/legion#4550, which added `runtime.kubernetes.sandbox.microvm.keep_volume` and left the contract at 178, so only a rollback below contract 219 can meet an image without it.
 A rollback below contract 219 to an image before cybermonklabs/legion#4550 also takes the steps of the kept volume's **Rolling back** ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), the first of which takes the key out of `legion.yaml`, since that image refuses it at load.
 The earlier release names every column it reads and writes, so after the block it boots with every column the four migrations above add and the block leaves standing, reads none of them and writes none of them.
@@ -9879,9 +9900,9 @@ each issue's pod (every role of it alike) and the image probe's.
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
   `none` before the first login finishes, `issued` while a credential that has not expired is held (a renewal that failed beside it included), or `failed` (daemon API contract 22).
   Pod enrollment fails closed and retries until a login succeeds.
-  After a login given no HTTP answer, or a 5xx answer from the broker or its front door (the broker is down, out of reach, or cannot reach its database), the daemon waits 2 s before the next, doubling each time to at most 10 s, so after an outage it logs in again within about 10 s of the broker serving.
+  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes.
   Every other transport failure — a refused or reset connection, a timeout, an unreachable network, a resolver that failed for any other reason — is the broker out of reach too, and takes that same short wait.
-  After a login the broker refused (a 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
+  After a login the broker refused (any other 4xx), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience <the broker's audience> --duration 1h`:
@@ -10553,7 +10574,8 @@ Containers, in order:
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
-   The metaedit fills an empty author, and `jj git push` refuses a commit with an empty author.
+   The metaedit fills an empty author.
+   `jj git push` refuses a commit with an empty author, but the push step of `legion jj` first gives such a commit the author of the role that its `Legion-Role` trailer names, where the step's rules let it (`docs/deployment.md`).
 
 Volumes and mounts:
 
