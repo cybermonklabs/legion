@@ -127,13 +127,14 @@ func ready(t testing.TB) {
 // clone returns a store on a new database cloned from template, dropped after t ends.
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := adminContext(t)
+	defer cancel()
 	name := randomName(t, "dispatch_test_")
 	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
-	database, err := store.Open(ctx, testdb.WithConnectDeadline(t, databaseURL(shared.server, name)))
+	database, err := store.Open(context.Background(), testdb.WithConnectDeadline(t, databaseURL(shared.server, name)))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -148,7 +149,9 @@ func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
+	ctx, cancel := adminContext(t)
+	defer cancel()
+	if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -199,7 +202,8 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 			return
 		}
 		name := "dispatch_template_" + suffix
-		ctx := context.Background()
+		ctx, cancel := adminContext(t)
+		defer cancel()
 		// The template is a file copy of template1, for the reason each clone of it is one.
 		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
@@ -229,6 +233,21 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 // than a copy through the write-ahead log (the package comment says why).
 func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
+}
+
+// adminContext is the context of a statement a test makes on the admin pool (clone, Empty,
+// OpenFrom): its deadline is the connect end (testdb.ConnectEnd), so the statement's wait for one
+// of the pool's connections, that connection's connect and the statement itself all end by then,
+// whatever holds the pool's connections. A drop holds one for up to
+// testdb.NoDeadlineConnectTimeout while the server holds its login (openAdmin), and the pool has
+// four (MaxConns), so a statement on context.Background() waited for four such drops past the
+// connect end with no bound of its own (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool).
+// Where t names no deadline it has none.
+func adminContext(t testing.TB) (context.Context, context.CancelFunc) {
+	if end, bounded := testdb.ConnectEnd(t); bounded {
+		return context.WithDeadline(context.Background(), end)
+	}
+	return context.WithCancel(context.Background())
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops every template
@@ -336,8 +355,13 @@ func dropDatabase(name string) {
 // A connection a drop asks for (teardown) takes testdb.NoDeadlineConnectTimeout instead, as at
 // main: Run waits for the drops after the tests, when go test's alarm has stopped, and once end
 // has passed the tests' bound is a second (TimeoutUntil's floor), which a loaded server's login
-// outlasts, failing the run and leaving the database and its template on the server. Without
-// bounded (no deadline) raw's bound stands, pgxpool's two minutes where raw names none.
+// outlasts, failing the run and leaving the database and its template on the server. Two costs
+// follow. A drop holds a pool connection for up to two minutes while its login is held, so drops
+// a test's cleanups start can fill the pool's four; a test's own statement then fails by name at
+// end (adminContext), as it did when the drops had the tests' bound, and no drop leaks. And a drop
+// after the tests can take up to two minutes to connect, so a run whose tests end near end can
+// pass cmd/go's kill, one minute after -timeout ("ran too long"), as at main. Without bounded (no
+// deadline) raw's bound stands, pgxpool's two minutes where raw names none.
 func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {

@@ -164,10 +164,13 @@ const NoDeadlineConnectTimeout = 2 * time.Minute
 
 // ConnectEnd is the moment every connect a test of t's binary makes must end by: the binary's
 // deadline (go test's -timeout, the one t.Deadline names for every test of the binary) less
-// testwait.Margin. It is false where t names no deadline: a *testing.T under -timeout 0, or inside
-// a synctest bubble (testing's T.Deadline), and every testing.TB that is not a *testing.T, since
-// at Go 1.27.3 only *testing.T has a Deadline method: a benchmark's *testing.B and a fuzz
-// target's *testing.F have none.
+// testwait.Margin. It is false where t names no deadline: a *testing.T under -timeout 0, and
+// every testing.TB that is not a *testing.T, since at Go 1.27.3 only *testing.T has a Deadline
+// method: a benchmark's *testing.B and a fuzz target's *testing.F have none. Nothing inside go
+// test ends a benchmark (testing's alarm stops before benchmarks run, and cmd/go sets no kill
+// for -bench), so NoDeadlineConnectTimeout is the only bound a benchmark's connect has. Inside a
+// synctest bubble it panics, as T.Deadline does there (testing.go:2323-2327 at Go 1.27.3); no
+// test that opens a test store runs in one.
 func ConnectEnd(t testing.TB) (time.Time, bool) {
 	named, ok := t.(interface{ Deadline() (time.Time, bool) })
 	if !ok {
