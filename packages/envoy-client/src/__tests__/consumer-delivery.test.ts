@@ -18,6 +18,7 @@ import {
 import { INBOUND_CARD_MAX_BYTES, renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
+import { objectChainPastTheEncoder } from "./deep-json";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -660,8 +661,7 @@ describe("replies", () => {
   // so an actor holding an object chain 100,000 deep, past the encoder's recursion and
   // JSON.stringify's, neither throws out of the render nor sends the frame back to the stream.
   test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
-    const deep = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
-    const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${deep}},"payload":{}}`;
+    const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${objectChainPastTheEncoder}},"payload":{}}`;
     const payload = JSON.stringify({
       event_id: "evt-deep-actor",
       source: "dispatch",
