@@ -32,8 +32,9 @@
 # fails naming the commit it lacks, so a shallow clone never gives a short list.
 #
 # Run from anywhere in the clone: bash scripts/daemon-contract-order.sh --stamp HEAD
-# CI runs it in release.yaml's legion_build, worker-image.yaml's build and
-# ci-job-daemon-go.yaml's daemon-go jobs; scripts/daemon-contract-order.test.sh tests it.
+# CI runs it in release.yaml's legion_build, worker-image.yaml's build, ci-job-daemon-go.yaml's
+# daemon-go-legs and ci-job-download-retry.yaml's download-retry-images-worker jobs;
+# scripts/daemon-contract-order.test.sh tests it.
 set -euo pipefail
 export LC_ALL=C
 

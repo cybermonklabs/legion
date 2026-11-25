@@ -6,10 +6,11 @@ name: CI job download-retry
 # the four Dockerfiles, the worker image's alone in the second, as five runs of one matrix, and
 # the other three in the first. ci.yaml's job of the same
 # id calls this file, and that caller keeps `needs: changes` and the `if:` that decides whether
-# any runs, on the `changes` output download_retry: 'false' in a merge group, 'true' on a
-# dispatched run, and otherwise the download_retry filter, which is both lanes' filters together,
-# read on a pull request only under its `full-ci` or `lane:download_retry` label (ci.yaml's
-# changes job). Each lane of this file runs behind an input of its own, which the caller fills
+# any runs, on the `changes` output download_retry: 'true' on a dispatch that selects every job
+# (`-f every-job=true`, or a dispatch of main or a tag), 'false' in a merge group and on any other
+# dispatch of a branch since main's #5231, and otherwise the download_retry filter, which is both
+# lanes' filters together, read on a pull request only under its `full-ci` or
+# `lane:download_retry` label (ci.yaml's changes job). Each lane of this file runs behind an input of its own, which the caller fills
 # from the `changes` output of that lane's own filter (download_retry_sites,
 # download_retry_images), so each lane runs on exactly the changes its own filter selects, once
 # the caller runs; the two images jobs are one lane and read the one input. A job of a called

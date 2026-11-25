@@ -65,7 +65,7 @@ download_retry, the output the job's `if:` tests, is false on a pull request wit
 Neither lane runs in a merge group, whatever the change touches or the labels say
 — the `changes` job's three outputs for them are 'false' there.
 download-retry took 116.5 minutes at this branch's head, and a queue that waited for download-retry's two hours would hold every group behind it that long;
-a labelled pull request's run, or a dispatched one, proves the machinery, on the same files the group merges, and it is the one held-back job whose result never comes from the queue.
+a labelled pull request's run, or since main's #5231 a dispatch that selects every job (`-f every-job=true`, or a dispatch of main or a tag), proves the machinery, on the same files the group merges, and it is the one held-back job whose result never comes from the queue.
 The event test is in those outputs rather than in the job's `if:` because an `if:` that declines a merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh fails a selected job whose result is not success, reading that skip as a disagreement between the filter and the `if:` the author must fix;
 it admits a skip only for a job `changes` did not select, which is what 'false' there makes this one.
 
