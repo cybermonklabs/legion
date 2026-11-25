@@ -54,6 +54,16 @@
 # tell one entry's change from the other's. TestEntryFixtures and the request gate then pass over
 # the two fixtures.
 #
+# Two more rows hold the script to its main and to a stacked branch. Before the first branch's
+# conversion, the script run with the first branch's base as its main, a main from before the
+# cutover whose tree defines no registerEntry, exits non-zero naming that ref, and leaves the branch
+# as it was. After the first branch is converted and its row moved, a stacked branch made from the
+# first branch's commit of N+1 adds numbered entry N+2 (its text, its constant in
+# SupportedContracts, its manifests and its goldens by `-update`). The script run on it with
+# --base naming the first branch converts N+2 alone and merges the first branch, in a commit that
+# names it: the stacked branch then differs from the first branch by N+2's entry file and fixture,
+# so N+1, which the first branch converted, is not converted a second time under another id.
+#
 # Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
 set -euo pipefail
 
@@ -67,10 +77,13 @@ branch=convert-test-$$
 repo=$scratch/repo
 branch_two=convert-test-two-$$
 repo_two=$scratch/repo-two
+branch_stacked=convert-test-stacked-$$
+repo_stacked=$scratch/repo-stacked
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" "$branch_two" >/dev/null 2>&1 || true
+  git -C "$root" worktree remove --force "$repo_stacked" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -203,6 +216,20 @@ jq -e --argjson k "$k" 'any(.[]; .contract == $k)' "$fixtures/request-shapes.jso
 git add -A
 git commit -q -m "feat(daemon): the conversion test's entry $k"
 echo "branch: $(git diff --name-only "$base" HEAD | tr '\n' ' ')"
+# The commit of entry $k, which the stacked branch below starts from.
+entry_commit=$(git rev-parse HEAD)
+
+step "a main from before the cutover is refused"
+# The base is such a main: its version.go declares `const DaemonAPIVersion`, and its tree defines
+# no registerEntry, which the entry files of the conversion call.
+status=0
+bash "$root/scripts/daemon-contract-convert.sh" --main "$base" >"$scratch/convert-old-main.txt" 2>&1 || status=$?
+[ "$status" != 0 ] || { cat "$scratch/convert-old-main.txt"; fail "the conversion against main at $base, which declares const DaemonAPIVersion, exits 0"; }
+grep -qF "main at $base " "$scratch/convert-old-main.txt" && grep -qF 'declares `const DaemonAPIVersion`' "$scratch/convert-old-main.txt" ||
+  { cat "$scratch/convert-old-main.txt"; fail "the refusal does not name main at $base and its const DaemonAPIVersion"; }
+[ "$(git rev-parse HEAD)" = "$entry_commit" ] && [ -z "$(git status --porcelain)" ] ||
+  fail "the refused conversion changed the branch: HEAD $(git rev-parse --short HEAD), want ${entry_commit:0:10}"
+echo "refused, exit $status: $(cat "$scratch/convert-old-main.txt")"
 
 step "the conversion"
 # The control takes out the one line that runs the script, and leaves the branch as it was.
@@ -312,6 +339,80 @@ DAEMON_API_CONTRACT_BASE=$this bash .github/scripts/check-daemon-api-contract.sh
   -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract|TestEntryFixtures)$' \
   >"$scratch/gate.txt" 2>&1) || { excerpt "$scratch/gate.txt"; fail "the shape gate fails on the converted branch"; }
 echo "PASS: entry $k converts to entry $id, merges this change with no conflict, and passes the contract check and the shape gate"
+
+step "the stacked branch: numbered entry $((k + 1)) on the first branch's commit of entry $k"
+cd "$root"
+git worktree add -q -b "$branch_stacked" "$repo_stacked" "$entry_commit"
+cd "$repo_stacked"
+python3 - "$((k + 1))" <<'PY'
+import re, sys
+
+number = sys.argv[1]
+api = "packages/daemon/internal/api"
+
+
+def edit(path, change):
+    with open(path) as f:
+        text = f.read()
+    new = change(text)
+    if new == text:
+        sys.exit(f"{path}: the edit found nothing to change")
+    with open(path, "w") as f:
+        f.write(new)
+
+
+def once(pattern, replacement, text):
+    new, count = re.subn(pattern, replacement, text, count=1)
+    if count != 1:
+        sys.exit(f"no match of {pattern!r}")
+    return new
+
+
+# The entry's text, below the first branch's, and the const line raised to it.
+edit(f"{api}/version.go", lambda t: once(
+    r"\nconst DaemonAPIVersion = \d+\n",
+    lambda m: f"\n//\n// {number}: the conversion test's stacked entry -- the entry of a branch stacked on the\n"
+              "// first branch, which changes nothing of the contract.\n"
+              f"const DaemonAPIVersion = {number}\n", t))
+
+
+# The constant, after the last contract of shaping.go, and in SupportedContracts.
+def shaping(text):
+    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
+    return (text[:last.end()] + f"\n// convertStackedContract is the daemon contract of version.go's {number}, the\n"
+            "// entry of the conversion test's stacked branch.\nconst convertStackedContract = " + number + "\n"
+            + text[last.end():])
+edit(f"{api}/shaping.go", shaping)
+edit(f"{api}/answers.go", lambda t: once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", r"\1, convertStackedContract}", t))
+
+for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
+    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + number, t))
+PY
+gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go"
+(cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
+  '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
+  >"$scratch/goldens-stacked.txt" 2>&1) || { cat "$scratch/goldens-stacked.txt"; fail "the stacked branch: the goldens of entry $((k + 1)) were not written"; }
+git add -A
+git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
+
+step "the conversion of the stacked branch over its base branch"
+bash "$root/scripts/daemon-contract-convert.sh" --main "$this" --base "$branch" >"$scratch/convert-stacked.txt" 2>&1 ||
+  { cat "$scratch/convert-stacked.txt"; fail "scripts/daemon-contract-convert.sh --base $branch failed on the stacked branch"; }
+cat "$scratch/convert-stacked.txt"
+
+step "the stacked branch adds its own entry alone over its base branch"
+# With no rename detection: an entry of the base branch converted again differs from the base
+# branch's file by its id alone, which git would read as a rename.
+mapfile -t stacked < <(git diff --no-renames --name-only --diff-filter=A "$branch" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
+[ "${#stacked[@]}" -eq 1 ] && [[ ${stacked[0]} == */contract_*_convert-stacked.go ]] ||
+  fail "the stacked branch adds ${#stacked[@]} entry files over its base branch $branch, want 1, entry $((k + 1))'s: ${stacked[*]}"
+git merge-base --is-ancestor "$branch" HEAD || fail "the stacked branch does not hold its base branch $branch after the conversion"
+[[ $(git log -1 --format=%s) == *", and merge $branch" ]] ||
+  fail "the stacked branch's conversion commit names no merge of its base branch $branch: $(git log -1 --format=%s)"
+stacked_fixture=$(sed -E "s|.*/contract_([0-9]{14})_(.*)\\.go\$|$fixtures/contracts/\\1_\\2.json|" <<<"${stacked[0]}")
+[ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "${stacked[0]}" "$stacked_fixture" | sort)" ] ||
+  { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than ${stacked[0]} and $stacked_fixture"; }
+echo "PASS: the stacked branch converts entry $((k + 1)) alone to ${stacked[0]}, and differs from $branch by that entry's file and fixture"
 
 step "the second branch: numbered entries $k and $((k + 1)), each adding one field to one request"
 cd "$root"
