@@ -136,7 +136,8 @@ function closeAcme4(patch = mock(() => {})): StatusMove & { patch: typeof patch 
 
 const pendingStatus = () => screen.getByRole("status", { name: "Pending status" });
 const question = () => screen.getByRole("dialog", { name: "Move ACME-4 to Done?" });
-const choice = (name: string) => within(question()).getByRole("button", { name });
+const choice = (name: string) =>
+  within(question()).getByRole<HTMLButtonElement>("button", { name });
 
 test("idle: a status picked for an issue with no parent and no open child sends the PATCH as today, and no dry run", async () => {
   const statusChanges = answerStatusChanges();
