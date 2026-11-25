@@ -70,6 +70,7 @@ const usedTail = " Its handoff record counts as used, so the next run of this st
 // HANDOFF_STALE_GENERATION. An issue with no plan rows answers the same: a late reviewer's report
 // is taken and moves nothing, and a held issue's tester is told it runs no phase.
 func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
+	t.Parallel()
 	t.Run("a review that requested changes ended the reviewer's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -297,6 +298,7 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 // (HANDOFF_RECORD_MISMATCH), and its commit is the one its workspace stands on. Either refusal
 // writes nothing: the issue, its task, the role's row and the outbox stand as they were.
 func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
+	t.Parallel()
 	const head = "head"
 	for _, tc := range []struct {
 		name string

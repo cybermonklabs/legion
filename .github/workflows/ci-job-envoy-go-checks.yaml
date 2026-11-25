@@ -453,8 +453,8 @@ jobs:
       # On the bypass check's dispatch at main's tip after a push the queue never tested, which can
       # carry several commits, it is the commit main pointed at before that push (migration-base),
       # and a dispatch on main that names none fails here rather than compare the tip with its
-      # parent alone. On a dispatch of any other branch that names none, a full run started by
-      # hand, it is the branch's merge base with main. A push whose `before` is the all-zero
+      # parent alone. On a dispatch of any other branch that names none, it is the branch's merge
+      # base with main. A push whose `before` is the all-zero
       # commit, or a commit GitHub no longer serves, fails the base's fetch, so the check fails
       # closed: an operator then dispatches the run again by hand with a base GitHub serves, the
       # newest commit of main the queue tested before the push, as
