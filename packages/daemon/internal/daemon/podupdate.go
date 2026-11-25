@@ -2756,6 +2756,9 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
 		push := pushes[c.Role]
+		if push.Branch == "" && !push.FixReads {
+			push.Branch, _ = claim.BesideBranch(issue, 1, "a", 1, c.Role)
+		}
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound, push),
 			Branch: push.Branch, OwnFix: push.OwnFix, FixReads: push.FixReads}
 	}
@@ -2782,7 +2785,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 // branch, which has one writer while the fix holds it, so the round asks again at the next sweep.
 func (s *supervision) pushesOf(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error) {
 	if s.updatePushes == nil {
-		return nil, nil
+		return nil, errors.New("planted: no read of the pushes")
 	}
 	return s.updatePushes(ctx, issue)
 }
