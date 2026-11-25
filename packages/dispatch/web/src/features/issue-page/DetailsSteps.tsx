@@ -13,7 +13,7 @@ import {
 } from "../../theme/classes";
 import { standsFailed } from "../refs/reference-target";
 import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
-import { type StepRow, stepTasks } from "../steps/steps-model";
+import { type StepRow, stepTasks, stepVariant } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { groupsDrawn, useListPages } from "./details-leaves";
 import { authorText, pageChrome } from "./page-structure";
@@ -160,7 +160,8 @@ function Run({ row }: { row: StepRow }): ReactNode {
 
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`), under the history in Details,
- * where today's page has a Steps tab: headed by how many runs it lists, then one group per task
+ * where today's page has a Steps tab: headed by how many runs it lists, then the experiment and
+ * variant of the newest run where its records name one (`stepVariant`), then one group per task
  * in the order of each task's first step (`stepTasks`), each run of the task in the order the
  * server read them, with its step, role, type, agent, model, attempt, start, end and result. The
  * runs are one list across their tasks, drawn 20 at a time with Show more under them
@@ -192,6 +193,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   // stands failed (`standsFailed`).
   const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
+  const variant = query.data === undefined ? null : stepVariant(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);
   return (
     <section
@@ -225,6 +227,15 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           retrying={query.isFetching}
         />
       ) : null}
+      {variant === null ? null : (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
+          data-step-variant=""
+          {...authorText}
+        >
+          {variant}
+        </p>
+      )}
       {tasks === undefined ? (
         failed ? null : (
           <p className={`text-xs ${pageQuietText}`} {...pageChrome}>

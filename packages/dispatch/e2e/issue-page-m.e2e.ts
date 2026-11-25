@@ -121,6 +121,7 @@ import {
   historyShowMoreState,
   newestHistoryEntry,
   olderPageAnswered,
+  putStepExperiment,
   rowFacts,
   seededHistoryEntry,
   stepRun,
@@ -6002,5 +6003,102 @@ test("Steps in Details draws a run whose record reaches the server after its eve
       { timeout: 10_000 }
     );
     await expect(stepRun(page, late)).toHaveCount(1);
+  });
+});
+
+/**
+ * Two issues whose steps ran as Legion's daemon writes them (`putStep`, then `putStepExperiment`
+ * for each run that names an experiment): `named`, whose first generation drew the variant `a` of
+ * the experiment `planning` in one task and whose newest, the second, drew its variant `b` in two
+ * tasks; and `unnamed`, whose first generation drew that same variant `a` and whose newest, the
+ * second, names none.
+ */
+async function seedExperiment(): Promise<{ named: string; unnamed: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const named = await createIssue({ project: "CORE", title: "Runs of an experiment" });
+  const unnamed = await createIssue({ project: "CORE", title: "Runs of a newest run with none" });
+  const write = async (
+    key: string,
+    generation: number,
+    task: string,
+    drawn?: Parameters<typeof putStepExperiment>[2]
+  ) => {
+    const id = crypto.randomUUID();
+    await putStep(key, id, {
+      agent: `legion-core-${key.toLowerCase()}-implementer`,
+      ended_at: stepAt(`${9 + generation}:30`),
+      generation,
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      result: "passed",
+      role: "implementer",
+      started_at: stepAt(`${9 + generation}:00`),
+      step: 2,
+      task,
+      type: "implementation",
+    });
+    if (drawn !== undefined) await putStepExperiment(key, id, drawn);
+  };
+  const first = { experiment: "planning", variant: "a" };
+  const newest = { experiment: "planning", variant: "b" };
+  await write(named.key, 1, "default", first);
+  await write(named.key, 2, "default", newest);
+  await write(named.key, 2, "docs", newest);
+  await write(unnamed.key, 1, "default", first);
+  await write(unnamed.key, 2, "default");
+  return { named: named.key, unnamed: unnamed.key };
+}
+
+// Where the records of the issue's newest run, its highest generation, name an experiment,
+// Details' steps draw "Experiment <experiment>: variant <variant>" once, directly under their
+// heading and above their first task group, at 1440 px and at 390 px, and not the variant the
+// first generation drew. Where no record of the newest run names one, though the first
+// generation's does, they draw no such line. It carries no `@phone` tag: it reads the same markup
+// in the same order at both widths, which it sets itself, and the phone changes none of it.
+// SLOW(>=2s): nine step and experiment records written, and two issues loaded at two widths.
+test("Steps in Details names the experiment and the variant of the newest run once above its tasks, and none where none is named", async ({
+  browser,
+}) => {
+  await phase(browser, seedExperiment, async (page, seeded) => {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.named}`);
+      await openDetails(page);
+      const section = stepsSection(page);
+      await expect(
+        section.getByRole("heading", { level: 2 }),
+        `the steps of ${seeded.named} do not count its three runs at ${width} px`
+      ).toHaveText(`${CONTROL_LABELS.steps} (3)`);
+      const line = section.locator("[data-step-variant]");
+      await expect(
+        line,
+        `Details draws no experiment line for the newest run of ${seeded.named} at ${width} px`
+      ).toHaveCount(1);
+      await expect(line, `the experiment line at ${width} px`).toHaveText(
+        "Experiment planning: variant b"
+      );
+      await expect(
+        section.getByText(/^Experiment /u),
+        `the steps draw more than one experiment line at ${width} px`
+      ).toHaveCount(1);
+      await expect(section.locator("[data-step-task]")).toHaveCount(2);
+      await expect(
+        section.locator("h2 + [data-step-variant] ~ [data-step-task]"),
+        `the experiment line is not directly under the heading and above both task groups at ${width} px`
+      ).toHaveCount(2);
+
+      await gotoIssue(page, `/issues/${seeded.unnamed}`);
+      await openDetails(page);
+      await expect(
+        section.getByRole("heading", { level: 2 }),
+        `the steps of ${seeded.unnamed} do not count its two runs at ${width} px`
+      ).toHaveText(`${CONTROL_LABELS.steps} (2)`);
+      await expect(section.locator("[data-step-run]")).toHaveCount(2);
+      await expect(
+        section.getByText(/^Experiment /u),
+        `the steps of ${seeded.unnamed} draw an experiment its newest run does not name at ${width} px`
+      ).toHaveCount(0);
+      await expect(section.locator("[data-step-variant]")).toHaveCount(0);
+    }
   });
 });

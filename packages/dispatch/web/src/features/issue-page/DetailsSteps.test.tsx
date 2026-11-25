@@ -292,6 +292,71 @@ test("an issue with no runs reads None under its heading", async () => {
   }
 });
 
+// Where the records of the newest run, the highest generation, name an experiment, the section
+// draws its experiment and variant once, under its heading and above its first task group; the
+// older generation's, which names another variant, is not drawn.
+test("the section draws the experiment and variant of the newest run once, above its first task group", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        steps: [
+          stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+          stepRecord({ experiment: "planning", generation: 2, id: "newest-1", variant: "b" }),
+          stepRecord({
+            experiment: "planning",
+            generation: 2,
+            id: "newest-2",
+            role: "reviewer",
+            step: 4,
+            type: "review",
+            variant: "b",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    await headedWith(3);
+    const section = screen.getByRole("region", { name: CONTROL_LABELS.steps });
+    const line = within(section).getByText("Experiment planning: variant b");
+    expect(within(section).getAllByText(/^Experiment /u)).toHaveLength(1);
+    expect(line.hasAttribute("data-step-variant")).toBe(true);
+    const group = section.querySelector("[data-step-task]");
+    if (group === null) throw new Error("the section draws no task group");
+    expect(heading().compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  } finally {
+    steps.restore();
+  }
+});
+
+// Where no record of the newest run names an experiment, though the older generation's does, the
+// section draws no experiment line.
+test("the section draws no experiment line where no record of the newest run names one", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        steps: [
+          stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+          stepRecord({ generation: 2, id: "newest-1" }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    await headedWith(2);
+    const section = screen.getByRole("region", { name: CONTROL_LABELS.steps });
+    expect(within(section).queryByText(/^Experiment /u)).toBeNull();
+    expect(section.querySelector("[data-step-variant]")).toBeNull();
+  } finally {
+    steps.restore();
+  }
+});
+
 /** `count` passed runs of the task `task`, each its own record, `<task>-1` and on. */
 function runsOf(task: string, count: number): StepRecord[] {
   return Array.from({ length: count }, (_, index) =>
