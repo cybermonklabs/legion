@@ -1618,6 +1618,24 @@ func TestControllerStartDropsAnInheritedBootToken(t *testing.T) {
 	}
 }
 
+// A start from inside a Legion pane or pod inherits that role's table of every role's identity
+// (LEGION_ROLE_IDENTITIES, runtime.RoleIdentitiesVariable), which the push step of `legion jj`
+// reads. A controller pushes nothing and carries no table, as the daemon's own controller carries
+// none, so neither the operator's controller nor its load probe is handed it.
+func TestControllerStartDropsAnInheritedRoleIdentityTable(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	t.Setenv("LEGION_ROLE_IDENTITIES", `{"implementer":{"name":"legion-implementer[bot]","email":"7+legion-implementer[bot]@users.noreply.github.com"}}`)
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+		if value, set := env["LEGION_ROLE_IDENTITIES"]; set {
+			t.Errorf("the %s's environment carries LEGION_ROLE_IDENTITIES=%q", kind, value)
+		}
+	}
+}
+
 // A start from inside the daemon-launched controller's pod, or from any shell that exported it,
 // inherits LEGION_SLACK_CHANNELS: another project's channels, or this project's, whose mentions only
 // the daemon's controller hears. Neither the operator's controller nor its load probe is handed it.

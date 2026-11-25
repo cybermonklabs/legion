@@ -519,13 +519,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` and
-`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
-package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
-database and a server or document service of its own (`storetest.Open`), so run alone it spends
-most of its time waiting on Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment

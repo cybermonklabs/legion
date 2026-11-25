@@ -1,0 +1,4 @@
+jj git push --dry-run --ignore-working-copy --color=never --bookmark forward
+Changes to push to origin:
+  Move forward bookmark forward from bacdb9e98ea0 to 82c89dd0bcca
+Dry-run requested, not pushing.
