@@ -14,25 +14,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// takeOverPublisherHold makes another process the publisher hold's holder, as duty's takeHold
-// writes the hold's row, and answers the write's error.
-func takeOverPublisherHold(ctx context.Context, database *store.Store) error {
-	_, err := database.Pool.Exec(ctx, `
-		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + interval '1 hour')
-		on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at
-	`, publisherHold, uuid.New())
-	return err
-}
-
-// expiryCursor is the stream sequence of the last expiry notice the outbox recorded, 0 for none.
-func expiryCursor(t *testing.T, database *store.Store) int64 {
+// armTakeover sets deps's holdRead hook to make another process the publisher hold's holder
+// (writePublisherHold) the next time a holder transaction's first read runs while the returned
+// flag is set, and clears the flag when it does: a test sets the flag just before the pass whose
+// record it means to roll back, and a flag still set after that pass means no record ran.
+func armTakeover(t *testing.T, database *store.Store, deps *Deps) *atomic.Bool {
 	t.Helper()
-	var cursor int64
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce((select sequence from outbox_kept_expiry_cursor), 0)`).Scan(&cursor); err != nil {
-		t.Fatalf("read the expiry cursor: %v", err)
+	armed := new(atomic.Bool)
+	deps.holdRead = func() {
+		if armed.CompareAndSwap(true, false) {
+			if err := writePublisherHold(context.Background(), database, uuid.New()); err != nil {
+				t.Errorf("take the publisher hold over: %v", err)
+			}
+		}
 	}
-	return cursor
+	return armed
 }
 
 // A takeover of the publisher hold that meets a holder transaction's final lock waits for that
@@ -70,7 +66,7 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 		t.Fatal("the expiry record did not reach its hold check within 30s")
 	}
 	tookOver := make(chan error, 1)
-	go func() { tookOver <- takeOverPublisherHold(ctx, rig.database) }()
+	go func() { tookOver <- writePublisherHold(ctx, rig.database, uuid.New()) }()
 	select {
 	case err := <-tookOver:
 		close(release)
@@ -114,28 +110,13 @@ func TestATakeoverBeforeTheFinalLockMakesTheRecordRollBack(t *testing.T) {
 		const role = "expiry-takeover-notice"
 		rig.silent(t, contracts.RoleTopicPrefix+role)
 		event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-		var armed atomic.Bool
 		deps := rig.deps()
-		deps.holdRead = func() {
-			if armed.CompareAndSwap(true, false) {
-				if err := takeOverPublisherHold(ctx, rig.database); err != nil {
-					t.Errorf("take the publisher hold over: %v", err)
-				}
-			}
-		}
+		armed := armTakeover(t, rig.database, &deps)
 		outbox := holding(t, deps)
 		outbox.scan(ctx, unfenced{})
-		for keep := 1; keep < maxRoleKeeps; keep++ {
-			lane := keptLane(t, rig.client, role)
-			expire(t, rig.client, role, lane[len(lane)-1])
-			outbox.passKeptExpiries(ctx, unfenced{})
-		}
-		lane := keptLane(t, rig.client, role)
-		if len(lane) != maxRoleKeeps {
-			t.Fatalf("role %s's kept lane holds %d copies, want %d before the last expiry", role, len(lane), maxRoleKeeps)
-		}
+		expireUpTo(t, rig, outbox, unfenced{}, role, event.ID, maxRoleKeeps-1)
 		before := expiryCursor(t, rig.database)
-		expire(t, rig.client, role, lane[maxRoleKeeps-1])
+		expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID))
 
 		armed.Store(true)
 		outbox.passKeptExpiries(ctx, unfenced{})
@@ -160,15 +141,8 @@ func TestATakeoverBeforeTheFinalLockMakesTheRecordRollBack(t *testing.T) {
 		const role = "expiry-takeover-cannot-keep"
 		rig.silent(t, contracts.RoleTopicPrefix+role)
 		event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-		var armed atomic.Bool
 		deps := rig.deps()
-		deps.holdRead = func() {
-			if armed.CompareAndSwap(true, false) {
-				if err := takeOverPublisherHold(ctx, rig.database); err != nil {
-					t.Errorf("take the publisher hold over: %v", err)
-				}
-			}
-		}
+		armed := armTakeover(t, rig.database, &deps)
 		outbox := holding(t, deps)
 		owedExpiry(t, rig.database, event.ID, role, 1, 999991, nil)
 
@@ -207,16 +181,8 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	outbox.scan(ctx, hold)
-	for keep := 1; keep < maxRoleKeeps; keep++ {
-		lane := keptLane(t, rig.client, role)
-		expire(t, rig.client, role, lane[len(lane)-1])
-		outbox.passKeptExpiries(ctx, hold)
-	}
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != maxRoleKeeps {
-		t.Fatalf("role %s's kept lane holds %d copies, want %d before the last expiry", role, len(lane), maxRoleKeeps)
-	}
-	expire(t, rig.client, role, lane[maxRoleKeeps-1])
+	expireUpTo(t, rig, outbox, hold, role, event.ID, maxRoleKeeps-1)
+	expire(t, rig.client, role, newestCopyOf(t, rig, role, event.ID))
 
 	// Another write holds the issue's row while the record that appends the event's
 	// role.undelivered record waits on it, for longer than the hold's loss window.

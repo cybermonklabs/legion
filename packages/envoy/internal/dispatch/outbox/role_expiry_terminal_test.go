@@ -121,12 +121,12 @@ func undeliveredCount(t *testing.T, database *store.Store, eventID int64) int {
 	return count
 }
 
-// An event whose copies are all gone - the stream no longer holds any copy its owed keeps name -
-// ends as an event recorded undelivered at the bound does: one role.undelivered record, however
-// many of its gone copies one pass finds, and none of its rows left owed. An event one of whose
-// copies is gone while another is still owed a keep is not ended: the gone row is passed over and
-// the other stays owed. With the fix turned off each gone copy appends a record of its own and
-// a gone copy ends an event another copy still carries.
+// An event whose copies all cannot be kept again - the stream no longer holds any copy its owed
+// keeps name - ends as an event recorded undelivered at the bound does: one role.undelivered
+// record, however many such copies one pass finds, and none of its rows left owed. An event one of
+// whose copies cannot be kept again while another is still owed a keep is not ended: that row is
+// settled carried and the other stays owed. With the carried outcome taken away, each such copy
+// appends a record of its own and ends an event another copy still carries.
 func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -169,11 +169,11 @@ func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 	}
 }
 
-// A gone copy does not end an event a sibling copy delivers in the same pass: with a session
-// holding the role, the sibling is forwarded to it, and with none, the sibling is kept again. In
-// both, the gone row is passed over and no role.undelivered record is appended. With the fix turned
-// off the gone row ends the event after its sibling reached the holder, or while its new copy still
-// has its hour.
+// A copy that cannot be kept again does not end an event a sibling copy delivers in the same pass:
+// with a session holding the role, the sibling is forwarded to it, and with none, the sibling is
+// kept again. In both, the row is settled carried and no role.undelivered record is appended. With
+// the carried outcome taken away, the row ends the event after its sibling reached the holder, or
+// while its new copy still has its hour.
 func TestAGoneCopyDoesNotEndAnEventItsSiblingDelivers(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		t.Run(fmt.Sprintf("held %v", held), func(t *testing.T) {

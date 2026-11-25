@@ -148,9 +148,8 @@ func TestAnOutboxTheHoldDoesNotNameWritesNothingOfTheExpiries(t *testing.T) {
 	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 0 {
 		t.Fatalf("the process the hold does not name recorded %+v, want nothing", rows)
 	}
-	var cursor int64
-	if err := rig.database.Pool.QueryRow(ctx, `select coalesce((select sequence from outbox_kept_expiry_cursor), 0)`).Scan(&cursor); err != nil || cursor != 0 {
-		t.Fatalf("the expiry cursor is %d (%v) after the other process's pass, want 0", cursor, err)
+	if cursor := expiryCursor(t, rig.database); cursor != 0 {
+		t.Fatalf("the expiry cursor is %d after the other process's pass, want 0", cursor)
 	}
 	if lane := keptLane(t, rig.client, role); len(lane) != 1 {
 		t.Fatalf("role %s's kept lane holds %d copies after the other process's pass, want 1", role, len(lane))

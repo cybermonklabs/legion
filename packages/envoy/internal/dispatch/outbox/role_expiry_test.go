@@ -366,48 +366,109 @@ func lastMsgID(lane []bus.StoredMessage) string {
 	return lane[len(lane)-1].MsgID
 }
 
-// refusingKeeps is a publisher whose window refuses every keep on role's kept lane for good, as
-// NATS refuses a send however often it is sent (bus.ErrRefused), and passes every other send on.
-type refusingKeeps struct {
+// expiryCursor is the stream sequence of the last expiry notice the outbox recorded, 0 for none.
+func expiryCursor(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var cursor int64
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce((select sequence from outbox_kept_expiry_cursor), 0)`).Scan(&cursor); err != nil {
+		t.Fatalf("read the expiry cursor: %v", err)
+	}
+	return cursor
+}
+
+// newestCopyOf is the copy of eventID that role's kept lane stored last.
+func newestCopyOf(t *testing.T, rig *roleRig, role string, eventID int64) bus.StoredMessage {
+	t.Helper()
+	var newest *bus.StoredMessage
+	for _, stored := range keptLane(t, rig.client, role) {
+		if envelopeOf(t, stored).SourceEventID == fmt.Sprint(eventID) {
+			newest = &stored
+		}
+	}
+	if newest == nil {
+		t.Fatalf("role %s's kept lane holds no copy of event %d", role, eventID)
+	}
+	return *newest
+}
+
+// expireUpTo runs eventID's copies on role's kept lane through keeps 1 to last: for each, it stores
+// the expiry notice of the event's newest copy, as a listener's walk does at the end of its hour,
+// and runs outbox's expiry pass under hold. At maxRoleKeeps the outbox records the event
+// undelivered; below it, the outbox has kept the event's copy last+1 times.
+func expireUpTo(t *testing.T, rig *roleRig, outbox *Outbox, hold fence, role string, eventID int64, last int) {
+	t.Helper()
+	for keep := 1; keep <= last; keep++ {
+		if notice := expire(t, rig.client, role, newestCopyOf(t, rig, role, eventID)); notice.Attempt != keep {
+			t.Fatalf("event %d's newest copy names attempt %d, want %d", eventID, notice.Attempt, keep)
+		}
+		outbox.passKeptExpiries(context.Background(), hold)
+	}
+}
+
+// failingKeeps is a publisher whose window answers every keep on role's kept lane with err, and
+// passes every other send on.
+type failingKeeps struct {
 	*bus.Client
 	role string
+	err  error
 }
 
-func (p refusingKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
-	return refusingKeepsWindow{Sender: p.Client.WindowUntil(deadline), role: p.role}
+func (p failingKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
+	return failingKeepsWindow{Sender: p.Client.WindowUntil(deadline), keeps: p}
 }
 
-type refusingKeepsWindow struct {
+type failingKeepsWindow struct {
 	bus.Sender
-	role string
+	keeps failingKeeps
 }
 
-func (w refusingKeepsWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
-	if subject == bus.KeptRoleSubject(w.role) {
-		return answered(fmt.Errorf("test window: %w", bus.ErrRefused))
+func (w failingKeepsWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	if subject == bus.KeptRoleSubject(w.keeps.role) {
+		return answered(fmt.Errorf("test window: %w", w.keeps.err))
 	}
 	return w.Sender.PublishStoredAsync(subject, item, msgID)
 }
 
-// An expired copy whose keep NATS refuses for good cannot be kept again, so its event ends as one
-// whose copy is gone does: its row settles undelivered and one role.undelivered record is appended,
-// with the reason expired, after the one keep that ended. Before this rule a refused keep was a
-// failed attempt, retried with backoff for good, and never reached its record.
-func TestARefusedKeepEndsItsEventRecordedUndelivered(t *testing.T) {
-	ctx := context.Background()
-	rig := newRoleRig(t)
-	const role = "expiry-keep-refused"
+// expiredOnce routes an event to role, keeps its copy and ends that copy's hour, and answers the
+// event: what a test of the expiry pass's first keep starts from.
+func expiredOnce(t *testing.T, rig *roleRig, role string) model.Event {
+	t.Helper()
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	holding(t, rig.deps()).scan(ctx, unfenced{})
+	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 	lane := keptLane(t, rig.client, role)
 	if len(lane) != 1 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
 	}
 	expire(t, rig.client, role, lane[0])
+	return event
+}
 
-	refusing := holding(t, rig.publisherOn(refusingKeeps{Client: rig.client, role: role}))
-	refusing.passKeptExpiries(ctx, unfenced{})
+// expiryState is eventID's one expiry row for role: its failed attempts, whether it is settled,
+// and when it is due again.
+func expiryState(t *testing.T, database *store.Store, eventID int64, role string) (attempts int, settled bool, due *time.Time) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `
+		select attempt_count, settled_at is not null, next_attempt_at from outbox_role_copy_expiries
+		where event_id = $1 and role = $2
+	`, eventID, role).Scan(&attempts, &settled, &due); err != nil {
+		t.Fatalf("read event %d's expiry: %v", eventID, err)
+	}
+	return attempts, settled, due
+}
+
+// An expired copy whose keep NATS refuses for good cannot be kept again, and no other copy of the
+// event carries its delivery, so its row settles undelivered and one role.undelivered record is
+// appended, with the reason expired, after the one keep that ended. With a refused keep counted as
+// a failed attempt instead, the row stays owed and is retried with backoff for good.
+func TestARefusedKeepEndsItsEventRecordedUndelivered(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-keep-refused"
+	event := expiredOnce(t, rig, role)
+
+	holding(t, rig.publisherOn(failingKeeps{Client: rig.client, role: role, err: bus.ErrRefused})).passKeptExpiries(ctx, unfenced{})
 
 	rows := expiryRows(t, rig.database, event.ID, role)
 	if len(rows) != 1 || !rows[0].settled || rows[0].outcome == nil || *rows[0].outcome != expiryUndelivered {
@@ -423,8 +484,8 @@ func TestARefusedKeepEndsItsEventRecordedUndelivered(t *testing.T) {
 }
 
 // A notice whose own attempt disagrees with the outbox's count - here it says 5 for the event's
-// first expiry - is recorded at the outbox's next attempt, 1, and the event is kept again. Before
-// this rule the notice's attempt decided the row, so this notice reached the bound at once.
+// first expiry - is recorded at the outbox's next attempt, 1, and the event is kept again. With
+// the notice's attempt deciding the row, this notice reaches the bound at once.
 func TestTheOutboxsCountDecidesAnExpirysAttempt(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -453,7 +514,8 @@ func TestTheOutboxsCountDecidesAnExpirysAttempt(t *testing.T) {
 
 // A notice that names no copy this outbox kept for its role is passed over, and only the cursor
 // moves past it: one for a role the event was never routed to, and one stored on another role's
-// expiry subject than its own role's. Before this rule both were recorded and kept again.
+// expiry subject than its own role's. With the routing and subject checks taken away, both are
+// recorded and kept again.
 func TestANoticeForACopyTheOutboxNeverKeptIsPassedOver(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
@@ -535,46 +597,16 @@ func TestANoticeWhoseRoleIsNoRoleNameIsPassedOver(t *testing.T) {
 	}
 }
 
-// unavailableKeeps is a publisher whose window answers every keep on role's kept lane as NATS
-// unreachable (bus.ErrUnavailable), and passes every other send on.
-type unavailableKeeps struct {
-	*bus.Client
-	role string
-}
-
-func (p unavailableKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
-	return unavailableKeepsWindow{Sender: p.Client.WindowUntil(deadline), role: p.role}
-}
-
-type unavailableKeepsWindow struct {
-	bus.Sender
-	role string
-}
-
-func (w unavailableKeepsWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
-	if subject == bus.KeptRoleSubject(w.role) {
-		return answered(fmt.Errorf("test window: %w", bus.ErrUnavailable))
-	}
-	return w.Sender.PublishStoredAsync(subject, item, msgID)
-}
-
 // A keep of the expiry pass that finds NATS unavailable counts on the outbox's publish failures as
 // failed, and its row is released after retry.BaseDelay with no attempt counted: the outage is no
-// fault of the row. Before the shared send rule the expiry pass counted nothing for it.
+// fault of the row. With the send released before it is counted, the count is missing.
 func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "expiry-keep-unavailable"
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	holding(t, rig.deps()).scan(ctx, unfenced{})
-	lane := keptLane(t, rig.client, role)
-	if len(lane) != 1 {
-		t.Fatalf("role %s's kept lane holds %d copies, want the scan's one", role, len(lane))
-	}
-	expire(t, rig.client, role, lane[0])
+	event := expiredOnce(t, rig, role)
 	deps, registry := rig.countingDeps(t)
-	deps.Publisher = unavailableKeeps{Client: rig.client, role: role}
+	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrUnavailable}
 
 	before := time.Now()
 	holding(t, deps).passKeptExpiries(ctx, unfenced{})
@@ -583,17 +615,32 @@ func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	if body := failureReasons(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
 		t.Fatalf("/metrics body = %q, want the unavailable keep counted as failed once", body)
 	}
-	var attempts int
-	var settled bool
-	var due *time.Time
-	if err := rig.database.Pool.QueryRow(ctx, `
-		select attempt_count, settled_at is not null, next_attempt_at from outbox_role_copy_expiries
-		where event_id = $1 and role = $2
-	`, event.ID, role).Scan(&attempts, &settled, &due); err != nil {
-		t.Fatalf("read event %d's expiry: %v", event.ID, err)
-	}
+	attempts, settled, due := expiryState(t, rig.database, event.ID, role)
 	if attempts != 0 || settled || due == nil || due.Before(before.Add(retry.BaseDelay-time.Second)) || due.After(after.Add(retry.BaseDelay+time.Second)) {
 		t.Fatalf("event %d's expiry is attempts=%d settled=%v due=%v, want no attempt, unsettled, due retry.BaseDelay (%v) after the pass",
 			event.ID, attempts, settled, due, retry.BaseDelay)
+	}
+}
+
+// A keep of the expiry pass that the stream never acknowledged counts on the outbox's publish
+// failures as unanswered, as the batch counts a role-route send it never heard back on
+// (forwardUnanswered), and its row counts one failed attempt. With the keep not counted as a
+// role-route send, it is counted as failed.
+func TestAnUnacknowledgedKeepIsCountedUnanswered(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "expiry-keep-unacknowledged"
+	event := expiredOnce(t, rig, role)
+	deps, registry := rig.countingDeps(t)
+	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrNotAcknowledged}
+
+	holding(t, deps).passKeptExpiries(ctx, unfenced{})
+
+	body := failureReasons(t, registry)
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="unanswered"} 1`) || strings.Contains(body, `reason="failed"`) {
+		t.Fatalf("/metrics body = %q, want the unacknowledged keep counted as unanswered once and nothing as failed", body)
+	}
+	if attempts, settled, _ := expiryState(t, rig.database, event.ID, role); attempts != 1 || settled {
+		t.Fatalf("event %d's expiry is attempts=%d settled=%v, want one failed attempt, unsettled", event.ID, attempts, settled)
 	}
 }

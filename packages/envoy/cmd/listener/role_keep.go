@@ -1682,13 +1682,14 @@ type keptRoleDrop struct {
 	unreadable bool
 }
 
-// claimReason is the reason a walk writes into its claim of the copy it ends for d
-// (bus.KeptRoleCursor.DeadLetter): with a dead letter (endKeptCopyWithDeadLetter), or, for an
-// expired copy Dispatch's outbox kept, with an expiry notice (endKeptCopyWithExpiryNotice, d an
-// expired drop). It is d's reason, with unconfirmedClaimSuffix after it for a copy whose forward
-// may have reached the holder (d.forwarded), whichever reason that is. It is the one place a drop
-// is written into a claim, as keptCopyClaimOf is the one place a claim is read back, so a walk
-// that takes the claim over drops the copy for the reason, and with the qualifier, this drop has.
+// claimReason is the reason a walk writes into its claim of the copy it ends with a dead letter
+// for d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter): d's reason, with
+// unconfirmedClaimSuffix after it for a copy whose forward may have reached the holder
+// (d.forwarded), whichever reason that is. It is the one place a dead letter's drop is written
+// into a claim; an expiry notice, which no forward precedes, writes the plain expired reason
+// itself (endKeptCopyWithExpiryNotice). keptCopyClaimOf is the one place a claim is read back, so a
+// walk that takes the claim over drops the copy for the reason, and with the qualifier, this drop
+// has.
 func (d keptRoleDrop) claimReason() string {
 	if d.forwarded {
 		return string(d.reason) + unconfirmedClaimSuffix
@@ -1990,8 +1991,7 @@ func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelo
 func endKeptCopyWithExpiryNotice(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role := lane.cfg, lane.role
 	notice := keptCopyExpiry(role, stored, judged.item, judged.at)
-	claim := keptRoleDrop{reason: deadLetterExpired}.claimReason()
-	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: claim}); err != nil {
+	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: string(deadLetterExpired)}); err != nil {
 		return false, false, err
 	}
 	published := cfg.client.PublishKeptCopyExpiry(ctx, notice)

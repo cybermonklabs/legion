@@ -150,8 +150,8 @@ func holdsPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (boo
 // only across the commit, never while the transaction waits on anything else - an event owner's
 // lock that appendUndelivered takes, say - so the hold's renewal, which writes the same row, never
 // waits behind such a wait: the hold is lost after its TTL less its margin (4 s) with no renewal,
-// which is shorter than recordTimeout. Deps.holdLocked runs once the lock is held, for a test.
-func lockPublisherHold(ctx context.Context, deps Deps, tx pgx.Tx, instance uuid.UUID) (bool, error) {
+// which is shorter than recordTimeout.
+func lockPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (bool, error) {
 	var mine bool
 	err := tx.QueryRow(ctx, `
 		select holder = $2 and expires_at > now() from duty_holds where name = $1 for share
@@ -159,22 +159,19 @@ func lockPublisherHold(ctx context.Context, deps Deps, tx pgx.Tx, instance uuid.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	if deps.holdLocked != nil {
-		deps.holdLocked()
-	}
-	return mine, nil
+	return mine, err
 }
 
 // inHolderTransaction runs write in one transaction the publisher hold fences, and publishes the
-// event write appended, if any, once the transaction has committed. It is the one way an expiry
-// record is written (recordKeptExpiry, recordCannotKeep). The transaction reads the hold's row
-// first with no lock (holdsPublisherHold), runs write, and locks the hold's row for share as its
-// last statement before the commit (lockPublisherHold); when the row does not name instance at
-// either read it writes nothing and answers errNotTheHolder. Deps.holdRead runs after the first
-// read, for a test that takes the hold over between the two.
+// event write appended, if any, once the transaction has committed. It covers every write of the
+// expiry work that may append a role.undelivered record: a notice's record (recordKeptExpiry) and
+// a record of a copy that cannot be kept again (recordCannotKeep). The pass's other writes to
+// outbox_role_copy_expiries are single statements that check the hold themselves
+// (expiryClaimQuery, expiryRecordQuery). The transaction reads the hold's row first with no lock
+// (holdsPublisherHold), runs write, and locks the hold's row for share as its last statement
+// before the commit (lockPublisherHold); when the row does not name instance at either read it
+// writes nothing and answers errNotTheHolder. For a test, Deps.holdRead runs after the first read,
+// and Deps.holdLocked once the final lock is held.
 func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, write func(pgx.Tx) (*model.Event, error)) error {
 	tx, err := deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -193,10 +190,13 @@ func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, wri
 	if err != nil {
 		return err
 	}
-	if mine, err := lockPublisherHold(ctx, deps, tx, instance); err != nil {
+	if mine, err := lockPublisherHold(ctx, tx, instance); err != nil {
 		return err
 	} else if !mine {
 		return errNotTheHolder
+	}
+	if deps.holdLocked != nil {
+		deps.holdLocked()
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -789,7 +789,7 @@ func recordCannotKeep(ctx context.Context, deps Deps, instance uuid.UUID, row ca
 			return nil, err
 		}
 		if carried {
-			slog.Info("dispatch outbox: an expired copy that cannot be kept again is passed over; another copy of the event carries its delivery to the role",
+			slog.Info("dispatch outbox: an expired copy that cannot be kept again is settled carried; another copy of the event carries its delivery to the role",
 				"event_id", held.eventID, "role", held.role, "attempt", held.attempt, "sequence", held.sequence, "reason", row.reason)
 			return nil, nil
 		}

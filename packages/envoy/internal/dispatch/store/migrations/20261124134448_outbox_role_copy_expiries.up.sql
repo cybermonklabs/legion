@@ -3,19 +3,20 @@
 -- The copies the outbox kept on a role's kept lane whose hour ended with no session taking them
 -- (internal/dispatch/outbox/role_expiry.go): one row per (event, role, keep_attempt), written when
 -- the outbox reads the listener's expiry notice of that copy (bus.KeptCopyExpiry). keep_attempt is
--- the outbox's own count of the pair's expiries, one more than the pair's rows (1 for the first);
--- the notice's own attempt decides nothing. copy_sequence is where the stream holds that copy on
--- the role's kept lane, which is what the outbox reads back to keep it again and what tells a
+-- the outbox's own count of the pair's expiries, one more than the pair's earlier rows (1 for the
+-- first); the notice's own attempt decides nothing. copy_sequence is where the stream holds that
+-- copy on the role's kept lane, which is what the outbox reads back to keep it again and what tells a
 -- second notice of the same copy from another copy's; dedupe_key, kept_at and dropped_at are the
 -- notice's. A row whose keep_attempt is below the outbox's bound (maxRoleKeeps) owes a keep of the
 -- next attempt, which the outbox's expiry pass makes and settles the row by: outcome kept (the copy
 -- is on the lane again), forwarded (a session held the role by then and was sent it) or skipped
 -- (the holder was the event's own actor); a row at the bound is written settled with outcome
 -- undelivered, in the transaction that appends the event's role.undelivered record. A row whose
--- copy cannot be kept again - the stream no longer holds it, or NATS refused its keep or its
--- forward for good - is settled carried while another copy of the event still carries its delivery
--- to the role, and undelivered, with that record, when none does. next_attempt_at and
--- attempt_count are the pass's claim and backoff, as comment_fallback_copies keeps them.
+-- copy cannot be kept again - the stream no longer holds it, or holds one no read can decode, or
+-- NATS refused its keep or its forward for good - is settled carried while another copy of the
+-- event still carries its delivery to the role, and undelivered, with that record, when none does.
+-- next_attempt_at and attempt_count are the pass's claim and backoff, as comment_fallback_copies
+-- keeps them.
 --
 -- outbox_kept_expiry_cursor is its one row: the stream sequence of the last expiry notice the
 -- outbox read, so a read goes on from the notice after it.

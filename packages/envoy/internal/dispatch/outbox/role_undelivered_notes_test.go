@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -74,27 +73,12 @@ func systemMessages(t *testing.T, database *store.Store, key string) []systemMes
 	return found
 }
 
-// expireToTheBound ends eventID's copies for role undelivered: it stores the expiry notice of the
-// event's newest copy on role's kept lane, as a listener's walk does at the end of its hour, and
-// runs the outbox's expiry pass, maxRoleKeeps times, so the outbox keeps the event again until its
-// bound and then records it undelivered.
+// expireToTheBound ends eventID's copies for role undelivered: it runs the event's copies through
+// every keep of the bound (expireUpTo), so the outbox keeps the event again until its bound and
+// then records it undelivered.
 func expireToTheBound(t *testing.T, rig *roleRig, outbox *Outbox, role string, eventID int64) {
 	t.Helper()
-	for keep := 1; keep <= maxRoleKeeps; keep++ {
-		var newest *bus.StoredMessage
-		for _, stored := range keptLane(t, rig.client, role) {
-			if envelopeOf(t, stored).SourceEventID == fmt.Sprint(eventID) {
-				newest = &stored
-			}
-		}
-		if newest == nil {
-			t.Fatalf("role %s's kept lane holds no copy of event %d before its keep %d ends", role, eventID, keep)
-		}
-		if notice := expire(t, rig.client, role, *newest); notice.Attempt != keep {
-			t.Fatalf("event %d's newest copy names attempt %d, want %d", eventID, notice.Attempt, keep)
-		}
-		outbox.passKeptExpiries(context.Background(), unfenced{})
-	}
+	expireUpTo(t, rig, outbox, unfenced{}, role, eventID, maxRoleKeeps)
 	var records int
 	if err := rig.database.Pool.QueryRow(context.Background(), `
 		select count(*) from events where type = $1 and (payload ->> 'event_id')::bigint = $2
