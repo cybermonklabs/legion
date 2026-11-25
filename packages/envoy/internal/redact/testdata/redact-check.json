@@ -4460,6 +4460,156 @@
         "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
         "files": ["packages/envoy/agentloop/redirect_location_test.go"],
         "capture": "agentloop.redirect-error/openai-chat-elsewhere"
+      },
+      {
+        "row": "legion-daemon-root-state-read",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/daemon_root_words_test.go"],
+        "capture": "legion.daemon-root/state-read"
+      },
+      {
+        "row": "legion-daemon-root-state-read-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/daemon_root_words_test.go"],
+        "capture": "legion.daemon-root/state-read-unparsed"
+      },
+      {
+        "row": "legion-daemon-root-secret-mint",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/daemon_root_words_test.go"],
+        "capture": "legion.daemon-root/secret-mint"
+      },
+      {
+        "row": "legion-daemon-root-credential",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/daemon_root_words_test.go"],
+        "capture": "legion.daemon-root/credential"
+      },
+      {
+        "row": "legion-git-remote-url-line",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/remote_url_words_test.go"],
+        "capture": "legion.git-remote/url-line"
+      },
+      {
+        "row": "legion-git-remote-ssh-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/remote_url_words_test.go"],
+        "capture": "legion.git-remote/ssh-elsewhere"
+      },
+      {
+        "row": "legion-git-remote-remote-v-line",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/remote_url_words_test.go"],
+        "capture": "legion.git-remote/remote-v-line"
+      },
+      {
+        "row": "legion-git-remote-remote-v-second-url",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/remote_url_words_test.go"],
+        "capture": "legion.git-remote/remote-v-second-url"
+      },
+      {
+        "row": "legion-cache-url-no-scheme",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/cache_url_words_test.go"],
+        "capture": "legion.cache-url/no-scheme"
+      },
+      {
+        "row": "legion-cache-url-other-scheme",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/cmd/legion/cache_url_words_test.go"],
+        "capture": "legion.cache-url/other-scheme"
+      },
+      {
+        "row": "config-nats-urls-entry-query",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/config/nats_url_words_test.go"],
+        "capture": "config.nats-urls-entry/query"
+      },
+      {
+        "row": "config-nats-urls-entry-unparsed",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/config/nats_url_words_test.go"],
+        "capture": "config.nats-urls-entry/unparsed"
+      },
+      {
+        "row": "config-pod-address-nats-loopback",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/config/pod_address_words_test.go"],
+        "capture": "config.pod-address/nats-loopback"
+      },
+      {
+        "row": "config-pod-address-daemon-loopback",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/config/pod_address_words_test.go"],
+        "capture": "config.pod-address/daemon-loopback"
+      },
+      {
+        "row": "cipherd-edge-https-edge-url",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/cipherd/edge_https_words_test.go"],
+        "capture": "cipherd.edge-https/edge-url"
+      },
+      {
+        "row": "cipherd-edge-https-machine-login",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/cipherd/edge_https_words_test.go"],
+        "capture": "cipherd.edge-https/machine-login"
+      },
+      {
+        "row": "dispatch-signin-issuer-other-issuer",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/cmd/dispatch/signin_issuer_words_test.go"],
+        "capture": "dispatch.signin-issuer/other-issuer"
+      },
+      {
+        "row": "routes-devsignin-origin-remote",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/routes/devsignin_origin_words_test.go"],
+        "capture": "routes.devsignin-origin/remote"
+      },
+      {
+        "row": "intake-review-field-review-id",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/intake/review_words_test.go"],
+        "capture": "intake.review-field/review-id"
+      },
+      {
+        "row": "intake-review-field-submitted-at",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/daemon/internal/intake/review_words_test.go"],
+        "capture": "intake.review-field/submitted-at"
+      },
+      {
+        "row": "natscallout-issuer-other-issuer",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/cipher/natscallout/issuer_words_test.go"],
+        "capture": "natscallout.issuer/other-issuer"
+      },
+      {
+        "row": "delivery-search-url-elsewhere",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/delivery/search_url_words_test.go"],
+        "capture": "delivery.search-url/elsewhere"
+      },
+      {
+        "row": "delivery-search-url-no-owner",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/delivery/search_url_words_test.go"],
+        "capture": "delivery.search-url/no-owner"
+      },
+      {
+        "row": "delivery-search-url-no-pull",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/delivery/search_url_words_test.go"],
+        "capture": "delivery.search-url/no-pull"
+      },
+      {
+        "row": "delivery-attribution-url-failed-read",
+        "base": "be8747137ca3243c26156721af0d87ebe801e5e7",
+        "files": ["packages/envoy/internal/dispatch/delivery/attribution_url_words_test.go"],
+        "capture": "delivery.attribution-url/failed-read"
       }
     ],
     "boundary_fields": {
@@ -18806,6 +18956,440 @@
       "package": "./agentloop",
       "test": "TestAFailedCallNamesNoneOfAHeaderLineItCannotRead/openai-chat",
       "production": "agentloop providerFailure: a run on openai-chat whose answer holds a header line net/http cannot parse, whose error openai-compatible hands on with the line quoted whole, is said by its class (redact.Cause)"
+    },
+    {
+      "id": "legion-daemon-root-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonTheControllerCannotReachIsNamedThroughTheRule/twin",
+      "production": "the probe of the legion daemon-root rows: each API root holds the made-up user name and password, and each of the controller's requests still fails naming the daemon it could not reach, so the rows can see one printed"
+    },
+    {
+      "id": "legion-daemon-root-state-read",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonTheControllerCannotReachIsNamedThroughTheRule/state-read",
+      "production": "legion operator.shownRoot, through checkControllerRepositories: legion controller start's repositories read of a daemon it cannot reach names the API root through the URL rule (redact.URLCredentials), never as written, user information and query included",
+      "function": "(github.com/sjawhar/legion/daemon/cmd/legion.operator).shownRoot",
+      "capture": "legion.daemon-root/state-read",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/operator.go",
+        "preimage": "return redact.URLCredentials(op.base)\n}",
+        "replacement": "return op.base\n}"
+      }
+    },
+    {
+      "id": "legion-daemon-root-state-read-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonTheControllerCannotReachIsNamedThroughTheRule/state-read-unparsed",
+      "production": "legion checkControllerRepositories: an API root that does not parse as a URL with a host is named by what it is (operator.shownRoot), where it was printed as written and, having no \"://\", passed the URL rule on the CLI's stderr whole",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.checkControllerRepositories",
+      "capture": "legion.daemon-root/state-read-unparsed",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/controller.go",
+        "preimage": "return fmt.Errorf(\"could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)\", daemon.shownRoot(), err)",
+        "replacement": "return fmt.Errorf(\"could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)\", daemonURL, err)"
+      }
+    },
+    {
+      "id": "legion-daemon-root-secret-mint",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonTheControllerCannotReachIsNamedThroughTheRule/secret-mint",
+      "production": "legion fetchControllerSecret: the capability mint's request of a daemon it cannot reach names the API root through the URL rule (operator.shownRoot), never as written",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.fetchControllerSecret",
+      "capture": "legion.daemon-root/secret-mint",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/controller.go",
+        "preimage": "return \"\", nil, fmt.Errorf(\"could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)\", daemon.shownRoot(), err)",
+        "replacement": "return \"\", nil, fmt.Errorf(\"could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)\", daemonURL, err)"
+      }
+    },
+    {
+      "id": "legion-daemon-root-credential",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonTheControllerCannotReachIsNamedThroughTheRule/credential",
+      "production": "legion fetchControllerCredential: the gh credential's fetch from a daemon it cannot reach names the API root through the URL rule (operator.shownRoot), never as written",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.fetchControllerCredential",
+      "capture": "legion.daemon-root/credential",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/controller_credential.go",
+        "preimage": "daemon.shownRoot(), err)",
+        "replacement": "daemonURL, err)"
+      }
+    },
+    {
+      "id": "legion-git-remote-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule/twin",
+      "production": "the probe of the legion git-remote rows: each remote's URL holds the made-up user name, password and token, and each call is still refused naming the remote, so the rows can see one printed"
+    },
+    {
+      "id": "legion-git-remote-url-line",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule/url-line",
+      "production": "legion gh ghRemote.what: a github.com remote naming no OWNER/REPO is refused naming the remote with its URL through the URL rule (redact.URLCredentials), never as written, a token in its user information or query included",
+      "function": "(github.com/sjawhar/legion/daemon/cmd/legion.ghRemote).what",
+      "capture": "legion.git-remote/url-line",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/gh_selectors.go",
+        "preimage": "redact.URLCredentials(r.url))",
+        "replacement": "func() string { _ = redact.URLCredentials; return r.url }())"
+      }
+    },
+    {
+      "id": "legion-git-remote-ssh-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule/ssh-elsewhere",
+      "production": "legion gh ghRemote.what: an ssh remote on another host is refused naming the remote with its URL through the URL rule, never as written",
+      "function": "(github.com/sjawhar/legion/daemon/cmd/legion.ghRemote).what",
+      "capture": "legion.git-remote/ssh-elsewhere",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/gh_selectors.go",
+        "preimage": "redact.URLCredentials(r.url))",
+        "replacement": "func() string { _ = redact.URLCredentials; return r.url }())"
+      }
+    },
+    {
+      "id": "legion-git-remote-remote-v-line",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule/remote-v-line",
+      "production": "legion gh readGitRemotes: a git remote -v line this cannot read, whose URL holds a space, is refused printing no part of the line, where it quoted the line whole; the URL rule ends a URL at whitespace, so a URL that holds a space would leave its tail as written",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.readGitRemotes",
+      "capture": "legion.git-remote/remote-v-line",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/gh_selectors.go",
+        "preimage": "fmt.Errorf(\"git remote -v printed a line that git's shape and gh's reading of it do not agree on, from which gh reads the URL %s (the line is not printed)\", ghReadURL(gh))",
+        "replacement": "fmt.Errorf(\"git remote -v printed %q\", line)"
+      }
+    },
+    {
+      "id": "legion-git-remote-remote-v-second-url",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule/remote-v-second-url",
+      "production": "legion gh readGitRemotes: a git remote -v line whose URL holds a second URL, which gh reads as the remote's, is refused naming that URL through the URL rule (ghReadURL, redact.URLCredentials) and never the line, where it quoted the line whole, the second URL's user information and query included",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.ghReadURL",
+      "capture": "legion.git-remote/remote-v-second-url",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/gh_selectors.go",
+        "preimage": "return redact.URLCredentials(read)",
+        "replacement": "return read"
+      }
+    },
+    {
+      "id": "legion-cache-url-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACacheURLTheFetchRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the legion cache-url rows: each --cache-url holds the made-up user name and password and is still refused naming the flag, so the rows can see one printed"
+    },
+    {
+      "id": "legion-cache-url-no-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACacheURLTheFetchRefusesPrintsNoneOfIt/no-scheme",
+      "production": "legion workspace-init fetch fetchInputs: a --cache-url with no scheme is refused naming the flag alone, where it was quoted as written and, having no \"://\", passed the URL rule on the CLI's stderr whole",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.fetchInputs",
+      "capture": "legion.cache-url/no-scheme",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/workspace_fetch.go",
+        "preimage": "errors.New(\"--cache-url must be an http:// URL with a host\")",
+        "replacement": "fmt.Errorf(\"--cache-url must be an http:// URL (got %q)\", cacheURL)"
+      }
+    },
+    {
+      "id": "legion-cache-url-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACacheURLTheFetchRefusesPrintsNoneOfIt/other-scheme",
+      "production": "legion workspace-init fetch fetchInputs: a --cache-url of another scheme is refused naming the flag alone, never the URL",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.fetchInputs",
+      "capture": "legion.cache-url/other-scheme",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/workspace_fetch.go",
+        "preimage": "errors.New(\"--cache-url must be an http:// URL with a host\")",
+        "replacement": "fmt.Errorf(\"--cache-url must be an http:// URL (got %q)\", cacheURL)"
+      }
+    },
+    {
+      "id": "config-nats-urls-entry-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestANatsURLsEntryTheConfigRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the nats_urls entry rows: each entry holds the made-up user name and password and is still refused, so the rows can see one printed"
+    },
+    {
+      "id": "config-nats-urls-entry-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestANatsURLsEntryTheConfigRefusesPrintsNoneOfIt/query",
+      "production": "daemon config readNatsURLs: a nats_urls entry with a query is refused naming the entry by its place in the list, never as written, its user information (a NATS server's user and password) included",
+      "function": "github.com/sjawhar/legion/daemon/internal/config.readNatsURLs",
+      "capture": "config.nats-urls-entry/query",
+      "mutation": {
+        "file": "packages/daemon/internal/config/config.go",
+        "preimage": "fmt.Errorf(\"%s entry %d%s\", key, i+1, strings.TrimPrefix(err.Error(), key))",
+        "replacement": "func() error { _ = i; return fmt.Errorf(\"%s entry %q%s\", key, raw, strings.TrimPrefix(err.Error(), key)) }()"
+      }
+    },
+    {
+      "id": "config-nats-urls-entry-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestANatsURLsEntryTheConfigRefusesPrintsNoneOfIt/unparsed",
+      "production": "daemon config readNatsURLs: a nats_urls entry that is no URL is refused naming it by its place in the list, never as written",
+      "function": "github.com/sjawhar/legion/daemon/internal/config.readNatsURLs",
+      "capture": "config.nats-urls-entry/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/config/config.go",
+        "preimage": "fmt.Errorf(\"%s entry %d%s\", key, i+1, strings.TrimPrefix(err.Error(), key))",
+        "replacement": "func() error { _ = i; return fmt.Errorf(\"%s entry %q%s\", key, raw, strings.TrimPrefix(err.Error(), key)) }()"
+      }
+    },
+    {
+      "id": "config-pod-address-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestAnAddressNoPodReachesIsNamedThroughTheRule/twin",
+      "production": "the probe of the pod-address rows: each URL holds the made-up user name and password and is still refused as a loopback host, so the rows can see one printed"
+    },
+    {
+      "id": "config-pod-address-nats-loopback",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestAnAddressNoPodReachesIsNamedThroughTheRule/nats-loopback",
+      "production": "daemon config checkPodReachable: under runtime kubernetes, a nats_urls entry on a loopback host is refused naming the URL through the URL rule (redact.URLCredentials), never its user information",
+      "function": "github.com/sjawhar/legion/daemon/internal/config.checkPodReachable",
+      "capture": "config.pod-address/nats-loopback",
+      "mutation": {
+        "file": "packages/daemon/internal/config/kubernetes.go",
+        "preimage": "redact.URLCredentials(address.value), why)",
+        "replacement": "func() string { _ = redact.URLCredentials; return address.value }(), why)"
+      }
+    },
+    {
+      "id": "config-pod-address-daemon-loopback",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/config",
+      "test": "TestAnAddressNoPodReachesIsNamedThroughTheRule/daemon-loopback",
+      "production": "daemon config checkPodReachable: under runtime kubernetes, a daemon_url on a loopback host is refused naming the URL through the URL rule, never its user information",
+      "function": "github.com/sjawhar/legion/daemon/internal/config.checkPodReachable",
+      "capture": "config.pod-address/daemon-loopback",
+      "mutation": {
+        "file": "packages/daemon/internal/config/kubernetes.go",
+        "preimage": "redact.URLCredentials(address.value), why)",
+        "replacement": "func() string { _ = redact.URLCredentials; return address.value }(), why)"
+      }
+    },
+    {
+      "id": "cipherd-edge-https-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipherd",
+      "test": "TestAnHTTPEdgeURLTheBrokerRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the edge-https rows: the rule's reading of each plain-http URL (redact.URL), which the refusal quoted, holds the token, and each is still refused naming its setting, so the rows can see one printed"
+    },
+    {
+      "id": "cipherd-edge-https-edge-url",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipherd",
+      "test": "TestAnHTTPEdgeURLTheBrokerRefusesPrintsNoneOfIt/edge-url",
+      "production": "cipherd refuseHTTPEdgeURLsInProduction: a plain-http BROKER_EDGE_URL outside a local run is refused naming the setting and never the URL, where the refusal quoted it as the rule reads it (redact.URL), which prints a plain path as written",
+      "function": "github.com/sjawhar/envoy/cmd/cipherd.refuseHTTPEdgeURLsInProduction",
+      "capture": "cipherd.edge-https/edge-url",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipherd/main.go",
+        "preimage": "fmt.Errorf(\"%s must be https in production, since %s (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http\", setting.name, setting.what)",
+        "replacement": "fmt.Errorf(\"%s %q must be https in production, since %s (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http\", setting.name, redact.URL(setting.value), setting.what)"
+      }
+    },
+    {
+      "id": "cipherd-edge-https-machine-login",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipherd",
+      "test": "TestAnHTTPEdgeURLTheBrokerRefusesPrintsNoneOfIt/machine-login",
+      "production": "cipherd refuseHTTPEdgeURLsInProduction: a plain-http BROKER_EDGE_MACHINE_LOGIN_URL outside a local run is refused naming the setting and never the page's URL, whose path redact.URL printed as written",
+      "function": "github.com/sjawhar/envoy/cmd/cipherd.refuseHTTPEdgeURLsInProduction",
+      "capture": "cipherd.edge-https/machine-login",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipherd/main.go",
+        "preimage": "fmt.Errorf(\"%s must be https in production, since %s (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http\", setting.name, setting.what)",
+        "replacement": "fmt.Errorf(\"%s %q must be https in production, since %s (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use http\", setting.name, redact.URL(setting.value), setting.what)"
+      }
+    },
+    {
+      "id": "dispatch-signin-issuer-twin",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADomainSignInUnderAnotherIssuerPrintsNoneOfIt/twin",
+      "production": "the probe of the signin-issuer row: the issuer holds the user name, the password and the token, and is still refused naming DISPATCH_SIGNIN_ISSUER, so the row can see one printed"
+    },
+    {
+      "id": "dispatch-signin-issuer-other-issuer",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestADomainSignInUnderAnotherIssuerPrintsNoneOfIt/other-issuer",
+      "production": "dispatch checkSignInSettings: a DISPATCH_SIGNIN_DOMAIN beside another DISPATCH_SIGNIN_ISSUER is refused naming both settings and Google's issuer, never the configured issuer, where it was named as written",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.checkSignInSettings",
+      "capture": "dispatch.signin-issuer/other-issuer",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/signin.go",
+        "preimage": "fmt.Errorf(\"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be %s, since only Google's tokens carry hd\", googleIssuer)",
+        "replacement": "fmt.Errorf(\"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s\", googleIssuer, boot.SignInIssuer)"
+      }
+    },
+    {
+      "id": "routes-devsignin-origin-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/routes",
+      "test": "TestADevSignInOriginTheFenceRefusesPrintsNoneOfIt/twin",
+      "production": "the probe of the devsignin-origin row: the origin holds the user name, the password and the token, and is still refused as no loopback origin, so the row can see one printed"
+    },
+    {
+      "id": "routes-devsignin-origin-remote",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/routes",
+      "test": "TestADevSignInOriginTheFenceRefusesPrintsNoneOfIt/remote",
+      "production": "dispatch routes DevSignInOrigin: a dashboard origin off this machine is refused for the dev sign-in naming DISPATCH_SERVER_URL and dispatch.serverUrl, never the origin, which envoy.json holds to a URL with a host and nothing more",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/routes.DevSignInOrigin",
+      "capture": "routes.devsignin-origin/remote",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/routes/devsignin.go",
+        "preimage": "errors.New(\"DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost\")",
+        "replacement": "func() error { _ = errors.New; return fmt.Errorf(\"DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin %q (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost\", serverURL) }()"
+      }
+    },
+    {
+      "id": "intake-review-field-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAReviewFieldTheIntakeCannotReadPrintsNoneOfIt/twin",
+      "production": "the probe of the review-field rows: each field holds the token and is still named, so the rows can see one printed"
+    },
+    {
+      "id": "intake-review-field-review-id",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAReviewFieldTheIntakeCannotReadPrintsNoneOfIt/review-id",
+      "production": "daemon intake decodeReview: a review_id that is no positive integer is named by its member (the value is not printed), never as GitHub's event carried it",
+      "function": "github.com/sjawhar/legion/daemon/internal/intake.decodeReview",
+      "capture": "intake.review-field/review-id",
+      "mutation": {
+        "file": "packages/daemon/internal/intake/decode.go",
+        "preimage": "errors.New(\"review_id is not a positive integer (the value is not printed)\")",
+        "replacement": "fmt.Errorf(\"review_id %q is not a positive integer\", text)"
+      }
+    },
+    {
+      "id": "intake-review-field-submitted-at",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAReviewFieldTheIntakeCannotReadPrintsNoneOfIt/submitted-at",
+      "production": "daemon intake decodeReview: a submitted_at that is no RFC 3339 time is reported by its member (the value is not printed), never as GitHub's event carried it",
+      "function": "github.com/sjawhar/legion/daemon/internal/intake.decodeReview",
+      "capture": "intake.review-field/submitted-at",
+      "mutation": {
+        "file": "packages/daemon/internal/intake/decode.go",
+        "preimage": "\"submitted_at is not an RFC 3339 time (the value is not printed)\")",
+        "replacement": "fmt.Sprintf(\"submitted_at %s is not an RFC 3339 time\", raw[\"submitted_at\"]))"
+      }
+    },
+    {
+      "id": "natscallout-issuer-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/natscallout",
+      "test": "TestAServiceTokenOfAnotherIssuerPrintsNoneOfIt/twin",
+      "production": "the probe of the natscallout issuer row: the token's iss claim holds the user name, the password and the token, and is still refused, so the row can see one printed"
+    },
+    {
+      "id": "natscallout-issuer-other-issuer",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/natscallout",
+      "test": "TestAServiceTokenOfAnotherIssuerPrintsNoneOfIt/other-issuer",
+      "production": "natscallout PlatformTokens.Verify: a service token whose own unverified iss is no issuer the broker takes NATS tokens from is refused naming the issuer by what it is, never the presenter's claim, which the broker logs",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/natscallout.PlatformTokens).Verify",
+      "capture": "natscallout.issuer/other-issuer",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/natscallout/tokens.go",
+        "preimage": "errors.New(\"natscallout: no NATS audience of this broker takes tokens of the issuer the token names (the value is not printed)\")",
+        "replacement": "fmt.Errorf(\"natscallout: no NATS audience of this broker takes tokens of the issuer %q\", issuer)"
+      }
+    },
+    {
+      "id": "delivery-search-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchResultURLReconcileCannotReadPrintsNoneOfIt/twin",
+      "production": "the probe of the search-url rows: each URL holds a credential and is still refused, so the rows can see one printed"
+    },
+    {
+      "id": "delivery-search-url-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchResultURLReconcileCannotReadPrintsNoneOfIt/elsewhere",
+      "production": "delivery Reconcile.searchResultRepo: a search result's HTML URL on another host is refused saying what is wrong with it, never the URL, GitHub's word in an answer to a search that carried the installation token",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/delivery.Reconcile).searchResultRepo",
+      "capture": "delivery.search-url/elsewhere",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/reconcile.go",
+        "preimage": "errors.New(\"its URL does not start with \" + prefix + \" (the URL is not printed)\")",
+        "replacement": "fmt.Errorf(\"pull request URL %q does not start with %s\", pr.URL, prefix)"
+      }
+    },
+    {
+      "id": "delivery-search-url-no-owner",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchResultURLReconcileCannotReadPrintsNoneOfIt/no-owner",
+      "production": "delivery Reconcile.searchResultRepo: a search result's HTML URL naming no owner is refused never printing the URL",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/delivery.Reconcile).searchResultRepo",
+      "capture": "delivery.search-url/no-owner",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/reconcile.go",
+        "preimage": "errors.New(\"its URL names no owner/repo (the URL is not printed)\")",
+        "replacement": "fmt.Errorf(\"pull request URL %q: no owner/repo\", pr.URL)"
+      }
+    },
+    {
+      "id": "delivery-search-url-no-pull",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestASearchResultURLReconcileCannotReadPrintsNoneOfIt/no-pull",
+      "production": "delivery Reconcile.searchResultRepo: a search result's HTML URL with no /pull/ segment is refused never printing the URL",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/delivery.Reconcile).searchResultRepo",
+      "capture": "delivery.search-url/no-pull",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/reconcile.go",
+        "preimage": "errors.New(\"its URL has no /pull/ segment (the URL is not printed)\")",
+        "replacement": "fmt.Errorf(\"pull request URL %q: no /pull/ segment\", pr.URL)"
+      }
+    },
+    {
+      "id": "delivery-attribution-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestAnAttributionReadThatFailsPrintsNoneOfThePullRequestsURL/twin",
+      "production": "the probe of the attribution-url row: the stored URL holds the user name, the password and the token, and the read still fails, so the row can see one printed"
+    },
+    {
+      "id": "delivery-attribution-url-failed-read",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestAnAttributionReadThatFailsPrintsNoneOfThePullRequestsURL/failed-read",
+      "production": "delivery Attributor.resolveAttributionCandidates: a failed read of the issues a pull request's stored inputs name names the pull request by what it is, never by its stored URL, GitHub's word from an answer to a request that carried the installation token",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/delivery.Attributor).resolveAttributionCandidates",
+      "capture": "delivery.attribution-url/failed-read",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/attribution.go",
+        "preimage": "url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"resolve the pull request's issue: %w\", err)",
+        "replacement": "url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"resolve the issue of %s: %w\", url, err)"
+      }
     }
   ],
   "bun": [
@@ -22345,6 +22929,66 @@
       "site": "agentloop's model client: its own redirect policy (a CheckRedirect that failed the call) let net/http name the Location, an echo of the credential, in the decision client's error and in each SDK's stream error",
       "source": "the round-8 quality review",
       "guard": "agentloop-redirect-error-decide-elsewhere"
+    },
+    {
+      "site": "legion controller start's refusals of a daemon it could not reach (checkControllerRepositories, fetchControllerSecret, fetchControllerCredential) named the API root as written; one with no \"://\" passed the URL rule on the CLI's stderr whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-daemon-root-state-read-unparsed"
+    },
+    {
+      "site": "legion gh's refusal of a git remote it cannot read named the remote's URL as written, and its refusal of a git remote -v line quoted the line whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-git-remote-url-line"
+    },
+    {
+      "site": "legion workspace-init fetch's refusal of a --cache-url quoted it as written",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-cache-url-no-scheme"
+    },
+    {
+      "site": "the daemon config's refusal of a nats_urls entry quoted the entry as written, its user information included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "config-nats-urls-entry-query"
+    },
+    {
+      "site": "the daemon config's refusal of an address no pod reaches named the URL as written, a nats_urls entry's user information included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "config-pod-address-nats-loopback"
+    },
+    {
+      "site": "cipherd's refusal of a plain-http BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL quoted the URL as the rule reads it, which prints a plain path as written",
+      "source": "the round-9 decisions of #4368",
+      "guard": "cipherd-edge-https-machine-login"
+    },
+    {
+      "site": "dispatch's refusal of a DISPATCH_SIGNIN_DOMAIN beside another DISPATCH_SIGNIN_ISSUER named the issuer as written",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-signin-issuer-other-issuer"
+    },
+    {
+      "site": "dispatch's dev sign-in fence quoted a dashboard origin off this machine as written",
+      "source": "the round-9 decisions of #4368",
+      "guard": "routes-devsignin-origin-remote"
+    },
+    {
+      "site": "the daemon intake printed a review's review_id and submitted_at it could not read as GitHub's event carried them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "intake-review-field-submitted-at"
+    },
+    {
+      "site": "natscallout quoted a service token's unverified iss claim in a refusal the broker logs",
+      "source": "the round-9 decisions of #4368",
+      "guard": "natscallout-issuer-other-issuer"
+    },
+    {
+      "site": "delivery reconcile quoted a search result's HTML URL, GitHub's word in an answer to a search that carried the installation token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "delivery-search-url-no-pull"
+    },
+    {
+      "site": "delivery's attribution read named a pull request's stored URL in its failure",
+      "source": "the round-9 decisions of #4368",
+      "guard": "delivery-attribution-url-failed-read"
     }
   ]
 }
