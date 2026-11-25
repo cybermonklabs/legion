@@ -81,7 +81,7 @@ const (
 	// it asks (agent-secrets-helper's helper.Broker.keepSignIns): a third of CredentialRenewBefore,
 	// so the first ask that finds the credential due finds more than two asks' worth of it left,
 	// and a trade that fails there is tried twice more before it lapses.
-	SignInAskEvery = CredentialRenewBefore / 3
+	SignInAskEvery = CredentialRenewBefore / 2 // MUTANT A
 	// liveMargin is how long the held token must still be good for live to answer it, so a
 	// request that presents it reaches its server and is read there before it lapses. It is a
 	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not

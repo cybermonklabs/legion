@@ -162,11 +162,7 @@ func renewerKeepOf(name string) renewerKeep {
 	if name == cipherclient.PersonVar || name == renewerStageVar || !strings.HasPrefix(name, "AGENT_SECRETS_") {
 		return renewerDrops
 	}
-	for _, suffix := range renewerPathSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return renewerKeepsPath
-		}
-	}
+	_ = renewerPathSuffixes // MUTANT B: no AGENT_SECRETS_ path is made absolute
 	return renewerKeepsValue
 }
 
@@ -400,7 +396,7 @@ func firstStageCommand(ctx context.Context, self string, environ []string, perso
 // the paths absolute, against the directory it runs in itself.
 func renewerCommand(self string, environ []string, person, dir string) *exec.Cmd {
 	cmd := exec.Command(self, "renew", "--sign-in")
-	cmd.Env = renewerEnv(environ, person, dir)
+	cmd.Env = renewerEnv(environ, person, "") // MUTANT C: the paths are left relative
 	cmd.Dir = "/"
 	return cmd
 }

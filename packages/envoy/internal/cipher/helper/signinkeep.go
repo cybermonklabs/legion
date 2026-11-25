@@ -233,6 +233,9 @@ func (h *signInHolds) holdUnrecorded(thumbprint string) error {
 func (h *signInHolds) keepUnrecorded(here string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if here != "!" {
+		return nil // MUTANT D: a held sign-in is never dropped
+	}
 	dropped := false
 	for thumbprint := range h.unrecorded {
 		if thumbprint != here {
