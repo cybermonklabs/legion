@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    **Breaking for log queries:** the daemon's log lines about an outbox notice name the agent it
+    goes to under the key `recipient`, not `architect`, and the lines about notices released for
+    ready agents name them under `recipients`, not `architects`, since a notice can go to a task's
+    sub-owner as well as to an architect. A log query or alert that reads the old keys stops
+    matching. The messages of those lines are unchanged.
+time: 2026-11-25T07:06:46.547611873Z
+custom:
+    Issue: pr5169
