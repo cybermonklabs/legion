@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,9 +47,42 @@ func pacedWakes() *wakepace.Limiter {
 }
 
 // wakePaceOf is the supervise pacing the daemon hands its machines from limiter at the shipped
-// pace: its Reserve and its Interval from that one limiter, as openSupervision takes them.
-func wakePaceOf(limiter *wakepace.Limiter) supervise.WakePace {
-	return supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
+// pace: a pacer over that one limiter on the machines' clock, and its Interval, as run and
+// openSupervision build them.
+func wakePaceOf(limiter *wakepace.Limiter, clock supervise.Clock) supervise.WakePace {
+	pacer := wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
+	return supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
+}
+
+// parkedFor is a wake pacing on clock that lets the first paced launch out wait after the clock's
+// now, wherever before that its place is joined, for a test that needs a launch held to a known
+// moment: a pacer over a limiter of one wake a minute, whose bucket is spent at that now for every
+// whole minute of wait, every paced release after that spread by the rest of wait. A place joined
+// later than the first waits a further interval and that spread behind the one before it. wait is
+// a minute or more. The rate and the burst the wake lines name are that limiter's. It stands where
+// these tests once handed the machines a Reserve that answered a fixed moment, which a pacer,
+// whose limiter gives the turns, has no equal of.
+func parkedFor(clock supervise.Clock, wait time.Duration) supervise.WakePace {
+	minutes := int(wait / time.Minute)
+	var spread atomic.Int64
+	limiter := wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Duration(spread.Load()) })
+	now := clock.Now()
+	for range minutes {
+		limiter.Reserve(now)
+	}
+	spread.Store(int64(wait - time.Duration(minutes)*time.Minute))
+	pace := wakePaceOf(limiter, clock)
+	pace.Rate, pace.Burst = 1, 1
+	return pace
+}
+
+// lettingOutAtOnce is a wake pacing on clock that lets every paced launch out at its join: a pacer
+// over a limiter that paces nothing. The pacing is on all the same, so each launch is paced, as
+// the wake lines it writes say, and its let-out is told the daemon (supervise.Deps.WakeLetOut).
+func lettingOutAtOnce(clock supervise.Clock) supervise.WakePace {
+	pace := wakePaceOf(wakepace.New(0, 1, nil), clock)
+	pace.Interval, pace.Rate, pace.Burst = time.Minute, 1, 1
+	return pace
 }
 
 // wakeEngine is the workflow engine as the daemon builds it when the pacing is on: its clock held
@@ -434,7 +468,7 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -484,7 +518,7 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -535,7 +569,7 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -595,7 +629,7 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer

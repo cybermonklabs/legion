@@ -352,12 +352,12 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim().PluginRelaunchFor; got != 0 {
 		t.Fatalf("the claim whose retry waits its turn is marked for %d, want no mark until that turn starts the process", got)
 	}
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.claim().PluginRelaunchFor; got != refreshContract {
@@ -381,10 +381,10 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	h.wantStarts(h.token, 1)
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.store.load(h.token).PluginRelaunchFor; got != refreshContract {
@@ -503,9 +503,9 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 	queueAhead(h, 4)
 	h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its issue's phase"})
 
-	resumed := h.wantWaitingWake(WakeLaunch)
+	h.wantWaitingWake(WakeLaunch)
 
-	h.advance(resumed.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	h.wantWakeLine(h.token, "kind=launch", "waited=true")
@@ -588,14 +588,14 @@ func TestTheRetryOfARefusedRefreshTurnRefusedAgainWaitsUnderTheLanesOwnKind(t *t
 
 	h.advance(testProbe)
 
-	parked := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 
 	// The store cannot answer the lifecycle check that wake's turn makes: the turn starts
 	// nothing and the retry it arms holds the intent the wake carried (runWake, retryHolding).
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 
-	h.advance(parked.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 1)
 	if held := h.m.View().WakeWaiting; held != nil {

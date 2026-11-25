@@ -463,16 +463,25 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// [0, interval), the limiter's own interval: without one, two daemons restarted together
 	// would let their wakes out on the same instants, and the organization they share would see
 	// both bursts in one minute. A rate of zero is the pacing off, and each lane is handed no
-	// Reserve at all rather than one that paces nothing, which is how both read the pacing off
-	// (workflow.Config.Reserve, supervise.WakePace.Reserve). wakeInterval is what one wake of it
-	// costs, which the gate reads a launch's lateness by (supervise.WakePace.Interval).
+	// limiter at all rather than one that paces nothing, which is how both read the pacing off
+	// (workflow.Config.Reserve, supervise.WakePace.Pacer).
+	//
+	// The machines' launches wait in front of that limiter in one pacer's two queues, on the
+	// machines' own clock (wakepace.NewPacer, plan.clock): a wake for a role with an Envoy message
+	// waiting, or the relaunch of a role whose own process died, goes ahead of a restart's backlog
+	// (dispatch://INFRA-5682), and the pacer draws each turn from the limiter the workflow's
+	// catch-up reserves from, so the rate stays the daemon's one rate. wakeInterval is what one
+	// wake of the limiter costs, which the gate reads how late a place the boot took may run at
+	// once by (supervise.WakePace.Interval).
 	var (
 		reserveWake  func(time.Time) time.Time
+		wakePacer    *wakepace.Pacer
 		wakeInterval time.Duration
 	)
 	if cfg.WorkerWakesPerMinute > 0 {
 		limiter := wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration])
 		reserveWake, wakeInterval = limiter.Reserve, limiter.Interval()
+		wakePacer = wakepace.NewPacer(limiter, plan.clock.Now, func(t time.Time, f func()) func() bool { return plan.clock.At(t, f).Stop })
 	}
 	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
 	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
@@ -600,7 +609,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, wakeInterval, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, wakePacer, wakeInterval, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1950,14 +1959,15 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // workflow's App tokens (nil without a workflow): every step of supervision that can refuse, so a
 // daemon that cannot supervise refuses before its boot is recorded.
 //
-// reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
-// workflow, which reserves from the same one): the moment each launch may run, and nil while the
-// operator paces nothing, which is the gate's reading of the pacing off (supervise's
-// reserveWake). interval is that limiter's Interval, and it must come from the same limiter: the
-// gate reads how late a launch whose turn the boot reserved may run by it (supervise.WakePace). The
-// rate and the burst go with them for the line every wake writes, never for that decision.
+// pacer is the daemon's one wake pacer as the machines reach it (run builds it over the one
+// limiter, before the workflow, which reserves from the same limiter): the two queues every paced
+// launch takes a place in, and nil while the operator paces nothing, which is the gate's reading
+// of the pacing off (supervise's reserveWake). interval is that limiter's Interval, and it must
+// come from the same limiter: the gate reads how late a place the boot took may run at once by it
+// (supervise.WakePace). The rate and the burst go with them for the line every wake writes, never
+// for that decision.
 //
-// refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
+// refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as pacer is and
 // from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
 // every machine of this daemon asks the same gate, and the supervision keeps the same reference,
 // because the refresh pass corrects it from the wakes those machines publish and asks it for
@@ -1965,10 +1975,11 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 //
 // pauses is the project's pause (projectPause, nil without a workflow): the machines read its flag
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
-// (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
-// it reads the machines this supervisor holds for its catch-up and its resume.
+// (Deps.PauseStopped), stamp each paced launch's let-out moment through it (Deps.WakeLetOut) and
+// tell it each paced launch that begins to wait (Deps.WakeQueued); it reads the machines this
+// supervisor holds for its catch-up and its resume.
 func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source,
-	reserve func(time.Time) time.Time, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+	pacer *wakepace.Pacer, interval time.Duration, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -2065,7 +2076,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			LaunchBackoff:         launchBackoffFirst,
 		},
 		WakePace: supervise.WakePace{
-			Reserve:  reserve,
+			Pacer:    pacer,
 			Interval: interval,
 			Rate:     cfg.WorkerWakesPerMinute,
 			Burst:    cfg.WorkerWakeBurst,
@@ -2077,7 +2088,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
 	if pauses != nil {
-		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
+		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut, sup.deps.WakeQueued =
+			pauses.service.Paused, pauses.stopped, pauses.wakeLetOut, pauses.wakeQueued
 		pauses.supervisor = sup
 	}
 	stopping, beginStop := context.WithCancel(context.Background())

@@ -29,8 +29,9 @@ import (
 // What is the daemon's is what joins them:
 //
 //   - the stop transaction a machine's pause suspension ends in (projectPause.stopped,
-//     supervise.Deps.PauseStopped, decision 6), and the let-out moment of a paced launch
-//     (projectPause.wakeLetOut, Deps.WakeLetOut, decision 14);
+//     supervise.Deps.PauseStopped, decision 6), the let-out moment of a paced launch
+//     (projectPause.wakeLetOut, Deps.WakeLetOut, decision 14), and the start of its wait in the
+//     pacing's queue (projectPause.wakeQueued, Deps.WakeQueued);
 //   - what runs after a pause or a resume commits (projectPause.Paused and projectPause.Resumed,
 //     the service's Effects, decisions 3 and 22);
 //   - the boot's read of the flag before any claim is restored, and its pass over the claims a
@@ -301,12 +302,13 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	return made, nil
 }
 
-// wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment the wake pacing lets a launch
-// of the claim token out becomes the stuck clock of its role's open resume
-// (store.Store.SetResumeClock, which never moves a clock back), so a launch that waited its turn
-// in a long queue is not warned stuck for the wait. The machine calls it inside its decision, so
-// the write runs on a goroutine of its own, as podResume's stamp does, under a hold mark of its
-// own; a failed write is logged and the clock keeps the moment it had.
+// wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment a launch of the claim token is
+// let out — the wake pacing's let-out of its place, or an operator's request that runs it now —
+// becomes the stuck clock of its role's open resume (store.Store.SetResumeClock, which never moves
+// a clock back), so a launch that waited its turn in a long queue is not warned stuck for the
+// wait. The machine calls it at the let-out, inside its decision, so the write runs on a goroutine
+// of its own, as podResume's stamp does, under a hold mark of its own; a failed write is logged
+// and the clock keeps the moment it had.
 func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Role, at time.Time) {
 	if issue == "" || role == claim.RoleController {
 		return
@@ -320,6 +322,13 @@ func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Ro
 		}
 	}()
 }
+
+// wakeQueued is supervise.Deps.WakeQueued: a paced launch of the claim token has begun to wait in
+// the wake pacing's queue. It does nothing yet. It is the hook the resume's stuck clock will write
+// the wait by — that clock does not run while the launch's place waits, and starts at its let-out
+// (wakeLetOut) — and the daemon wires it now so that the machines tell it every wait from the
+// start.
+func (p *projectPause) wakeQueued(claim.Token, string, claim.Role) {}
 
 // Paused is the catch-up once a pause has committed and the flag is set (pause.Effects, decision
 // 3): every live role of the project's machines but the controller's that the pause's

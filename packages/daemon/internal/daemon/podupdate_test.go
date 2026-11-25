@@ -161,6 +161,10 @@ type podUpdateRig struct {
 	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
 	// relaunchedUnregistered and runParkedLaunch ask nothing.
 	keptSince time.Time
+	// wakePace builds the rig's wake pacing on its clock (podUpdateRigOptions.wakePace), which a
+	// restart builds afresh, as a restarted daemon builds its one pacer anew; nil is the pacing
+	// off.
+	wakePace func(supervise.Clock) supervise.WakePace
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -176,10 +180,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // boot restores the first machine, because the feeds read it with no lock; a later restart carries
 // it to the next daemon's feeds (restart). nil runs nothing.
 //
-// wakePace is the wake pacing every machine is built with (supervise.Deps.WakePace), as
-// openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
-// boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
-// pacing off: every launch runs where it is raised.
+// wakePace builds the wake pacing every machine is built with (supervise.Deps.WakePace) on the
+// rig's clock, as run builds the daemon's one pacer on the machines' clock and openSupervision
+// hands it to its machines. A machine takes its deps when the boot restores it, so the pacing is
+// built before that, as beforeDecision is set. nil is the pacing off: every launch runs where it
+// is raised.
 //
 // paused is the project's pause flag every machine reads (supervise.Deps.Paused), as
 // openSupervision hands the daemon's pause service to its machines: the open pause's id, or
@@ -187,7 +192,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // pacing is. nil is a project that is never paused.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
-	wakePace       supervise.WakePace
+	wakePace       func(supervise.Clock) supervise.WakePace
 	paused         func() (int64, bool)
 }
 
@@ -273,6 +278,10 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// supervision, bound once it exists and before any machine is restored, as the daemon's boot
 	// binds the Sandbox runtime's (plan.launchRounds).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
+	var pace supervise.WakePace
+	if opts.wakePace != nil {
+		pace = opts.wakePace(clock)
+	}
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
@@ -288,7 +297,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		PluginRelaunchable: true,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
-		WakePace:           opts.wakePace,
+		WakePace:           pace,
 		Paused:             opts.paused,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
@@ -310,7 +319,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// sequential flow's: a goroutine a test starts beside it takes worker() instead.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
-		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
+		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}, wakePace: opts.wakePace}
 	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
 		if !role.session {
@@ -1734,10 +1743,10 @@ func TestPodUpdateResumesAnOpenRoundAfterARestart(t *testing.T) {
 	next.awaitReplacement(1, "by the daemon that resumed the round")
 }
 
-// restart is a second daemon over the same Postgres: new machines, a new runtime, and nothing of
-// the first daemon's memory. The new machines' feeds run what the first daemon's ran before each
-// decision (podUpdateRigOptions.beforeDecision), as the test's own seam rather than the daemon's
-// memory.
+// restart is a second daemon over the same Postgres: new machines, a new runtime, a wake pacer
+// built afresh, and nothing of the first daemon's memory. The new machines' feeds run what the
+// first daemon's ran before each decision (podUpdateRigOptions.beforeDecision), as the test's own
+// seam rather than the daemon's memory.
 func (r *podUpdateRig) restart() *podUpdateRig {
 	r.t.Helper()
 	r.sup.stop()
@@ -1753,6 +1762,9 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	sup.beforeDecision = r.sup.beforeDecision
 	sup.deps = r.sup.deps
 	sup.deps.Runtime, sup.deps.Conns, sup.deps.Store = rt, conns, st
+	if r.wakePace != nil {
+		sup.deps.WakePace = r.wakePace(r.clock)
+	}
 	r.t.Cleanup(sup.stop)
 	s := &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
@@ -1780,7 +1792,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked, keptSince: r.keptSince}
+		listener: r.listener, asked: r.asked, keptSince: r.keptSince, wakePace: r.wakePace}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next

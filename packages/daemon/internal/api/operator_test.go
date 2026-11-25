@@ -125,15 +125,18 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 // One person's spawn is not the wave the pacing exists for.
 func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	h := newHarness(t)
-	// One wake a minute, its burst already taken by another claim of this daemon, so the next
-	// reservation is a minute out: that is the wait a paced spawn would be held for.
+	// One wake a minute, its burst already taken by another claim of this daemon, so a place
+	// joined now waits a minute for its turn: that is the wait a paced spawn would be held for.
+	// The pacer is on the harness's still clock, whose timers never fire, so that turn never
+	// comes and a spawn the pacing held would stay parked.
 	limiter := wakepace.New(1, 1, nil)
-	now := stillClock{}.Now()
-	limiter.Reserve(now)
-	if at := limiter.Reserve(now); !at.After(now) {
-		t.Fatalf("the limiter reserved %s for a spent queue, want a moment after %s", at, now)
+	clock := stillClock{}
+	limiter.Reserve(clock.Now())
+	pacer := wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
+	if waiting := pacer.Join(wakepace.Second); !waiting.Estimate().After(clock.Now()) {
+		t.Fatalf("the pacer lets a place out at %s over a spent queue, want a moment after %s", waiting.Estimate(), clock.Now())
 	}
-	h.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: 1, Burst: 1}
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: 1}
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 

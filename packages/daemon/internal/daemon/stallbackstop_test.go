@@ -901,9 +901,9 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	t.Parallel()
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
-	rig.sup.deps.WakePace = wakePaceOf(limiter)
-	// The burst's one token is spent before the sweep, so the backstop's own relaunch is parked
-	// rather than run where it is raised (supervise's reserveWake).
+	rig.sup.deps.WakePace = wakePaceOf(limiter, rig.sup.deps.Clock)
+	// The burst's one token is spent before the sweep, so the backstop's own relaunch waits in the
+	// pacer's queue rather than run where it is raised (supervise's reserveWake).
 	for range testWakeBurst {
 		limiter.Reserve(time.Now())
 	}

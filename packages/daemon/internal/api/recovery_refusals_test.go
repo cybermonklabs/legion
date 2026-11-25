@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The windows both of the controller's claim recoveries are read in, and the fixtures that
@@ -121,17 +122,11 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
-// ready run as they are raised. The turn it then gives is an hour away and this harness's clock
+// ready run as they are raised. The turn it then gives is a minute away and this harness's clock
 // fires no timer at all (stillClock), so the wake stays parked for the rest of the test.
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	release := conn.HoldCompact()
@@ -141,7 +136,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	}()
 	waitForCompacting(t, h, token)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	locator := m.Claim().Locator
 	if locator == nil {
@@ -180,6 +175,25 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 			view.SuspensionHeldBy)
 	}
 	return token
+}
+
+// pacedUntilParked sets the harness's wake pacing to a pacer on the machines' own clock that lets
+// every paced launch out at its join until park is called, and parks every one after it: the
+// limiter's burst holds every launch the fixtures make before the park, and park spends what is
+// left of it, so a place joined after waits for a turn a minute out, which a harness clock that
+// fires no timer (stillClock) never gives. It is set before any claim is created, because a
+// machine takes its deps where it is built. The burst is the pace the wake lines name.
+func pacedUntilParked(h *harness) (park func()) {
+	const burst = 64
+	limiter := wakepace.New(1, burst, nil)
+	clock := h.supervisor.deps.Clock
+	pacer := wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) func() bool { return clock.At(at, f).Stop })
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: burst}
+	return func() {
+		for range burst {
+			limiter.Reserve(clock.Now())
+		}
+	}
 }
 
 // A claim whose relaunch waits its paced turn is a claim between states with a launch in
@@ -243,16 +257,10 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // TheLaunchsTurn in supervise).
 func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-		if park.Load() {
-			return now.Add(time.Hour)
-		}
-		return now
-	}}
+	park := pacedUntilParked(h)
 	token := idleOnTheLadder(t, h)
 
-	park.Store(true)
+	park()
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
 	stale.PluginContract = DaemonAPIVersion - 1
@@ -1163,13 +1171,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 	} {
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			var park atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
-				if park.Load() {
-					return now.Add(time.Hour)
-				}
-				return now
-			}}
+			park := pacedUntilParked(h)
 			token := readyImplementer(t, h)
 			m, _ := h.supervisor.Machine(token)
 			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
@@ -1179,7 +1181,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
 				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing parked", before.State, before.WakeWaiting)
 			}
-			park.Store(true)
+			park()
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
 			}}); err != nil {

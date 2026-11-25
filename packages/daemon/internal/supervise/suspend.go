@@ -175,9 +175,9 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // source and reason and written (suspendedFor), which is why this row names StateSuspended among
 // its destinations (Handle, which holds every row to its own destinations because nothing is held
 // here). The wake goes with the process the claim never had (letGo clears it and disarms
-// TimerWake), and no token is handed back, since the limiter charges on the reserve: every wake
-// behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
-// wait leaves them (dropWakeFor, reparkWake).
+// TimerWake), which gives its place in the pacing up: the place had drawn no token, so the turn it
+// would have taken goes to the wake behind it, as a dropped wake's place does when the decision it
+// was dropped for takes it up no more (placeTimer, reparkWake).
 //
 // A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
 // the launch has let its process go and parked on the machine with no process started, waiting

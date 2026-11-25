@@ -1804,7 +1804,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// lanes draw from — the workflow's catch-up by its Reserve, the machines through the pacer in front
+// of it — was built before either of them (run). The outbox's two reads of one pull
 // request, the merge-queue read and the second read of a conflicting head, read GitHub through
 // this runtime's own read of a pull request, apply its answer as every read of this runtime does,
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they

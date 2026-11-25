@@ -256,17 +256,17 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 // parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
 // wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
 // the process it records, which speaks the contract before the daemon's (liveClaim), under the
-// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
-// the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
-// (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
-// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
+// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing lets
+// the relaunch's place out an hour ahead (parkedFor) and the machines' clock fires no timer the
+// test does not fire (heldClock), so the relaunch waits through the whole test. It is posted as
+// the daemon's pass posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
 func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
 	t.Helper()
 	ctx := context.Background()
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
 	sup.deps.Clock = &heldClock{}
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	sup.deps.WakePace = parkedFor(sup.deps.Clock, time.Hour)
 	token := mustClaimToken(t, issue, role)
 	live := liveClaim(1, token, sup.deps.PluginContract-1)
 	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
@@ -399,8 +399,8 @@ type parkedWake struct {
 }
 
 // parkTheWake queues one role-message row for role's released claim on LEGION-208 and runs it to
-// the park, against the listener keptAcrossTheWake meets. The pacing gives every wake a turn
-// parkedTurn ahead and the machines' clock fires a timer only when the test fires it
+// the park, against the listener keptAcrossTheWake meets. The pacing lets the first wake's place
+// out parkedTurn ahead (parkedFor) and the machines' clock fires a timer only when the test fires it
 // (heldClock), so the resume the row's first attempt makes waits, its claim launching with no
 // process and its view naming the waiting launch. The row's next attempt, parkFound on, finds
 // the park and waits for that launch, publishing nothing.
@@ -412,7 +412,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	// claim is created.
 	clock := &heldClock{}
 	sup.deps.Clock = clock
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	sup.deps.WakePace = parkedFor(clock, parkedTurn)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
 	machine := releasedClaim(t, sup, role)

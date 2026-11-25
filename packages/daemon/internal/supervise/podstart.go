@@ -632,10 +632,10 @@ func (m *Machine) adoptPodLoad() {
 // grant on while the wake carries the hold, and a fresh try of the same launch, asked of the gate
 // anew, once it carries none: the pause's gate holds the wake in the park's place where the
 // project is paused at the grant (podStartDue), and its let-out after the pause runs it
-// (letOutHeldLaunch, runWake), without a second token or wake line, since the launch passed the
-// wake gate before it parked (wake.paid, wake.ran). Its state is the claim's as the park leaves
-// it, launching, which a request that does not wait restores once the pause's gate holds the wake
-// (dropWakeFor).
+// (letOutHeldLaunch, runWake), without a second place in the pacing or a second wake line, since
+// the launch passed the wake gate before it parked (wake.paid, wake.ran). Its state is the claim's
+// as the park leaves it, launching, which a request that does not wait restores once the pause's
+// gate holds the wake (dropWakeFor).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes

@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1862,15 +1863,17 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // long the lane took to pick it up.
 //
 // The pace the line names is the one the daemon holds its machines to (supervise.WakePace, set in
-// openSupervision): the rate and the burst alone, never its Reserve — the reservation that
-// decided when this row was due is the workflow engine's (workflow.Config.Reserve), taken from
-// the same limiter. A test that builds the runner by hand over a supervisor with no pace reads
-// the pacing off, which is that line's own reading of it.
+// openSupervision): the rate and the burst alone, never its Pacer — the reservation that decided
+// when this row was due is the workflow engine's (workflow.Config.Reserve), taken from the same
+// limiter the pacer draws its turns from. A catch-up waits on its row rather than on a place in the
+// pacer's queues, so its line names no queue, no turns waited and no lateness for a message (the
+// zero wakepace.Let, and false). A test that builds the runner by hand over a supervisor with no
+// pace reads the pacing off, which is that line's own reading of it.
 func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 	architect, _ := claim.NewToken(r.project, row.Issue, claim.RoleArchitect)
 	pace := r.supervisor.deps.WakePace
 	fields := append([]any{"claim", string(architect)},
-		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom), pace.Rate, pace.Burst)...)
+		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom), wakepace.Let{}, false, pace.Rate, pace.Burst)...)
 	r.log.Info(supervise.WakeRanMessage, fields...)
 }
 
