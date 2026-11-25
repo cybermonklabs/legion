@@ -69,7 +69,8 @@
 # over one that took the first branch with N+1's text reworded, where that text opens no entry file
 # and the refusal names the entry's constant, which the entry file declares too;
 # and the crossed branch with two merge bases with the first branch, converted, where the refusal
-# names both.
+# names both and the way to one: rebased onto the commit it names, with the commit that came in
+# through a merge dropped, the crossed branch converts N+2 alone.
 # Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
 # and merges the first branch, in a commit that names it: the stacked branch then differs from the
 # first branch by N+2's entry file and fixture, so N+1, which the first branch converted, is not
@@ -94,11 +95,12 @@ branch_stacked=convert-test-stacked-$$
 repo_stacked=$scratch/repo-stacked
 branch_crossed=convert-test-crossed-$$
 branch_conflict=convert-test-conflict-$$
+branch_rebased=convert-test-rebased-$$
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_stacked" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" "$branch_rebased" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -543,7 +545,27 @@ step "a branch with two merge bases with its base branch is refused"
 base_crossed=$(git commit-tree "$(tree_with "$branch" "${side_file[@]}")" -p "$branch" -p "$side" -m "convert-test: the first branch merges it")
 git checkout -q "$branch_crossed"
 refused "the conversion of the crossed branch with two merge bases with its base branch" \
-  "2 merge bases" "${entry_commit:0:10}" "${side:0:10}" -- --base "$base_crossed"
+  "2 merge bases" "${entry_commit:0:10}" "${side:0:10}" \
+  "git rebase -i" "drop each commit that came into the branch through a merge" \
+  "cherry-pick the branch's own commits onto a branch made at that commit" -- --base "$base_crossed"
+
+step "the way out of two merge bases that the refusal names leads to one"
+# The refusal names the first branch as it was before it merged the cutover, the first parent of
+# its conversion: its commit of entry $k, which the crossed branch holds already, so a merge of it
+# leaves the two merge bases. `git rebase -i` onto it, with the commit that came in through the
+# merge dropped, leaves the crossed branch its own commit alone on it; that commit is then the one
+# merge base, and the conversion over the first branch converts entry $((k + 1)) alone.
+git checkout -q -b "$branch_rebased" "$branch_crossed"
+GIT_SEQUENCE_EDITOR="sed -i '/convert-test: a commit before the cutover\$/s/^pick /drop /'" git rebase -q -i "$entry_commit" ||
+  fail "the rebase of the crossed branch onto ${entry_commit:0:10}, its merged commit dropped, failed"
+[ "$(git merge-base --all HEAD "$base_crossed")" = "$entry_commit" ] ||
+  fail "the rebased crossed branch has merge bases $(git merge-base --all HEAD "$base_crossed" | tr '\n' ' ')with the first branch, want ${entry_commit:0:10} alone"
+bash "$root/scripts/daemon-contract-convert.sh" --base "$base_crossed" >"$scratch/convert-rebased.txt" 2>&1 ||
+  { cat "$scratch/convert-rebased.txt"; fail "scripts/daemon-contract-convert.sh --base ${base_crossed:0:10} failed on the rebased crossed branch"; }
+mapfile -t rebased < <(git diff --no-renames --name-only --diff-filter=A "$base_crossed" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
+[ "${#rebased[@]}" -eq 1 ] && [[ ${rebased[0]} == */contract_*_convert-stacked.go ]] ||
+  fail "the rebased crossed branch adds ${#rebased[@]} entry files over ${base_crossed:0:10}, want 1, entry $((k + 1))'s: ${rebased[*]}"
+echo "PASS: rebased onto ${entry_commit:0:10} with the merged commit dropped, the crossed branch has one merge base, and converts entry $((k + 1)) alone to ${rebased[0]}"
 git checkout -q "$branch_stacked"
 
 step "the conversion of the stacked branch over its base branch"
