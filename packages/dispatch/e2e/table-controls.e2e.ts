@@ -10943,3 +10943,127 @@ test("Take out of epic with the row marked last cut by the table box's bottom ed
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-25 04:59Z: a click of
+// the reader's that puts the focus on the body while a Board move's dry run is out is the reader
+// going elsewhere, so nothing moves the focus once the move lands; the body is the place the press
+// left only when the press's own card went away. Measured at 8e7e463a in builds Jobs
+// infra-3135-f-h-ch-wlcgj (Chromium) and infra-3135-f-h-fw-7ssrl (WebKit) at 390x664, with a
+// click that landed below the window's bottom, and in infra-3135-f-red2-qhtr5 with a click on a
+// blank spot of the shell's header: a child's card moved by Shift+L, with the rule's dry run held
+// and the focus put on the body by that click meanwhile, took the focus from the body to the
+// moved card once the move landed. A click inside the main content puts the focus on the main
+// content itself (`tabIndex={-1}`), which the effect leaves where it is. 34dc6a07
+// (infra-3135-f-b-ch-cb98p, infra-3135-f-b-fw-t8fw8) sends no dry run, so the case cannot be made
+// there. The move's focus effect counts any focus on the body, once the card it moved has left
+// the page, as where the press left it (features/project/IssueBoard.tsx:521), so it cannot tell
+// the reader's own click from the card's going. Firefox kept the focus on the card at the click
+// the first Jobs sent, so the row runs in Chromium and WebKit, as the ruling asks.
+// SLOW(>=2s): two projects of three issues on the Board, and two keyboard moves with held dry runs.
+test("a click that puts the focus on the body while a Board move's dry run is out keeps it there once the move lands, where the same move with no click takes it to the moved card, at 390 @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  // Every dry run of a status change sent while `holding` is held until the row lets it through.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(/\/api\/v1\/issues\/[^/?]+\/status-change$/, async (route) => {
+    const dryRun = (route.request().postData() ?? "").includes('"dry_run":true');
+    if (!holding || !dryRun) return route.fallback();
+    held.push(route);
+  });
+  /** What holds the keyboard focus: the body, or its tag and name. */
+  const focusName = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      return `${focused.tagName.toLowerCase()} "${words}"`;
+    });
+  /** A point of the window where the element drawn, and every element around it, takes no focus,
+   *  outside the main content and the board's columns: a click there leaves no control focused,
+   *  and Chromium and WebKit put the focus on the body. */
+  const blankSpot = () =>
+    page.evaluate(() => {
+      const takesFocus =
+        "a[href], button, input, select, textarea, summary, iframe, label, [tabindex], [contenteditable]";
+      for (let y = 4; y < window.innerHeight; y += 8) {
+        for (let x = 4; x < window.innerWidth; x += 8) {
+          const hit = document.elementFromPoint(x, y);
+          if (
+            hit !== null &&
+            hit.closest(takesFocus) === null &&
+            hit.closest("main, [data-board-column]") === null
+          ) {
+            return { x, y };
+          }
+        }
+      }
+      return null;
+    });
+  for (const press of ["no click", "a click on a blank spot"] as const) {
+    const where = `Board at 390x664 with ${press} while the dry run is out`;
+    // One project per press: a parent in work and a child under it, so the child's move is one
+    // the rule's dry run checks first, and one more card in the same column.
+    const key = press === "no click" ? "BDNC" : "BDCL";
+    await createProject({ key, name: `Board ${press}` });
+    const parent = await createIssue({ project: key, title: `Parent ${key}` });
+    const child = await createIssue({ parent: parent.key, project: key, title: `Child ${key}` });
+    const other = await createIssue({ project: key, title: `Other ${key}` });
+    for (const issue of [parent, child, other]) await patchIssue(issue.key, { status: "todo" });
+    await openIssuesTab(page, key, "Board");
+    const card = page.locator(`[data-board-card="${child.key}"]`);
+    await card.focus();
+    await expect(card).toBeFocused();
+    holding = true;
+    await page.keyboard.press("Shift+L");
+    await expect
+      .poll(() => held.length, { message: `${where}: the move sent no dry run` })
+      .toBeGreaterThan(0);
+    let afterClick = "";
+    if (press === "a click on a blank spot") {
+      // The reader scrolls the window back to the top, which moves no focus, and clicks a blank
+      // spot of the shell's header there: the main content takes the focus at a click anywhere
+      // inside it (`app.tsx` gives it `tabIndex={-1}`), and the header is outside it.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await settledScrollTop(page);
+      // The spot is read once the window has held still at its top, and nothing is drawn over
+      // the page while the dry run is held.
+      const spot = await blankSpot();
+      expect(spot, `${where}: no point of the window takes no focus`).not.toBeNull();
+      await page.mouse.click(spot?.x ?? 0, spot?.y ?? 0);
+      await nextFrames(page);
+      // One read is the answer: the click's change of focus is done after the frames above, and
+      // nothing else moves the focus while the dry run is held.
+      afterClick = await focusName();
+    }
+    holding = false;
+    for (const route of held.splice(0)) await route.continue();
+    await expect(
+      page.locator(`[data-board-column="in_progress"] [data-board-card="${child.key}"]`),
+      `${where}: the card did not move to In progress`
+    ).toHaveCount(1);
+    // The move's focus effect runs with the render that draws the card in its column, so it is
+    // done after these frames.
+    await nextFrames(page);
+    await nextFrames(page);
+    if (press === "no click") {
+      await expect(
+        card,
+        `${where}: the move did not take the focus to the moved card`
+      ).toBeFocused();
+    } else {
+      // One read is the answer: the move has landed and its focus effect has run, so nothing
+      // moves the focus after this.
+      const afterMove = await focusName();
+      expect(
+        afterMove,
+        `${where}: the click left the focus on ${afterClick}, and the move took it to ${afterMove}`
+      ).toBe(afterClick);
+    }
+  }
+});
