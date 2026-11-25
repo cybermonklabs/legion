@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks the daemon API contract of entry 20261125170906, whose state schema no longer declares `slot.lentTo` or `admission.free`. The entry has no number until main merges it: the pack writes the number that the daemon built from the same commit declares.
+  The plugin speaks the daemon API contract that carries entry `20261125170906` (`drop-unserved-state-keys`), whose state schema no longer declares `slot.lentTo` or `admission.free`.
 time: 2026-11-25T09:26:36Z
 custom:
     Issue: pr5332

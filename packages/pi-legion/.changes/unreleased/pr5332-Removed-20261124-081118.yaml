@@ -1,5 +1,5 @@
 kind: Removed
-body: The `read_state` summary no longer reads `admission.free` for its `admission cap` line or `slot.lentTo` for an issue's `slot` line. No daemon has served either field, so the summary never printed `free` or `lent`.
+body: Under the daemon API contract that carries entry `20261125170906` (`drop-unserved-state-keys`), the `read_state` summary no longer reads `admission.free` for its `admission cap` line or `slot.lentTo` for an issue's `slot` line. No daemon has served either field, so the summary never printed `free` or `lent`.
 time: 2026-11-24T08:11:18.986987979Z
 custom:
     Issue: pr5332
