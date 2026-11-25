@@ -22,27 +22,38 @@ import (
 // (wait.ErrWaiting) until it runs nothing, each judges the step again under the machine's lock,
 // and a step the issue left before that lock is supervise.ErrStepLeft with nothing of the claim
 // changed: the outbox's start then finishes the row without acting, since the start of the step
-// the issue stands in now readies its claim in the same way. It is the one step between the
-// outbox's fences and the request that brings the claim back, so a reader asking what a start
-// does to a claim before it starts it reads this and no other place.
+// the issue stands in now readies its claim in the same way.
 func (r *outbox) readyClaimForStart(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow,
 	issue record.Issue, payload record.SuperviseRequest, work supervise.StartWork) error {
 	// A start of no entry — a wake, a resume, a role admission brings back — starts the claim
 	// with the role it holds; the steps of one key are one claim, and its next step may be of
 	// another role.
-	if payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
+	step := stepStart(payload)
+	rerole := step && machine.Claim().Role != payload.Role
+	if !rerole && (!machine.Leaves(work) || machine.Claim().RunsNothing()) {
+		return nil
+	}
+	if step {
+		ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+	}
+	if rerole {
 		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
 			return err
 		}
-		if err := r.reroleForStep(ctx, machine, token, row, payload); err != nil {
+		if err := reroleForStep(ctx, machine, token, row.Issue, payload.Role); err != nil {
 			return err
 		}
 	}
-	return r.suspendToLeave(ctx, machine, token, row, payload, work)
+	return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
 }
 
-// reroleForStep gives machine's claim the role of payload, the start of the step its agent is
-// started for, and is a wait (wait.ErrWaiting) while the claim still runs a process. That process
+// stepStart is whether a start names the entry of a phase's step rather than a wake or resume.
+func stepStart(payload record.SuperviseRequest) bool {
+	return payload.Entry > 0 && payload.Phase != ""
+}
+
+// reroleForStep gives machine's claim the role of the step its agent is started for,
+// and is a wait (wait.ErrWaiting) while the claim still runs a process. That process
 // runs the role it was started with, so the start asks it to suspend, as the daemon and keeping its
 // session, and the start waits on the row's backoff: a claim in a turn holds the suspension for the
 // turn's end and a launching one until its agent is ready (supervise's suspend rows), as
@@ -56,12 +67,10 @@ func (r *outbox) readyClaimForStart(ctx context.Context, machine *supervise.Mach
 // changed. A suspension the machine holds for the turn's end lands at that end on the judgment it
 // passed when it was asked: a move back in between costs the claim that one suspension, and the
 // move back's own start resumes it on its session in the role it holds.
-func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest) error {
-	role := payload.Role
-	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+func reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, issue string, role claim.Role) error {
 	if held := machine.Claim(); !held.RunsNothing() {
-		err := suspendUntilIdle(ctx, machine, token, fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role), func(held supervise.Claim) error {
-			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, row.Issue, token, held.Role)
+		err := suspendUntilIdle(ctx, machine, token, fmt.Sprintf("its agent's next step on %s is the %s's", issue, role), func(held supervise.Claim) error {
+			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, issue, token, held.Role)
 		})
 		if err != nil {
 			return err

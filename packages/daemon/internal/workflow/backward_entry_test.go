@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"net/http"
-	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -143,12 +141,8 @@ func TestAStaleMoveBackReportsItsTwoEntryIdentities(t *testing.T) {
 			t.Fatalf("stale move refusal names no receiver %q: %s", receiver, refusal.Message)
 		}
 	}
-	reason, _, _ := strings.Cut(refusal.Message, ". ")
-	numbers := make(map[string]int)
-	for _, number := range regexp.MustCompile(`[0-9]+`).FindAllString(reason, -1) {
-		numbers[number]++
-	}
-	if want := (map[string]int{"208": 1, "2": 1, "9": 1}); !reflect.DeepEqual(numbers, want) {
-		t.Fatalf("stale move refusal reports numeric values %v, want only receiver and entry identities %v: %s", numbers, want, reason)
+	clause := intake.StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, "move back")
+	if !strings.HasPrefix(refusal.Message, clause+", so it changed nothing. ") {
+		t.Fatalf("stale move refusal does not use the shared entry clause %q: %s", clause, refusal.Message)
 	}
 }
