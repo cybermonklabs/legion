@@ -36,6 +36,7 @@ import (
 // the pool it would have built is built here instead, which connects lazily, so the claim write
 // is what meets the refusal — exactly as a daemon whose database went away meets it.
 func TestTheOwedWriteErrorsOfAnUnreachableDatabaseCarryNoSQLSTATE(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, err := testpool.NewPool(ctx, "postgres://legion:secret@127.0.0.1:1/legion")
 	if err != nil {

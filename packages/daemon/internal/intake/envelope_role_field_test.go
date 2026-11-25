@@ -13,6 +13,7 @@ import (
 // role a message Dispatch's API sent for a route to a role was sent for) is ignored: each
 // subject's envelope decodes to the same message, fact and id with the field as without it.
 func TestDecodeMessageReadsAnEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testing.T) {
+	t.Parallel()
 	at := strconv.FormatInt(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC).UnixMilli(), 10)
 	for _, tc := range []struct {
 		name, subject string

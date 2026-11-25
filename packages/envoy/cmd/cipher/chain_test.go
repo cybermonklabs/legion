@@ -1258,7 +1258,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		}},
 		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
-			return "machine: " + cipherclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
+			// Found with no setting, so the audience is the broker's and AGENT_SECRETS_MACHINE_AUDIENCE
+			// is not named; the rig's metadata server is the one GCE_METADATA_HOST names.
+			return "machine: this machine's Google identity token for the Google exchange audience the broker names (GCE_METADATA_HOST names the metadata server)\n"
 		}},
 		{name: "machine cache", setup: func(t *testing.T, r *chainRig) string {
 			r.writeMachineCacheFixture("cached-enrollment")

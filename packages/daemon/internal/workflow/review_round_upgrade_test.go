@@ -79,6 +79,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 // The owed entry sent after the upgrade (SendOwedEntry) delivers the stored task word for word,
 // ending with the two sentences.
 func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, pool := storeBeforeTheReviewedHead(t)
 	const (

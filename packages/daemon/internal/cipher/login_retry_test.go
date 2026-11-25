@@ -172,8 +172,29 @@ func failedCall(brokerURL, failure string) string {
 	return fmt.Sprintf("broker POST %s: Post %q: %s", loginRoute, brokerURL+loginRoute, failure)
 }
 
-// fixed is a cause a rig knows before the login it drives has run.
-func fixed(cause string) func() string { return func() string { return cause } }
+// fixed is a value a row knows before the login it drives has run: a cause, or a Retry-After.
+func fixed(value string) func() string { return func() string { return value } }
+
+// failedLoginMsg is the message of the one line a failed login logs (Client.retryAfter).
+const failedLoginMsg = "agent-secrets: the token login failed; retrying"
+
+// failedLoginLine starts a Client on brokerURL through httpClient, whose first login must fail,
+// and answers the one line that login logged, without its timestamp.
+func failedLoginLine(t *testing.T, brokerURL string, httpClient *http.Client) string {
+	t.Helper()
+	logged := &lockedLog{}
+	client := &Client{
+		URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "token"),
+		Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := client.Start(ctx)
+	cancel() // before the line is read, so the loop cannot write a second line into it
+	if err == nil {
+		t.Fatal("the login succeeded, want the failure this row drove")
+	}
+	return strings.TrimSuffix(logged.String(), "\n")
+}
 
 // withoutTime drops the timestamp from a log line, so a row can read the line whole.
 func withoutTime(groups []string, a slog.Attr) slog.Attr {
@@ -183,17 +204,19 @@ func withoutTime(groups []string, a slog.Attr) slog.Attr {
 	return a
 }
 
-// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the ten classes a failed token
-// login falls in, each against a real server or a real resolver rather than a planted error, as
+// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the classes a failed token login
+// falls in, each against a real server or a real resolver rather than a planted error, as
 // internal/dispatch/unreachable_test.go drives transportFailure's own shapes.
 //
-// The five long-retry rows are what changed: a TLS handshake that fails, a TLS alert the far side
-// sent or the daemon sent itself, and a name that does not resolve are faults on the daemon's own
-// side, which asking again in seconds only repeats, so they now wait the schedule a refusal waits
-// instead of the pod renewer's. The five short-retry rows — a refused connection, a connection
-// reset after it was accepted, a timeout, a DNS failure that is not "not found", and a 5xx — are
-// the behaviour this client already had, and are new coverage of it rather than proof of a
-// change.
+// The five long-retry rows of faults on the daemon's own side were a change: a TLS handshake that
+// fails, a TLS alert the far side sent or the daemon sent itself, and a name that does not resolve
+// are faults on the daemon's own side, which asking again in seconds only repeats, so they wait
+// the schedule a refusal waits instead of the pod renewer's. The 408 and the 429 are the latest
+// change: like a 5xx they are an outage, a broker that could not take the login now, so they wait
+// the short schedule, where they waited a refusal's. The other short-retry rows — a refused
+// connection, a connection reset after it was accepted, a timeout, a DNS failure that is not "not
+// found", and a 5xx — and the 403 refusal on the long schedule are the behaviour this client
+// already had, and are coverage of it rather than proof of a change.
 //
 // Each row reads the whole log the login wrote, not a line of it: one failed login is one line,
 // and a second line per failure would be a regression an operator sees.
@@ -369,29 +392,58 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 				return server.URL, server.Client(), fixed("broker answered 500 INTERNAL: token login failed")
 			},
 		},
+		{
+			name:     "a 408",
+			class:    "broker-unavailable",
+			schedule: "short",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				// A front door that did not take the login in time, with a page of its own.
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusRequestTimeout)
+					fmt.Fprint(w, "request timed out")
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 408 UNKNOWN: request timed out")
+			},
+		},
+		{
+			name:     "a 429",
+			class:    "broker-unavailable",
+			schedule: "short",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					fmt.Fprint(w, `{"code":"RATE_LIMITED","error":"too many token logins"}`)
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 429 RATE_LIMITED: too many token logins")
+			},
+		},
+		{
+			name:     "a 403",
+			class:    "broker-refusal",
+			schedule: "long",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				// The broker refusing the token, as it refuses a ServiceAccount no entry lists.
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"code":"TOKEN_REFUSED","error":"no entry lists this account"}`)
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 403 TOKEN_REFUSED: no entry lists this account")
+			},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			brokerURL, httpClient, cause := row.rig(t)
-			logged := &lockedLog{}
-			client := &Client{
-				URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "token"),
-				Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			err := client.Start(ctx)
-			cancel() // before the row reads the log, so the loop cannot write a second line into it
-			if err == nil {
-				t.Fatal("the login succeeded, want the failure this row drove")
-			}
-			got := strings.TrimSuffix(logged.String(), "\n")
+			got := failedLoginLine(t, brokerURL, httpClient)
 			t.Logf("the line: %s", got)
 			wait := longWait
 			if row.schedule == "short" {
 				wait = shortWait
 			}
-			const msg = "agent-secrets: the token login failed; retrying"
 			head := fmt.Sprintf("level=ERROR msg=%q class=%s schedule=%s retry_in=%s error=",
-				msg, row.class, row.schedule, wait)
+				failedLoginMsg, row.class, row.schedule, wait)
 			if !strings.HasPrefix(got, head) {
 				t.Fatalf("the line\n\t%s\nwants the head\n\t%s", got, head)
 			}
@@ -409,6 +461,70 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 			}
 			if want := cause(); gotCause != want {
 				t.Fatalf("the cause\n\t%s\nwant\n\t%s", gotCause, want)
+			}
+		})
+	}
+}
+
+// TestALoginTheBrokerRateLimitedWaitsItsRetryAfter pins the wait after a token login answered 429:
+// the short schedule's step, or the Retry-After the answer names where it asks longer, in seconds
+// or as an HTTP date, though never longer than the long schedule's most. The broker's token login
+// route answers a 429 with the wait its buckets refill in (by default 30 s per source address, a
+// minute per account), and a login sent before then is refused again; one the account's bucket
+// refuses has spent a request of its address's bucket and a token verification first. The rows
+// asking 30 s, a date 45 s ahead, a day and a number past int64 are the change: before it, a 429
+// waited the short step whatever it asked. The other rows wait the step, as they did: a 429 asking
+// less than the step, naming no Retry-After, a date already past, a negative number or no wait at
+// all, and a 503 asking 30 s, since only a 429's Retry-After is read.
+func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
+	const step = 2 * time.Second
+	withUnansweredRetry(t, step, 10*time.Second)
+	withLoginRetry(t, 30*time.Second, 5*time.Minute)
+	for _, row := range []struct {
+		name   string
+		status int
+		// retryAfter is the Retry-After the answer carries, read as it is written; "" carries none.
+		retryAfter func() string
+		// least and most bound the wait the login's log line names.
+		least, most time.Duration
+	}{
+		{"a 429 asking 30 s", http.StatusTooManyRequests, fixed("30"), 30 * time.Second, 30 * time.Second},
+		{"a 429 asking until a date 45 s ahead", http.StatusTooManyRequests, func() string {
+			// An HTTP date names whole seconds, so the wait is a little under 45 s.
+			return time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+		}, 40 * time.Second, 45 * time.Second},
+		{"a 429 asking a day waits the long schedule's most", http.StatusTooManyRequests, fixed("86400"), 5 * time.Minute, 5 * time.Minute},
+		{"a 429 asking a number past int64 waits the long schedule's most", http.StatusTooManyRequests, fixed("99999999999999999999999"), 5 * time.Minute, 5 * time.Minute},
+		{"a 429 asking 1 s", http.StatusTooManyRequests, fixed("1"), step, step},
+		{"a 429 naming no Retry-After", http.StatusTooManyRequests, fixed(""), step, step},
+		{"a 429 naming a date already past", http.StatusTooManyRequests, fixed("Mon, 02 Jan 2006 15:04:05 GMT"), step, step},
+		{"a 429 naming a negative number", http.StatusTooManyRequests, fixed("-30"), step, step},
+		{"a 429 naming no wait", http.StatusTooManyRequests, fixed("soon"), step, step},
+		{"a 503 asking 30 s", http.StatusServiceUnavailable, fixed("30"), step, step},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var sent atomic.Value
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				value := row.retryAfter()
+				sent.Store(value)
+				if value != "" {
+					w.Header().Set("Retry-After", value)
+				}
+				w.WriteHeader(row.status)
+				fmt.Fprint(w, `{"code":"RATE_LIMITED","error":"too many token logins"}`)
+			}))
+			t.Cleanup(server.Close)
+			got := failedLoginLine(t, server.URL, server.Client())
+			head := fmt.Sprintf("level=ERROR msg=%q class=broker-unavailable schedule=short retry_in=", failedLoginMsg)
+			rest, headed := strings.CutPrefix(got, head)
+			waited, _, named := strings.Cut(rest, " error=")
+			if !headed || !named {
+				t.Fatalf("the line\n\t%s\nwants the head\n\t%s<wait> error=", got, head)
+			}
+			wait, err := time.ParseDuration(waited)
+			if err != nil || wait < row.least || wait > row.most {
+				t.Fatalf("a login answered %d with Retry-After %q waits %s before the next (%v), want %s to %s",
+					row.status, sent.Load(), waited, err, row.least, row.most)
 			}
 		})
 	}
