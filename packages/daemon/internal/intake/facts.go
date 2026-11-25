@@ -898,13 +898,16 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
 
-// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
-// the head the pull request merged at, "" when the observation names none.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, HeadSHA, the
+// head the pull request merged at, "" when the observation names none, and MergedAt, GitHub's
+// merged_at of the pull request, which orders a later merge of the issue after an earlier one. It
+// is zero where the observation carries none, or one that does not parse: no reader invents one.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
 	HeadSHA  string
+	MergedAt time.Time
 }
 
 func (PullRequestMerged) namedIssue() (string, bool) { return "", false }
