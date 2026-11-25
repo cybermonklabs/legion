@@ -27787,22 +27787,17 @@ describe("consumer delivery", () => {
       stopSink();
       await stop();
     }
-    // A hang guard: what can hang is the consumer's boot or its delivery of the frame. The row's
-    // own cost is CPU work, not a wait: the parse and the card's encoding of a payload nested 9,999
-    // deep, which overflows the encoder's stack (3.0 to 3.3 s of user CPU in 3.4 to 3.7 s of wall
-    // time with no load, against 0.7 s for a row that boots nothing). So its rung is 32 busy loops,
-    // 16 per CPU, below this file's 96: at 96 it cost up to 407 996 ms over 20 runs, one run past
-    // the 390_000 it had then (the tester's Job infra-1580-t27-j1-l27pc of the cluster's `builds`
-    // namespace, two CPUs and 8 GiB, 137 busy loops, row A 31.6 s, at 06d187e7), and up to 107 425
-    // ms (infra-1580-r28np96-55dhk, 122 busy loops, row A 35.1 s); at 48, up to 112 946 ms
-    // (infra-1580-r28np48-lkphb, 97 busy loops for the 48 rung, row A 32.7 s). Six times any of
-    // these is past the room the pi-envoy job leaves one hang. That room is 395 s: the job's
-    // `timeout-minutes: 15` less the 505 s its workflow records as its longest run
-    // (`ci-job-pi-envoy.yaml:26-31`). At 32 it is 20 of 20, charged 8 285 / 31 938 / 71 686 ms
-    // (min / median / max), in the Job infra-1580-r28np32-z7t7q (76 busy loops for the 32 rung,
-    // row A 37.6 s), at 06d187e7 with this round's changes. Six times that worst, 430 116 ms, is
-    // past the room too, so the room decides the limit: 390_000, 5.4 times that worst.
-  }, 390_000);
+    // A hang guard: what can hang is the consumer's boot or its delivery of the frame. Main's
+    // #5220, which the merge of main 67dcae63 brought here, bounds a card's layout by its size, so
+    // the payload nested 9,999 deep no longer overflows the encoder's stack, and the row's own
+    // work is no longer seconds of CPU: it took 126 to 139 ms over 3 runs with no load on the
+    // issue's pod, at b96dcc3e. Its rung is this file's 96 again. Worst measured cost: 23 308 ms
+    // over 20 runs at the 96 rung in the Job infra-1580-r30np96-kzkf8 of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (205 busy loops, at which row A's runs took 37.1 s against the
+    // calibration's 31.2 s), at b96dcc3e. Six times that is 139 848 ms, rounded up to 150_000,
+    // 6.4 times it, inside the 395 s the pi-envoy job leaves one hang
+    // (`ci-job-pi-envoy.yaml:26-31`).
+  }, 150_000);
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");
