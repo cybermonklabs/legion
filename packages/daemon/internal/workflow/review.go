@@ -886,6 +886,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	resolvedIssue(ctx, issue.Key)
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
