@@ -11,13 +11,17 @@ import (
 
 // A struct tag cannot name a constant, so the enum tags the OpenAPI document reads off the step
 // route's body and its answer spell the words of a step record out. Each is held here to the words
-// contracts gives them (STEP_KINDS, STEP_RESULTS), which Dispatch's store and the Legion daemon
-// read, so the document never names a word the store or the daemon does not hold. The answer's
-// result is "" too, for a run that still runs.
+// contracts gives them (STEP_KINDS, STEP_RESULTS, PLANNED_STEP_STATES), which Dispatch's store and
+// the Legion daemon read, so the document never names a word the store or the daemon does not
+// hold. The answer's result is "" too, for a run that still runs. A planned step's state is not
+// started, running, or a result, the words the steps read writes (listIssueSteps), and the web
+// client switches on the enum the document names (steps-model.ts), so a state renamed on one side
+// fails here, and the document's new enum fails the web client's typecheck until it draws it.
 func TestTheStepRouteNamesContractsWords(t *testing.T) {
 	t.Parallel()
 	kinds := strings.Join([]string{contracts.StepKindStep, contracts.StepKindRetro, contracts.StepKindMerge}, ",")
 	results := strings.Join([]string{contracts.StepResultPassed, contracts.StepResultFailed, contracts.StepResultStopped}, ",")
+	states := strings.Join([]string{contracts.PlannedStepNotStarted, contracts.PlannedStepRunning, results}, ",")
 	for _, field := range []struct {
 		of    reflect.Type
 		field string
@@ -27,6 +31,7 @@ func TestTheStepRouteNamesContractsWords(t *testing.T) {
 		{reflect.TypeFor[stepRecordInput](), "Result", results},
 		{reflect.TypeFor[model.StepRecord](), "Kind", kinds},
 		{reflect.TypeFor[model.StepRecord](), "Result", "," + results},
+		{reflect.TypeFor[model.PlannedStep](), "State", states},
 	} {
 		named, ok := field.of.FieldByName(field.field)
 		if !ok {

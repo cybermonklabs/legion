@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -508,10 +509,13 @@ func credentialIn(text string) string {
 // implementer, each a reason of its task or of the whole plan, and one id on two blocks, a task id
 // outside the form and a step outside the grammar, each an error of the read, which the route
 // answers as a reason of the whole plan. Each case holds the reason's task, the quote of
-// redactedURL cut and marked, and no run of six bytes of plantedUser. The fault is a cut made
-// before the rule, which can end inside the userinfo, before its "@", where the rule then finds no
-// userinfo; the control is quoted cutting first, under which each quote keeps 120 bytes of
-// plantedUser.
+// redactedURL cut and marked, and no run of six bytes of plantedUser, and each error of the read
+// names no length of plantedURL, which would give away the length of its credential, where the
+// rule leaves neither a part nor the length of one (redact.URLCredentials). The fault is a cut
+// made before the rule, which can end inside the userinfo, before its "@", where the rule then
+// finds no userinfo; the control is quoted cutting first, under which each quote keeps 120 bytes
+// of plantedUser. The fault of the length is an error that prints the raw word's length beside
+// its quote.
 func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	implementer := Step{Role: "implementer"}
@@ -559,6 +563,9 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 			}
 			if part := credentialIn(err.Error()); part != "" {
 				t.Errorf("the error %.1000q holds %q of the URL's credential", err.Error(), part)
+			}
+			if raw := strconv.Itoa(len(plantedURL)); strings.Contains(err.Error(), raw) {
+				t.Errorf("the error %.1000q names %s, the length of the word with its credential", err.Error(), raw)
 			}
 		})
 	}
