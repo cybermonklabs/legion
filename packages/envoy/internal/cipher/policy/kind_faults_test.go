@@ -90,68 +90,105 @@ func TestProxyFaultsAreEveryFaultInTheLoadsOrder(t *testing.T) {
 	}
 }
 
-// TestSecretOfTagsIsTheLoadsReading: SecretOfTags reads a secret's store tags as the load does:
-// for a secret the load serves, the same kind, way, proxy-narrowed tag, max-grant, type and
-// fingerprint; for one it refuses for a tag SecretOfTags reads, the same reason and detail.
-func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
-	file := policytest.KindsFile()
-	profiles := policytest.Profiles(t, file, daemonService)
-	tag := func(s secrets.LocalSecret, tags map[string]string) secrets.LocalSecret {
-		for k, v := range tags {
-			s.Tags[k] = v
-		}
-		return s
-	}
-	plain := func(name string) secrets.LocalSecret {
-		return policytest.Secret(name, appOwner, policy.TierAgent, "v1")
-	}
-	rows := []secrets.LocalSecret{
-		tag(plain("SWAP_KEY"), map[string]string{policy.TagProxy: "slack"}),
-		tag(plain("SIGN_KEY"), map[string]string{policy.TagProxy: "aws", policy.TagMaxGrant: "2h"}),
-		tag(plain("NARROW_KEY"), map[string]string{policy.TagProxy: "github", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}),
-		tag(policytest.TypeSecret("FED_KEY", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), map[string]string{policy.TagProxy: "anthropic"}),
-		tag(policytest.TypeSecret("LOGIN_KEY", appOwner, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)), map[string]string{policy.TagProxy: "gcp"}),
-		plain("BARE_KEY"),
-		tag(plain("UNKNOWN_KEY"), map[string]string{policy.TagProxy: "gitlab"}),
-		tag(plain("WAY_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}),
-		tag(policytest.TypeSecret("CAP_KEY", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}),
-		tag(plain("NARROWED_BAD_KEY"), map[string]string{policy.TagProxyNarrowed: "yes"}),
-		tag(plain("GRANT_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagMaxGrant: "a day"}),
-		tag(plain("TYPE_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagType: "no-such-type"}),
-	}
-	// CAP_KEY's cap within the kind's is served; the kind with a cap a stored value under it lacks
-	// is the max_grant row of TestEachProxyTagRefusalNamesWhatIsWrong.
-	loader := policytest.Loader(secrets.NewLocal(rows...), daemonService)
-	loader.Profiles = profiles
-	set, err := loader.Load(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range rows {
-		name := policy.SlugToName(row.Name[len(policytest.Prefix):])
-		got, reason, detail := profiles.SecretOfTags(secrets.LocalARN(row.Name), row.Tags)
-		if refusal, refused := set.Refused[row.Name]; refused {
-			if reason != refusal.Reason || detail != refusal.Detail {
-				t.Errorf("SecretOfTags(%s) = %q, %q; the load refuses it %q, %q", name, reason, detail, refusal.Reason, refusal.Detail)
+// TestGrantAndTypeReadsTheTagsInTheLoadsOrder: the one reader of a secret's max-grant,
+// default-grant and type tags refuses a secret with several of them malformed for the first, in
+// the order max-grant, default-grant, type, which is the order the load has refused them in since
+// before the kinds; reads the type only once both grant tags pass, so a secret refused for a grant
+// tag writes no legacy-tag line; and, for a secret it serves, sets the grant cap, the session
+// default and the type frozen into the source, read back by Secret.Type. The load and SecretOfTags
+// both refuse in that order, since both read through it.
+func TestGrantAndTypeReadsTheTagsInTheLoadsOrder(t *testing.T) {
+	const source = "arn:row-key"
+	for _, row := range []struct {
+		name     string
+		tags     map[string]string
+		reason   string
+		typeRead bool
+		want     policy.Secret
+	}{
+		{"all three malformed", map[string]string{policy.TagMaxGrant: "a day", policy.TagDefaultGrant: "forever", policy.TagType: "no-such-type"}, policy.ReasonMaxGrantMalformed, false, policy.Secret{}},
+		{"default-grant and type malformed", map[string]string{policy.TagMaxGrant: "1h", policy.TagDefaultGrant: "forever", policy.TagType: "no-such-type"}, policy.ReasonDefaultGrantMalformed, false, policy.Secret{}},
+		{"type malformed", map[string]string{policy.TagMaxGrant: "1h", policy.TagDefaultGrant: policy.DefaultGrantSession, policy.TagType: "no-such-type"}, policy.ReasonTypeUnknown, true, policy.Secret{}},
+		{"all three read", map[string]string{policy.TagMaxGrant: "1h", policy.TagDefaultGrant: policy.DefaultGrantSession, policy.TagType: policy.TypeAnthropicFederation}, "", true,
+			policy.Secret{Source: policy.TypeSource(policy.TypeAnthropicFederation, source), MaxGrant: time.Hour, SessionDefault: true}},
+		{"the old kind tag", map[string]string{policy.LegacyTypeTag: policy.TypeGoogleLogin}, "", true, policy.Secret{Source: policy.TypeSource(policy.TypeGoogleLogin, source)}},
+		{"no tag", map[string]string{}, "", true, policy.Secret{Source: source}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s, read := policy.Secret{Source: source}, false
+			secretType, reason := policy.GrantAndType(&s, row.tags, func() string { read = true; return policy.TypeFromTags(row.tags) })
+			if reason != row.reason || read != row.typeRead {
+				t.Fatalf("GrantAndType = %q, read the type %t; want %q, %t", reason, read, row.reason, row.typeRead)
 			}
-			continue
+			if reason != "" {
+				return
+			}
+			if s != row.want || secretType != row.want.Type() {
+				t.Errorf("GrantAndType read %+v and the type %q; want %+v and %q", s, secretType, row.want, row.want.Type())
+			}
+		})
+	}
+
+	// The load and SecretOfTags refuse in the helper's order: a secret whose default-grant and type
+	// are both malformed is refused for its default-grant by both.
+	bad := policytest.Secret("BAD_KEY", appOwner, policy.TierAgent, "v1")
+	bad.Tags[policy.TagDefaultGrant], bad.Tags[policy.TagType] = "forever", "no-such-type"
+	profiles := policytest.Profiles(t, policytest.KindsFile(), daemonService)
+	set := policytest.ProfiledCurrent(t, secrets.NewLocal(bad), policytest.KindsFile(), daemonService).Get()
+	refusedSecret(t, set, "BAD_KEY", policy.ReasonDefaultGrantMalformed)
+	if _, reason, _ := profiles.SecretOfTags(secrets.LocalARN(bad.Name), bad.Tags); reason != policy.ReasonDefaultGrantMalformed {
+		t.Errorf("SecretOfTags refuses BAD_KEY for %q; the load refuses it for %q", reason, policy.ReasonDefaultGrantMalformed)
+	}
+}
+
+// TestSourceMissingFaultWordsEachStateOfASource: a profile whose source the load does not serve is
+// refused profile-source-missing, with the source's state as its detail, in the words of
+// SourceMissingFault, which `profiles check` reports the same profile in: the source's refusal
+// reason, with that refusal's detail where it has one; its wait for its value; its being a profile,
+// which is never the source of another; and its absence. Each load refusal carries the source's
+// owner where the store holds it. A stored secret refused or pending is worded so even when a
+// profile holds its name, as the load words it.
+func TestSourceMissingFaultWordsEachStateOfASource(t *testing.T) {
+	unknownKind := policytest.Proxied(policytest.Secret("UNKNOWN_KIND_KEY", appOwner, policy.TierAgent, "v1"), "gitlab")
+	store := secrets.NewLocal(
+		policytest.Secret("BAD_TIER_KEY", appOwner, "admin", "v1"),
+		unknownKind,
+		createdWithoutValue("WAITING_KEY", time.Now()),
+		policytest.Proxied(policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "v1"), "example"),
+	)
+	file := policytest.KindsFile(
+		`{"name": "TIER_READ", "source": "BAD_TIER_KEY", "proxy": "example"}`,
+		`{"name": "KIND_READ", "source": "UNKNOWN_KIND_KEY", "proxy": "example"}`,
+		`{"name": "WAITING_READ", "source": "WAITING_KEY", "proxy": "example"}`,
+		`{"name": "FIRST_READ", "source": "PLAIN_KEY"}`,
+		`{"name": "SECOND_READ", "source": "FIRST_READ"}`,
+		`{"name": "GHOST_READ", "source": "NO_SUCH_KEY", "proxy": "example"}`,
+	)
+	profiles := policytest.Profiles(t, file, daemonService)
+	set := policytest.ProfiledCurrent(t, store, file, daemonService).Get()
+	kindDetail := set.Refused[policytest.ID("UNKNOWN_KIND_KEY")].Detail
+	if kindDetail == "" {
+		t.Fatalf("UNKNOWN_KIND_KEY's refusal has no detail, so the row of a refusal with a detail checks nothing: %+v", set.Refused)
+	}
+	for _, row := range []struct {
+		profile, source, reason, detail, owner, want string
+	}{
+		{"TIER_READ", "BAD_TIER_KEY", policy.ReasonTierTagMalformed, "", appOwner, "source BAD_TIER_KEY: " + policy.ReasonTierTagMalformed},
+		{"KIND_READ", "UNKNOWN_KIND_KEY", policy.ReasonProxyKindUnknown, kindDetail, appOwner, "source UNKNOWN_KIND_KEY: " + policy.ReasonProxyKindUnknown + " (" + kindDetail + ")"},
+		{"WAITING_READ", "WAITING_KEY", policy.ReasonPendingValue, "", owner, "source WAITING_KEY: " + policy.ReasonPendingValue},
+		{"SECOND_READ", "FIRST_READ", "", "", "", "source FIRST_READ: a profile, which is never the source of another"},
+		{"GHOST_READ", "NO_SUCH_KEY", "", "", "", "source NO_SUCH_KEY: " + policy.ReasonAbsent},
+	} {
+		want := policy.ProfileFault{Reason: policy.ReasonProfileSourceMissing, Detail: row.want}
+		if got := profiles.SourceMissingFault(row.source, row.reason, row.detail); got != want {
+			t.Errorf("SourceMissingFault(%s, %q, %q) = %+v, want %+v", row.source, row.reason, row.detail, got, want)
 		}
-		served, ok := set.Secrets[name]
-		if !ok || reason != "" {
-			t.Errorf("SecretOfTags(%s) = %q, %q, the load served %t", name, reason, detail, ok)
-			continue
-		}
-		if got.Proxy != served.Proxy || got.Way != served.Way || got.ProxyNarrowed != served.ProxyNarrowed || got.MaxGrant != served.MaxGrant || got.Type() != served.Type() || got.ProfileDigest != served.ProfileDigest || got.Source != served.Source {
-			t.Errorf("SecretOfTags(%s) = %+v; the load serves %+v", name, got, served)
+		if refusal := refusedProfile(t, set, row.profile, policy.ReasonProfileSourceMissing); refusal.Detail != row.want || refusal.Owner != row.owner {
+			t.Errorf("the load refuses %s with detail %q and owner %q; want %q and %q", row.profile, refusal.Detail, refusal.Owner, row.want, row.owner)
 		}
 	}
-	for _, refused := range []string{"UNKNOWN_KEY", "WAY_KEY", "NARROWED_BAD_KEY", "GRANT_BAD_KEY", "TYPE_BAD_KEY"} {
-		if _, ok := set.Refused[policytest.ID(refused)]; !ok {
-			t.Errorf("the load serves %s, so this test checks no refusal of it", refused)
-		}
-	}
-	if got := set.Secrets["SIGN_KEY"]; got.Way != proxyrules.WaySign || got.MaxGrant != 2*time.Hour {
-		t.Errorf("SIGN_KEY = %+v; want it signed with a 2h cap, so the row checks a way and a cap", got)
+	if got, want := profiles.SourceMissingFault("FIRST_READ", policy.ReasonTierTagMalformed, ""), "source FIRST_READ: "+policy.ReasonTierTagMalformed; got.Detail != want {
+		t.Errorf("SourceMissingFault of a refused stored secret a profile's name is = %q, want %q: the store's state comes first", got.Detail, want)
 	}
 }
 

@@ -74,10 +74,10 @@ func TestTheKindsRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing.T
 }
 
 // TestBothGuardsAreTakenOutOfTheRequesters: a secret of a private project behind a kind carries
-// both guards, as `agent-secrets secret` writes them (WithKindsGuard(WithRequestersGuard(list))),
-// and this broker serves it with its list alone, as it serves the same secret with neither; a tag
-// holding the two guards and no list is no list. The broker before the kinds refused the kinds
-// guard (the golden), and the broker before the project tags the project one, so either refuses it.
+// both guards, as `agent-secrets secret` writes them (WithGuards(list, true, true)), and this
+// broker serves it with its list alone, as it serves the same secret with neither; a tag holding
+// the two guards and no list is no list. The broker before the kinds refused the kinds guard (the
+// golden), and the broker before the project tags the project one, so either refuses it.
 func TestBothGuardsAreTakenOutOfTheRequesters(t *testing.T) {
 	secret := func(name, requesters string) secrets.LocalSecret {
 		s := policytest.Proxied(policytest.Secret(name, guardOwner, policy.TierHuman, "v"), "github")
@@ -87,13 +87,13 @@ func TestBothGuardsAreTakenOutOfTheRequesters(t *testing.T) {
 		}
 		return s
 	}
-	both := policy.WithKindsGuard(policy.WithRequestersGuard(guardOwner))
+	both := policy.WithGuards(guardOwner, true, true)
 	if both != guardOwner+" "+policy.RequestersRollbackGuard+" "+policy.KindsRollbackGuard {
-		t.Fatalf("WithKindsGuard(WithRequestersGuard(%q)) = %q; want the list, the project guard, then the kinds guard", guardOwner, both)
+		t.Fatalf("WithGuards(%q, true, true) = %q; want the list, the project guard, then the kinds guard", guardOwner, both)
 	}
 	loader := policytest.Loader(secrets.NewLocal(
 		secret("BOTH_LISTED", both), secret("NONE_LISTED", guardOwner),
-		secret("BOTH_ALONE", policy.WithKindsGuard(policy.WithRequestersGuard(""))), secret("NONE_ALONE", ""),
+		secret("BOTH_ALONE", policy.WithGuards("", true, true)), secret("NONE_ALONE", ""),
 	))
 	loader.ProjectChecks = true
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile())
@@ -110,45 +110,6 @@ func TestBothGuardsAreTakenOutOfTheRequesters(t *testing.T) {
 		got.Name, got.Source = twin.Name, twin.Source
 		if got != twin {
 			t.Errorf("%s loaded as %+v, %s as %+v; want them equal but for the name: neither guard is a requester", guarded, got, bare, twin)
-		}
-	}
-}
-
-// TestSplitKindsGuard: the kinds guard is taken out of a requesters tag wherever it stands, the
-// rest answered single-spaced, and the project tags' guard left where it stands; a tag without it
-// is answered unchanged. SplitRequestersGuard leaves the kinds guard alone in turn, so a caller that
-// rewrites one guard keeps the other. WithKindsGuard puts the kinds guard after a list once,
-// keeping a project guard the list holds.
-func TestSplitKindsGuard(t *testing.T) {
-	kinds, project := policy.KindsRollbackGuard, policy.RequestersRollbackGuard
-	for _, c := range []struct {
-		raw, rest string
-		guarded   bool
-	}{
-		{kinds, "", true},
-		{"ada@example.com " + kinds, "ada@example.com", true},
-		{kinds + "  ada@example.com\tlegion-daemon", "ada@example.com legion-daemon", true},
-		{"ada@example.com " + project + " " + kinds, "ada@example.com " + project, true},
-		{"ada@example.com  " + project, "ada@example.com  " + project, false},
-		{"ada@example.com," + kinds, "ada@example.com," + kinds, false},
-		{"", "", false},
-	} {
-		if rest, guarded := policy.SplitKindsGuard(c.raw); rest != c.rest || guarded != c.guarded {
-			t.Errorf("SplitKindsGuard(%q) = %q, %v; want %q, %v", c.raw, rest, guarded, c.rest, c.guarded)
-		}
-	}
-	if rest, guarded := policy.SplitRequestersGuard("ada@example.com " + project + " " + kinds); rest != "ada@example.com "+kinds || !guarded {
-		t.Errorf("SplitRequestersGuard of a tag holding both guards = %q, %v; want the kinds guard kept", rest, guarded)
-	}
-	for list, want := range map[string]string{
-		"":                                       kinds,
-		"carol@example.com":                      "carol@example.com " + kinds,
-		"carol@example.com " + project:           "carol@example.com " + project + " " + kinds,
-		"carol@example.com " + kinds:             "carol@example.com " + kinds,
-		kinds + " carol@example.com  " + project: "carol@example.com " + project + " " + kinds,
-	} {
-		if got := policy.WithKindsGuard(list); got != want {
-			t.Errorf("WithKindsGuard(%q) = %q, want %q", list, got, want)
 		}
 	}
 }

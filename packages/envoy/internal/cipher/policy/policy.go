@@ -210,9 +210,9 @@ const (
 	TagRollbackGuard   = "mint-service-account"
 	RollbackGuardValue = "type-secret"
 	// RequestersRollbackGuard is the entry `agent-secrets secret` writes into a secret's
-	// requesters tag beside a dispatch-project or a project-channels tag, and takes out once the
-	// secret carries neither. This broker takes it out before it reads the list
-	// (SplitRequestersGuard), so it means nothing here: a requesters tag holding it alone is no
+	// requesters tag beside a dispatch-project or a project-channels tag (WithGuards), and takes
+	// out once the secret carries neither. This broker takes it out before it reads the list
+	// (SplitGuards), so it means nothing here: a requesters tag holding it alone is no
 	// list, and a list beside it reads as it would without it. Brokers before the project tags
 	// read every requesters entry as a person's email or a registered service, and no service
 	// name holds a colon (record.ValidService, which BROKER_SERVICES is held to), so they refuse
@@ -222,9 +222,10 @@ const (
 	// before the project tags against a store holding one.
 	RequestersRollbackGuard = "rollback-guard:project-tags"
 	// KindsRollbackGuard is the entry `agent-secrets secret` writes into a secret's requesters
-	// tag beside a proxy or a proxy-narrowed tag (TagProxy, TagProxyNarrowed), and takes out once
-	// the secret carries neither, as RequestersRollbackGuard is beside the project tags. This
-	// broker takes it out before it reads the list (SplitKindsGuard), so it means nothing here.
+	// tag beside a proxy or a proxy-narrowed tag (TagProxy, TagProxyNarrowed), after the project
+	// tags' guard where both are written (WithGuards), and takes out once the secret carries
+	// neither, as RequestersRollbackGuard is beside the project tags. This broker takes it out
+	// before it reads the list (SplitGuards), so it means nothing here.
 	// Brokers before the kinds read neither proxy tag, and would serve a secret behind the proxy
 	// by its tag alone as its value, to a command; they read the guard as a requester, which is
 	// no person's email and no registered service (it holds a colon, which record.ValidService

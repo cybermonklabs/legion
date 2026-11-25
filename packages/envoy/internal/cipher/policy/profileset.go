@@ -436,29 +436,39 @@ func RowWords(row proxyrules.Allow) string {
 	return row.Method + " " + row.PathPrefix + " on " + row.Host
 }
 
-// sourceMissing is the refusal of a profile whose source set does not serve, with the source's own
-// state as its detail: the reason the policy refuses it and that refusal's own detail where it has
-// one (a value refusal's decoder words, such as the shapeVersion it read), its wait for a value,
-// its being a profile, which is never the source of another, or its absence.
+// sourceMissing is the refusal of a profile whose source set does not serve, with its source's
+// owner where the store holds it, worded by SourceMissingFault from the source's state in set.
 func (p Profiles) sourceMissing(source string, set *Set, prefix string) Refusal {
 	id := prefix + slugOf(source)
-	missing := func(owner, why string) Refusal {
-		return Refusal{Reason: ReasonProfileSourceMissing, Owner: owner, Detail: "source " + source + ": " + why}
-	}
+	var owner, reason, detail string
 	if refusal, refused := set.Refused[id]; refused {
-		why := refusal.Reason
-		if refusal.Detail != "" {
-			why += " (" + refusal.Detail + ")"
-		}
-		return missing(refusal.Owner, why)
+		owner, reason, detail = refusal.Owner, refusal.Reason, refusal.Detail
+	} else if pending, waits := set.Pending[id]; waits {
+		owner, reason = pending.Owner, ReasonPendingValue
 	}
-	if pending, waits := set.Pending[id]; waits {
-		return missing(pending.Owner, ReasonPendingValue)
+	fault := p.SourceMissingFault(source, reason, detail)
+	return Refusal{Reason: fault.Reason, Owner: owner, Detail: fault.Detail}
+}
+
+// SourceMissingFault is the fault for which the policy load refuses a profile whose source, the
+// stored secret source, it does not serve (ReasonProfileSourceMissing), with the source's state as
+// its detail. reason is that state: the reason the load refuses the source for, with detail that
+// refusal's own detail ("" for none), such as a value refusal's decoder words; ReasonPendingValue
+// for a source waiting for its value; or "" for no secret of that name under the prefix, which is
+// worded as a profile, which is never the source of another, where p holds a profile of that name,
+// and as ReasonAbsent otherwise. The load words its refusal through it (sourceMissing), and
+// `envoy-broker profiles check` its report of the same profile.
+func (p Profiles) SourceMissingFault(source, reason, detail string) ProfileFault {
+	why := reason
+	switch {
+	case reason != "" && detail != "":
+		why += " (" + detail + ")"
+	case reason == "" && p.Lookup(source) != nil:
+		why = "a profile, which is never the source of another"
+	case reason == "":
+		why = ReasonAbsent
 	}
-	if p.Lookup(source) != nil {
-		return missing("", "a profile, which is never the source of another")
-	}
-	return missing("", ReasonAbsent)
+	return ProfileFault{Reason: ReasonProfileSourceMissing, Detail: "source " + source + ": " + why}
 }
 
 // storeHolds reports whether the store holds a secret of name under prefix, as set read it:

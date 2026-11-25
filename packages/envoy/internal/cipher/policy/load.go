@@ -612,36 +612,60 @@ func proxyTags(file Profiles, s *Secret, tags map[string]string) (reason, detail
 }
 
 // SecretOfTags is the stored secret whose store source is storeSource and whose store tags are
-// tags, as far as Cipher's proxy reads it, read as the policy load reads it under p (Loader.secret):
-// its max-grant (ParseMaxGrant), its type (TypeFromTags, the old kind tag beside it) frozen into
-// its Source (TypeSource), and its proxy-narrowed and proxy tags against p's kinds (proxyTags),
-// which give it its kind, its way and its fingerprint. It answers the reason and detail the load
-// refuses the secret for by one of those tags, in the load's order (ReasonMaxGrantMalformed,
-// ReasonTypeUnknown, then proxyTags' reasons), and "" for none. It reads no other tag, so a secret
-// it answers no reason for may still be refused for its owner, tier or the rest; and it writes no
-// line where the load writes LegacyTypeTagMessage. storeSource is not "": a typed secret's Source
-// holds it after its type, and Secret.Type reads none from a Source with no store source.
-// `envoy-broker profiles check` reads a store's tags through it, so a source it holds a profile
-// to (ProxyFaults) is the Secret the load would hold it to.
+// tags, as far as Cipher's proxy reads it, read as the policy load reads it under p (Loader.secret),
+// through the load's own readers: its max-grant, default-grant and type tags, the type with the old
+// kind tag beside it, frozen into its Source (grantAndType), and its proxy-narrowed and proxy tags
+// against p's kinds (proxyTags), which give it its kind, its way and its fingerprint. It answers the
+// reason and detail the load refuses the secret for by one of those tags, in the load's order
+// (ReasonMaxGrantMalformed, ReasonDefaultGrantMalformed, ReasonTypeUnknown, then proxyTags'
+// reasons), and "" for none. It reads no other tag, so a secret it answers no reason for may still
+// be refused for its owner, tier or the rest; and it writes no line where the load writes
+// LegacyTypeTagMessage. storeSource is not "": a typed secret's Source holds it after its type, and
+// Secret.Type reads none from a Source with no store source. `envoy-broker profiles check` reads a
+// store's tags through it, so a source it holds a profile to (ProxyFaults) is the Secret the load
+// would hold it to.
 func (p Profiles) SecretOfTags(storeSource string, tags map[string]string) (Secret, string, string) {
 	s := Secret{Source: storeSource}
-	if raw, tagged := tags[TagMaxGrant]; tagged {
-		maxGrant, err := ParseMaxGrant(raw)
-		if err != nil {
-			return Secret{}, ReasonMaxGrantMalformed, ""
-		}
-		s.MaxGrant = maxGrant
-	}
-	if secretType := TypeFromTags(tags); secretType != "" {
-		if !ValidType(secretType) {
-			return Secret{}, ReasonTypeUnknown, ""
-		}
-		s.Source = TypeSource(secretType, storeSource)
+	if _, reason := grantAndType(&s, tags, func() string { return TypeFromTags(tags) }); reason != "" {
+		return Secret{}, reason, ""
 	}
 	if reason, detail := proxyTags(p, &s, tags); reason != "" {
 		return Secret{}, reason, detail
 	}
 	return s, "", ""
+}
+
+// grantAndType reads a secret's max-grant (ParseMaxGrant), default-grant and type tags from tags
+// into s, in that order, which is the order the load refuses a secret for them in, and answers the
+// type it read ("" for none) and the reason of the first tag it is refused for
+// (ReasonMaxGrantMalformed, ReasonDefaultGrantMalformed, ReasonTypeUnknown), "" for none. typeOf
+// reads the secret's type from tags, once and only after the two grant tags pass: the load's
+// listingType, which writes LegacyTypeTagMessage for an old kind tag, so a secret refused for a
+// grant tag writes no such line, as before; SecretOfTags' TypeFromTags, which writes nothing. A
+// valid type is frozen into s.Source, which holds the store source, so Secret.Type reads it back.
+// It is the one reader of these tags, the load's (storedSecret) and SecretOfTags'.
+func grantAndType(s *Secret, tags map[string]string, typeOf func() string) (secretType, reason string) {
+	if raw, tagged := tags[TagMaxGrant]; tagged {
+		maxGrant, err := ParseMaxGrant(raw)
+		if err != nil {
+			return "", ReasonMaxGrantMalformed
+		}
+		s.MaxGrant = maxGrant
+	}
+	if raw, tagged := tags[TagDefaultGrant]; tagged {
+		if raw != DefaultGrantSession {
+			return "", ReasonDefaultGrantMalformed
+		}
+		s.SessionDefault = true
+	}
+	if secretType = typeOf(); secretType == "" {
+		return "", ""
+	}
+	if !ValidType(secretType) {
+		return secretType, ReasonTypeUnknown
+	}
+	s.Source = TypeSource(secretType, s.Source)
+	return secretType, ""
 }
 
 // wayRefusal is ReasonProxyWay's detail: the way a secret of secretType takes, "" for a type that
@@ -708,39 +732,28 @@ func (l Loader) storedSecret(ctx context.Context, slug string, ls secrets.Listin
 	if !onKey {
 		return Secret{}, ReasonNotOnAgentSecretsKey, nil
 	}
-	if raw, tagged := ls.Tags[TagMaxGrant]; tagged {
-		if s.MaxGrant, err = ParseMaxGrant(raw); err != nil {
-			return Secret{}, ReasonMaxGrantMalformed, nil
-		}
+	secretType, reason := grantAndType(&s, ls.Tags, func() string { return listingType(ls) })
+	if reason != "" {
+		return Secret{}, reason, nil
 	}
-	if raw, tagged := ls.Tags[TagDefaultGrant]; tagged {
-		if raw != DefaultGrantSession {
-			return Secret{}, ReasonDefaultGrantMalformed, nil
-		}
-		s.SessionDefault = true
-	}
-	if secretType := listingType(ls); secretType != "" {
-		if !ValidType(secretType) {
-			return Secret{}, ReasonTypeUnknown, nil
-		}
+	if secretType != "" {
 		if s.GitHubOwners, err = GitHubOwnersFor(secretType, ls.Tags[TagGitHubOwners]); errors.Is(err, ErrGitHubOwnersMissing) {
 			return Secret{}, ReasonGitHubOwnersMissing, nil
 		} else if err != nil {
 			return Secret{}, ReasonGitHubOwnersMalformed, nil
 		}
-		s.Source = TypeSource(secretType, ls.Source)
 	}
 	// Read after max-grant and type, both of which the tag rules weigh: Secret.Type reads the type
-	// back off the Source the branch above froze it into. The admin and scopes tags are
+	// back off the Source grantAndType froze it into. The admin and scopes tags are
 	// read here too, since the rules weigh them against the type, the tier and the requesters
 	// alike, and so is the guidance tag, whose length they weigh, beside the judge tag it goes
 	// with. A type whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
 	// The project tags' rollback guard and the kinds' are no requesters (RequestersRollbackGuard,
-	// KindsRollbackGuard): each is taken out before the list is read, and a tag that held only
-	// guards is no list.
+	// KindsRollbackGuard): SplitGuards takes each out before the list is read, and a tag that held
+	// only guards is no list.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
-		if rest, guarded := splitGuards(raw); !guarded || rest != "" {
+		if rest, project, kinds := SplitGuards(raw); !(project || kinds) || rest != "" {
 			if s.Requesters, err = ParseRequesters(rest, l.Services); err != nil {
 				return Secret{}, ReasonRequestersMalformed, nil
 			}
