@@ -32,6 +32,11 @@ import (
 // (internal/shim) and agent-secrets the same os.Stderr for both of its streams; and `legion
 // controller start` gives its foreground Oh My Pi session os.Stdin, os.Stdout and os.Stderr.
 func newRoot(stdout, stderr io.Writer) *cobra.Command {
+	return newRootIn(stdout, stderr, processWorkspace())
+}
+
+// newRootIn is newRoot whose `legion workspace-init` reads ws instead of this process (runIn).
+func newRootIn(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
 	own := redact.Writer(stderr)
 	root := group(&cobra.Command{
 		Use:           "legion",
@@ -68,7 +73,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		newClaudeBridgeCommand(stdout, stderr),
 		newModelTokenCommand(stdout, own),
 		newProbeImageCommand(stdout, own),
-		newWorkspaceInitCommand(stdout, own),
+		newWorkspaceInitCommand(stdout, own, ws),
 		passThrough("git-credential", "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names, or of a fork's parent's or source's owner where the path's owner has no gh directory (git runs it, never a person)", runGitCredential, stdout, own),
 		passThrough("git", "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)", runGit, stdout, own),
 		passThrough("gh", "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)", runGh, stdout, own),
@@ -134,8 +139,15 @@ func newHelpCommand() *cobra.Command {
 // What run prints itself goes to the root's stderr, through the URL rule as every command's does
 // (newRoot).
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
+	return runIn(ctx, argv, stdout, stderr, processWorkspace())
+}
+
+// runIn is run whose `legion workspace-init` reads ws (its environment, clock and runner) instead
+// of this process's own: what a test runs the command with inside its test process, so the run
+// changes nothing the process's other tests share.
+func runIn(ctx context.Context, argv []string, stdout, stderr io.Writer, ws workspaceProcess) int {
 	args := argv[1:]
-	root := newRoot(stdout, stderr)
+	root := newRootIn(stdout, stderr, ws)
 	if message, moved := movedForm(args); moved {
 		fmt.Fprintln(root.ErrOrStderr(), message)
 		return 2
