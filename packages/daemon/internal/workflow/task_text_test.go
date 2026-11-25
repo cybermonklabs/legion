@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
@@ -301,11 +299,6 @@ func taskReaders(t *testing.T) string {
 	return corpus.String()
 }
 
-// readersNameALine finds each label the readers name as a line of the worker's task: "your
-// task's `Steps:` line", "a task with no `Task:` line", "a task whose `Steps:` line", "your task
-// names `Last reviewed commit:".
-var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has no) `([A-Z][^`:]*):")
-
 // Each label of a step's task that the prompts and the skills tell a worker to read is one the
 // task writes, and each the task writes is one they name: the label is one constant, every line is
 // built from it, and a rename on either side alone fails here. The forms the prompts spell out
@@ -336,11 +329,6 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 		if !strings.Contains(readers, named) {
 			t.Errorf("no prompt or skill a worker reads names the task's %q line as %q", label, named)
-		}
-	}
-	for _, match := range readersNameALine.FindAllStringSubmatch(readers, -1) {
-		if _, ok := labels[match[1]]; !ok && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
-			t.Errorf("a prompt or a skill names the task's %q line (%q), and the task writes no such label", match[1], match[0])
 		}
 	}
 

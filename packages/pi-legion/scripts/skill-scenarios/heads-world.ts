@@ -118,7 +118,7 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
 /** `heads-issue <file> <scenario> [<case>]`: the run's issue, before rig.sh's heads_fixture makes
  * branches named after it. First the GitHub stand-in holds the run's repository and no pull
  * request, since the delivery settings read GitHub before Dispatch stores them
- * (settings_delivery.go); then the run's repository is made project LWEVAL's default repository and the
+ * (settings_delivery.go); then the run's project LWEVAL takes the repository as its default and the
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
@@ -226,7 +226,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  * #702's head, or in ci-check-fail-other-head `success` there and `failure` at #703's. It serves
  * no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
- * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
+ * DISPATCH_E2E_NATS_URLS names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
  * the handoff records, in this order:
  *   - sibling-fails: a pass of the implementer and one of the tester at #702's head, a fail of the
@@ -253,9 +253,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     then the `test` record, and for the architect the `review` record. k2, the check a CI job
  *     runs, holds no result of a role: its state is its job's.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
- * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
- * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
- * adds each record's `{id, version}` and each pull request body's line of k1 to <file>. */
+ * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's holds no
+ * `implementerProof`, `failures` or `failed`, since each failure is a fail result on its check and
+ * no phase completion or record carries a verdict. It adds each record's `{id, version}` and each
+ * pull request body's line of k1 to <file>. */
 export async function headsEvents(file: string, headsFile: string, world: string): Promise<void> {
   const fixture = HeadsFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const heads = z
@@ -365,9 +366,13 @@ export async function headsEvents(file: string, headsFile: string, world: string
           : {}),
   });
 
-  const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
-  if (natsUrl === "") throw new Error("DISPATCH_E2E_NATS_URL names no NATS (rig.sh own_github)");
-  const nats = await connect({ name: "skill-scenarios-seed", servers: natsUrl });
+  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter((server) => server !== "");
+  if (natsServers.length === 0)
+    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
+  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
   const codec = StringCodec();
   const [owner, name] = HEADS_REPO.split("/");
   for (const pr of prs) {
@@ -449,9 +454,6 @@ export async function headsEvents(file: string, headsFile: string, world: string
               phase,
               issue: fixture.issue,
               head,
-              implementerProof: { how: `read k1 at ${head} with dispatch results` },
-              failures: [],
-              failed: 0,
               classSearch: [],
             }
           : {

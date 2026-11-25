@@ -42,7 +42,7 @@ var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session
 // words.
 var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
 
-// ErrAirlockMintedOnly is readRelease's refusal of a release under a rules entry of kind dpop,
+// ErrAirlockMintedOnly is readRelease's refusal of a release under a proxy block of kind dpop,
 // before anything of the name is read.
 // A name of that kind is a CI run's results capability, which the broker mints for the run's
 // result grant and holds (resultValues), and never a stored secret: a secret stored under such a

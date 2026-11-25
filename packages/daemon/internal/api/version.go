@@ -3363,7 +3363,43 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
-// 221: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
+// 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. The code is a value of the refusal's `code`, which no reader
+// enumerates, so a plugin below 220 reads the code and its sentence as it reads every other one,
+// and no answer's shape moves for it. This entry also names what the two routes answer and 219's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
+// two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of
+// an issue's `assignments` carries `plan`, the group the arm of an experiment that sets how its
+// issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
+// absent where the arm named none. The issue runs on that group for its whole life, and the
+// project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
+// the group from the record and never from `settings`. The records of 220 hold
+// `issues.*.assignments.*.plan`, and no record below 220 does: a caller whose contract (the one it
+// states, else its pod's) is below 220 is served every assignment without the key (the band of
+// shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
+// `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings).
+// (This entry takes 220, above each number another open pull request declared. The forward merge
+// of 2026-11-22 brought the base's 219 (the owner's plan's entry above). A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 431 open pull requests, made between
+// 2026-11-22T02:35:47Z and 02:36:07Z, read all 431 and found 219 declared by #4611 and #4805, 220
+// by this change's own pull request alone, and nothing above 220. The forward merge of 2026-11-23
+// that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
+// open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
+// pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
+// From this entry the last number of answers.go's SupportedContracts is
+// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+//
+// 225: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
 // (`api.HandoffCompleteRequest`, contracts' `LegionHandoffCompleteRequest`) keeps `verdict` for a
 // production check's report alone: a phase completion that names one from a plugin at this
 // contract or a later one is refused 400 `VERDICT_NOT_TAKEN`, "a phase completion carries no
@@ -3398,7 +3434,7 @@ package api
 // `legion` tool refuses a `test` record naming no head before it posts. No shape of
 // `GET /legion/v1/state` moves. This contract is served with no code of its own (193's entry): no
 // key path or value of any answer moves, and no request field, so a caller at it is served what
-// one at 219 is, and its records in `contract-shapes.json` and `request-shapes.json` are 219's
+// one at 220 is, and its records in `contract-shapes.json` and `request-shapes.json` are 220's
 // under its own number. `VERDICT_NOT_TAKEN` and `TESTED_HEAD_REQUIRED` are values of the
 // refusal's `code`, which no reader enumerates.
 // (This entry took 206 at first, above main's 202: a reading of `const DaemonAPIVersion` at
@@ -3408,12 +3444,13 @@ package api
 // above). A reading of every open pull request at that merge, which ended at
 // 2026-11-22T10:01:29Z, found 206 (#3712), 207 to 220 and 223 and 224 declared, so this entry
 // moved to 221, the lowest number above main's 205 that no other open pull request declares. The
-// forward merge of 2026-11-23 that brought in 5685883d brought main's 213 (the entry of 213
-// above), below 221, so this entry keeps 221. The merge of 2026-11-23 that joined this change
-// with the owner's plan (cybermonklabs/legion#5161 at 27191336) brought 217 and 219 (the two
-// entries above), below 221, so this entry keeps 221, a caller at it is served what one at 219 is,
-// and CheckStatesContract comes after OwnerPlanContract in SupportedContracts. Read the base's own
-// number and every open pull request again at every forward merge rather than from this line.)
+// forward merge of 2026-11-23 that brought in 5685883d brought main's 213, below 221, so this
+// entry kept 221. The forward merge of 2026-11-24 that brought in 4bd9a2b4 brought main's 217, 219
+// and 220 (the entries above), and a reading of every open pull request at that merge, which ended
+// at 2026-11-24T11:41:39Z, found 221 declared by #4049, #4392, #4682 and #5164 as well, and 222,
+// 223 and 224 declared, so this entry moved to 225, the lowest number above the base's 220 that no
+// other open pull request declares. Read the base's own number and every open pull request again
+// at every forward merge rather than from this line.)
 //
 // 236: a check that a CI job runs and that fails at the head of a task starts the task's first
 // implementation step again as a fix, in a working copy of its own, while the other steps go on.
@@ -3443,18 +3480,21 @@ package api
 // (This entry takes 236, the lowest number above the base's 221 that no open pull request
 // declares: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 510 open
 // pull requests of cybermonklabs/legion, made between 2026-11-23T13:51:49Z and 13:53:48Z, found
-// each number from 222 to 235 declared. Read the base's own number and every open pull request
-// again at every forward merge rather than from this line.)
+// each number from 222 to 235 declared. The forward merge of 2026-11-25 that brought in 8bcb8e59
+// (cybermonklabs/legion#4940) moved the check states' entry from 221 to 225 (the entry above) and
+// brought main's 220, both below 236, so this entry keeps 236, and FixBesideReviewContract stays
+// after CheckStatesContract in SupportedContracts. Read the base's own number and every open pull
+// request again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 236
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
-// entry of 221 above): a plugin at it or above has its completion naming one refused
+// entry of 225 above): a plugin at it or above has its completion naming one refused
 // VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
 // across the upgrade still completes and Dispatch's check states decide its phase. A later bump
 // of DaemonAPIVersion leaves it where it is. It stands above every contract declared before the
 // check states' change, which a plugin that still sends a verdict can state
 // (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
-const CheckStatesContract = 221
+const CheckStatesContract = 225
 
 // FixBesideReviewContract is the daemon contract at which a failed CI check starts a fix beside
 // the other steps (the entry of 236 above): the adoption's `fixFrom` and `moveTo` with their

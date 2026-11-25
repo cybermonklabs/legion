@@ -49,9 +49,9 @@ const linkedPullRequestReads = 10
 // check's issue resolves to, which readResultRequest resolved for this refusal; a nil repo is
 // nothing to ask GitHub about, no refusal and no read-through. A deployment with no App key
 // resolves none, so the key is not checked again here. The second is the repository of each open
-// or merged pull request of the issue that Dispatch holds (delivery.HeadsAttributedTo): a pull
-// request an issue links by its URL is that issue's in any repository (attributionHeldFor, R19
-// of the spec of several open pull requests), so it may be another repository than repo (R17).
+// or merged pull request of the issue that Dispatch holds (delivery.Attributor.HeadsAttributedTo):
+// a pull request an issue links by its URL is that issue's in any repository (attributionHeldFor,
+// R19 of the spec of several open pull requests), so it may be another repository than repo (R17).
 // The third is a linked repository in which the external links of the check's issue name a
 // GitHub pull request that is open or merged (linkedRepositories, linkedRepositoryHolds). A
 // closed pull request that did not merge makes no repository count, and neither does a link to a
@@ -79,15 +79,15 @@ const linkedPullRequestReads = 10
 // It refuses in two ways. Where GitHub does not say that repo holds the commit — it proves repo
 // does not, or its read of repo did not answer — and Dispatch's own rows that say which other
 // repositories count could not be read, the heads of the issue's pull requests
-// (delivery.HeadsAttributedTo) or the list of its links (linkedRepositories), it answers that
-// error, a server error to the caller, and nothing is stored: the record cannot tell whether the
-// commit is the head of a pull request of another repository, nor which repositories to ask, so
-// a refusal would leave out a repository R17 has it name, and a stored result would be taken to
-// be repo's while another repository may hold it. A commit GitHub says repo holds is taken to be
-// repo's whether or not the heads could be read, as a commit no head names is, and the links are
-// not read for it. And where GitHub proved that repo does not hold the commit and every other
-// repository either does not count or, counting, is proved not to hold it either — which
-// delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
+// (delivery.Attributor.HeadsAttributedTo) or the list of its links (linkedRepositories), it
+// answers that error, a server error to the caller, and nothing is stored: the record cannot tell
+// whether the commit is the head of a pull request of another repository, nor which repositories
+// to ask, so a refusal would leave out a repository R17 has it name, and a stored result would be
+// taken to be repo's while another repository may hold it. A commit GitHub says repo holds is
+// taken to be repo's whether or not the heads could be read, as a commit no head names is, and
+// the links are not read for it. And where GitHub proved that repo does not hold the commit and
+// every other repository either does not count or, counting, is proved not to hold it either —
+// which delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
 // commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. A refusal with links left unread
 // for the bound says how many, since a link past it may name the repository that holds the
 // commit.
@@ -108,11 +108,12 @@ const linkedPullRequestReads = 10
 // check's result in that repository (comparisonReader.onNamedBranch) and reads a `before_merge`
 // result's pull requests through it (comparisonReader.readThroughHead); and the read-through after
 // the write reads the commit's pull requests through it, or through repo where it answers nil
-// (readThroughPullRequests). The linked repository is under the name it is called today: the
-// links are read under the boot's rename pairs (delivery.Attributor.LinkedPullRequests, through
-// refs.CanonicalRepoSQL, which answers as refs.Renames.Canonical does), so the row stores no
-// name a repository was renamed away from, as no write of a repository does, and the boot's
-// pass rewrites a row stored before (store.RewriteRenamedRepositories, check_results.commit_repo).
+// (readThroughPullRequests). The repository is under the name it is called today: a head's row is
+// keyed by its repository's canonical name (delivery.Attributor), and the links are read under
+// the boot's rename pairs (delivery.Attributor.LinkedPullRequests, through refs.CanonicalRepoSQL,
+// which answers as refs.Renames.Canonical does), so the row stores no name a repository was
+// renamed away from, as no write of a repository does, and the boot's pass rewrites a row stored
+// before (store.RewriteRenamedRepositories, check_results.commit_repo).
 func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueKey string, repo *string, sha string) (*string, error) {
 	if repo == nil {
 		return nil, nil
@@ -296,8 +297,8 @@ type linkedRepository struct {
 // linkedRepositories is every repository that the issue does not resolve to and in which the
 // external links of issueKey name a GitHub pull request, each once with the numbers of its
 // linked pull requests, in the order the issue lists its links. It groups
-// delivery.Attributor.LinkedPullRequests, read from the links themselves under the rename pairs
-// the boot read, since Dispatch may hold no row of a pull request a link names yet. A link to a
+// delivery.Attributor.LinkedPullRequests, under the rename pairs the boot read, and read from the
+// links themselves, since Dispatch may hold no row of a pull request a link names yet. A link to a
 // pull request of the issue's own repository names nothing here: that repository is asked about
 // the commit before any link is read.
 func (s *server) linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([]linkedRepository, error) {

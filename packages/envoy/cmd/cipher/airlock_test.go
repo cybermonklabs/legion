@@ -55,9 +55,11 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 // TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy pins the one list the airlock gets wrong in both
 // directions: an entry that stays takes a secret's request past the proxy with a placeholder in
 // it, and an entry that is missing sends a request the proxy refuses (a private address) or
-// cannot reach (the broker itself) through it.
+// cannot reach (the broker itself) through it. An entry with a trailing dot is the same name
+// fully qualified, which Bun's fetch, the runtime `dispatch result` writes with, reads as covering
+// the bound host, so it is held to the bound hosts as the name without it is.
 func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
-	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com"}, map[string]string{"value": testAirlockPlaceholder})
+	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com", "dispatch.example.test"}, map[string]string{"value": testAirlockPlaceholder})
 	for _, row := range []struct {
 		name        string
 		environ     []string
@@ -120,6 +122,41 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 			name:     "a broker host under a bound *. name",
 			environ:  []string{"AGENT_SECRETS_URL=https://secrets.cdn.example.com"},
 			wantGone: []string{"secrets.cdn.example.com"},
+		},
+		{
+			name: "an inherited entry with a trailing dot naming a bound host or its parent",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=dispatch.example.test.,.dispatch.example.test.,example.test.,.example.test.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"dispatch.example.test.", ".dispatch.example.test.", "example.test.", ".example.test."},
+		},
+		{
+			// A row of its own: beside "dispatch.example.test." the list keeps one spelling of
+			// each name in any case, so this entry would leave it whatever the test made of it.
+			name: "an inherited bound host in capitals with a trailing dot",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=DISPATCH.EXAMPLE.TEST.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"DISPATCH.EXAMPLE.TEST."},
+		},
+		{
+			name:     "a broker host that is a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://dispatch.example.test.:8443"},
+			wantGone: []string{"dispatch.example.test.", "dispatch.example.test"},
+		},
+		{
+			name:     "a broker host that is a parent domain of a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.test."},
+			wantGone: []string{"example.test.", "example.test"},
+		},
+		{
+			name:        "control: a sibling entry with a trailing dot stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=secrets.example.test."},
+			wantEntries: []string{"secrets.example.test.", "broker.internal.example"},
 		},
 		{
 			name:        "control: a sibling broker host stays",

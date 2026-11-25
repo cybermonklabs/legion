@@ -711,6 +711,12 @@ such as `admin-tier` for an agent-tier profile of an `admin` source. A source a 
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
 (`github-installations-no-profile`), so every GitHub token the broker hands over is a profile's.
+The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
+nothing else, is served by a CI run's result grant and has no stored secret as its source: with
+none of its name, the policy refuses it as `profile-source-missing`, and a stored secret of its
+name is never released, as a value or as a placeholder. The profiles file is refused when that
+profile has no proxy block, or when a profile of kind `dpop` sets a `source`, `tier`,
+`requesters`, `maxGrant`, `github` or `google`.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -1507,8 +1513,9 @@ authority to trust that proxy by, a proxy password, and, for each name, a placeh
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>]` says whether a broker would
-serve a file, and what that file adds and removes against the one in force.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream
+<host>=<url>]` says whether a broker would serve a file, and what that file adds and removes
+against the one in force.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
@@ -1608,10 +1615,9 @@ What the airlock does not stop is as much of the design as what it does:
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
   The one exception is `BROKER_AIRLOCK_PRIVATE_UPSTREAM` (`<host>=<url>`): the allowed requests
-  of the proxy block of the profile `DISPATCH_RESULTS_TOKEN`, which binds that host alone, go to
-  the URL, at an address the proxy refuses to every other request and never at a loopback,
-  link-local or metadata server's address, and a tunnel or plain-HTTP request to that address
-  stays refused.
+  of the profile `DISPATCH_RESULTS_TOKEN`, whose proxy block binds that host alone, go to the URL,
+  at an address the proxy refuses to every other request and never at a loopback, link-local or
+  metadata server's address, and a tunnel or plain-HTTP request to that address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

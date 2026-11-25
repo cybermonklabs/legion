@@ -9,10 +9,11 @@
 # The first form does these steps in order, each with this checkout's own tools, and stops at the
 # first step that fails:
 #   1. label-checkouts.sh <this checkout> <its HEAD> <dir>/*.patch: the label checkouts, cut from
-#      the committed HEAD. <dir> holds one <label>.patch for each label that label-rules.ts names.
-#      label-checkouts.sh refuses a set of patches that names a label label-rules.ts does not
-#      have. So in a checkout whose rules have no label ablate-states-read, the check stops here,
-#      before the rig starts a service or a model;
+#      the committed HEAD. <dir> holds one <label>.patch for each label, ablate-states-read among
+#      them: the labels are the patches' names. label-checkouts.sh refuses a patch that does not
+#      apply at HEAD or changes nothing there. So in a checkout whose texts do not hold what the
+#      ablate-states-read patch cuts, the check stops here, before the rig starts a service or a
+#      model;
 #   2. rig.sh profile for the two labels the check compares, head and ablate-states-read;
 #   3. rig.sh batch reviewer-own-head 5 head ablate-states-read and rig.sh score reviewer-own-head,
 #      then the same for architect-pass-and-fail. A batch's exit is printed; the score decides;
@@ -178,7 +179,7 @@ case $# in
 esac
 
 patches_dir=${SKILL_SCENARIOS_LABEL_PATCHES:-}
-[ -n "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES is unset: name the directory of the label patches, one <label>.patch for each label of label-rules.ts"
+[ -n "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES is unset: name the directory of the label patches, one <label>.patch for each label, ablate-states-read among them"
 [ -d "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES ($patches_dir) is no directory"
 shopt -s nullglob
 patches=("$patches_dir"/*.patch)

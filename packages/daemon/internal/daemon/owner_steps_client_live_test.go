@@ -237,8 +237,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// left it, and within that one turn its client, of that release's tree, reads this daemon's
 	// answers. The daemon serves each client the shape of the contract its request states
 	// (api's shapeAnswer and valueStrips): the release before reads an issue's holdReason with the
-	// one value `escalated`, so its read of the issue held task-stopped must parse in its own schema
-	// and carry no hold reason that arrived at api.OwnerPlanContract (heldOlder).
+	// one value `escalated` while its contract is below api.OwnerPlanContract, so its read of the
+	// issue held task-stopped must parse in its own schema and carry no hold reason that arrived
+	// at that contract (heldOlder). Each reading of the release before is of its own contract,
+	// which moves with main: its client has the owner's plan's routes once main stands at the
+	// contract that brought them.
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
@@ -258,9 +261,15 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the older client's state read of %s, which stands on plan rows in testing, %s", older, state)
 		}
 		l.note("contract %d client's methods: %v", l.oldContract, state.Methods)
+		// The owner's plan brought both routes at api.OwnerPlanContract, so a client below that
+		// contract has neither and one at it or above has both. The check reads the client
+		// against its own contract, never against the contract main happens to stand at, as
+		// heldOlder reads the hold words this daemon serves it.
 		for _, route := range []string{"planRegister", "taskStop"} {
-			if slices.Contains(state.Methods, route) {
-				t.Fatalf("the contract %d client has %s; the release before has no such route", l.oldContract, route)
+			has, owns := slices.Contains(state.Methods, route), l.oldContract >= api.OwnerPlanContract
+			if has != owns {
+				t.Fatalf("the contract %d client has %s: %t, want %t, since that route arrived at contract %d",
+					l.oldContract, route, has, owns, api.OwnerPlanContract)
 			}
 		}
 		l.note("contract %d client state(): %s", l.oldContract, state)

@@ -85,9 +85,10 @@ go packages/daemon/internal/api ^TestAPhaseCompletionCarriesNoVerdict$ packages/
 go packages/daemon/internal/record ^TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices$ packages/daemon/internal/record/store_test.go
 
 # v-review-and-acceptance-read-the-states: the whole model check, run by states-read-check.sh with
-# the rig of the commit it runs at. That commit's label-rules.ts has no label ablate-states-read, so
-# its label-checkouts.sh refuses the patches before the rig starts a service or a model; and its
-# scenarios have no case no-verdict-fail or no-verdict-pass for the judgement to count.
+# the rig of the commit it runs at. That commit's texts do not hold the sentences the
+# ablate-states-read patch cuts, so its label-checkouts.sh refuses the patch (it does not apply)
+# before the rig starts a service or a model; and its scenarios have no case no-verdict-fail or
+# no-verdict-pass for the judgement to count.
 cmd . states-read-scenarios packages/pi-legion/scripts/skill-scenarios/states-read-check.sh -- bash packages/pi-legion/scripts/skill-scenarios/states-read-check.sh
 
 # v-a-testing-step-passes-by-its-checks: no state event, so the test does not build.
@@ -97,3 +98,6 @@ go packages/daemon/internal/workflow ^TestAFailStateBeforeTheTesterCompletesStar
 
 # v-no-event-without-a-change: no settler and no state event, so the test does not build.
 go packages/envoy/internal/dispatch/api ^TestOneEventForEachChangeOfAStateAndNoneWhenAResultChangesNoState$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+
+# v-outside-text: no settler and no state event, so the test does not build.
+go packages/envoy/internal/dispatch/api ^TestAnEditOfThePullRequestBodyChangesNoState$ packages/envoy/internal/dispatch/api/results_outside_text_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/envoy/internal/dispatch/api/check_states_ci_test.go

@@ -78,7 +78,10 @@ func requireTmux(t *testing.T) {
 }
 
 // standins builds the real `legion` (whose worker-shim every pane runs) and the stand-in OMP (as
-// `omp`), once per run.
+// `omp`), once per run. The `legion` links leakguardtest.NoCurl as its guards' curl
+// (leakguardtest.NoCurlLinked): a pane's `legion gh` here runs a stand-in gh, and a guard whose
+// bound stopped that gh's REST read would otherwise read through the system's /usr/bin/curl, with
+// a token of the rig's bundle (INFRA-3904).
 func standins(t *testing.T) (legion, omp string) {
 	t.Helper()
 	standinOnce.Do(func() {
@@ -86,7 +89,11 @@ func standins(t *testing.T) (legion, omp string) {
 			return
 		}
 		for name, source := range map[string]string{"legion": "github.com/sjawhar/legion/daemon/cmd/legion", "omp": "testdata/omp-standin.go"} {
-			if out, err := exec.Command("go", "build", "-o", filepath.Join(standinDir, name), source).CombinedOutput(); err != nil {
+			args := []string{"build", "-o", filepath.Join(standinDir, name)}
+			if name == "legion" {
+				args = append(args, "-ldflags", leakguardtest.NoCurlLinked)
+			}
+			if out, err := exec.Command("go", append(args, source)...).CombinedOutput(); err != nil {
 				standinErr = fmt.Errorf("build %s: %v\n%s", source, err, out)
 				return
 			}

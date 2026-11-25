@@ -2907,13 +2907,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
-		case supervise.StateFailed, supervise.StateRetired:
+		held, stoppable := claimToStop(machine)
+		if !stoppable {
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
-		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
+		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too, on
+		// the claim claimToStop answered. Its LastStartRow is the newest start's even where that is the
+		// published view: the start rows that write it (supervise.Machine.StartedBy) run on this row's
+		// lane one row at a time, so none is in flight while this row runs.
+		if last := held.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox "+string(payload.Op)+" superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
@@ -2956,8 +2959,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
-		case supervise.StateFailed, supervise.StateRetired:
+		if _, stoppable := claimToStop(machine); !stoppable {
 			// The claim runs nothing, so there is nothing to release.
 			return nil
 		}
@@ -2980,7 +2982,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
+		if last := machine.View().Claim.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox issue close superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "start-row", last)
 			return nil
@@ -3004,7 +3006,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err != nil {
 			return err
 		}
-		if !workflow.StopActs(row.ID, payload, machine.Claim().LastStartRow, root) {
+		if !workflow.StopActs(row.ID, payload, machine.View().Claim.LastStartRow, root) {
 			r.log.Info("outbox tree close of a linger that has ended; finished without acting", "row", row.ID, "issue", issue.Key,
 				"tree", issue.Tree, "role", payload.Role, "linger", payload.Linger)
 			return nil
@@ -3020,6 +3022,31 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	default:
 		return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
 	}
+}
+
+// failedOrRetired is whether c has failed or retired: a claim its last decision left in either
+// state has let its process go and has no launch under way, so a stop has nothing of it to stop.
+func failedOrRetired(c supervise.Claim) bool {
+	return c.State == supervise.StateFailed || c.State == supervise.StateRetired
+}
+
+// claimToStop is machine's claim as a row that stops it reads it before the stop, and whether the
+// claim has anything to stop (failedOrRetired). It reads the published view
+// (supervise.Machine.View), which never waits, and where the view reads the claim failed or
+// retired it reads the claim once more through supervise.Machine.Claim before it gives up. Giving
+// up decides whether to stop the claim at all, which is "a check a decision must not race"
+// (supervise.Machine.Claim): the view reads a failed claim failed until a retry's launch is first
+// written (supervise's writeTry), so a row that gave up on the view while a retry's decision was
+// in flight would leave that retry to launch the claim the row was to stop. The second read waits
+// out the whole decision, the retry's start in the runtime included, which under a Sandbox can
+// take minutes; a claim the view reads live is never read that way. The caller's stop decides on
+// the claim answered.
+func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
+	held := machine.View().Claim
+	if failedOrRetired(held) {
+		held = machine.Claim()
+	}
+	return held, !failedOrRetired(held)
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
@@ -3150,6 +3177,10 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 // runs there; stopped says it ran when this call began and runs nothing when it returns. A
 // suspension the claim holds for its turn or its boot is no error: the caller waits on its backoff
 // and asks again.
+//
+// It reads the claim through supervise.Machine.Claim, before the stop and after it: each read
+// decides whether the claim still has to stop, which is "a check a decision must not race"
+// (supervise.Machine.Claim).
 func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, issue record.Issue) (still string, stopped bool, err error) {
 	held := machine.Claim()
 	token := held.Token

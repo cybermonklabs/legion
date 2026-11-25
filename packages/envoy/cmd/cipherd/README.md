@@ -41,9 +41,13 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>]` reads a profiles file with the
-broker's own code and exits non-zero, naming the profile and the field or the parse position, when
-the broker would not serve that file;
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream <host>=<url>]`
+reads a profiles file with the broker's own code and exits non-zero, naming the profile and the
+field or the parse position, when the broker would not serve that file, or when its start check of
+the results profile `DISPATCH_RESULTS_TOKEN` refuses it;
+`--private-upstream` takes the value `BROKER_AIRLOCK_PRIVATE_UPSTREAM` gives the broker, and holds
+that profile to the destination's host as the start does, and without it a file that holds the
+profile prints one line saying that tie was not checked;
 on a file it would serve it prints every field of each profile the file adds and removes against
 the file `--against` names, and each field a profile both files hold changes: its source, tier,
 requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google

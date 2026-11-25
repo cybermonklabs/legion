@@ -126,7 +126,7 @@ const (
 )
 
 // The two sources of a plan: the owner's document, or the default steps of an issue whose owner
-// gave none.
+// gave none, or whose experiment's group takes none from its owner.
 const (
 	PlanSourceDefault = "default"
 	PlanSourceOwner   = "owner"

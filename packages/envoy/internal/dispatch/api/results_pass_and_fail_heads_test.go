@@ -23,8 +23,8 @@ const (
 )
 
 // learnedInOrder sets when Dispatch learned the head of each of numbers, pull requests of repo,
-// so delivery.HeadsAttributedTo lists them in the order given: the first was learned last. The
-// times are fixed ones, a minute apart, and no clock's.
+// so delivery.Attributor.HeadsAttributedTo lists them in the order given: the first was learned
+// last. The times are fixed ones, a minute apart, and no clock's.
 func learnedInOrder(t *testing.T, database *store.Store, repo string, numbers ...int) {
 	t.Helper()
 	newest := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)

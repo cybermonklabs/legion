@@ -9,15 +9,17 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // one-record: the tester records a pass of k1 and a fail of k2, and its `legion` tool completes
 // testing with the summary "Every check passes." and no verdict; the issue goes back to
-// implementing, and the implementer's task the move queued names k2 and not k1. In a second run,
-// on an issue of its own, the tester records a pass of both checks and completes the same way; the
-// issue goes to reviewing, its reviewer starts, and the implementer is given no task: the results
-// in Dispatch decide, whatever the completion's summary says. Each run reads back the results
-// Dispatch holds of its issue.
+// implementing, the tester's phase-finished notice carries the head and k2 alone as the check that
+// does not pass, and the implementer has a task. In a second run, on an issue of its own, the
+// tester records a pass of both checks and completes the same way; the issue goes to reviewing,
+// its reviewer starts, and the implementer is given no task: the results in Dispatch decide,
+// whatever the completion's summary says. Each run reads back the results Dispatch holds of its
+// issue.
 func (r *statesProof) oneRecord() {
 	issues := r.issues["one-record"]
 	r.oneRecordRuns(issues[0], issues[1])
@@ -25,7 +27,7 @@ func (r *statesProof) oneRecord() {
 
 // oneRecordRuns makes the two runs of the case one-record, on failing and passing.
 func (r *statesProof) oneRecordRuns(failing, passing *statesIssue) {
-	r.sentBack(failing, []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "back-to-implementing", "k2: no (fail)", "k1")
+	r.sentBack(failing, []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "back-to-implementing", record.FailingCheck{Check: "k2", State: "no", Reason: "fail"})
 	done := r.testerRun(passing, []statesResult{{"k1", "pass"}, {"k2", "pass"}}, "Every check passes.")
 	r.movesWithin(passing, phase.Reviewing, "to-reviewing", done, statesCompletion)
 	r.reviewerLaunched(passing, "to-reviewing", done, statesCompletion)
@@ -154,46 +156,55 @@ func (r *statesProof) noCheck() {
 }
 
 // fail-sends-back: the tester records a pass of k1 and a fail of k2 and completes with no verdict;
-// the issue goes back to implementing, and the implementer's task, read from the daemon's store,
-// names k2, the state no and the reason fail, and does not name k1. On a second issue the tester
-// records a pass and a fail of k1 and a pass of k2, and the task names k1 with the reason
-// pass_and_fail, and not k2. Each run reads back the results Dispatch holds of its issue.
+// the issue goes back to implementing, the tester's phase-finished notice the architect's topic
+// received carries the tested head and k2, the state no and the reason fail, as the one check that
+// does not pass, and the implementer has a task. On a second issue the tester records a pass and a
+// fail of k1 and a pass of k2, and the notice carries k1, unknown for pass_and_fail, alone. Each
+// run reads back the results Dispatch holds of its issue.
 func (r *statesProof) failSendsBack() {
 	issues := r.issues["fail-sends-back"]
-	r.sentBack(issues[0], []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "implementing", "k2: no (fail)", "k1")
-	r.sentBack(issues[1], []statesResult{{"k1", "pass"}, {"k1", "fail"}, {"k2", "pass"}}, "implementing", "k1: unknown (pass_and_fail)", "k2")
+	r.sentBack(issues[0], []statesResult{{"k1", "pass"}, {"k2", "fail"}}, "implementing", record.FailingCheck{Check: "k2", State: "no", Reason: "fail"})
+	r.sentBack(issues[1], []statesResult{{"k1", "pass"}, {"k1", "fail"}, {"k2", "pass"}}, "implementing", record.FailingCheck{Check: "k1", State: "unknown", Reason: "pass_and_fail"})
 }
 
 // sentBack makes one run that sends issue back: the tester's results, its completion, the move
-// back to implementing within statesWithin of the completion (assertion names it), the
-// implementer's task naming named and not unnamed, and the results Dispatch holds of issue. The
-// implementers' stand-in holds every turn while the task is read, so the task is still the
-// claim's pending delivery.
-func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, assertion, named, unnamed string) {
+// back to implementing within statesWithin of the completion (assertion names it), the tester's one
+// phase-finished notice the architect's topic received, whose head is the issue's head and whose
+// failing is failing, compared whole, the implementer's pending task, which carries the reason
+// that notice gives (the move writes both from one value; neither is compared with a literal), and
+// the results Dispatch holds of issue. The implementers' stand-in holds every turn while the task
+// is read, so the task is still the claim's pending delivery.
+func (r *statesProof) sentBack(issue *statesIssue, results []statesResult, assertion string, failing ...record.FailingCheck) {
 	r.implementer.holdTurn()
 	defer r.implementer.releaseTurn()
 	done := r.testerRun(issue, results, "Every check passes.")
 	r.movesWithin(issue, phase.Implementing, assertion, done, statesCompletion)
 	task := r.implementerTask(issue)
-	r.note("read back: the implementer's task in the daemon's store: %q", task)
-	if !strings.Contains(task, named) {
-		r.fail("task-names", "the implementer's task of %s does not name %q: %q", issue.key, named, task)
+	r.note("read back: the implementer has a pending task in the daemon's store (%d bytes)", len(task))
+	var told []record.Notice
+	r.until("notice-fields", "the tester's phase-finished notice of "+issue.key+" on its architect's topic", statesWithin, func() bool {
+		told = r.testerNotices(issue.key)
+		return len(told) > 0
+	})
+	if len(told) != 1 || told[0].Head != issue.head || !slices.Equal(told[0].Failing, failing) || told[0].WaitsFor != "" || len(told[0].Waiting) != 0 {
+		r.fail("notice-fields", "the tester's phase-finished notices of %s on its architect's topic = %+v, want one with the head %s and failing %+v", issue.key, told, issue.head, failing)
 	}
-	if strings.Contains(task, unnamed) {
-		r.fail("task-names", "the implementer's task of %s names %s, which passes: %q", issue.key, unnamed, task)
+	if told[0].Reason == "" || !strings.Contains(task, told[0].Reason) {
+		r.fail("task-carries-notice", "the implementer's task of %s does not carry the reason %q its tester's notice gives: %q", issue.key, told[0].Reason, task)
 	}
-	r.note("the task names %q and not %s", named, unnamed)
+	r.note("the tester's notice carries the head %s and failing %+v, and the implementer's task carries its reason", told[0].Head, told[0].Failing)
 	r.resultsHeld(issue)
 }
 
 // completion-before-event: with the states from before the results held, the run's own
 // nats-server is stopped (SIGSTOP, by the pid the run started it with). The tester records a pass
 // of k1 and of k2, writes its test record and completes testing. For 10 seconds the issue stays in
-// testing and the daemon starts no worker, and the architect is told once, in a phase-finished
-// notice, that the move waits for Dispatch's check states at the head. Then the broker is continued
-// (SIGCONT), Dispatch's outbox and the daemon's consumer deliver what waited, and the issue goes to
-// reviewing within 10 seconds of the SIGCONT. Once its reviewer starts, the implementer has been
-// given no task, and Dispatch holds the tester's two results.
+// testing and the daemon starts no worker, and the architect is told once, in the tester's
+// phase-finished notice, whose head is the tested head and whose waits_for is fence: the move
+// waits for Dispatch's check states. Then the broker is continued (SIGCONT), Dispatch's outbox and
+// the daemon's consumer deliver what waited, and the issue goes to reviewing within 10 seconds of
+// the SIGCONT. Once its reviewer starts, the implementer has been given no task, and Dispatch holds
+// the tester's two results.
 func (r *statesProof) completionBeforeEvent() {
 	issue := r.issues["completion-before-event"][0]
 	r.readyTester(issue)
@@ -224,11 +235,11 @@ func (r *statesProof) completionBeforeEvent() {
 	if len(notices) != 1 {
 		r.fail("notice", "%s's architect was told %d phase-finished notices while the move waited, want one: %v", issue.key, len(notices), notices)
 	}
-	reason := notices[0].Payload
-	r.note("read back: the architect's one phase-finished notice: %q", reason)
-	if !strings.Contains(reason, "the move waits for Dispatch's check states") || !strings.Contains(reason, issue.head) {
-		r.fail("notice", "the phase-finished notice says %q, which is not that the move waits for Dispatch's check states at %s", reason, issue.head)
+	told := r.testerNotices(issue.key)
+	if len(told) != 1 || told[0].Head != issue.head || told[0].WaitsFor != "fence" || len(told[0].Failing) != 0 {
+		r.fail("notice", "the tester's phase-finished notices of %s while the move waited = %+v, want one with the head %s and waits_for fence", issue.key, told, issue.head)
 	}
+	r.note("read back: the tester's one phase-finished notice carries the head %s and waits_for %s", told[0].Head, told[0].WaitsFor)
 	continued := r.continueBroker()
 	if continued.IsZero() {
 		r.fail("broker", "the run's nats-server was not continued, so nothing can be measured from the SIGCONT")

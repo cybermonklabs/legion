@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -138,6 +139,28 @@ func (r *statesRig) finished() []map[string]any {
 	return notices
 }
 
+// finishedNotices is every phase-finished notice of LEGION-208, in the order written, each as the
+// architect receives it: its stored payload decoded as a notice.
+func (r *statesRig) finishedNotices() []record.Notice {
+	r.t.Helper()
+	var notices []record.Notice
+	for _, row := range issueOutboxOf(r.t, r.pool, "LEGION-208", "notice") {
+		var notice record.Notice
+		if err := json.Unmarshal(row.payload, &notice); err != nil {
+			r.t.Fatalf("decode notice %s: %v", row.payload, err)
+		}
+		if notice.Kind == "phase-finished" {
+			notices = append(notices, notice)
+		}
+	}
+	return notices
+}
+
+// failingOf is check not passing at the tested head, in state for reason, as the move judges it.
+func failingOf(check, state, reason string) record.FailingCheck {
+	return record.FailingCheck{Check: check, State: state, Reason: reason}
+}
+
 // starts is the number of worker starts LEGION-208's outbox holds.
 func (r *statesRig) starts() int {
 	r.t.Helper()
@@ -148,35 +171,61 @@ func (r *statesRig) starts() int {
 	return starts
 }
 
-// waitsSaying fails unless LEGION-208 is still in testing, with no worker started and the one
-// phase-finished notice of the tester saying reason.
-func (r *statesRig) waitsSaying(reason string) {
+// roleStarts is the number of starts of role the outbox holds.
+func roleStarts(t *testing.T, pool *pgxpool.Pool, role claim.Role) int {
+	t.Helper()
+	var starts int
+	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'start'
+		and payload->>'role' = $1`, string(role)).Scan(&starts); err != nil {
+		t.Fatalf("count the starts of the %s: %v", role, err)
+	}
+	return starts
+}
+
+// waitsFor fails unless LEGION-208 is still in testing, with no worker started and one
+// phase-finished notice of the tester, as the architect receives it: the tester's summary, the
+// tested head head, what the move waits for (waitsFor) and the checks it waits for (checks), and
+// no failing check. It reads no reason: the notice carries the wait as fields.
+func (r *statesRig) waitsFor(head, waitsFor string, checks ...string) {
 	r.t.Helper()
 	assertPhase(r.t, r.pool, phase.Testing)
 	if starts := r.starts(); starts != 0 {
 		r.t.Fatalf("the waiting move started %d workers, want none", starts)
 	}
-	notices := r.finished()
-	if len(notices) != 1 || notices[0]["role"] != "tester" || notices[0]["phase"] != "testing" || notices[0]["reason"] != reason ||
-		notices[0]["summary"] != "Every check passes." {
-		r.t.Fatalf("phase-finished notices = %v, want one of the tester's testing, its summary, saying %q", notices, reason)
+	notices := r.finishedNotices()
+	if len(notices) != 1 || notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing || notices[0].Summary != "Every check passes." ||
+		notices[0].Head != head || notices[0].WaitsFor != waitsFor || !slices.Equal(notices[0].Waiting, checks) || len(notices[0].Failing) != 0 {
+		r.t.Fatalf("phase-finished notices = %+v, want one of the tester's testing, with its summary, the head %q, waits_for %q and waiting %v", notices, head, waitsFor, checks)
 	}
 }
 
-// movedBackNaming fails unless LEGION-208 went back to implementing with an implementer's task
-// that names each of named, and none of unnamed.
-func (r *statesRig) movedBackNaming(named []string, unnamed ...string) {
+// movedBackFailing fails unless LEGION-208 went back to implementing with one start of the
+// implementer, and the tester's one phase-finished notice of the move back, the last notice
+// written, carries the tested head head and failing, compared whole: each check that does not
+// pass there, with its state and reason. The implementer's task must carry the reason that notice
+// gives, read from the notice and not written here, since the move writes the two from one value;
+// no word of either is compared with a literal.
+func (r *statesRig) movedBackFailing(head string, failing ...record.FailingCheck) {
 	r.t.Helper()
 	assertPhase(r.t, r.pool, phase.Implementing)
-	task := startTask(r.t, r.pool, claim.RoleImplementer)
-	for _, want := range named {
-		if !strings.Contains(task, want) {
-			r.t.Fatalf("the implementer's task %q does not name %q", task, want)
+	if starts := roleStarts(r.t, r.pool, claim.RoleImplementer); starts != 1 {
+		r.t.Fatalf("the move back started the implementer %d times, want once", starts)
+	}
+	notices := r.finishedNotices()
+	var back []record.Notice
+	for _, notice := range notices {
+		if notice.WaitsFor == "" {
+			back = append(back, notice)
 		}
 	}
-	for _, not := range unnamed {
-		if strings.Contains(task, not) {
-			r.t.Fatalf("the implementer's task %q names %q", task, not)
-		}
+	if len(back) != 1 || notices[len(notices)-1].WaitsFor != "" {
+		r.t.Fatalf("phase-finished notices = %+v, want the move back's one notice, written last", notices)
+	}
+	last := back[0]
+	if last.Role != claim.RoleTester || last.Phase != phase.Testing || last.Head != head || !slices.Equal(last.Failing, failing) || len(last.Waiting) != 0 {
+		r.t.Fatalf("the tester's phase-finished notice of the move back = %+v, want the head %q and failing %+v", last, head, failing)
+	}
+	if task := startTask(r.t, r.pool, claim.RoleImplementer); last.Reason == "" || !strings.Contains(task, last.Reason) {
+		r.t.Fatalf("the implementer's task %q does not carry the reason %q the notice of the move back gives", task, last.Reason)
 	}
 }

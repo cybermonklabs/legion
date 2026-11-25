@@ -192,6 +192,33 @@ func TestAFailedProfileIsRefusedAloneAndTheOthersServe(t *testing.T) {
 	}
 }
 
+// TestAProfileWhoseSourceIsItsOwnNameAndAbsentIsRefusedAsAbsent: a profile that names no other
+// source is made from the stored secret of its own name, and with none in the store it is refused
+// profile-source-missing with the detail that its source is absent. The results capability is
+// such a profile, a name and a proxy block of kind dpop, refused so wherever no stored secret
+// carries its name. Its own name is no other profile, so the detail never says its source is a
+// profile; a profile whose source is another profile's name still says that.
+func TestAProfileWhoseSourceIsItsOwnNameAndAbsentIsRefusedAsAbsent(t *testing.T) {
+	const results = `{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.example.test"], "headers": ["Authorization"], "kind": "dpop",
+  "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}}`
+	for _, row := range []struct {
+		name, profile, profileName, detail string
+	}{
+		{"a stored value's profile of its own name", `{"name": "GHOST_KEY", ` + apiProxy + `}`, "GHOST_KEY", "source GHOST_KEY: " + policy.ReasonAbsent},
+		{"the results capability", results, "DISPATCH_RESULTS_TOKEN", "source DISPATCH_RESULTS_TOKEN: " + policy.ReasonAbsent},
+		{"the control: a source that is another profile", `{"name": "READ_OF_READ", "source": "GITHUB_READ", ` + acmeRead + `, ` + apiProxy + `}`, "READ_OF_READ", "source GITHUB_READ: a profile, which is never the source of another"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cur, _ := profiled(t, everySource(), readProfile, row.profile)
+			set := cur.Get()
+			if refusal := refusedProfile(t, set, row.profileName, policy.ReasonProfileSourceMissing); refusal.Detail != row.detail {
+				t.Errorf("%s's refusal detail = %q; want %q", row.profileName, refusal.Detail, row.detail)
+			}
+			servedProfile(t, set, "GITHUB_READ")
+		})
+	}
+}
+
 // TestAProfileLooserThanItsSourceIsRefused: a profile is no looser than its source in tier,
 // requesters or maxGrant. For requesters, a source with no requesters tag serves every session
 // and pod, so any list narrows it; a listed source takes a subset of its list; and a profile with

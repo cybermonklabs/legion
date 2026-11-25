@@ -16,9 +16,26 @@ import (
 	"time"
 )
 
+// childOutlives is how long a child process of a test is to live, as `sleep`'s operand: until the
+// test binary's deadline (t.Deadline) and a minute past it, or for ever when the binary has none
+// (-timeout 0). A child that ended at a fixed 30 s was retired by the helper ("session retired
+// why=process exited") under a test the machine held that long, and the row then failed on what it
+// was not testing (Tester5002, for #5023). No test outlives its binary's deadline, so no held test
+// outlives such a child; and a child whose binary was killed before its cleanup ran (SIGKILL, go
+// test's alarm, a panic on another goroutine) still ends by itself a minute after that deadline.
+func childOutlives(t *testing.T) string {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return "infinity"
+	}
+	return strconv.Itoa(int((time.Until(deadline) + time.Minute + time.Second - 1) / time.Second))
+}
+
+// sleeper starts a child process of this test that lives until its cleanup kills it, or by itself
+// until a minute past the test binary's deadline (childOutlives).
 func sleeper(t *testing.T) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command("sleep", "30")
+	cmd := exec.Command("sleep", childOutlives(t))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -28,8 +45,9 @@ func sleeper(t *testing.T) *exec.Cmd {
 
 // ompTree starts a session launcher with no session — a process whose kernel comm is `omp`, as a
 // real launcher's is: sh started through a symlink of that name — and n `sleep` children of it,
-// and returns the launcher's pid and the children's. It fails, rather than going on, when the
-// launcher's comm does not read `omp`: a test of the launcher check needs a launcher it accepts.
+// each living as long as sleeper's (childOutlives), and returns the launcher's pid and the
+// children's. It fails, rather than going on, when the launcher's comm does not read `omp`: a test
+// of the launcher check needs a launcher it accepts.
 func ompTree(t *testing.T, n int) (int, []int) {
 	t.Helper()
 	sh, err := exec.LookPath("sh")
@@ -40,7 +58,7 @@ func ompTree(t *testing.T, n int) (int, []int) {
 	if err := os.Symlink(sh, launcher); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(launcher, "-c", `i=0; while [ "$i" -lt "$1" ]; do sleep 30 & echo "$!"; i=$((i + 1)); done; wait`, "omp", strconv.Itoa(n))
+	cmd := exec.Command(launcher, "-c", `i=0; while [ "$i" -lt "$1" ]; do sleep "$2" & echo "$!"; i=$((i + 1)); done; wait`, "omp", strconv.Itoa(n), childOutlives(t))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

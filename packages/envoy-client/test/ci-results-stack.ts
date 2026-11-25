@@ -49,8 +49,8 @@ import {
 // answers the public name: a write that goes around the proxy opens no connection at all.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
-// project ACME mapped to the repository local-org/local-repo as its default, one commit of it with
-// the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
+// project ACME, whose default repository is local-org/local-repo, one commit of that repository
+// with the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
 // ordinary one, prints the variables of one job of a push run and the commands of the try line,
 // and runs until Ctrl-C. With `--forge-only` it starts the stand-in's Actions token endpoint alone
 // and prints the three variables a job reads it by: each token it mints is signed by a key no real
@@ -60,7 +60,7 @@ import {
 // `process.env.X`.
 const { PATH: SHELL_PATH = "" } = process.env;
 
-/** The project the stack's result entry writes, mapped to {@link REPOSITORY}. */
+/** The project the stack's result entry writes, whose default repository is {@link REPOSITORY}. */
 const PROJECT = "ACME";
 /** The repository whose runs the result entry takes. */
 const REPOSITORY = "local-org/local-repo";
@@ -412,8 +412,8 @@ interface Front {
 /**
  * Starts the stack in `options.work`, which the caller reserved with
  * {@link useCIResultsStackDirectory} and which is empty, and resolves once each part serves and
- * project ACME maps local-org/local-repo. It throws, naming why, when a part does not come up;
- * whatever started by then is stopped.
+ * project ACME's default repository is local-org/local-repo. It throws, naming why, when a part
+ * does not come up; whatever started by then is stopped.
  */
 export async function startCIResultsStack(options: CIResultsStackOptions): Promise<CIResultsStack> {
   const { work } = options;
@@ -454,7 +454,9 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const stands = path.join(bin, "dev-proxy-stands");
 
     // The cluster's issuer: Dispatch's own token at the brokers, rewritten before it lapses, and
-    // the brokers' sign-in client, which a broker requires and nothing here signs in at.
+    // the brokers' sign-in client, which a broker requires and nothing here signs in at. The issuer
+    // takes a code-flow client with its registered callback (#5185); this is the one dev-broker.sh
+    // and run-broker.sh register.
     const accountToken = path.join(work, "dispatch-account-token");
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
@@ -465,7 +467,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
-        `${SIGNIN_CLIENT}=${signInSecret}`,
+        `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
       { PATH: SHELL_PATH, HOME: work },
       issuerLog
@@ -549,9 +551,9 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
 
     const fakeSecrets = path.join(work, "fake-secrets.json");
     writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
-    // C8's entry, the proxy block of the profile DISPATCH_RESULTS_TOKEN: Dispatch's public host
-    // alone, kind dpop, the placeholder in Authorization alone, and a POST under the projects' and
-    // the issues' routes alone.
+    // C8's profile: a name and a proxy block alone, Dispatch's public host alone, kind dpop, the
+    // placeholder in Authorization alone, and a POST under the projects' and the issues' routes
+    // alone.
     const profilesFile = path.join(work, "profiles.json");
     writeFileSync(
       profilesFile,
