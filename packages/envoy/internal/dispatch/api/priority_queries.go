@@ -151,6 +151,16 @@ const (
 // each member row, 14,712 probes for 6,362 member issues (TestStatementTimings, PostgreSQL 18.6,
 // 2026-11-24).
 //
+// The probe runs only where the row cannot answer. The statement that advances last_seq writes
+// the event's created_at and seq beside it, as last_event_at and last_event_at_seq
+// (20261125094500, events/broker.go), so where last_event_at_seq equals last_seq the row holds the
+// time of its event of last_seq, the very value the probe reads, and member_event takes it with no
+// read of events. Where the two differ - an event a process of the release before 20261125094500
+// appended, during a roll or after a rollback, or a row 20261125094600 did not fill - or the pair is
+// null, the row's pair names no event this read can trust, and member_event probes as above. So
+// the answer is the probe's own wherever either branch answers, in steady state, in a roll and
+// after a rollback alike. Both branches take last_seq > 0: an issue with no event answers no row.
+//
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
 // created_at (the now() default of events.created_at, store/migrations/0001_init.up.sql). Each
@@ -189,12 +199,16 @@ const (
 // (`collate "C"`), which is the order priorityFault.resolve sorts them in again.
 var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issue as materialized (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at,
-		       i.closed_at, i.last_seq
+		       i.closed_at, i.last_seq, i.last_event_at, i.last_event_at_seq
 		from members m
 		join issues i on i.key = m.key
 		where ` + priorityProjectFilter + `
 		group by i.key
 	), member_event as materialized (
+		select member_issue.key, member_issue.last_event_at as created_at
+		from member_issue
+		where member_issue.last_seq > 0 and member_issue.last_event_at_seq = member_issue.last_seq
+		union all
 		select member_issue.key, last_seq_event.created_at
 		from member_issue
 		cross join lateral (
@@ -203,6 +217,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issu
 			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = member_issue.last_seq
 			limit 1
 		) last_seq_event
+		where member_issue.last_seq > 0 and member_issue.last_event_at_seq is distinct from member_issue.last_seq
 	), unplaced as (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from issues i
