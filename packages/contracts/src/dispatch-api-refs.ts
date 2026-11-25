@@ -107,6 +107,8 @@ export const replyBlockFields = {
   removed: z.boolean(),
   edited_at: z.string().optional(),
   deleted_at: z.string().optional(),
+  quote: z.string().optional(),
+  occurrence: z.number().int().optional(),
 };
 
 /** An actor as the OpenAPI document reads it (`Actor`): a `kind` that is any string and one
@@ -138,7 +140,10 @@ const DocumentActorSchema = z.object({
  *  parent still says the parent was edited; absent means nobody edited it. `deleted_at` and
  *  `deleted_by` are the mark of the quoted comment or message once its author deleted it: the
  *  block then reads removed with no text, and the mark says the post itself is gone; absent while
- *  the post stands. Every mark is absent on a part of an ask and from a Dispatch older than it. */
+ *  the post stands. Every mark is absent on a part of an ask and from a Dispatch older than it.
+ *  `quote` and `occurrence` are the words of the block the reply quotes and which of their
+ *  matches in the block's plain text they are, counted from 0, as the reply stored them: both or
+ *  neither, absent on a reply that quotes nothing and from a Dispatch older than them. */
 export const WrittenReplyBlockSchema = z
   .strictObject({ ...replyBlockFields, deleted_by: ActorSchema.optional() })
   .readonly();

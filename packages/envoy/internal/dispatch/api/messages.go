@@ -27,8 +27,13 @@ const maxMessageReplyPreview16 = 160
 type createMessageInput struct {
 	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
-	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2"). Quote
+	// and Occurrence are the words of that block the reply quotes, in its plain text, and which
+	// of their matches in the block they are, counted from 0, as model.AnchorInput holds them for
+	// a document's text.
 	InReplyToBlock *string      `json:"in_reply_to_block"`
+	Quote          *string      `json:"quote"`
+	Occurrence     *int         `json:"occurrence"`
 	Target         *string      `json:"target"`
 	Delivery       *string      `json:"delivery"`
 	Urgency        *string      `json:"urgency"`
@@ -84,6 +89,10 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	// Quote and Occurrence are the words of block InReplyToBlock the reply quotes, as
+	// createMessageInput's.
+	Quote      *string `json:"quote"`
+	Occurrence *int    `json:"occurrence"`
 	// ConnectedOnly asks that this message reach a session that is running now or not at all:
 	// the send is made with the listener's connected_only, which refuses a session the listener
 	// knows and that is not running rather than storing the message for it, and the attempt

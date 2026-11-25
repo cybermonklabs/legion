@@ -32,8 +32,12 @@ type commentInput struct {
 	// ReplyToBlock is the id of the block the reply answers ("b2"), read from the item the same
 	// request names (namedReplyBlock): a block of comment ReplyTo, checked against that comment
 	// before reply_to climbs to the thread's head, or, with AskID in place of ReplyTo, a part of
-	// that ask.
+	// that ask. Quote and Occurrence are the words of that block the reply quotes, in its plain
+	// text, and which of their matches in the block they are, counted from 0, as
+	// model.AnchorInput holds them for a document's text.
 	ReplyToBlock *string `json:"reply_to_block"`
+	Quote        *string `json:"quote"`
+	Occurrence   *int    `json:"occurrence"`
 	AskID        *string `json:"ask_id"`
 	Mentions     []struct {
 		Target string `json:"target" required:"true"`

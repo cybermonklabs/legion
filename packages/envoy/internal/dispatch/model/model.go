@@ -3324,15 +3324,23 @@ type Comment struct {
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
 // with every field but its text, which is empty: a delete event carries no text of another post.
+//
+// Quote and Occurrence are the words of the block the reply quotes and which of their matches in
+// the block's plain text they are, counted from 0, as the reply stored them
+// (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
+// neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
+// none.
 type ReplyBlock struct {
-	Node      string     `json:"node"`
-	Ref       string     `json:"ref,omitempty"`
-	BlockID   string     `json:"block_id"`
-	Text      string     `json:"text"`
-	Removed   bool       `json:"removed"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy *Actor     `json:"deleted_by,omitempty"`
+	Node       string     `json:"node"`
+	Ref        string     `json:"ref,omitempty"`
+	BlockID    string     `json:"block_id"`
+	Text       string     `json:"text"`
+	Removed    bool       `json:"removed"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy  *Actor     `json:"deleted_by,omitempty"`
+	Quote      *string    `json:"quote,omitempty"`
+	Occurrence *int       `json:"occurrence,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET

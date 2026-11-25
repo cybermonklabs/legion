@@ -960,8 +960,11 @@ type messageReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as createMessageInput's.
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	Quote          *string `json:"quote"`
+	Occurrence     *int    `json:"occurrence"`
 }
 
 // messageReplyPlan is everything a session's reply to a message delivery is decided on, read

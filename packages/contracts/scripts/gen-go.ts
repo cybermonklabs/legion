@@ -4,6 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
@@ -43,6 +44,7 @@ import {
   MAX_ISSUE_COMPONENTS,
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_THREAD_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
@@ -536,6 +538,15 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = ${MAX_THREAD_PAGE_LIMIT}
+const DefaultThreadPageLimit = ${DEFAULT_THREAD_PAGE_LIMIT}
 
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT

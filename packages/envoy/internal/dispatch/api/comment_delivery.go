@@ -1347,8 +1347,11 @@ type commentReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2").
+	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as commentInput's.
 	ReplyToBlock *string `json:"reply_to_block"`
+	Quote        *string `json:"quote"`
+	Occurrence   *int    `json:"occurrence"`
 }
 
 // commentReplyPlan is everything a delivery callback's reply is decided on, read and planned
