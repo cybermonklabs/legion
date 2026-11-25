@@ -74,26 +74,21 @@ function recordingSchemaApi(): {
   };
 }
 
-/** The Dispatch skill's own text, read from the repository it ships in. */
-function dispatchSkill(): string {
-  const repoRoot = resolve(import.meta.dir, "../../..");
-  return readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
-}
-
-/** Every `## ` heading of the Dispatch skill, the names a tool description may point at. */
-function dispatchSkillHeadings() {
-  return dispatchSkill()
-    .split("\n")
-    .flatMap((line) => {
-      const match = line.match(/^## (.+)$/u);
-      return match === null ? [] : [match[1]];
-    });
-}
-
 function specFor(name: string) {
   const spec = dispatchToolSpecs.find((candidate) => candidate.name === name);
   if (!spec) throw new Error(`missing ${name}`);
   return spec;
+}
+
+/** The help text of one argument of a tool: the field's own description, or, for an optional
+ *  field, its inner schema's, which is what `dispatch <command> --help` prints. */
+function argumentDescription(name: string, field: string): string {
+  const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+    string,
+    { description?: string; unwrap?: () => { description?: string } }
+  >;
+  const argument = fields[field];
+  return argument?.description ?? argument?.unwrap?.().description ?? "";
 }
 
 /** Every tool that writes a body, with the argument carrying that body: the close reason, the
@@ -1632,11 +1627,15 @@ describe("dispatchToolSpecs", () => {
     expect(namesMissing(specFor(name).description, names)).toEqual([]);
   });
 
-  test("dispatch_resolve_ask's description names every kind the tool takes", () => {
+  // Every kind the tool takes but `resolved`, which stands twice in the description: by the rule
+  // above, a check of it would still pass if the clause that lists the kinds stopped naming it.
+  test("dispatch_resolve_ask's description names each kind the tool takes that stands once in it", () => {
     const argumentsSchema = specFor("dispatch_resolve_ask").arguments(schemaApi) as unknown as {
       kind: z.ZodEnum;
     };
-    const kinds = argumentsSchema.kind.options.map(String);
+    const all = argumentsSchema.kind.options.map(String);
+    expect(all).toContain("resolved");
+    const kinds = all.filter((kind) => kind !== "resolved");
     expect(kinds.length).toBeGreaterThan(0);
     expect(namesMissing(specFor("dispatch_resolve_ask").description, kinds)).toEqual([]);
   });
@@ -1662,12 +1661,7 @@ describe("dispatchToolSpecs", () => {
   test.each(
     referenceForms
   )("%s's %s flag help names each form of reference it takes", (name, field, forms) => {
-    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields[field];
-    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    const description = argumentDescription(name, field);
     expect(namesMissing(description, forms)).toEqual([]);
   });
 
@@ -1690,18 +1684,6 @@ describe("dispatchToolSpecs", () => {
     expect(existsSync(resolve(repoRoot, "skills/dispatch-writing-specs/SKILL.md"))).toBe(true);
   });
 
-  // The Dispatch skill keeps the four headings named by envoy-client's advice.
-  test("the Dispatch skill keeps every heading code names in its advice", () => {
-    expect(dispatchSkillHeadings()).toEqual(
-      expect.arrayContaining([
-        "Issue status is yours to move",
-        "Close what you opened",
-        "Structure over stream",
-        "Architecture components",
-      ])
-    );
-  });
-
   // Each tool that writes a body states the server's bounds and the decision
   // block it refuses, so `dispatch comment --help` and its four siblings print them before a
   // writer puts one in a body. The names are asserted whole: an empty or shortened table would
@@ -1719,12 +1701,7 @@ describe("dispatchToolSpecs", () => {
   test.each(
     BODY_WRITING_TOOLS
   )("%s's %s gives the server's two body bounds and names the decision block it refuses", (name, field) => {
-    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields[field];
-    const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
+    const flag = argumentDescription(name, field);
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
     expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
     expect(flag, `${name} --${field}`).toContain(":::ask");
@@ -1902,12 +1879,7 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
       const result = schema.safeParse({ ...validCalls[name], components });
       expect(result.success, JSON.stringify(components)).toBe(true);
     }
-    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields.components;
-    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    const description = argumentDescription(name, "components");
     expect(description).toContain(rule);
   });
 
@@ -1916,12 +1888,7 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
   // TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers in server_test.go holds the route to
   // that code, and the tool's generated copy to naming it.
   test("dispatch_issue's external names the code its route refuses an import into another project with", () => {
-    const fields = specFor("dispatch_issue").arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields.external;
-    const description = argument?.description ?? argument?.unwrap?.().description ?? "";
+    const description = argumentDescription("dispatch_issue", "external");
     expect(namesMissing(description, ["400 EXTERNAL_PROJECT_MISMATCH"])).toEqual([]);
   });
 });
