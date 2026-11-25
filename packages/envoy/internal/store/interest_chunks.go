@@ -262,17 +262,14 @@ func (r *Registry) deleteChunks(ctx context.Context, kv bus.KeyValue, sessionID 
 // collectInterestChunks deletes every chunk of the interest bucket that no row of the cache names
 // and that the chunk copy took longer ago than kvchunk.Grace (kvchunk.Chunks.Unnamed), and reports
 // how many it deleted: the chunks a crash, a call that did not answer or an earlier build's delete
-// of a manifest left behind, which no write of this build deletes. It judges nothing while the
-// cache does not follow its bucket (kvwatch.Watcher.Following), since a copy behind the bucket
-// could lack the manifest that names a chunk. Each delete waits no longer than ctx.
+// of a manifest left behind, which no write of this build deletes. It judges nothing in a pass
+// kvchunk.CollectionReady skips (a cache that does not follow its bucket, or that stays behind the
+// bucket stream's last sequence). Each delete waits no longer than ctx.
 // The cache, not the bucket stream's leader, decides these deletes, which
-// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe:
-// these are safe only while the copy is less than kvchunk.Grace behind the bucket, and Following
-// proves only that a full read completed since the copy last stopped following, not the live
-// watch's lag.
+// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe.
 func (r *Registry) collectInterestChunks(ctx context.Context) (int, error) {
-	if !r.watcher.Following() {
-		return 0, nil
+	if ready, err := kvchunk.CollectionReady(ctx, r.watcher, r.chunkBarrierWait, r.logger()); !ready {
+		return 0, err
 	}
 	cutoff := r.now().Add(-kvchunk.Grace)
 	r.mu.RLock()

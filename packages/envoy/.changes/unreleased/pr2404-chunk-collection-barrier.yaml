@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    A collection of unnamed chunks in the interest registry or the known-session store now waits
+    at most one minute for the listener's copy to apply up through its bucket stream's last
+    sequence before judging any chunk, and skips the pass with a WARN when the copy stays behind.
+    This prevents a stalled or frozen copy that still reports following from deleting a chunk whose
+    manifest has already landed in the bucket.
+time: 2026-11-25T06:32:02.174761573Z
+custom:
+    Issue: pr2404

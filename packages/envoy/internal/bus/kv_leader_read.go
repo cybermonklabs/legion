@@ -32,10 +32,11 @@
 //   - The collection of chunks no record names (internal/kvchunk, store's collectInterestChunks
 //     and session's collectChunks). No read of one key proves that no manifest of the bucket
 //     names a chunk, so the cache decides, and only for a chunk its copy has held for
-//     kvchunk.Grace (10 minutes) while no record named it: that is safe only while the copy is
-//     less than the grace behind the bucket. The collectors judge nothing while
-//     kvwatch.Watcher.Following is false, which proves that a full read of the bucket completed
-//     since the copy last stopped following, not how far behind the live watch is now.
+//     kvchunk.Grace (10 minutes) while no record named it, and only in a pass whose copy follows
+//     the bucket and has applied the bucket stream's last sequence, read at the pass's start,
+//     within kvchunk.WriteBound (1 minute) (kvchunk.CollectionReady, which says why that names
+//     every chunk a manifest written before the pass names; a pass whose copy stays behind is
+//     skipped with a WARN).
 //   - A known-session write's delete of the chunks of the record it replaces (session's
 //     KnownSessions.writeWithin, through kvchunk.Write), whose layout is this listener's copy of
 //     that record. The record itself is last-writer-wins, a plain Put that no compare-and-swap

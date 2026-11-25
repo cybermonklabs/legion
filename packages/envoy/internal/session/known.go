@@ -56,11 +56,12 @@ const knownSessionSweepInterval = time.Hour
 const knownBucketOpenWait = 2 * time.Second
 
 // knownBucketServeWait is the wait every bucket call made after the open gets: the handle the
-// cache watcher reads and a write (RecordWithin) goes through, which its caller's own context
-// bounds besides (bus.Bounded). It is the 10 seconds the listener's other stores give their bucket
-// calls (store.Open, OpenSessionRegistry, kvwatch.Watcher.Rewatch): the short wait above is for
-// the attempt a start waits on, and giving a write or a watch that wait would make a cluster that
-// is merely slow look like one that refuses.
+// cache watcher reads and a write (RecordWithin) goes through, which its caller's own context and
+// the connection each call went out on bound besides (bus.BoundedOn). It is the 10 seconds the
+// listener's other stores give their bucket calls (store.Open, OpenSessionRegistry,
+// kvwatch.Watcher.Rewatch): the short wait above is for the attempt a start waits on, and giving
+// a write or a watch that wait would make a cluster that is merely slow look like one that
+// refuses.
 const knownBucketServeWait = 10 * time.Second
 
 // knownBucketRetryFirst and knownBucketRetryMax are the waits between the attempts the store's
@@ -171,11 +172,14 @@ type KnownSessions struct {
 	log *slog.Logger
 	// replicas is the copies the bucket is created with, kept for the attempts that follow a
 	// bucket that did not open; retryFirst and retryMax are the waits between them, and
-	// watchOptions what a test adds to the watcher's options.
-	replicas     int
-	retryFirst   time.Duration
-	retryMax     time.Duration
-	watchOptions []kvwatch.Option
+	// watchOptions what a test adds to the watcher's options. chunkBarrierWait bounds how long
+	// collectChunks waits for the copy to catch up with the bucket's stream; zero uses
+	// kvchunk.WriteBound, and only tests set it.
+	replicas         int
+	retryFirst       time.Duration
+	retryMax         time.Duration
+	watchOptions     []kvwatch.Option
+	chunkBarrierWait time.Duration
 
 	// mu guards records, chunks, markers, topics and unknown, which are kept in step: every record
 	// the copy stores or removes for the bucket's sake is indexed or unindexed, and its unknown keys

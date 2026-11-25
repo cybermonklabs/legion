@@ -134,18 +134,18 @@ func (s *KnownSessions) purgeChunkMarkers(ctx context.Context) (int, error) {
 // collectChunks deletes every chunk of the bucket that no record of the copy names and that the
 // chunk copy took longer ago than kvchunk.Grace (kvchunk.Chunks.Unnamed), and reports how many it
 // deleted: the chunks a write that stopped part way left behind, which no write deletes. It judges
-// nothing while the store's bucket is not open or its cache does not follow the bucket
-// (kvwatch.Watcher.Following), since a copy behind the bucket could lack the manifest that names
-// a chunk. Each delete waits no longer than ctx.
+// nothing while the store's bucket is not open, nor in a pass kvchunk.CollectionReady skips (a
+// cache that does not follow the bucket, or that stays behind the bucket stream's last sequence).
+// Each delete waits no longer than ctx.
 // The cache, not the bucket stream's leader, decides these deletes, which
-// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe:
-// these are safe only while the copy is less than kvchunk.Grace behind the bucket, and Following
-// proves only that a full read completed since the copy last stopped following, not the live
-// watch's lag.
+// internal/bus/kv_leader_read.go names among the deletes a copy decides, with why each is safe.
 func (s *KnownSessions) collectChunks(ctx context.Context) (int, error) {
 	watcher := s.watch()
-	if watcher == nil || !watcher.Following() {
+	if watcher == nil {
 		return 0, nil
+	}
+	if ready, err := kvchunk.CollectionReady(ctx, watcher, s.chunkBarrierWait, s.logger()); !ready {
+		return 0, err
 	}
 	cutoff := s.now().Add(-kvchunk.Grace)
 	s.mu.RLock()

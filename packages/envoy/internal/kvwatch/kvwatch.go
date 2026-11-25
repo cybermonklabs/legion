@@ -211,7 +211,15 @@ type Watcher struct {
 	unreadSince time.Time
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
-	bound time.Duration
+	// applied is the highest stream sequence this epoch's copy has applied: the highest
+	// Entry.Revision handed to Cache.Apply (applyCurrent), and the stream's LastSeq of any read
+	// that completed in this epoch (completeRead). A new epoch (a recreated bucket's watch)
+	// starts it again at 0, since that stream numbers from 1. appliedChanged is created when a
+	// WaitCaughtUp waiter blocks, and closed and cleared whenever applied moves or a new epoch
+	// installs, so steady-state Apply calls allocate nothing.
+	applied        uint64
+	appliedChanged chan struct{}
+	bound          time.Duration
 	// streamReads counts the reads of the bucket's stream that this watcher's watches began, each
 	// one the start of a read (Read.StreamRead), whether or not its watch then installed.
 	streamReads uint64
@@ -369,6 +377,11 @@ func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
 		return fmt.Errorf("watch %s KV bucket: %w", w.name, err)
 	}
 	return nil
+}
+
+// Name is the watcher's name, as passed to New, which labels its log lines and terminal error.
+func (w *Watcher) Name() string {
+	return w.name
 }
 
 // KV is the bucket handle the store reads and writes through.
@@ -546,6 +559,8 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	recreated := !w.stream.IsZero() && !stream.Equal(w.stream)
 	if recreated {
 		w.epoch++
+		w.applied = 0
+		w.wakeApplied()
 	}
 	w.generation++
 	generation := w.generation
@@ -818,6 +833,10 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 		w.following = true
 		w.completedOnce = true
 		w.staleSince = time.Time{}
+		if read.Epoch == w.epoch && read.LastSeq > w.applied {
+			w.applied = read.LastSeq
+			w.wakeApplied()
+		}
 		w.armScheduledRead(generation)
 		// The copy can be served now, so a caller waiting for one (WaitComplete) is released.
 		w.wakeComplete()
@@ -870,9 +889,16 @@ func (w *Watcher) applyCurrent(entry Entry, generation uint64, read Read) {
 	}
 	w.applyMu.Lock()
 	defer w.applyMu.Unlock()
-	if w.current(generation) {
-		w.cache.Apply(entry, read)
+	if !w.current(generation) {
+		return
 	}
+	w.cache.Apply(entry, read)
+	w.mu.Lock()
+	if read.Epoch == w.epoch && entry.Revision > w.applied {
+		w.applied = entry.Revision
+		w.wakeApplied()
+	}
+	w.mu.Unlock()
 }
 
 // current reports whether generation is still the current watcher's.

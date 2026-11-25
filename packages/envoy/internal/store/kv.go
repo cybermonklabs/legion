@@ -188,6 +188,9 @@ type Registry struct {
 	// legacySubjects counts the old-form names callers give the registry (LegacySubjectCounter);
 	// nil counts nothing.
 	legacySubjects LegacySubjectCounter
+	// chunkBarrierWait bounds how long collectInterestChunks waits for the copy to catch up with
+	// the bucket's stream; zero uses kvchunk.WriteBound, and only tests set it.
+	chunkBarrierWait time.Duration
 }
 
 // OpenOption configures the registry.

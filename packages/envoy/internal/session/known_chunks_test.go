@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -609,6 +610,105 @@ func TestAKnownSessionWriteStoppedAtAnyStepLeavesTheOldRecordAndItsChunksCollect
 	}
 	clock.set(time.Now())
 	requireKnownTopics(t, "the store after the collection", known, "ses_known_crashed", old)
+}
+
+// heldKnownManifest stalls the cache before Apply takes the store lock, like a stall between
+// the watcher's delivery queue and the cache. The watcher still reports Following.
+type heldKnownManifest struct {
+	knownCache
+	key          string
+	held, resume chan struct{}
+}
+
+func (c heldKnownManifest) Apply(entry kvwatch.Entry, read kvwatch.Read) {
+	if entry.Key == c.key {
+		close(c.held)
+		<-c.resume
+	}
+	c.knownCache.Apply(entry, read)
+}
+
+// A copy that took a chunk but stalled before taking its manifest must not decide a delete
+// after the grace, even while it still reports Following.
+func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
+	const id = "ses_known_chunk_stalled"
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &knownClock{at: time.Now()}
+	logs := &lockedLog{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	known := newKnownSessions(conn, knownSessionsOpts{now: clock.Now, log: log})
+	kv, err := openKnownBucket(ctx, conn, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := heldKnownManifest{knownCache{known}, id, make(chan struct{}), make(chan struct{})}
+	known.watcher = kvwatch.New("known session store", kv, cache, kvwatch.WithLogger(log))
+	known.chunkBarrierWait = 20 * time.Millisecond
+	t.Cleanup(known.StopWatch)
+	defer close(cache.resume)
+	known.watcher.Start()
+	if err := known.WaitForCacheReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := json.Marshal(KnownSession{
+		SessionID: id, Topics: kvchunktest.Topics("stalled", 400), LastSeen: clock.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write the chunks as a store does, but keep the manifest back until the watcher has taken
+	// them. When the manifest then reaches Apply, the gate leaves it out of the copy.
+	var manifest []byte
+	written, err := kvchunk.Write(ctx, kv, id, record, nil, kvchunk.Layout{}, func(head []byte) (uint64, error) {
+		manifest = head
+		return 0, nil
+	}, clock.Now, log, knownRecord)
+	if err != nil || !written.Layout.Chunked() {
+		t.Fatalf("stage a chunked record: %v, %v", written, err)
+	}
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the copy to take the unnamed chunks", func() bool {
+		known.mu.RLock()
+		defer known.mu.RUnlock()
+		_, _, err := known.chunks.Join(manifest)
+		return err == nil
+	})
+	chunks, err := kv.ReadStreamState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSeq, err := kv.Put(id, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cache.held:
+	case <-ctx.Done():
+		t.Fatal("the manifest did not reach Apply")
+	}
+	if !known.watch().Following() {
+		t.Fatal("the stalled copy no longer reports Following")
+	}
+	clock.set(clock.Now().Add(kvchunk.Grace + time.Second))
+	collected, err := known.collectChunks(ctx)
+	if err != nil {
+		t.Fatalf("collect chunks: %v", err)
+	}
+	if live := kvchunktest.LiveChunkKeys(t, kv.Legacy()); !slices.Equal(live, written.Layout.Keys()) {
+		t.Fatalf("collection deleted chunks the manifest still names: collected %d, live %v, want %v",
+			collected, live, written.Layout.Keys())
+	}
+	if collected != 0 {
+		t.Fatalf("collected %d chunks, want none", collected)
+	}
+	warning := fmt.Sprintf("level=WARN msg=%q store=%q applied_seq=%d last_seq=%d",
+		"known session store skipped chunk collection: its cache is behind its bucket",
+		"known session store", chunks.LastSeq, headSeq)
+	if got := logs.String(); strings.Count(got, "level=WARN") != 1 || !strings.Contains(got, warning+"\n") {
+		t.Fatalf("log = %s, want one warning with %s", got, warning)
+	}
 }
 
 // A chunked known-session record with a chunk missing is a record the store cannot decode: a store
