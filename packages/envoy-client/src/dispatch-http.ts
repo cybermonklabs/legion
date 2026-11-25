@@ -1301,7 +1301,9 @@ export class DispatchClient {
    *  text answer `outcome: "not_made"` with the reason. An answer Dispatch kept no copy of is
    *  asked for again (`#writingNothing`). */
   async related(project: string, input: RelatedCheckInput): Promise<Suggestions> {
-    return this.#writingNothing(["api", "v1", "projects", project, "related"], input, { writes: false });
+    return this.#writingNothing(["api", "v1", "projects", project, "related"], input, {
+      writes: false,
+    });
   }
 
   async getIssue(issue: string): Promise<IssueDetails> {

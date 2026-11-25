@@ -2327,9 +2327,9 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?user-agent");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?user-agent");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck(sessionContext("ses_user_agent"));
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
