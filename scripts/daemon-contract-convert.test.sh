@@ -60,12 +60,14 @@
 # conversion, the script refuses each ref it cannot merge, exits non-zero naming the ref, and
 # leaves the branch as it was: on the first branch, the first branch's base, a main from before the
 # cutover whose tree defines no registerEntry, and this change with no version.go, which it cannot
-# read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet.
+# read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet,
+# and so with that branch's refusal where the two have two merge bases (the crossed branch: the
+# stacked branch with a commit from before the cutover merged, which the first branch merges too).
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
 # way, over a main that took the first branch as a squash: over its merge base with that main the
 # stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it;
-# and with two merge bases with the first branch, which a commit from before the cutover makes that
-# each of the two merges apart from the other, where the refusal names both.
+# and the crossed branch with two merge bases with the first branch, converted, where the refusal
+# names both.
 # Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
 # and merges the first branch, in a commit that names it: the stacked branch then differs from the
 # first branch by N+2's entry file and fixture, so N+1, which the first branch converted, is not
@@ -344,6 +346,14 @@ numbered_entry "$((k + 1))" stacked
 git add -A
 git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
 stacked_commit=$(git rev-parse HEAD)
+# A commit from before the cutover, which the stacked branch merges apart from the first branch, as
+# a branch merges main: the crossed branch. Where the first branch merges it too, the two have two
+# merge bases, that commit and the first branch's commit of entry $k.
+side_blob=$(printf 'convert-test: a commit both branches merge\n' | git hash-object -w --stdin)
+side_file=(--add --cacheinfo "100644,$side_blob,convert-side.txt")
+side=$(git commit-tree "$(tree_with "$base" "${side_file[@]}")" -p "$base" -m "convert-test: a commit before the cutover")
+crossed=$(git commit-tree "$(tree_with "$stacked_commit" "${side_file[@]}")" -p "$stacked_commit" -p "$side" -m "convert-test: the stacked branch merges it")
+git branch "$branch_crossed" "$crossed"
 cd "$repo"
 
 step "a main from before the cutover is refused"
@@ -366,6 +376,20 @@ cd "$repo_stacked"
 refused "the conversion of the stacked branch over $branch, not converted yet," \
   "$branch (${entry_commit:0:10}) declares \`const DaemonAPIVersion\`" "it has not merged the cutover" \
   "convert it if it adds a numbered entry, else merge main into it" -- --base "$branch"
+cd "$repo"
+
+step "a base branch that has not merged the cutover is refused so, whatever its merge bases"
+# The first branch, not converted yet, merges the commit the crossed branch merges: the two have
+# two merge bases. What the author does first is to convert the first branch, so that is the
+# refusal; the advice for two merge bases names the first branch as it was before it merged the
+# cutover, which it has not done.
+cd "$repo_stacked"
+side_base=$(git commit-tree "$(tree_with "$entry_commit" "${side_file[@]}")" -p "$entry_commit" -p "$side" -m "convert-test: the first branch, not converted yet, merges it")
+git checkout -q "$branch_crossed"
+refused "the conversion of the crossed branch over the first branch, not converted yet, with two merge bases," \
+  "$side_base (${side_base:0:10}) declares \`const DaemonAPIVersion\`" "it has not merged the cutover" \
+  -- --base "$side_base"
+git checkout -q "$branch_stacked"
 cd "$repo"
 
 step "the conversion"
@@ -488,17 +512,12 @@ refused "the conversion of the stacked branch over a main that took its base bra
   -- --base "$squash"
 
 step "a branch with two merge bases with its base branch is refused"
-# A commit from before the cutover that the stacked branch and the first branch each merge apart
-# from the other, as two branches each merge main: the stacked branch's merge bases with the first
-# branch are then that commit and the first branch's commit of entry $k, and the one git prints
-# would decide which entries the stacked branch reads as its own.
-side_blob=$(printf 'convert-test: a commit both branches merge\n' | git hash-object -w --stdin)
-side_file=(--add --cacheinfo "100644,$side_blob,convert-side.txt")
-side=$(git commit-tree "$(tree_with "$base" "${side_file[@]}")" -p "$base" -m "convert-test: a commit before the cutover")
-crossed=$(git commit-tree "$(tree_with "$stacked_commit" "${side_file[@]}")" -p "$stacked_commit" -p "$side" -m "convert-test: the stacked branch merges it")
+# The first branch, converted, merges the commit the crossed branch merges: the crossed branch's
+# merge bases with it are then that commit and the first branch's commit of entry $k, and the one
+# git prints would decide which entries the crossed branch reads as its own.
 base_crossed=$(git commit-tree "$(tree_with "$branch" "${side_file[@]}")" -p "$branch" -p "$side" -m "convert-test: the first branch merges it")
-git checkout -q -b "$branch_crossed" "$crossed"
-refused "the conversion of the stacked branch with two merge bases with its base branch" \
+git checkout -q "$branch_crossed"
+refused "the conversion of the crossed branch with two merge bases with its base branch" \
   "2 merge bases" "${entry_commit:0:10}" "${side:0:10}" -- --base "$base_crossed"
 git checkout -q "$branch_stacked"
 
