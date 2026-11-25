@@ -1344,8 +1344,6 @@ func (c *Client) blob(ctx context.Context, token, repoRef, path, sha string) ([]
 	if err := body.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), err)
 	}
-	// The encoding is GitHub's word, or a stand-in's: a blob in any but base64 is named as one,
-	// and its encoding is printed nowhere.
 	if payload.Encoding != "base64" {
 		return nil, fmt.Errorf("blob %s (%s) is in an encoding that is not base64", ShownBody(sha), ShownBody(path))
 	}
