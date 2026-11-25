@@ -21,12 +21,15 @@ change what the agent does. Two such things did, and the runner now removes both
   value, or by a neutral one where the store holds none ("The harness strings", below).
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
-repositories copies map to, the dev box's Claude Code config directory, the clones made by hand on
-a dev box, the registries read with a token and the images a deployment builds) comes from the `--config
-<skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
-gateway key comes from `--key-file`, read inside the process that uses it, never printed, logged
-or written. The behaviour test and the load test read the skill texts from directories and the
-cases or tasks from a file outside the repository. The repositories a context needs come from
+repositories copies map to, the dev box's home and its Claude Code config directory, the clones
+made by hand on a dev box, the session pod's deployment repository and image pin, the file where
+the dev box's own repository pins its Oh My Pi build, the registries read with a token and the
+images a deployment builds) comes from the `--config <skill-cuts.json>` file at run time
+(`config.ts` says each key: `devboxHome`, `sessionPod` and `ompPin` among them). No file here
+names one. The gateway key comes from `--key-file`, read inside the process that uses it, never
+printed, logged or written. The behaviour test and the load test read the skill texts from
+directories and the cases or tasks from a file outside the repository. The repositories a context
+needs come from
 `--repos <dir>`, a tree of `<owner>/<name>/<commit>/` directories, each the repository at that
 commit; without `--repos` they are read from GitHub through `gh` (GET calls and GraphQL
 queries; a whole repository's tarball only for a plugin's checkout). A skill's directory is read
@@ -104,11 +107,12 @@ skill's cases (`cases.ts`), one JSON object per line.
   skill.
 - `confirm`: 40 fresh runs of old and new for each flagged case that is not dropped. Each confirm
   records the runner that made it: a digest of the runner's code (each file of this directory but
-  its tests, its test data and this README). Where a case's last two confirms at the same texts on
-  one runner disagree, one a loss and one not, `confirm` runs a third, and the three are pooled
-  (the architect's decision "The behaviour test's pass rule"): the case is a loss when the cut's
-  text passes at least 30 fewer of the 120 runs than the old text, the same bound of 10 for each
-  40.
+  its tests, its test data and this README, and each module of `../skill-scenarios` that its files
+  import, with those modules' own imports there). Where a case's last two confirms at the same
+  texts on one runner disagree, one a loss and one not, `confirm` runs a third, and the three are
+  pooled (the architect's decision "The behaviour test's pass rule"): the case is a loss when the
+  cut's text passes at least 30 fewer of the 120 runs than the old text, the same bound of 10 for
+  each 40.
   Confirms made on different runners (before and after a fix) or at other texts are not pooled:
   only the last confirm's runner and texts count. `--again <case id>` asks for one more confirm of
   a flagged case whose confirm is finished, on this runner; it is refused (exit 2), naming the
@@ -168,16 +172,19 @@ skill's cases (`cases.ts`), one JSON object per line.
   for another reason, after its retries, fails the command (exit 1), and the next run reads it
   again.
 - The runner of each run. Each stage and each run records the runner that made it: a digest of the
-  runner's code (each file of this directory but its tests, its test data and this README; the
-  commit is not knowable in a copy of the directory with no git). A run saved before runs recorded
-  it takes its stage's runner, and a stage saved before stages recorded theirs is the runner
-  `unrecorded`. `screen`, `confirm` and `control` take a saved stage of their own kind (a case's
-  screen; a flagged case's last confirm; the control case's control) as done, or go on with one
-  still running, only when each of its runs, or the stage where it has none, is this runner's or
-  that of a runner `--allow-runners <digest>[,<digest>...]` names. A saved stage of another runner
-  is refused before any model call (exit 2), naming the case, its runner and this runner: it is
-  never skipped as done and never made again. Confirms are pooled on one runner at one set of
-  texts as above, whatever `--allow-runners` says.
+  runner's code (each file of this directory but its tests, its test data and this README, and each
+  module of `../skill-scenarios` that its files import, found from their imports and followed
+  through those modules' own; the commit is not knowable in a copy of the directory with no git).
+  A run saved before runs recorded it takes its stage's runner, and a stage saved before stages
+  recorded theirs is the runner `unrecorded`. `screen`, `confirm` and `control` take a saved stage
+  of their own kind (a case's screen; a flagged case's last confirm; the control case's control)
+  as done, or go on with one still running, only when each of its runs, or the stage where it has
+  none, is this runner's or that of a runner `--allow-runners <digest>[,<digest>...]` names. A
+  saved stage of another runner is refused before any model call (exit 2), naming the case, its
+  runner and this runner, and the `--allow-runners` value that takes it: the runners the given
+  value names and the others, since a new value replaces the old one. It is never skipped as done
+  and never made again. Confirms are pooled on one runner at one set of texts as above, whatever
+  `--allow-runners` says.
 - `report`: for each stage kind (`screen`, `confirm` with earlier confirms, `control`), each
   runner with its case stages and its runs (a stage whose runs two runners made counts as a case
   stage of each); results whose runs more than one runner made are refused (exit 2), naming each
@@ -412,6 +419,7 @@ its answer names that finding. It exits 0 when the control held, 1 when it did n
 
 ```
 bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --query roots
 ```
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
@@ -420,7 +428,8 @@ file's model, read from the first 256 Ki characters of the file, as one row per 
 
 For the `attribute` context step, print the store-wide query with
 `count-sql --config <skill-cuts.json> --store <db> --query roots`. Omit `--day` and `--hour`.
-Run the query with the store's `psqlCommand` and save its result as `<count>/<db>/roots.txt`.
+Run the query with the configuration's `psqlCommand <db>` and save its result as
+`<count>/<db>/roots.txt`.
 The query reads only the file table's paths. It returns each file's count hash and Oh My Pi
 profile, not the path. You can add this file to an existing count without running the count again.
 
@@ -750,7 +759,9 @@ removed, or moved to a directory with no copy now, has a `former-stages.tsv` row
 `attribute` says in the outcome of a read there that the plugin held it then and no longer.
 The limit: a move is seen only in a commit that also changed the marketplace manifest, so a skill
 moved by a commit that left the manifest alone keeps no former row. Each file list of a commit is
-read once and cached by repository and commit.
+read once and cached by repository and commit. GitHub lists at most 300 of a commit's files: a
+commit that lists 300 has its moves read as listed, and a note under the manifest and a failure
+say that a move past them may be missed.
 
 ### `attribute`
 
@@ -851,6 +862,9 @@ bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json
 `<home>/.omp/agent/sessions/` is the default profile. `<home>/.omp/profiles/<name>/agent/sessions/`
 is a named profile. A subagent's transcript is below its root's directory, so it uses the same
 profile.
+`--reprofile` of a case whose store holds its session no longer takes the profile the case saved
+(its `Oh My Pi profile` evidence item), and, for a case built before cases saved one, the profile
+its store gave such a case then: `legion` in a Legion store, `default` in a `devbox` store.
 A session's context follows its store, its profile and where its skills came from.
 It is one of five kinds:
 
@@ -891,6 +905,7 @@ source. Use paths relative to their repositories.
 Set `registries` in the private configuration to read images in a registry other than public GHCR.
 Each entry is `{"host": "registry.example.test", "tokenCommand": ["<program>", "<argument>"]}`.
 The runner runs `tokenCommand` once per process and sends its standard output, trimmed, as the Bearer token on that host's `/v2/` reads of an image's manifest and config blob.
+A `tokenCommand` that runs past a minute is ended, and the read fails naming the host and the limit.
 It keeps the token in memory alone, and never prints it or puts it in an error message.
 A host that no entry names, other than GHCR, is not read.
 Set `deploymentImages` to name the images that the deployment repository builds on a worker image.

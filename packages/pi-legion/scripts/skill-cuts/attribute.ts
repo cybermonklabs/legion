@@ -822,8 +822,8 @@ export type RepositoriesRow = Columns<typeof REPOSITORIES_COLUMNS>;
 export type ManifestsRow = Columns<typeof MANIFESTS_COLUMNS>;
 
 /** The tables of the copies output (copies.ts) this file reads. `manifests` (manifests.tsv) is
- *  what the dev box's own repository is found from (`devboxRepository`); without it no dev box is
- *  known. */
+ *  what the dev box's own repository is found from (`devboxRepositories`); without it no dev box
+ *  is known. */
 export interface R4Tables {
   readonly copies: readonly SkillCopiesRow[];
   readonly prefixes: readonly PrefixTableRow[];
@@ -1382,8 +1382,10 @@ export interface Placement {
 export interface Placer {
   /** Where the read goes, using the session's profile if the path does not decide. */
   place(store: string, copyPath: string, skill: string, profile: string): Placement;
-  /** Step 3's units: for each store, each unit its prefix-table reads come from, with their
-   *  sessions (file hashes). */
+  /** For each store, each unit its prefix-table reads come from, with their sessions (file
+   *  hashes): the units step 3 infers from reads. Step 3's group of a devbox store's default
+   *  profile also holds the units the dev box's own installers install (DEVBOX_INSTALLERS_RULE),
+   *  which no read need come from, so this does not list them. */
   readonly storeUnits: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
   /** Each unit's copies: its installer rows, and the copies its prefix rows map to. */
   readonly members: ReadonlyMap<string, ReadonlySet<string>>;
@@ -1462,7 +1464,8 @@ export function placer(
     r4.copies.filter((row) => projectSkillDir(row.path) !== undefined)
   );
 
-  // Step 3's units: those each store's own mapped reads come from, with their sessions.
+  // Each store's units its own mapped reads come from, with their sessions, and step 3's groups:
+  // those units by store and profile, to which the dev box's installers' units are added below.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
   const profileUnits = new Map<string, Set<string>>();
   for (const output of counted.outputs) {
@@ -2406,12 +2409,14 @@ export function readCountMarkdown(report: Report): string {
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
     "",
     "### Units read from in each store, across profiles",
+    "",
+    "Step 3's group of a devbox store's default profile also holds each unit the dev box's own installers install into Oh My Pi, which no read need come from, so these lists leave them out.",
     ""
   );
   for (const store of attribution.stores) {
     if (store.units.length === 0) {
       say(
-        `- ${store.store} (${store.context}): none, since no read of this store maps by the prefix table; the context rule places none of its reads.`
+        `- ${store.store} (${store.context}): none, since no read of this store maps by the prefix table; the context rule places none of its reads${store.context === "devbox" ? " but its default-profile reads of a copy the dev box's own installers install" : ""}.`
       );
       continue;
     }
@@ -2532,7 +2537,7 @@ export function readCountMarkdown(report: Report): string {
   say(
     "## Claude Code",
     "",
-    'This count reads no Claude Code session (see "Stores"). Oh My Pi installs a copy when an Oh My Pi session read it (every store holds Oh My Pi sessions), when a store\'s context installs it (the units above), or when an installers.tsv row of host omp installs it (an installer script into Oh My Pi, an Oh My Pi plugins package.json, a package.json with omp.skills, the prepack script). Claude Code installs it when an installers.tsv row of host claude-code does.',
+    "This count reads no Claude Code session (see \"Stores\"). Oh My Pi installs a copy when an Oh My Pi session read it (every store holds Oh My Pi sessions), when a store's context installs it (the units read from above, and in a devbox store's default profile the units the dev box's own installers install), or when an installers.tsv row of host omp installs it (an installer script into Oh My Pi, an Oh My Pi plugins package.json, a package.json with omp.skills, the prepack script). Claude Code installs it when an installers.tsv row of host claude-code does.",
     "",
     "### Not countable yet: only Claude Code installs them, and no Oh My Pi session read them",
     ""

@@ -524,9 +524,9 @@ export interface TimeLimit {
  *  transient failure), the store reads (psql-rows.ts's `eachStoreRow`), and, ended with
  *  `pastLimit`'s reason, context.ts's commands (`tar`, `bun install`, `bun run build`, `go
  *  test`), `omp --version` (capture.ts), Claude Code's `--version` and `claude plugin` commands
- *  (load.ts) and `--after-case` (cli.ts). The Oh My Pi run (capture.ts) and the Claude Code run
- *  (load.ts), which write their output to files, keep their own timer, which ends them with
- *  SIGKILL. */
+ *  (load.ts), a registry's token command (pod-image.ts) and `--after-case` (cli.ts). The Oh My Pi
+ *  run (capture.ts) and the Claude Code run (load.ts), which write their output to files, keep
+ *  their own timer, which ends them with SIGKILL. */
 export function timeLimit(child: { kill(): void }, ms: number | undefined): TimeLimit {
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;

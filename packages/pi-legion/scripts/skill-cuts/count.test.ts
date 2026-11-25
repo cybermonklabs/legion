@@ -39,7 +39,7 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // The fixture proof of count.sql (the read count) and of models.sql, and the pieces they stand on:
 // countsql.ts's filling and fixturedb.ts's loading. The proof needs the pod's test server
 // (LEGION_TEST_PG_DSN) and psql, and runs each query with the store command's own flags; without
-// the server it is skipped with a printed line (the pi-legion CI job has none). It makes seven
+// the server it is skipped with a printed line (the pi-legion CI job has none). It makes eight
 // databases of its own on that server and drops them at the end:
 // F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
 // cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
@@ -47,11 +47,12 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // after its session_init line, F1d (F1b's first two lines, with no model line) and F1b cut inside
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
-// Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; and
-// in the seventh a made-up session and three forks of it, which the fork tests describe. Three
-// digest-times.sql rows each make one more database, and drop it in their own `finally`: F1's
-// session cut inside its digest line, a made-up root of 256 MiB, and a made-up root with digest
-// lines whose timestamps are no times.
+// Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; in
+// the seventh a made-up session and three forks of it, which the fork tests describe; and in the
+// eighth, for roots.sql, made-up files at absolute paths of a named profile, of the default
+// profile and of neither. Three digest-times.sql rows each make one more database, and drop it in
+// their own `finally`: F1's session cut inside its digest line, a made-up root of 256 MiB, and a
+// made-up root with digest lines whose timestamps are no times.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
@@ -229,7 +230,7 @@ describe("countsql.ts fills the SQL", () => {
       countSql(CONFIG, "store_a", "2026-11-20"),
     ]);
     expect(main([...day, "--query", "pull"], io)).toBe(2);
-    expect(err).toEqual(['countsql: --query "pull" is neither count nor models']);
+    expect(err).toEqual(['countsql: --query "pull" is none of count, models and roots']);
   });
 
   test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {
@@ -418,6 +419,7 @@ describe.skipIf(serverDsn === undefined)(
       big: `skill_cuts_count_${stamp}_big`,
       pull: `skill_cuts_count_${stamp}_pull`,
       fork: `skill_cuts_count_${stamp}_fork`,
+      roots: `skill_cuts_count_${stamp}_roots`,
     };
     /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
     const dsnOf = (name: string) => {
@@ -596,6 +598,15 @@ describe.skipIf(serverDsn === undefined)(
           alphaRead("toolu_made_up_own", "2026-11-21T23:00:00.000Z"),
       },
     ];
+    /** The eighth database's files, each at the path the store keeps it under, with the profile
+     *  roots.sql names for it: a named profile's session and its subagent's file below it, the
+     *  default profile's session, and a path below neither root. */
+    const ROOTS = [
+      ["/home/made-up/.omp/profiles/fixture/agent/sessions/--work--/named.jsonl", "fixture"],
+      ["/home/made-up/.omp/profiles/fixture/agent/sessions/--work--/named/sub.jsonl", "fixture"],
+      ["/home/made-up/.omp/agent/sessions/--work--/default.jsonl", "default"],
+      ["/home/made-up/sessions/--work--/elsewhere.jsonl", "unknown"],
+    ] as const;
     /** No copies: the fork tests count sessions, and place no read. */
     const NO_COPIES: R4Tables = {
       copies: [],
@@ -707,6 +718,20 @@ describe.skipIf(serverDsn === undefined)(
       } finally {
         await fork.close();
       }
+      await loadFixtures(dsnOf(names.roots), [], { parts: 2 });
+      const roots = new SQL(dsnOf(names.roots));
+      try {
+        for (const [stored] of ROOTS) {
+          const text = sessionLine("made-up-root", "2026-11-20T02:00:00.000Z");
+          await roots`
+            INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+            VALUES (${stored}, ${text}, ${Date.parse("2026-11-20T02:00:00.000Z")},
+              ${Buffer.byteLength(text)})
+          `;
+        }
+      } finally {
+        await roots.close();
+      }
       writeFileSync(
         STORE,
         `#!/bin/sh\nexec psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction -c 'SET TRANSACTION READ ONLY' -f - "$1"\n`,
@@ -726,14 +751,11 @@ describe.skipIf(serverDsn === undefined)(
     });
 
     test("roots.sql reports only the count hash and profile of each stored path", () => {
-      const rows = run(names.first, rootsSql(CONFIG, "store_a"));
-      expect(rows).toHaveLength(3);
-      for (const row of rows) {
-        expect(row).toEqual({
-          hash: expect.stringMatching(/^[0-9a-f]{16}$/),
-          profile: expect.stringMatching(/^(fixture|unknown)$/),
-        });
-      }
+      expect(run(names.roots, rootsSql(CONFIG, "store_a"))).toEqual(
+        ROOTS.map(([stored, profile]) => ({ hash: fileHash(stored), profile })).sort((a, b) =>
+          a.hash < b.hash ? -1 : 1
+        )
+      );
     });
 
     test("the first database: alpha one read and one reference session, the missing skill none, beta one read in the subagent's file, F4's Skill call one read", () => {

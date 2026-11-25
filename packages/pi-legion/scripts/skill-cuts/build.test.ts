@@ -2777,6 +2777,40 @@ describe("build-cases over every made-up session", () => {
     );
   }, 60_000);
 
+  // Catches: a case built before cases saved their Oh My Pi profile, whose session the store holds
+  // no more, reprofiled under the profile `unknown`: a Legion case lost its worker image's units,
+  // role plugins and AGENTS.md, and a dev-box case its installers.
+  test("--reprofile of a case whose session the store no longer holds, and whose old evidence names no Oh My Pi profile, takes the store's: legion for a Legion store, default for a devbox store", async () => {
+    const legion = byName("proj-legion") as Case;
+    const devbox = byName("proj-devbox") as Case;
+    const unsaved = (c: Case, name: string): Case => ({
+      ...c,
+      id: `${c.id}-unsaved`,
+      source: { ...c.source, pathHash: pathHash(`/sessions/${name}.jsonl`) },
+      evidence: (c.evidence ?? []).filter((each) => each.item !== "Oh My Pi profile"),
+    });
+    const from = path.join(scratch, "heads-unsaved", "old.jsonl");
+    mkdirSync(path.dirname(from), { recursive: true });
+    writeFileSync(
+      from,
+      [unsaved(legion, "unsaved-legion"), unsaved(devbox, "unsaved-devbox")]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    const fresh = path.join(scratch, "heads-unsaved", "reprofiled.jsonl");
+    const args = ["build-cases", "--config", config, "--old", old, "--copies", copiesDir];
+    const reprofile = ["--count", countDir, "--reprofile", from, "--out", fresh];
+    const lines: string[] = [];
+    const code = await main([...args, ...reprofile], io(lines));
+    expect({ code, said: code === 0 ? "" : lines.join("") }).toEqual({ code: 0, said: "" });
+    const [l, d] = loadCases(fresh, old);
+    expect(l?.profile).toEqual(legion.profile);
+    expect(d?.profile).toEqual(devbox.profile);
+    expect(
+      [l, d].map((c) => c?.evidence?.find((each) => each.item === "Oh My Pi profile")?.source)
+    ).toEqual(["legion", "default"]);
+  }, 60_000);
+
   test("a Legion session's role comes from its first user message, and its profile adds the image's plugin and the context files", () => {
     const c = byName("legion");
     expect(c?.context).toBe("legion:ACME:tester");
@@ -5980,7 +6014,7 @@ async function podProfile(
   return { code, profile: built?.profile, lines, evidence };
 }
 
-test("session context row 1: only a default-root session uses the dev box's installers", async () => {
+test("a default-profile session of a devbox store gets the dev box's installers' units, and a legion-profile one the skills the session pod's image stages, at the image's commit", async () => {
   const pod = await podProfile("pod-case", "legion");
   const dev = await podProfile("dev-case", "");
   expect(dev.profile?.skills.map((skill) => skill.name)).toContain("unread");
@@ -5989,7 +6023,7 @@ test("session context row 1: only a default-root session uses the dev box's inst
   );
 }, 60_000);
 
-test("session context row 2: solreview has project skills but no role plugins", async () => {
+test("a solreview-profile session of a Legion store gets its session repository's project skills and no role plugins", async () => {
   const files = REPOSITORIES["acme/skills"] ?? {};
   files[".omp/skills/alpha/SKILL.md"] = projectSkillMd("alpha");
   try {
@@ -6003,23 +6037,25 @@ test("session context row 2: solreview has project skills but no role plugins", 
   }
 }, 60_000);
 
-test("session context row 3: a pod task uses the image's staged skills", async () => {
+test("a legion-profile pod task gets the skills the session pod's image stages, at the image's commit", async () => {
   const result = await podProfile("pod-task", "legion", { task: true });
   expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
     ["beta", "omicron"].map((name) => [name, IMAGE_SHA])
   );
 }, 60_000);
 
-test("session context row 5: without an OCI revision or pin evidence the pod is not measurable", async () => {
+test("a session pod whose base carries no OCI revision label, and whose Dockerfile's pin comment names no commit, is not measurable, naming its Dockerfile and its base", async () => {
   const result = await podProfile("unresolved-base", "legion", { label: false });
   expect(result.code).toBe(EXIT.failed);
-  expect(result.lines.join("\n")).toContain("not measurable");
+  expect(result.lines.join("\n")).toContain(
+    `pod profile not measurable: pods/Dockerfile at ${POD_BUILD} pins ${POD_BASE}, which has no OCI revision or commit in the pin history`
+  );
 }, 60_000);
 
 // Catches: a session pod read at the commit of the base its Dockerfile's ARG default names,
 // though a build can pass another base: the pinned image was never read, so an image built on
 // another base was taken for one built on that base.
-test("session context row 7: a pinned image whose rootfs.diff_ids do not start with its base's is not measurable, naming its digest and the mismatch; one whose do builds as before", async () => {
+test("a pinned image whose rootfs.diff_ids do not start with its base's is not measurable, naming its digest and the mismatch, one whose config the registry does not give is not measurable, naming why, and one whose diff ids start with its base's gets the image's skills", async () => {
   const pinDigest = `sha256:${"2".repeat(64)}`;
   const other = [POD_LAYERS[0] ?? "", `sha256:${"9".repeat(64)}`, ...POD_PIN_LAYERS.slice(2)];
   const mismatch = await podProfile("pin-other-base", "legion", { pinLayers: other });
@@ -6044,7 +6080,7 @@ test("session context row 7: a pinned image whose rootfs.diff_ids do not start w
 // Catches: vskills-293's porting-released-proofs, whose read of the project's own
 // .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
 // of that name, so the profile installed that plugin whole (20 of the 21 names it added).
-test("session context row 6: a read inside the session checkout's own .claude/skills is that project's skill, and installs no unit that holds a skill of its name", async () => {
+test("a read inside the session checkout's own .claude/skills is that project's skill, and installs no unit that holds a skill of its name", async () => {
   const project = await podProfile("project-skill-read", "", {
     readAt: "/work/.claude/skills/alpha",
   });
@@ -6053,7 +6089,7 @@ test("session context row 6: a read inside the session checkout's own .claude/sk
   expect(project.lines.join("\n")).toContain(
     "left out: the profile installs no alpha of acme/skills at the session's start"
   );
-  // The same read at the plugin's own install location installs it, as row 1's does.
+  // The same read at the plugin's own install location installs it.
   const plugin = await podProfile("plugin-skill-read", "");
   expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
 }, 60_000);
@@ -6111,7 +6147,7 @@ const outcomeOf = (result: { readonly code: number; readonly lines: readonly str
 // Catches: a session of a pod that mounts the dev box's home given the session pod's profile,
 // which installs the image's links alone, so it lacks the copy the session read and the case is
 // left out.
-test("skill source row 1: a named-profile session of a devbox store whose [Skill file] headers are under devboxHome gets the dev box's context: its installers' units, the pool a header names at its installer's pin, the copy the case read, and the evidence item that names the context", async () => {
+test("a named-profile session of a devbox store whose [Skill file] headers are under devboxHome gets the dev box's context: its installers' units, the pool a header names at its installer's pin, the copy the case read, and the evidence item that names the context", async () => {
   const result = await homeMounted("home-mounted", { devboxHome: DEV_HOME });
   expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
   const skills = skillsOf(result);
@@ -6133,7 +6169,7 @@ test("skill source row 1: a named-profile session of a devbox store whose [Skill
 
 // Guards the session pod's branch: devboxHome changes nothing for a session whose headers are all
 // on the pod's own paths.
-test("skill source row 2: a named-profile session of a devbox store whose [Skill file] headers are all on the pod's own paths gets the session pod's profile", async () => {
+test("a named-profile session of a devbox store whose [Skill file] headers are all on the pod's own paths gets the session pod's profile", async () => {
   const result = await podProfile("pod-only", "legion", { home: POD_HOME, devboxHome: DEV_HOME });
   expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
   expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
@@ -6145,7 +6181,7 @@ test("skill source row 2: a named-profile session of a devbox store whose [Skill
 
 // Catches: a session that read skill files under the dev box's home and on the pod's own paths
 // given one context with no word of the other, or the pod path's unit left out of it.
-test("skill source row 3: a session with [Skill file] headers under devboxHome and on the pod's own paths gets the dev box's context, the unit its pod-path header names, and an evidence item naming a header of each kind", async () => {
+test("a session with [Skill file] headers under devboxHome and on the pod's own paths gets the dev box's context, the unit its pod-path header names, and an evidence item naming a header of each kind", async () => {
   const result = await homeMounted("home-mixed", {
     devboxHome: DEV_HOME,
     reads: [
@@ -6174,7 +6210,7 @@ test("skill source row 3: a session with [Skill file] headers under devboxHome a
 // Catches: a [Skill file] header in a session pod's context placing no unit, since the pod's
 // links alone decided its units; and a home whose path only starts with devboxHome's text taken
 // for the dev box's.
-test("skill source row 4: a session pod's [Skill file] header outside devboxHome installs the unit it places beside the image's links, and the context stays the session pod's", async () => {
+test("a session pod's [Skill file] header outside devboxHome installs the unit it places beside the image's links, and the context stays the session pod's", async () => {
   const result = await podProfile("pod-proof", "legion", {
     home: POD_HOME,
     devboxHome: DEV_HOME,
@@ -6197,7 +6233,7 @@ test("skill source row 4: a session pod's [Skill file] header outside devboxHome
 
 // Guards the rule pod links keep: a whole read by path in a session pod's context places no unit,
 // even of a copy under devboxHome, and decides no context.
-test("skill source row 5: a session pod's whole reads by path of a copy the image's links do not give install nothing of it, and reads by path under devboxHome do not make the context the dev box's", async () => {
+test("a session pod's whole reads by path of a copy the image's links do not give install nothing of it, and reads by path under devboxHome do not make the context the dev box's", async () => {
   const result = await podProfile("pod-by-path", "legion", {
     home: POD_HOME,
     devboxHome: DEV_HOME,
@@ -6214,9 +6250,9 @@ test("skill source row 5: a session pod's whole reads by path of a copy the imag
   expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
 }, 60_000);
 
-// Catches: rule 1 applied with no devboxHome in the configuration, or the session pod's context
-// placing no unit of the session's [Skill file] headers.
-test("skill source row 6: with no devboxHome, a session like row 1's keeps the session pod's context, and its [Skill file] headers install their units, and the dev box's installers nothing", async () => {
+// Catches: the dev box's context given with no devboxHome in the configuration, or the session
+// pod's context placing no unit of the session's [Skill file] headers.
+test("with no devboxHome, a named-profile session whose [Skill file] headers are under the dev box's home keeps the session pod's context, its headers install their units, and the dev box's installers install nothing", async () => {
   const result = await homeMounted("home-unconfigured");
   expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
   const skills = skillsOf(result);
@@ -6989,7 +7025,7 @@ test("a dev-box session in a checkout whose .claude/settings.json turns a Claude
 
 // Catches: a Legion pod's worker image read at its repository's default branch at the session's
 // start, where the pod ran an image built from an older commit.
-test("build-cases --reprofile of a Legion pane reads the worker image's packages at the commit that the deployment's Pulumi config and GitHub's build provenance name: the image digest's, else that of a digest or a tag the comment above its image: line names, else its default branch at the session's start, its evidence saying which rule decided", async () => {
+test("build-cases --reprofile of a Legion pane reads the worker image's packages at the commit that the deployment's Pulumi config and GitHub's build provenance name: the image digest's, else that of a digest or a tag the comment above its image: line names, its evidence saying which rule decided; with none of them the case is left out, and the packages are not read at the default branch", async () => {
   const digest = (n: number) => String(n).repeat(64);
   const attested = digest(1);
   // A made-up Pulumi config of acme/infra: another project's entry first, whose comment names a
@@ -7308,7 +7344,12 @@ async function reprofiledLegion(
   return {
     code,
     said: lines.join("\n"),
-    written: c !== undefined,
+    // Whether the case file holds a case, whatever the exit code.
+    written:
+      existsSync(fresh) &&
+      readFileSync(fresh, "utf8")
+        .split("\n")
+        .some((line) => line !== ""),
     registryReads,
     skills: (c?.profile.skills ?? [])
       .filter((skill) => skill.repo === "acme/skills")
@@ -7524,7 +7565,8 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     expect(result.registryReads).not.toContain(BASE);
   }, 120_000);
 
-  test("an image the configuration does not list is left out as before: its Dockerfile and its base are not read", async () => {
+  test("an image the configuration does not list is left out, its commit not known: its Dockerfile and its base are not read", async () => {
+    const calls = ghCalls.length;
     const result = await built("unlisted", { listed: `${REPOSITORY}-other`, refused: true });
     expect({ code: result.code, written: result.written }).toEqual({
       code: EXIT.failed,
@@ -7534,6 +7576,11 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       `${notKnown}${own}, and no comment line is right above its image: line${rule}`
     );
     expect(result.registryReads).not.toContain(BASE);
+    expect(
+      ghCalls
+        .slice(calls)
+        .filter((args) => args.includes(`repos/acme/infra/contents/${DOCKERFILE}`))
+    ).toEqual([]);
   }, 120_000);
 });
 
@@ -9027,6 +9074,32 @@ describe("GithubReads", () => {
     expect(again.copies.map((copy) => copy.description)).toEqual(["Use for the alpha list."]);
     // Five tries the first time, one the second.
     expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(6);
+  });
+
+  // Catches: a registry read that failed once (an HTTP 5xx, a time-out) kept for the rest of the
+  // run, so every later profile that needs that image failed.
+  test("an image config read that fails is not kept: the next read of that image reads the registry again", async () => {
+    const image = `registry.example.test/acme/worker@sha256:${"a".repeat(64)}`;
+    const config: ImageConfig = { env: [], labels: {}, diffIds: [] };
+    let tries = 0;
+    const reads = new GithubReads(
+      standIn("acme/skills", () => skillBlob).gh,
+      new Map(),
+      noWait(),
+      undefined,
+      async () => {
+        tries++;
+        if (tries === 1) throw new Error(`reading ${image}: registry HTTP 502`);
+        return config;
+      }
+    );
+    expect(await reads.imageConfig(image).then(() => "read", String)).toBe(
+      `Error: reading ${image}: registry HTTP 502`
+    );
+    expect(await reads.imageConfig(image)).toEqual(config);
+    // The read that answered is kept.
+    expect(await reads.imageConfig(image)).toEqual(config);
+    expect(tries).toBe(2);
   });
 
   // Catches: a failure taken as transient for a word of the repository's name in its error, so a

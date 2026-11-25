@@ -2616,8 +2616,18 @@ export class GithubReads {
     private readonly readImageConfig: ReadImageConfig = registryImageConfig
   ) {}
 
-  imageConfig(image: string) {
-    return readOnce(this.images, image, () => this.readImageConfig(image));
+  /** The OCI config of `image` from its registry (`readImageConfig`), kept for each image; a read
+   *  that fails (an HTTP 5xx, a network error, the read's time-out) is not kept, so a later caller
+   *  reads the registry again. */
+  imageConfig(image: string): Promise<ImageConfig | undefined> {
+    const held = this.images.get(image);
+    if (held !== undefined) return held;
+    const made = this.readImageConfig(image);
+    this.images.set(image, made);
+    made.catch(() => {
+      if (this.images.get(image) === made) this.images.delete(image);
+    });
+    return made;
   }
 
   /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
@@ -7647,7 +7657,15 @@ async function reprofileCases(
         ];
     const reading = reads.get(c.id);
     const transcriptPath = transcriptPaths.get(store.name)?.get(c.source.pathHash);
-    const savedProfile = old.find((each) => each.item === OMP_PROFILE_ITEM)?.source;
+    // The Oh My Pi profile: its transcript's path, else (the store holds the session no longer)
+    // the one its case saved, else, for a case built before cases saved one, the one the store
+    // gave such a case then: the Legion worker's `legion` in a Legion store, `default` in a
+    // devbox store.
+    const ompProfile =
+      transcriptPath !== undefined
+        ? sessionProfileName(transcriptPath)
+        : (old.find((each) => each.item === OMP_PROFILE_ITEM)?.source ??
+          (legion ? "legion" : "default"));
     // The listing its measure sets it against, which decides its pools (POOL_LISTING_RULE): its
     // own recorded prompt's, else that of its subagent the store's query above found. Every case
     // of a store the configuration names has its reading, a window with no recorded prompt and
@@ -7671,10 +7689,7 @@ async function reprofileCases(
       profiled = await caseProfile(run, {
         store: store.name,
         context: store.context,
-        ompProfile:
-          transcriptPath === undefined && savedProfile !== undefined
-            ? savedProfile
-            : sessionProfileName(transcriptPath),
+        ompProfile,
         project: legion ? store.context.slice("legion:".length) : undefined,
         reads: profileReads(c.messages, c.skill, c.pathCopy === undefined ? [] : [c.pathCopy]),
         absoluteReads: absoluteReads(c.messages),

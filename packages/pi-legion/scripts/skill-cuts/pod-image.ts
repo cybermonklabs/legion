@@ -1,15 +1,21 @@
 import { z } from "zod";
 import type { GithubReads } from "./build";
+import { pastLimit, textOf, timeLimit } from "./common";
 import type { Registry, SkillCutsConfig } from "./config";
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const REVISION = "org.opencontainers.image.revision";
 const SOURCE = "org.opencontainers.image.source";
-const IMAGE = /^(?:[\w.-]+\/)+[\w.-]+(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
-/** A digest-pinned reference: its host (with its port, if any), its path and its digest. */
+/** A digest-pinned reference: its host (with its port, if any), its path and its digest (group
+ *  3). The path is held to lower case, as an image reference's path is, so a pinned image or a
+ *  base with an upper-case letter in its path is refused as unpinned. */
 const REFERENCE =
   /^([A-Za-z0-9.-]+(?::\d+)?)\/([a-z0-9._/-]+?)(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
+/** The longest a registry's tokenCommand may run before it is ended: the command prints a token it
+ *  holds or asks its issuer for, so a minute is room for a slow issuer, and a command that hangs
+ *  holds no read, and no later read of that registry, past it. */
+export const REGISTRY_TOKEN_TIMEOUT_MS = 60_000;
 
 export class PodNotMeasurable extends Error {
   constructor(why: string) {
@@ -39,10 +45,12 @@ export type RegistryFetch = (
 ) => Promise<Response>;
 
 /** What `registryImageConfig` reads a registry with: the registries the configuration names
- *  (`registries`), and the fetch it sends (`fetch` when absent). */
+ *  (`registries`), the fetch it sends (`fetch` when absent), and the time limit of a registry's
+ *  tokenCommand (REGISTRY_TOKEN_TIMEOUT_MS when absent). */
 export interface RegistryAccess {
   readonly registries?: readonly Registry[];
   readonly fetch?: RegistryFetch;
+  readonly tokenTimeoutMs?: number;
 }
 
 const Manifest = z.object({
@@ -67,9 +75,10 @@ const ConfigBlob = z.object({
 /** The token of each registry's tokenCommand, by its argv: the command runs once per process. */
 const tokens = new Map<string, Promise<string>>();
 
-/** The trimmed standard output of `registry`'s tokenCommand, run once per process. Its failure
- *  names the host and the exit status, never what the command printed. */
-function registryToken(registry: Registry): Promise<string> {
+/** The trimmed standard output of `registry`'s tokenCommand, run once per process, and ended once
+ *  it runs past `timeoutMs` (common.ts's `timeLimit`). Its failure names the host and the exit
+ *  status or the limit, never the command or what it printed. */
+function registryToken(registry: Registry, timeoutMs: number): Promise<string> {
   const key = JSON.stringify(registry.tokenCommand);
   const known = tokens.get(key);
   if (known !== undefined) return known;
@@ -79,10 +88,14 @@ function registryToken(registry: Registry): Promise<string> {
       stdout: "pipe",
       stderr: "ignore",
     });
-    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    if (code !== 0) throw new Error(`the token command of ${registry.host} exited ${code}`);
+    const limit = timeLimit(child, timeoutMs);
+    const [out, code] = await Promise.all([textOf(child.stdout, limit), child.exited]);
+    limit.clear();
+    const command = `the token command of ${registry.host}`;
+    if (limit.timedOut()) throw new Error(pastLimit(command, timeoutMs));
+    if (code !== 0) throw new Error(`${command} exited ${code}`);
     const trimmed = out.trim();
-    if (trimmed === "") throw new Error(`the token command of ${registry.host} printed no token`);
+    if (trimmed === "") throw new Error(`${command} printed no token`);
     return trimmed;
   })();
   tokens.set(key, token);
@@ -119,7 +132,7 @@ export async function registryImageConfig(
     if (!anonymous.success) return undefined;
     token = anonymous.data.token;
   } else {
-    token = await registryToken(registry);
+    token = await registryToken(registry, access.tokenTimeoutMs ?? REGISTRY_TOKEN_TIMEOUT_MS);
   }
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -260,20 +273,22 @@ export async function sessionPodImage(
     .safeParse(Bun.YAML.parse(pin));
   const image = stack.data?.config[pinKey];
   const pinned = typeof image === "string" ? image : "";
-  const digest = IMAGE.exec(pinned)?.[1]?.slice("sha256:".length);
+  const digest = REFERENCE.exec(pinned)?.[3]?.slice("sha256:".length);
   if (digest === undefined)
     throw new PodNotMeasurable(`${pinAt} has no pinned digest at ${pinKey}`);
   const pinLines = pin.split(/\r?\n/);
   const pinLine = pinLines.findIndex((line) => line.trimStart().startsWith(`${pinKey}:`));
+  // A key the YAML reads that no line starts with (a quoted key, say) has no line to cite, and no
+  // comment above it (commentAbove of -1 is empty).
+  const pinPlace =
+    pinLine === -1 ? `${pinAt} (no line of it starts with ${pinKey}:)` : `${pinAt}:${pinLine + 1}`;
   const comment = commentAbove(pinLines, pinLine);
   const attested = await github.attestedCommit(repository, digest);
   // The pin can move back to an older build. Read that build's Dockerfile, not the pin commit's.
   const ref =
     attested?.commit ?? /\b(?:built commit|push of commit) ([a-f0-9]{7,40})\b/.exec(comment)?.[1];
   if (ref === undefined)
-    throw new PodNotMeasurable(
-      `${pinAt}:${pinLine + 1} names no build commit for sha256:${digest}`
-    );
+    throw new PodNotMeasurable(`${pinPlace} names no build commit for sha256:${digest}`);
   const build = ref.length === 40 ? ref : await github.commitAt(repository, ref, at);
   if (!build.startsWith(ref))
     throw new PodNotMeasurable(`${pinAt} names an unresolved build commit ${ref}`);
@@ -281,7 +296,7 @@ export async function sessionPodImage(
   if (recipe === undefined) throw new PodNotMeasurable(`${dockerfile} at ${build} is missing`);
   const stage = finalStage(recipe);
   const base = stage.base;
-  if (base === undefined || !IMAGE.test(base))
+  if (base === undefined || !REFERENCE.test(base))
     throw new PodNotMeasurable(`${dockerfile} at ${build} has no digest-pinned final FROM`);
   const oci = await github.imageConfig(base);
   if (oci === undefined)
@@ -330,6 +345,6 @@ export async function sessionPodImage(
   const baseLinks = linksIn(profile, [], worker);
   const podLinks = linksIn(profile, oci.env.length ? oci.env : baseLinks.env, stage);
   const directories = [...new Set([...baseLinks.found, ...podLinks.found])];
-  const why = `Inference: ${pinAt}:${pinLine + 1} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
+  const why = `Inference: ${pinPlace} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
   return { repo: workerRepository, sha, directories, why };
 }

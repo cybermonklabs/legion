@@ -668,9 +668,10 @@ function instant(text: string, what: string): bigint {
  *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
  *      no issue) that this run's own session wrote (the transcript header's id, the session
  *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) with
- *      `implementerProof.verdict` `verified` and no failures; and the branch as the tester
- *      completed it (its last push before the completion, if it pushed) changes nothing under the
- *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
+ *      `implementerProof.verdict` `verified`, no failures listed and no `failed` count above 0;
+ *      and the branch as the tester completed it (its last push before the completion, if it
+ *      pushed) changes nothing under the PR's head: the handoff is never a commit, and the fixture
+ *      leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
  *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
  *      naming a commit of this run's own.
@@ -767,10 +768,11 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { implementerProof, failures = [] } = read.data;
+      const { implementerProof, failures = [], failed = 0 } = read.data;
       if (implementerProof.verdict !== "verified")
         problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
       if (failures.length > 0) problems.push(`${failures.length} failures`);
+      else if (failed > 0) problems.push(`failed is ${failed}, and the body lists no failures`);
     }
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);

@@ -682,23 +682,28 @@ install_superpowers() {
 
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
 # label's profile, the run's stand-ins first on PATH, its own TMPDIR, the spend collector's
-# variables the caller sets (spend_env), and nothing else from the caller's environment.
+# variables the caller sets (spend_env), and nothing else from the caller's environment. The file
+# is 0600, as the Postgres URL file is: those variables, and the services file a tester's pane
+# file holds, can carry credentials, and every line added to it later keeps its mode.
 base_env() {
   mkdir -p "$R/tmp"
   cp -a "$P/home" "$R/home"
-  {
-    echo "HOME=$R/home"
-    echo "USER=$USER"
-    echo "TERM=xterm-256color"
-    echo "TMPDIR=$R/tmp"
-    echo "MISE_DATA_DIR=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
-    echo "OMP_PROFILE=$profile"
-    echo "PI_NOTIFICATIONS=off"
-    echo "PI_NO_TITLE=1"
-    echo "SKILL_SCENARIO_RUN=$R"
-    echo "PATH=$R/bin:$PATH"
-    spend_env
-  } >"$R/pane.env"
+  (
+    umask 077
+    {
+      echo "HOME=$R/home"
+      echo "USER=$USER"
+      echo "TERM=xterm-256color"
+      echo "TMPDIR=$R/tmp"
+      echo "MISE_DATA_DIR=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
+      echo "OMP_PROFILE=$profile"
+      echo "PI_NOTIFICATIONS=off"
+      echo "PI_NO_TITLE=1"
+      echo "SKILL_SCENARIO_RUN=$R"
+      echo "PATH=$R/bin:$PATH"
+      spend_env
+    } >"$R/pane.env"
+  )
 }
 
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
@@ -926,16 +931,16 @@ given_services() {
 # percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
 # stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
 # pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
-# URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
-# URL with: the password runs to the last `@` before the path, the query or the fragment, so a raw
-# `@` in it goes too.
+# URL. Any other URL, the NATS one, prints as its scheme, its host and its port alone
+# (url_hostport), so no user info of any form is printed.
 safe_url() {
   local url scheme rest user='' kept='' param key
   local -a params=()
   case $1 in
   postgres://* | postgresql://*) ;;
   *)
-    printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
+    case $1 in *://*) printf '%s://' "${1%%://*}" ;; esac
+    url_hostport "$1"
     return
     ;;
   esac
@@ -976,17 +981,45 @@ pg_sql() {
   PGCONNECT_TIMEOUT=5 pg_url_run "$1" psql -X -q -w -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
 }
 
-# nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
-# NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
-# own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
-# client, and a host that swallows the connection cannot hold its caller past its bound.
+# url_hostport URL prints the host and the port of a NATS URL as Go's net/url reads them, which
+# nats.go parses a server URL with: the authority runs from past the `://` (from the start, in a
+# URL with none, which nats.go reads as nats://) to the path, the query or the fragment, and the
+# user info in it to its last `@`, whatever its form: a token (nats.go reads a user with no
+# password as one), user:password or :password.
+url_hostport() {
+  local authority=${1#*://}
+  authority=${authority%%[/?#]*}
+  printf '%s\n' "${authority##*@}"
+}
+
+# nats_ready URL succeeds when a server answers on URL's host and port (url_hostport; NATS's
+# default port 4222 where it names none, and a bracketed IPv6 host without its brackets) with
+# the INFO line every NATS server sends on connect, so it tells a NATS from any other process
+# holding the port. bash's own /dev/tcp opens the connection, in a child with a timeout of its
+# own: the probe needs no client, and a host that swallows the connection cannot hold its caller
+# past its bound.
 nats_ready() {
-  local hostport=${1#*://} line=''
-  hostport=${hostport##*@}
-  hostport=${hostport%%/*}
+  local hostport host port line=''
+  hostport=$(url_hostport "$1")
+  case $hostport in
+  \[*\]:*) host=${hostport%%\]:*} port=${hostport##*\]:} ;;
+  \[*\]) host=${hostport%\]} port=4222 ;;
+  *:*) host=${hostport%:*} port=${hostport##*:} ;;
+  *) host=$hostport port=4222 ;;
+  esac
+  host=${host#\[}
   line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
-    -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
+    -- "$host" "$port" 2>/dev/null) || return 1
   case $line in 'INFO '*) ;; *) return 1 ;; esac
+}
+
+# pg_answer prints, on standard error, what psql answers now to the query services_up's wait for
+# a given Postgres polls with (pg_sql): until_true drops each poll's output, so a wait that times
+# out runs this as its timeout_hook and shows why the server never answered (a wrong password,
+# say, which no poll mends), never only that it did not.
+# shellcheck disable=SC2329 # until_true runs it, as services_up's timeout_hook
+pg_answer() {
+  pg_sql "$pg_url" 'select 1' >&2
 }
 
 # services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
@@ -1040,7 +1073,9 @@ services_up() {
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
+    timeout_hook=pg_answer
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
+    timeout_hook=
     until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
     fits=$(((admits - 20) / 30))
@@ -1072,11 +1107,14 @@ services_up() {
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
-  {
-    echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    echo "ENVOY_NATS_URL=$nats_url"
-    echo "ENVOY_TOKEN_FILE=$S/envoy-token"
-  } >"$services_env"
+  (
+    umask 077
+    {
+      echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
+      echo "ENVOY_NATS_URL=$nats_url"
+      echo "ENVOY_TOKEN_FILE=$S/envoy-token"
+    } >"$services_env"
+  )
   note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
 }
 
@@ -1801,16 +1839,19 @@ run_tester_proof() {
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
-  {
-    cat "$R/worker.env" "$services_env"
-    echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
-    echo "GIT_CONFIG_COUNT=0"
-    echo "JJ_USER=Rig Worker"
-    echo "JJ_EMAIL=rig@example.invalid"
-    echo "JJ_CONFIG=$R/jj.toml"
-    echo "GH_REPO=$worker_repo"
-  } >"$R/pane.env"
+  (
+    umask 077
+    {
+      cat "$R/worker.env" "$services_env"
+      echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
+      echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+      echo "GIT_CONFIG_COUNT=0"
+      echo "JJ_USER=Rig Worker"
+      echo "JJ_EMAIL=rig@example.invalid"
+      echo "JJ_CONFIG=$R/jj.toml"
+      echo "GH_REPO=$worker_repo"
+    } >"$R/pane.env"
+  )
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"

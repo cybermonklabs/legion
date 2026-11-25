@@ -86,9 +86,10 @@ export const LISTING_MEASURE_ITEM = "listing measure";
  *  adds too many names as well. */
 export const LISTING_MISSES = "listing-misses";
 /** How the drop of a case or a task whose capture builds its listing from the rebuilt profile
- *  (a measure of kind `subagent listing`), and whose listing adds too many names and misses no
- *  more than MAX_LISTING_CHANGE_PERCENT of them, begins. A case or task whose capture sends its
- *  session's recorded system prompt whole is never dropped for added names. */
+ *  (a measure of kind `subagent listing`, or any measure where `capture.recordedPromptSent` is
+ *  false, as for a Claude Code capture), and whose listing adds too many names and misses no more
+ *  than MAX_LISTING_CHANGE_PERCENT of them, begins (listingStanding). A case or task whose capture
+ *  sends its session's recorded system prompt whole is never dropped for added names. */
 export const LISTING_ADDS = "listing-adds";
 
 /** The texts a case runs under: the cut's base, the cut text, no skill, the base without the

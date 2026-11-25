@@ -719,24 +719,34 @@ describe("safe_url", () => {
   // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
   // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
   // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
-  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
-  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
-  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
-  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
-  test("safe_url drops the password of a URL and keeps the rest", () => {
+  // percent-decoded, as libpq reads `%70assword=`), or in a NATS URL's user info of any form (a
+  // token user, `user:password`, `:password`, as Go's net/url reads it: to the last `@` before the
+  // path, the query or the fragment), of which only the scheme, the host and the port are printed;
+  // a query left with a dangling `?` or `&`; a safe_url that changes a Postgres URL with no
+  // password in it; and a URL pg-url.sh refuses (a raw `@` in its hosts) printed as it is, where
+  // safe_url prints a placeholder.
+  test("safe_url drops the password of a Postgres URL and keeps the rest, and prints only a NATS URL's scheme, host and port", () => {
     expect(
-      bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
-        "postgres://u:p@h:1/d",
-        "postgres://u@h:1/d",
-        "nats://127.0.0.1:4222",
-        "postgres://u:?@127.0.0.1:5433/legion_test",
-        "postgres://u@localhost:5432@10.1.2.3/db",
-        "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
-        "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
-        "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
-        "nats://u:p@ss@127.0.0.1:4222",
-        "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
-      ])
+      bash(
+        `. ${JSON.stringify(pgUrl)}\n${fn("url_hostport")}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`,
+        [
+          "postgres://u:p@h:1/d",
+          "postgres://u@h:1/d",
+          "nats://127.0.0.1:4222",
+          "postgres://u:?@127.0.0.1:5433/legion_test",
+          "postgres://u@localhost:5432@10.1.2.3/db",
+          "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
+          "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
+          "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
+          "nats://u:p@ss@127.0.0.1:4222",
+          "nats://tok-made-up@127.0.0.1:4222",
+          "nats://:pw-made-up@[::1]:4222",
+          "nats://u:p@127.0.0.1:4222/x@y?q=1#f",
+          "nats://127.0.0.1",
+          "tok-made-up@localhost:4222",
+          "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
+        ]
+      )
     ).toEqual({
       code: 0,
       stdout:
@@ -746,9 +756,49 @@ describe("safe_url", () => {
         "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
         "postgresql://u@127.0.0.1:5433/d\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
-        "nats://u@127.0.0.1:4222\n" +
+        "nats://127.0.0.1:4222\nnats://127.0.0.1:4222\nnats://[::1]:4222\nnats://127.0.0.1:4222\n" +
+        "nats://127.0.0.1\nlocalhost:4222\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
       stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
+    });
+  });
+});
+
+// services_up waits for a given NATS with nats_ready, which probes the host and the port of its
+// URL with bash's own /dev/tcp.
+describe("nats_ready", () => {
+  // Catches: a URL with no port probed with its host as the port, and a bracketed IPv6 host handed
+  // to /dev/tcp with its brackets: either way the wait ran its 60 s and failed.
+  test("probes a URL's host, a bracketed IPv6 host without its brackets, at its port, or at NATS's default 4222 where the URL names none", () => {
+    // `timeout` stands in for the probe: it names the host and the port it was given, on fd 3,
+    // and answers with a NATS server's INFO line.
+    expect(
+      bash(
+        `${fn("url_hostport")}\n${fn("nats_ready")}\nexec 3>&1\ntimeout() { printf 'probe %s %s\\n' "\${@: -2}" >&3; printf 'INFO {}'; }\nfor url; do nats_ready "$url" && echo ready; done`,
+        [
+          "nats://127.0.0.1",
+          "nats://127.0.0.1:4223",
+          "nats://[::1]:4224",
+          "nats://[::1]",
+          "nats://tok-made-up@[::1]:4225/x",
+          "nats://u:p@ss@127.0.0.1:4226?x=1",
+          "localhost:4227",
+        ]
+      )
+    ).toEqual({
+      code: 0,
+      stdout: [
+        "127.0.0.1 4222",
+        "127.0.0.1 4223",
+        "::1 4224",
+        "::1 4222",
+        "::1 4225",
+        "127.0.0.1 4226",
+        "localhost 4227",
+      ]
+        .map((probe) => `probe ${probe}\nready\n`)
+        .join(""),
+      stderr: "",
     });
   });
 });
@@ -789,7 +839,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     });
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `${fn("url_hostport")}\n${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
         `until_true() { shift 2; "$@"; }\n` +
         `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, services],
