@@ -82,17 +82,25 @@ func (s *xidTraceSink) arrived(n int) <-chan struct{} {
 }
 
 // startXidTrace starts the execution tracer. It stops the world to start, so Measure starts it
-// before the operation and none of that pause is inside a window. Then it ties the process's clock
-// to the system's monotonic clock (xidTieClocks) and fills the runtime's pool of trace buffers
-// (warm).
+// before the operation and none of that pause is inside a window. Right before the start it keeps
+// every address range the process has mapped (xidMappedBeforeTrace), against which the hold finds
+// the tracer's memory on a kernel that names no anonymous mapping (xidTracerRanges). Then it ties
+// the process's clock to the system's monotonic clock (xidTieClocks) and fills the runtime's pool
+// of trace buffers (warm).
 func startXidTrace() (*xidTrace, error) {
 	x := &xidTrace{}
+	maps, err := os.ReadFile("/proc/self/maps")
+	if err != nil {
+		return nil, fmt.Errorf("read /proc/self/maps, against which the hold finds the tracer's memory: %w", err)
+	}
+	before := xidMappedRanges(maps)
+	xidMappedBeforeTrace.Store(&before)
 	if err := trace.Start(&x.sink); err != nil {
+		xidMappedBeforeTrace.Store(nil)
 		return nil, err
 	}
-	var err error
 	if x.baseTime, x.baseMono, err = xidTieClocks(xidMonotonic, xidTraceNow); err != nil {
-		trace.Stop()
+		x.stop()
 		return nil, err
 	}
 	x.warm()
@@ -240,6 +248,7 @@ type xidTraceReading struct {
 // returned and the capture has ended, after every window it records. A second stop does nothing.
 func (x *xidTrace) stop() {
 	trace.Stop()
+	xidMappedBeforeTrace.Store(nil)
 }
 
 // read reads the stopped trace back. A trace the reader cannot read is named by its header and the

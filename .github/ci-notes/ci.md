@@ -406,11 +406,6 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
-## priorities_seed_check_test: The one harness of the job outside .github/scripts
-
-The one harness of the job outside .github/scripts: it carries its own helpers
-and sources no test-lib.sh.
-
 ## test: The test job: the script harnesses and the Bun suites of scripts/
 
 The test job: the script harnesses of the `release_push_test` to `go_test_step_expansion_test`
@@ -1582,13 +1577,15 @@ no job of the file it calls starts, and the run the check names (`test / test`) 
 
 A line number names whatever line a later edit moves there, and nothing reads a citation of a
 file the citing change does not touch, so a line-number citation in the CI's own files drifted
-with the next merge that edited the cited file (dispatch://INFRA-4017). A citation under .github
-is therefore one exact token on one line: a backtick, the path of a tracked file from the
-repository root as git ls-files prints it, a hash, a name, a backtick, as in
-`.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its path.
+with the next merge that edited the cited file (dispatch://INFRA-4017), and so did the line
+numbers that the //ci: lines of the test files under packages/ cited. A citation under .github,
+or in a //ci: line outside it, is therefore one exact token on one line: a backtick, the path of
+a tracked file from the repository root as git ls-files prints it, a hash, a name, a backtick, as
+in `.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its
+path.
 
-.github/scripts/ci_citations.py reads every tracked text file under .github as plain text, and
-claims this much and no more:
+.github/scripts/ci_citations.py reads every tracked text file under .github, and each //ci: line
+of every tracked text file outside it, as plain text, and claims this much and no more:
 - a token whose path is no tracked file fails, and so does a token whose name its file's code
   does not hold. The code is the cited file as its language's own scanner reads it: Python's
   tokenize, the typescript package's parser for TypeScript and JavaScript (one bun run of
@@ -1640,14 +1637,23 @@ release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#relea
 holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
 of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
 its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
-since another string of that file holds the file name alone. Nothing outside .github is read.
-The check runs in the lint job, which every pull request and merge group runs, since a rename
-can be in any file of the repository, after the job's setup-go and its bun install, which its
-scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The
-TypeScript scanner's bun run resolves typescript from this repository, where the scanner
-stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile fills
-from bun.lock. A local run with no node_modules does not fail on that: Bun installs typescript
-itself into its own cache, at the version the root package.json and bun.lock give.
+since another string of that file holds the file name alone.
+
+Outside .github a //ci: line alone is read: a line whose text, after any whitespace, starts with
+the five characters //ci:, the test that the parser of .github/scripts/ci_filter_sources.py puts
+to each line of a Go file before it reads the rest as what a test reads
+(`.github/scripts/ci_filter_sources.py#DIRECTIVE`). So every line that parser reads is read here,
+and such a line in any other text file is read too, so that a guide's example is held as well.
+Each such line is read alone, as that parser reads it: no rule reads across its end into the next
+line, and a problem names the line it is on. Any other line outside .github, among them a //ci:
+that does not start its line, as in a string or after code, is not read, held or refused. The
+check runs in the lint job, which every pull request and merge group runs, since a rename can be
+in any file of the repository, after the job's setup-go and its bun install, which its scanners
+need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The TypeScript
+scanner's bun run resolves typescript from this repository, where the scanner stands: in CI from
+the node_modules that the lint job's bun install --frozen-lockfile fills from bun.lock. A local
+run with no node_modules does not fail on that: Bun installs typescript itself into its own
+cache, at the version the root package.json and bun.lock give.
 
 ## A lane label turns on one slow suite on a pull request
 
@@ -2979,3 +2985,67 @@ nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filt
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## A cache restore comes before every step that can write a path it names
+
+In a job that restores a cache entry (actions/cache/restore, or the restore half of actions/cache),
+the restore runs before every step that can write a path the restore names. For the Go module
+cache, `~/go/pkg/mod`, that is every step that can run a go command: a `go` line of the step's own,
+a script that runs one, or a test that starts one. A lookup (`lookup-only: true`) extracts nothing
+and is not held to it. The step that broke this was a test: lint's "Check every NATS server a
+script starts or installs is one the floor takes" runs `bun test scripts/e2e/lib/nats-image.test.ts`,
+and that file runs `go build ./natsversion/cmd/natsfloor` when it loads.
+
+Each restore step carries a `# why:` line naming this section: those of ci.yaml's job workflows,
+ci-caches.yaml, dispatch-browser.yaml, docs-site.yaml, dispatch-browser-nightly.yaml and
+release.yaml, and those of the architecture-note and spec-file actions. The restores of
+release-envoy-infra.yaml and release-envoy-listener.yaml (one restore step and three setup-go
+caches) follow the rule and carry no line, since each of those files names itself in its
+`on.push.paths`, so an edit of either starts that release workflow on main.
+
+Go leaves a module it extracts read-only: its files 0444, its directories 0555. The restore's tar
+(`/usr/bin/tar -xf <entry> -P -C $GITHUB_WORKSPACE --use-compress-program unzstd`, GNU tar 1.35)
+can neither replace nor add a file in such a directory. It logs `Cannot open: File exists` for each
+file the earlier step left, extracts every other file of the entry, and exits 2, and
+actions/cache/restore v6.1.0 then reports the whole restore as failed (`Failed to restore:
+"/usr/bin/tar" failed with error: The process '/usr/bin/tar' failed with exit code 2`) and as a miss
+(`Cache not found for input keys`). Lint's job 138186405808 (run 45317043698, a dispatch of
+72001eaa368, with the restore after that test) logged 1,139 such lines, 744 of them as `##[error]`
+lines, over the five modules the test's build had extracted: github.com/klauspost/compress@v1.20.1
+471, golang.org/x/crypto@v0.58.0 388, github.com/nats-io/nats.go@v1.55.0 241, nkeys@v0.4.16 30 and
+nuid@v1.0.1 9. The rest of the entry did land, so the notices step after it was not cold: 92 s
+there, against 102 s on a clean restore with the restore first (job 138246432797, run
+45335461923) and 105 s for the same script in ci-caches.yaml's notices job (job 138205905737).
+What the order cost was a restore that read as a miss, a log of errors that were no fault, and the
+earlier build, which compiled with no cache at all: the floor test took 12.02 s in the first job and
+8.02 s in the second. `~/.cache/go-build` is writable, so tar replaces what an earlier step wrote
+there without a line in the log: that order is a cost to the earlier step only, and nothing shows
+it.
+
+So the instrument is the restore's own log: a `Cannot open: File exists` line in a job's restore
+means a step before it wrote the module cache. Read on 2026-11-24 over the 22 jobs with a restore of
+run 45317043698 (ci.yaml dispatched, every job selected) and the jobs of ci-caches.yaml run
+45323050174, lint's go-notices restore was the only one with such a line. A reading of every step
+before every restore of every workflow file, and of the scripts, actions and test files those steps
+run, found one other step that writes a path its restore names, in the envoy fill below. Two
+earlier go commands write elsewhere: envoy-go-build runs the architecture-note and spec-file
+actions before its restore of the module cache, and their builds keep module and build caches of
+their own under `$RUNNER_TEMP` (.github/scripts/build-envoy-command.sh). No job restores
+`~/.bun/install/cache` or `node_modules`, and no manifest of the workspace has an install script,
+so a `bun install` writes no restored path.
+
+No check of the workflow text holds this rule. The go command lint's restore met was inside a test
+file a `bun test` step loads, which no reading of the step's `run:` sees. A rule that refuses a
+`go` line before a restore of the module cache passes that case and refused the envoy fill below;
+one that also refuses `bun install` and `bun test` steps refuses six steps that write no restored
+path. A check at run time is exact: right before an extracting restore, fail when a path it names
+already holds anything, and when it cannot read one. That is the next step if a job breaks this
+rule again; until then the rule is this note and the line above each restore.
+
+The envoy fill had the second instance: ci-caches.yaml's envoy job filled go-envoy and
+go-envoy-test in one job, so the go-envoy-test restore unpacked over the go-envoy restore and
+build, and a step before it made the module cache writable (`chmod -R u+w ~/go/pkg/mod`) so tar
+could replace those files (no such line in job 138205905583, run 45323050174). go-envoy-test now
+fills in a job of its own, envoy-test, which restores first and then builds the listener and
+natsd as the envoy job does and the test binaries, so its entry still holds go-envoy's objects,
+built on its own entry, and the chmod step is gone. A run-time check would pass both jobs.

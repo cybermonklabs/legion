@@ -8,9 +8,10 @@ body: |-
   `--project`, repeated, narrows the counts and the lists to those projects. A deployment that
   has written no priority prints the server's sentence saying so and exits 0.
   `dispatch issue --advance <id>` and `dispatch issue-update --advance <id>` (repeated, with
-  `--clear-advances`) state which priorities an issue advances; the update sends the whole set
-  with the revision the read it answers returned, or with the one `--advances-revision <n>`
-  names, which is how a caller answers a 409 ADVANCES_REVISION. Every issue read prints an
+  `--clear-advances`) state which priorities an issue advances. The update sends the whole set,
+  and sends `advances_revision` only when `--advances-revision <n>` names it. Without it,
+  Dispatch adds or removes one priority and refuses a change of two or more with
+  409 ADVANCES_REVISION, which names the issue's revision. Every issue read prints an
   `Advances:` line, marking each priority own or inherited.
 time: 2026-11-12T06:49:31.000000000Z
 custom:

@@ -8,7 +8,7 @@ import { useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { capSearchQuery } from "../../lib/query-param";
 import { PAGE_SIZES } from "../project/issues-table-model";
-import type { TableColumn } from "./priority-table-model";
+import { hasFilter, type TableColumn } from "./priority-table-model";
 
 /** What the reader is viewing in one of these tables, as the address carries it. */
 export interface TableView {
@@ -24,7 +24,8 @@ const DEFAULT_PAGE_SIZE = 50;
 
 /** The address key one control of the table with this prefix is written under: `p.sort` for
  *  the priorities table, `f.` before a column's own filter so no column can take a control's
- *  name. Every table of this page carries a prefix, since the page draws three at once. */
+ *  name. Every table of this page carries a prefix, since the page keeps the view of each of
+ *  its tables in the one address, whichever tab draws it. */
 const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
 
 /** The ids a column had before, each with the id it has now, which an older link names: its sort
@@ -35,7 +36,8 @@ const NO_FORMER_IDS: FormerColumnIds = new Map();
 
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a
  *  column the table does not have is left where it is: it is another table's, or an older
- *  link's. A sort or a filter under an id of `formerIds` is read as the column's id now. */
+ *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. A
+ *  sort or a filter under an id of `formerIds` is read as the column's id now. */
 export function readTableView<Row>(
   params: URLSearchParams,
   prefix: string,
@@ -59,7 +61,7 @@ export function readTableView<Row>(
       ...[...formerIds].flatMap(([from, to]) => (to === column.id ? [from] : [])),
     ];
     const values = named.map((id) => params.getAll(key(`f.${id}`))).find((all) => all.length > 0);
-    if (values === undefined) return [];
+    if (values === undefined || !hasFilter(column)) return [];
     return [{ id: column.id, value: column.text === undefined ? values : (values[0] ?? "") }];
   });
   const group = params.get(key("group")) ?? "";

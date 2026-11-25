@@ -101,9 +101,9 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 }
 
 // seededStatusMovePayload is the payload of the `issue.updated` event a status write appends: the
-// status the issue was moved to and a `changed` list naming the field, which is what the lateral
-// of the fault in backlog or icebox reads to say when an issue was moved into `backlog` or
-// `icebox` and by whom (priorityBacklogQuery).
+// status the issue was moved to and a `changed` list naming the field, which is what the second
+// fault's lateral reads to say when an issue was moved into `backlog` or `icebox` and by whom
+// (priorityBacklogQuery).
 func seededStatusMovePayload(t testing.TB, status string) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{"status": status, "changed": []string{"status"}})

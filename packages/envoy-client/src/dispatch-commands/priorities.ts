@@ -27,10 +27,10 @@ function priorityWorkLine(work: PriorityWork): string {
   ].join(" · ");
 }
 
-/** One row of either fault list: where the issue stands, who holds it, and the cell only its
+/** One row of either fault list: where the issue stands, who holds it, and the cells only its
  *  own list fills — the priorities an issue in backlog or icebox advances, each marked own or
- *  inherited as the issue read marks it, and when it was moved there, which the work under no
- *  priority has neither of. */
+ *  inherited as the issue read marks it, and the move that put it in the status it stands in,
+ *  named by that status, which the work under no priority has neither of. */
 function priorityIssueLine(issue: PriorityIssue, agents: LiveAgents | undefined): string {
   const advances = issue.advances ?? [];
   const moved =
@@ -75,7 +75,7 @@ function priorityFaultLines(
  *  with the sentence saying so, which is printed as it came and is not an error. */
 function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
   const priorities = response.priorities ?? [];
-  const inBacklog = response.priority_work_in_backlog_or_icebox;
+  const backlog = response.priority_work_in_backlog_or_icebox;
   const unplaced = response.work_under_no_priority;
   // The server writes this field only for a deployment holding no live priority (`omitempty`).
   if (response.empty !== undefined) return response.empty;
@@ -94,7 +94,7 @@ function formatPriorities(response: Priorities, agents: LiveAgents | undefined):
     "",
     ...priorityFaultLines(
       "Priority work in backlog or icebox",
-      { count: inBacklog.count, issues: inBacklog.issues, by: inBacklog.by_priority },
+      { count: backlog.count, issues: backlog.issues, by: backlog.by_priority },
       agents
     ),
   ].join("\n");
