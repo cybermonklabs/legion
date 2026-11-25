@@ -1047,9 +1047,15 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err != nil {
 		return err
 	}
-	_, head := taskHead(pr)
+	// The head the started step's working copy moves to is the fix's own end where it made commits:
+	// its completion reports the commit it pushed, and it reaches the engine before the synchronize
+	// of that push may have moved the record's head.
+	_, moveTo := taskHead(pr)
+	if fix.EndHead != "" && fix.EndHead != fix.Head && !e.wayFromRecordedHead {
+		moveTo = fix.EndHead
+	}
 	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
-		"place", place, "head", head)
+		"place", place, "moveTo", moveTo)
 	if way == wayOn {
 		if pending != nil {
 			if err := e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.reason); err != nil {
@@ -1058,7 +1064,7 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		}
 		return e.mergeForwardAfterFix(ctx, tx, issue.Key)
 	}
-	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head}), moverKey{}, mover{fix: fix.Fix})
+	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: moveTo}), moverKey{}, mover{fix: fix.Fix})
 	handoff, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil {
 		return err
