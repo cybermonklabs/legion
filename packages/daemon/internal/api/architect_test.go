@@ -257,6 +257,9 @@ func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepW
 func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (r *statusRecorder) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -266,10 +269,17 @@ func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.Desi
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, the read of a document's token finds no document, and an upload answers
-// the slug Dispatch files the name under. It also takes every role-holder publication and keeps
-// none. No route of this package reads or writes a document of an issue's, and none publishes a
-// role holder.
+// the slug Dispatch files the name under. The results read answers no check. It also takes every
+// role-holder publication and keeps none. No route of this package reads or writes a document of
+// an issue's, reads its results, or publishes a role holder.
 type noArtifacts struct{}
+
+func (noArtifacts) IssueResults(_ context.Context, key string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
+func (noArtifacts) IssueResultsAt(_ context.Context, key, _ string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {

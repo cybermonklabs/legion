@@ -143,7 +143,7 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
 	c.mu.Unlock()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s again in its session %s = %d %s, want 200", c.token, c.session, status, body)

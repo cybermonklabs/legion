@@ -1,0 +1,112 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k4",
+      "compared_with": [
+        {
+          "branch": "main",
+          "kind": "branch"
+        },
+        {
+          "branch": "main",
+          "kind": "branch",
+          "merge_commit": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "repo": "acme/tools"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "yes",
+        "commit": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "results": [
+          "00000000-0000-4000-8000-000000000002"
+        ],
+        "roles": [
+          "tester"
+        ]
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k4",
+      "results": [
+        {
+          "actor": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "check_artifact_id": "00000000-0000-4000-8000-000000000001",
+          "check_block_id": "k4",
+          "check_issue_key": "ACME-1",
+          "check_sha256": "dbf8c8cf0d9f6c1050d0fdc4433fd701cae9c22442b486e1ddc78ac82f2e53f7",
+          "check_version": 1,
+          "check_words_moved": false,
+          "commit_sha": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "commit_stands": {
+            "answer": "at_basis",
+            "basis": {
+              "branch": "main",
+              "kind": "branch",
+              "merge_commit": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+              "repo": "acme/tools"
+            }
+          },
+          "created_at": "2026-01-01T00:00:00Z",
+          "currency": "current",
+          "event_seq": 4,
+          "excluded": 0,
+          "failed": 0,
+          "id": "00000000-0000-4000-8000-000000000002",
+          "issue_key": "ACME-1",
+          "negative_control": "",
+          "observed": "",
+          "role": "tester",
+          "run": "",
+          "screenshots": [],
+          "session": "",
+          "skipped": 0,
+          "surface": "",
+          "verdict": "pass"
+        }
+      ],
+      "run": "",
+      "sha256": "dbf8c8cf0d9f6c1050d0fdc4433fd701cae9c22442b486e1ddc78ac82f2e53f7",
+      "surface": "",
+      "text": "The branch the work merged into answers at the merged commit.",
+      "version": 1,
+      "when": "after_merge"
+    },
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k5",
+      "compared_with": [
+        {
+          "branch": "main",
+          "kind": "branch"
+        },
+        {
+          "branch": "main",
+          "kind": "branch",
+          "merge_commit": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+          "repo": "acme/tools"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "reason": "no_result"
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k5",
+      "results": [],
+      "run": "",
+      "sha256": "ef47e5915718ca10420186f70ecccd99cb5d206d37835da385533474f67c5736",
+      "surface": "",
+      "text": "The trunk answers at the merged commit.",
+      "version": 1,
+      "when": "default_branch"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}

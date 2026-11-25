@@ -116,13 +116,45 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 	return issues, nil
 }
 
-// GetIssue reads GET /api/v1/issues/{key}.
+// GetIssue reads GET /api/v1/issues/{key}, its direct children among it.
 func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 	var response issueResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key), nil, &response); err != nil {
 		return Issue{}, err
 	}
 	return response.issue(), nil
+}
+
+// IssueResults reads GET /api/v1/issues/{key}/results, with no query: Dispatch's computed state of
+// each check of the issue's Verification document, at what Dispatch compares each check with.
+func (c *HTTPClient) IssueResults(ctx context.Context, key string) (IssueResults, error) {
+	return c.issueResults(ctx, key, "")
+}
+
+// IssueResultsAt reads GET /api/v1/issues/{key}/results?at=<commit>: the same states, each check
+// compared with the one commit alone. The close reads it at the newest merge's final head, for a
+// before_merge check that has no subject there.
+func (c *HTTPClient) IssueResultsAt(ctx context.Context, key, commit string) (IssueResults, error) {
+	if commit == "" {
+		return IssueResults{}, fmt.Errorf("read the results of %s at a commit: no commit is named", key)
+	}
+	return c.issueResults(ctx, key, commit)
+}
+
+// issueResults is the results read of key, at commit where one is named.
+func (c *HTTPClient) issueResults(ctx context.Context, key, commit string) (IssueResults, error) {
+	path := "/api/v1/issues/" + url.PathEscape(key) + "/results"
+	if commit != "" {
+		path += "?" + url.Values{"at": {commit}}.Encode()
+	}
+	var response IssueResults
+	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return IssueResults{}, err
+	}
+	if response.Issue != key {
+		return IssueResults{}, fmt.Errorf("read the results of %s: Dispatch answered the results of %q", key, response.Issue)
+	}
+	return response, nil
 }
 
 // WebhookAppInstalled reads GET /api/v1/github/app-installation/{owner}/{repo}: whether
@@ -278,6 +310,27 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 		StepWrite:  write,
 		PlanRating: rating,
 		Actor:      daemonActor(key),
+	}, nil)
+}
+
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
 	}, nil)
 }
 
@@ -903,6 +956,7 @@ type issueResponse struct {
 	ResolvedRepo      *string        `json:"resolved_repo"`
 	BlockedBy         []string       `json:"blocked_by"`
 	Claim             *claimResponse `json:"claim"`
+	Children          []IssueChild   `json:"children"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -923,6 +977,7 @@ func (r issueResponse) issue() Issue {
 		BlockedBy:         r.BlockedBy,
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
+		Children:          r.Children,
 	}
 }
 
@@ -1093,6 +1148,14 @@ type stepWrite struct {
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
 	Actor actor `json:"actor"`
 }
 

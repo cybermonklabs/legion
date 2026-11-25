@@ -1,0 +1,74 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k5",
+      "compared_with": [
+        {
+          "branch": "main",
+          "kind": "branch",
+          "merge_commit": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "commit": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+        "reason": "fail",
+        "results": [
+          "00000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k5",
+      "results": [
+        {
+          "actor": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "check_artifact_id": "00000000-0000-4000-8000-000000000001",
+          "check_block_id": "k5",
+          "check_issue_key": "ACME-1",
+          "check_sha256": "8aa2d726fa4ca4eba8b0303eed67ab98fa242ee44faa002e423d8c4c181ccd0e",
+          "check_version": 1,
+          "check_words_moved": false,
+          "commit_sha": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "commit_stands": {
+            "answer": "at_basis",
+            "basis": {
+              "branch": "main",
+              "kind": "branch",
+              "merge_commit": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+            }
+          },
+          "created_at": "2026-01-01T00:00:00Z",
+          "currency": "current",
+          "event_seq": 3,
+          "excluded": 0,
+          "failed": 1,
+          "id": "00000000-0000-4000-8000-000000000002",
+          "issue_key": "ACME-1",
+          "negative_control": "",
+          "observed": "",
+          "role": "tester",
+          "run": "",
+          "screenshots": [],
+          "session": "",
+          "skipped": 0,
+          "surface": "",
+          "verdict": "fail"
+        }
+      ],
+      "run": "",
+      "sha256": "8aa2d726fa4ca4eba8b0303eed67ab98fa242ee44faa002e423d8c4c181ccd0e",
+      "surface": "",
+      "text": "Production answers at the merged commit.",
+      "version": 1,
+      "when": "after_merge"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}
