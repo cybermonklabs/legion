@@ -694,8 +694,9 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 }
 
 // The walk of the version an owner gave holds to its end, and holds the same across a boot. The
-// issue walks the line of version 1, implementing, reviewing, retro, merging and done, and its
-// run's plan holds version 1 alone at each move. With the daemon booted in the middle of the walk,
+// issue walks the line of version 1, implementing, reviewing, retro, merging and, at its merge,
+// verifying, where it waits for the checks of its goal with its task done; its run's plan holds
+// version 1 alone at each move. With the daemon booted in the middle of the walk,
 // the engine built again on the same store, the walk is the same. The control: version 2 given
 // while the task waits, before its first step, is taken, and the walk starts planning. The twin:
 // an issue that started its work before Legion took plans walks today's line, and its walk writes
@@ -710,10 +711,10 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 		{phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning, []string{"1 owner"}, versionOne},
 		{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning, []string{"1 owner"}, versionOne},
 		{phase.Merging, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning, []string{"1 owner"}, versionOne},
-		{phase.Done, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskDone, []string{"1 owner"}, versionOne},
+		{phase.Verifying, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskDone, []string{"1 owner"}, versionOne},
 	}
-	// walk gives version 1 and walks the issue to done, building the engine again after the move
-	// bootAfter (none for -1). It answers where the run stood after each move.
+	// walk gives version 1 and walks the issue to its merge, building the engine again after the
+	// move bootAfter (none for -1). It answers where the run stood after each move.
 	walk := func(t *testing.T, bootAfter int) []walkStanding {
 		pool := migratedPool(t)
 		engine := returnEngine()
