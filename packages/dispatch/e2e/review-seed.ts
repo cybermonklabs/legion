@@ -328,7 +328,7 @@ Each page is read once it is drawn.
   };
 }
 
-/** A broadcast of a row's own, for a row that opens the `broadcast` page of
+/** A broadcast of a row's own, for a row that opens the `broadcasts` or the `broadcast` page of
  *  `e2e/review-routes.ts` against the worker's corpus (`reviewCorpus`, e2e/test.ts), which holds
  *  none after the row that seeded it: that row's `ownBroadcasts` deletes the corpus's. It is sent
  *  as the corpus's is (`sendWorkspaceBroadcast`), to the sessions of `workspaceSessions`, which the

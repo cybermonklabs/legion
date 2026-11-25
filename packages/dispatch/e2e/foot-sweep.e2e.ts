@@ -258,9 +258,9 @@ function routeRows(): ReviewedRoute[][] {
 for (const routes of routeRows()) {
   const names = routes.map((route) => route.name).join(", ");
   // SLOW(>=2s): the review corpus where the worker has not seeded it yet, a broadcast of the
-  // row's own where it opens the broadcast page, then for each route a refused change made on
-  // the issues table, a load with both floats and three settled readings of the foot, each at
-  // the end of every scroller.
+  // row's own where it opens a broadcast page, then for each route a refused change made on the
+  // issues table, a load with both floats and three settled readings of the foot, each at the
+  // end of every scroller.
   test(`both floats leave the foot clear on ${names} at three desktop sizes, and no end room once closed @foot`, async ({
     browser,
     reviewSeed,
@@ -268,9 +268,10 @@ for (const routes of routeRows()) {
     // The worker's review corpus (`reviewCorpus`, e2e/test.ts), seeded once into the worker's
     // database, as the accessibility rows read it: its keys are fixed, so a row that seeded it
     // again would be refused. Its broadcast goes at the end of the row that seeded it
-    // (`ownBroadcasts`), so a row that opens the broadcast page opens one it sends itself, as the
-    // corpus's is sent (`seedReviewBroadcast`).
-    const seed = routes.some((route) => route.name === "broadcast")
+    // (`ownBroadcasts`), so a row that opens the list of broadcasts or one broadcast opens one it
+    // sends itself, as the corpus's is sent (`seedReviewBroadcast`): with none, the list draws its
+    // empty state, which the corpus's broadcast kept it from.
+    const seed = routes.some((route) => route.name === "broadcasts" || route.name === "broadcast")
       ? { ...reviewSeed, broadcast: await seedReviewBroadcast() }
       : reviewSeed;
     const refused = (await listIssues("CORE")).find((issue) => issue.title === REFUSED_TITLE);
