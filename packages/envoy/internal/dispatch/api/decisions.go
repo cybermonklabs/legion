@@ -458,7 +458,7 @@ func (s *server) decisionSumsAt(
 	if len(numbers) == 0 {
 		return sums, nil
 	}
-	markdown, err := s.versionsMarkdown(ctx, artifactID, numbers)
+	markdown, err := s.versionsMarkdown(ctx, artifactID, numbers, refs.VisibilityArg(everyReader))
 	if err != nil {
 		return nil, err
 	}

@@ -43,6 +43,18 @@ type projectDefaultRepositoryInput struct {
 // changes no row and appends no event. A change appends project.updated with the project row, as
 // PUT /api/v1/projects/{key}/gated-steps does, commits, and then publishes it. The row is read in
 // the transaction that wrote it, so the event carries the row as this write left it.
+//
+// The project is read as its writer reads it before anything is written and before any lock is
+// taken: a project the writer does not see is 404 PROJECT_NOT_FOUND, as a key nobody holds, its
+// row is never written, and the write never queues behind a writer of that project, which would
+// tell its writer one is at work (loadProject, access.ProjectClause). A default is the repository
+// every issue of the project that names none resolves to, which makes it a repository the project
+// owns (refs.ProjectRepositoriesSQL), so it is held as an issue's own repository is: one the
+// GitHub proxy hides from the writer is refused 403 REPOSITORY_NOT_AVAILABLE in words that name no
+// project (refuseRepoHidden), and a clear is refused nothing. The read after the update is made as
+// the writer reads it too, so a project made private in between is that 404, and nothing is kept.
+// A restricted member, and a credential whose writes a list holds, never reach this handler: the
+// route is scopeDeployment, which withinProjectScope refuses them (refuseDeploymentWrite).
 func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Request) {
 	var input projectDefaultRepositoryInput
 	if err := decodeJSON(r, &input); err != nil {

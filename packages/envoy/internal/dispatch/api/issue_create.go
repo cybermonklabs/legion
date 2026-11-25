@@ -685,7 +685,7 @@ type nearCopyOutcome struct {
 func (s *server) runNearCopyGate(
 	ctx context.Context, project, title, spec string, ancestors []string, force bool,
 ) nearCopyOutcome {
-	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
+	gate := s.duplicateGate(ctx, everyReader, project, title, spec, ancestors)
 	refusals := gate.refusals()
 	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {

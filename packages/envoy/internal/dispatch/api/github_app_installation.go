@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // appInstallationResponse is GET /api/v1/github/app-installation/{owner}/{repo}'s answer.
@@ -24,8 +27,21 @@ type appInstallationResponse struct {
 // the repository and GitHub's error, worded and cut to its bound as every such 502 words it
 // (gitHubReason): an error GitHub answered with a page that is no JSON carries the page as
 // githubapp.ShownBody shows it, its first 512 characters and its size.
+//
+// A repository the caller may not see by the GitHub proxy's rule (repositoriesHidden, over
+// refs.RepositoryClause) answers exactly what one the App is not installed on answers, as the
+// proxy answers it (githubapi.ProxyREST), and GitHub is asked nothing about it: that the App is
+// installed on a repository a private project's issues name would tell a caller who does not see
+// the project that the repository is served. While a rate limit is in force on the App's scope,
+// the lookup of an uninstalled repository is held unsent and answers that limit
+// (githubapp.Client.HeldLimit), so a hidden one answers the same limit; otherwise it is not
+// installed. No App key answers every repository alike, so it is answered before the repository is
+// read. A reader that sees every object, as every open viewer of a deployment with no private
+// project does, reads no statement for it and is answered as before any project could be private
+// (R9).
 func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	owner, name, err := githubRepoPath(r)
@@ -33,15 +49,74 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	installed, err := s.deps.GitHub.Installed(r.Context(), owner, name)
-	switch {
-	case errors.Is(err, githubapp.ErrNoAppKey):
-		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, err.Error())
-	case err != nil:
-		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s/%s: %s", owner, name, gitHubReason(err)))
-	default:
-		WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})
+	repo := owner + "/" + name
+	if s.deps.GitHub == nil {
+		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, githubapp.ErrNoAppKey.Error())
+		return
 	}
+	hidden, err := s.repositoriesHidden(r.Context(), reader, []string{repo})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var installed bool
+	if !hidden[repo] {
+		// While a project is private the lookup is held to the path's repository, as the GitHub
+		// proxy holds its reads (githubapp.HoldToRepository): GitHub answers an old name of a renamed
+		// or transferred repository with a redirect to that repository as it is now, which
+		// repositoriesHidden never judged, so such a redirect answers as a repository the App is not
+		// installed on. With no private project the lookup follows GitHub's redirects, as before.
+		ctx := r.Context()
+		if reader.Viewer != nil && reader.Viewer.AnyPrivate {
+			ctx = githubapp.HoldToRepository(ctx, owner, name)
+		}
+		installed, err = s.deps.GitHub.Installed(ctx, owner, name)
+		if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+			installed, err = false, nil
+		}
+	} else if limited := s.deps.GitHub.HeldLimit(r.Context(), githubapp.AppScope); limited != nil {
+		err = limited
+	}
+	if err != nil {
+		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s: %s", repo, gitHubReason(err)))
+		return
+	}
+	WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})
+}
+
+// repositoriesHiddenQuery is refs.RepositoryClause over each repository of an array, the reader's
+// visibility argument bound at $1 and the repositories at $2, each answered with whether it is
+// hidden. Neither placeholder differs between reads, so the text is built once.
+var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause("asked.repo", "$1") + ` from unnest($2::text[]) as asked(repo)`
+
+// repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
+// whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A
+// reader that sees every object (seesEveryObject) sees every repository, and nothing is read for
+// it (R9); nothing is read for no repository either. The App-installation route, and delivery's
+// pull requests that name no issue and its runs that ship none (deliveryPopulation.cutTo), hold a
+// repository to it, as the GitHub proxy does (routes' repositoryHidden).
+func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, repositories []string) (map[string]bool, error) {
+	hidden := make(map[string]bool, len(repositories))
+	if len(repositories) == 0 || seesEveryObject(reader) {
+		return hidden, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, repositoriesHiddenQuery, refs.VisibilityArg(reader), repositories)
+	if err != nil {
+		return nil, fmt.Errorf("read whether the caller sees %d repositories: %w", len(repositories), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var repository string
+		var concealed bool
+		if err := rows.Scan(&repository, &concealed); err != nil {
+			return nil, fmt.Errorf("read whether the caller sees a repository: %w", err)
+		}
+		hidden[repository] = concealed
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read whether the caller sees %d repositories: %w", len(repositories), err)
+	}
+	return hidden, nil
 }
 
 // githubRepoPath reads the {owner}/{repo} path of the App's installation read as parseSourceRepo

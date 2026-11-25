@@ -15,7 +15,8 @@ import (
 // together — with the work attached to it: each source's sync bookkeeping, every component with
 // its source repository, counts and issue rows, and the issues no component counts —
 // unassigned, declared not architectural, or linked only to retired components. 404
-// SOURCE_NOT_FOUND when the project has no architecture source.
+// SOURCE_NOT_FOUND when the project has no architecture source, or is one the caller does not
+// see, whose sources every statement here reads as none (access.ProjectClause).
 func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -27,8 +28,8 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	var tree model.ArchitectureTree
 	rows, err := pool.Query(r.Context(), `
 		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
-		where project_key = $1 order by id
-	`, project)
+		where project_key = $1 and `+access.ProjectClause("project_key", "$2")+` order by id
+	`, project, seen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -155,8 +156,9 @@ type treeIssue struct {
 	Components model.IssueComponents
 }
 
-// treeIssuesQuery is the architecture tree's read of a project's issues with their components.
-// The text is built once, at start, for the reason issueRowStatement gives.
+// treeIssuesQuery is the architecture tree's read of a project's issues with their components,
+// $2 the reader's visibility argument. The text is built once, at start, for the reason
+// issueRowStatement gives.
 var treeIssuesQuery = `
 		with recursive subjects as (select i.key from issues i where i.project_key = $1),
 		` + issueComponentsTerms + `

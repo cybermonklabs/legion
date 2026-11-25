@@ -2288,13 +2288,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2429,8 +2430,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record
