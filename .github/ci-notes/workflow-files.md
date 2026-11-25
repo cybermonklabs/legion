@@ -69,5 +69,5 @@ command matches. Every script that check reads ends in `.sh`; its `scripts` mode
 ## What the check step measures, and with which copy of the check
 
 A pull request's merge ref is this run's checkout, so a pull request that changes the
-check is measured by its own copy of it, as ci.yaml's `ci-filters` job is. The script
+check is measured by its own copy of it, as `.github/workflows/ci.yaml#ci-filters` job is. The script
 reports every fault of every file in one run; its header says what each fault is.

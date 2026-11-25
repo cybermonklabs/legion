@@ -113,7 +113,7 @@
 # action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
 # action's steps are read as a job's steps are (each `run:` under its own `shell:`), and any other
 # kind of action, or one this check cannot read, runs dependency code. Command position is found
-# by `.github/scripts/shell_commands.py` (`commands_of`), whose docstring gives the rules it reads a
+# by `.github/scripts/shell_commands.py#commands_of`, whose docstring gives the rules it reads a
 # `run:` by, as bash does: comments, quotes, line joins, substitutions, redirections, the
 # assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through.
 # This check reads it with `every_body`: every here-document body is read as commands, whatever
@@ -275,8 +275,8 @@ CREDENTIALED_USES = {
 
 def is_release_push(command: str) -> bool:
     """Whether the command word names release-push.sh, at any path: what it is left with after a
-    path relative to the checkout sheds its prefix, so `.github/scripts/release-push.sh`,
-    `./release-push.sh` and a bare `release-push.sh` all read as the one script. dependency_command
+    path relative to the checkout sheds its prefix, so a bare `release-push.sh`, the relative
+    `./release-push.sh` and `.github/scripts/release-push.sh` all read as the one script. dependency_command
     asks it of a `fold-notes`, and rule 6 of a step that needs a checkout before it."""
     return PATH_PREFIX.sub("", command).rsplit("/", 1)[-1] == "release-push.sh"
 

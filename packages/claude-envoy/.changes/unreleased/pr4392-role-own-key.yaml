@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  In a pod, each trade a Claude Code session makes at the secrets broker, its hooks' and
+  `envoy-send`'s included, proves the role's own agent-secrets key: the `key.pem` in the directory
+  `AGENT_SECRETS_KEY_DIR` names, which the role's pod-session registration names. When that file
+  cannot be read, the call fails naming its path. The bundled `dispatch` command gains
+  `dispatch api --path <route>`, one GET of a route under `/api/v1` that no other command reads,
+  with the session's own credential.
