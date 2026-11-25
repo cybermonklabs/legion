@@ -216,13 +216,15 @@ type Delivery struct {
 	RoundNamed bool
 	// Fix is the fix of the issue's task this task is of, from the start that queued it
 	// (RequestDeliver.Fix), 0 for a task of no fix. FixFrom is the head the fix's working copy is
-	// made at, which only a fix's task names, and MoveTo the head the task's working copy moves to
-	// before the task, "" for none. The send's adoption names both (adopt), and a shim that answers
-	// no echo of one it was asked holds the task (runtime.ErrAdoptionUnsupported). They are
-	// persisted with the delivery, so a restart sends the same adoption.
-	Fix     int
-	FixFrom string
-	MoveTo  string
+	// made at and FixBranch the fix's own branch (claim.BesideBranch), which only a fix's task
+	// names, and MoveTo the head the task's working copy moves to before the task, "" for none. The
+	// send's adoption names them (adopt), and a shim that answers no echo of one it was asked holds
+	// the task (runtime.ErrAdoptionUnsupported). They are persisted with the delivery, so a restart
+	// sends the same adoption.
+	Fix       int
+	FixFrom   string
+	MoveTo    string
+	FixBranch string
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -1664,12 +1666,14 @@ func (m *Machine) issueInTurn(copies WorkingCopies) (claim.Token, bool) {
 // (refused); without this line nothing in the log tells which tasks adopted the working copy,
 // which is what a production check reads to see the rule held (dispatch://INFRA-2695).
 //
-// The adoption names d's fix's commit and its move (Delivery.FixFrom, MoveTo): the shim makes or
-// moves the fix's working copy and adopts it in the workspace's place, and moves the task's working
-// copy first. A shim echoes each member it acted on. An answer that lacks the echo of a member d
-// named is a shim built before the members, which ignored them and adopted the task's working copy
-// as it always did; the task must not run there, so the send fails with an error that wraps
-// runtime.ErrAdoptionUnsupported, which the refusal charges nothing (table.go's refused).
+// The adoption names d's fix's commit, the fix's own branch and its move (Delivery.FixFrom,
+// FixBranch, MoveTo): the shim makes or moves the fix's working copy, at the fix's branch where it
+// makes it and origin holds the branch, and adopts it in the workspace's place, and moves the task's
+// working copy first. A shim echoes each member it acted on: the fix's working copy (FixDir) for
+// the fix's commit and its branch, the commit for the move. An answer that lacks the echo of a
+// member d named is a shim built before the members, which ignored them and adopted the task's
+// working copy as it always did; the task must not run there, so the send fails with an error that
+// wraps runtime.ErrAdoptionUnsupported, which the refusal charges nothing (table.go's refused).
 func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
@@ -1679,13 +1683,14 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	adopted, err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, runtime.Adoption{FixFrom: d.FixFrom, MoveTo: d.MoveTo})
+	adoption := runtime.Adoption{FixFrom: d.FixFrom, MoveTo: d.MoveTo, FixBranch: d.FixBranch}
+	adopted, err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, adoption)
 	if err != nil {
 		return err
 	}
-	if (d.FixFrom != "" && adopted.FixDir == "") || adopted.MovedTo != d.MoveTo {
-		return fmt.Errorf("%w: adopt the working copy of %s for delivery %s naming fixFrom %q and moveTo %q: the shim answered fixDir %q and movedTo %q",
-			runtime.ErrAdoptionUnsupported, m.claim.Token, d.ID, d.FixFrom, d.MoveTo, adopted.FixDir, adopted.MovedTo)
+	if ((d.FixFrom != "" || d.FixBranch != "") && adopted.FixDir == "") || adopted.MovedTo != d.MoveTo {
+		return fmt.Errorf("%w: adopt the working copy of %s for delivery %s naming fixFrom %q, fixBranch %q and moveTo %q: the shim answered fixDir %q and movedTo %q",
+			runtime.ErrAdoptionUnsupported, m.claim.Token, d.ID, d.FixFrom, d.FixBranch, d.MoveTo, adopted.FixDir, adopted.MovedTo)
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",
 		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
