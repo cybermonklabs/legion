@@ -373,7 +373,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
 // that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's.
+// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
+// configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
+// setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -491,6 +493,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
+	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
 	for _, state := range cacheWords {
@@ -521,7 +525,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Issues:       issues,
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Settings:     SettingsOf(settings),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:         pausedViewOf(goldenPause(false), stops, nil),
@@ -530,7 +534,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	}
 }
 
-// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 272): a
+// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 295): a
 // release a boot ended, which carries every value of the six fields answers.go's EnumeratedFields
 // declares under `projectRelease`, and the three keys the populated state's finished release
 // (goldenProjectRelease) carries none of: `endedAt`, `endedBy` and the result's `failure`. One
@@ -721,7 +725,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// goldens hold (TestPauseRouteGoldens): the setting that turns the pause off, the
 		// pause that stands, and the last pause, ended, which between them carry every key of
 		// a PauseFailure but one, and the project release's refusal while a pause holds the
-		// project (contract 272), which carries that one, `heldPods`. Their pause is the
+		// project (contract 295), which carries that one, `heldPods`. Their pause is the
 		// controller's, richer than the goldens' operator's (controllerPause). The plan
 		// refusal names a cause of the whole plan and a cause of one task, the two kinds a
 		// reason takes.
@@ -2126,7 +2130,7 @@ type answerField struct {
 // of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose pause is
 // ended, and by the refusal's `lastPause`.
 //
-// The last is a dry run's mark on the project release the state carries (contract 272): the
+// The last is a dry run's mark on the project release the state carries (contract 295): the
 // state carries the project's newest recorded release, and a dry run is answered and never
 // recorded (ProjectReleaseResponse), so no state body carries `dryRun`. The release's own routes,
 // which answer a dry run, answer the `legion` command, and are no row of Answers.

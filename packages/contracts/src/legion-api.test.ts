@@ -190,7 +190,7 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
-  // Contract 272 adds the two refusals between the pause and the project release: a pause while a
+  // Contract 295 adds the two refusals between the pause and the project release: a pause while a
   // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
   // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
@@ -2846,15 +2846,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // at, 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
-  // fixture does not hold. Seven bands stand above 199: the repositories block's at 202; contract
+  // fixture does not hold. Eight bands stand above 199: the repositories block's at 202; contract
   // 220's, which takes `plan` off each assignment; the intake's give-ups' at 228, so the narrowing
   // leaves `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; and the project release's at 272, which takes the state's `projectRelease` off for
-  // every caller below it (`withoutProjectRelease`); so the golden's issues, rows and claim views
-  // are compared without them. One value strip stands above 199 as well: `caches`, the source of
-  // the repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // claim view; contract 275's, which takes `dispatchCredential` off the state; and the project
+  // release's at 295, which takes the state's `projectRelease` off for every caller below it
+  // (`withoutProjectRelease`); so the golden's issues, rows and claim views are compared without
+  // them. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
   // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
@@ -2877,6 +2878,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     projectRelease: _release,
     ...rest
@@ -3169,6 +3171,46 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 275): the golden names
+// the daemon's session and the two counts a deployment reads before it removes
+// `dispatch_token_transition_file`, and the time of the last transition launch is null before the
+// first. The key is not required: a daemon without the setting writes none, and a daemon at this
+// contract leaves it off the state it serves a caller older than 275, whether the caller states
+// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
+// reads a field of it, so each field is optional; what is refused is a count that is not a whole
+// number of launches, or an empty session.
+test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).dispatchCredential).toEqual({
+    session: "legion-daemon:LEGION",
+    transitionLaunches: 2,
+    lastTransitionLaunchAt: "2026-09-22T09:17:03Z",
+    liveLaunchesWithDispatchToken: 3,
+  });
+  const credential = state.dispatchCredential as Record<string, unknown>;
+  expect(
+    LegionStateResponse.parse({
+      ...state,
+      dispatchCredential: { ...credential, transitionLaunches: 0, lastTransitionLaunchAt: null },
+    }).dispatchCredential?.lastTransitionLaunchAt
+  ).toBeNull();
+
+  const { dispatchCredential: _withoutTheCredential, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.dispatchCredential).toBeUndefined();
+
+  for (const refused of [
+    { ...credential, liveLaunchesWithDispatchToken: -1 },
+    { ...credential, transitionLaunches: 1.5 },
+    { ...credential, session: "" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
+    ).toBeFalse();
+  }
+});
+
 // The project's pause (contract 178). state.json is the state of a paused project: it names the
 // pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
 // it holds, one for a claim and one that names none. state-last-pause.json is the state of a
@@ -3270,7 +3312,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // session the read set names at every path that reaches it. Each refusal names what its code
 // names beside its sentence, and nothing else: the setting that turns the pause off, the pause
 // that stands, or the last pause. The daemon client reads a refusal through the plain refusal
-// shape, which keeps the code and the sentence of every one of them. Contract 272's two refusals
+// shape, which keeps the code and the sentence of every one of them. Contract 295's two refusals
 // between the pause and the project release are among them: a pause while a release runs names
 // nothing beside its sentence, and a release while a pause holds the project names the pause that
 // stands and each pod a pause still holds, with the claims of it stored suspended by `released`;

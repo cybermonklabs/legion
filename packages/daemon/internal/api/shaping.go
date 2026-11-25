@@ -585,6 +585,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
+	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
 	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
@@ -893,6 +894,21 @@ const quietTimeContract = 111
 // moves that constant, and the contract these keys arrived at stays where it is.
 const shapedAnswersContract = 193
 
+// dispatchCredentialContract is the daemon contract that added `dispatchCredential` to the state,
+// the daemon's own Dispatch credential under dispatch_token_broker and the two counts of the
+// Dispatch tokens its launches hand out (version.go's 275, DispatchCredentialView). A caller below
+// it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
+// one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
+// whole body for a key it does not name, and one built after strips the key instead, so the band
+// keeps the body its own contract's record describes. causeTimesContract's row, 256, stands just
+// below it. Every caller from 193 up states its contract, so callers from 256 through 274 are
+// served the keys of 256 without this object.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, as the last number of answers.go's SupportedContracts does.
+const dispatchCredentialContract = 275
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -1106,7 +1122,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's 272,
+// projectReleaseContract is the daemon contract that added the project release (version.go's 295,
 // dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
 // project's newest project release and its result, to the state, and `heldPods`, each pod a pause
 // still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
@@ -1116,13 +1132,14 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // reads the state with a strict schema and would refuse the whole body for a key it does not name,
 // and one built after strips the key instead, so the strip is what keeps the release from a caller
 // that did not ask for it. The roles a running release asks are such callers, and they are asked to
-// push and end their turn on that same body. repositoriesLiveContract stands below it, and the five
+// push and end their turn on that same body. repositoriesLiveContract stands below it, and the six
 // rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
 // assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
 // 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
 // which takes each issue's `priority` and its waiting line's `priority` off below 250, and
 // causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
-// below 256, so a caller at or above repositoriesLiveContract and below this contract, 202 to 271,
+// below 256, and dispatchCredentialContract's, which takes the state's `dispatchCredential` off
+// below 275, so a caller at or above repositoriesLiveContract and below this contract, 202 to 294,
 // is served the `live` block and not `projectRelease`. The release's six enumerated fields
 // (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
 // ride its band, so no value strip is owed. The release's own two routes answer the `legion`
@@ -1134,7 +1151,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that reason,
 // as it names cachesSourceContract.
-const projectReleaseContract = 272
+const projectReleaseContract = 295
 
 // causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
 // `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
@@ -1870,6 +1887,19 @@ func withoutLowestPluginContract(state State) (State, bool) {
 func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
+	return state, moved
+}
+
+// withoutDispatchCredential is state with no `dispatchCredential`, the one key
+// dispatchCredentialContract added to the state; nothing else of that contract is a key of an
+// answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
+// types (answers.go's typedSettings). The key is a pointer with `omitempty`, written only under
+// dispatch_token_broker, so the band reports a move only for a state that carries it. The field is
+// the state's own value, so the state the source answered is left as it was, as withoutPause
+// leaves it.
+func withoutDispatchCredential(state State) (State, bool) {
+	moved := state.DispatchCredential != nil
+	state.DispatchCredential = nil
 	return state, moved
 }
 

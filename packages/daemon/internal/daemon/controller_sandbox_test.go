@@ -412,7 +412,7 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 		held func() bool,
 	) (legionruntime.Runtime, error) {
-		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, "placeholder-dispatch-token", lookup(nil),
+		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil),
 			slog.New(slog.NewJSONHandler(r.logs, nil)))
 		if err != nil {
 			return nil, fmt.Errorf("sandboxOptions: %w", err)

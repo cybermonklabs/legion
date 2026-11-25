@@ -290,12 +290,14 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// projectReleaseContract's row stands above this one, so a caller below the cause times is
-	// below the project release too, and the log holds that row's line after this one's.
+	// A caller below causeTimesContract is below dispatchCredentialContract and
+	// projectReleaseContract too, the two rows above it, so it is told of all three rows, in the
+	// table's order.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "projectRelease" {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and the project release's",
+	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" ||
+		narrowings[2].Dropped != "projectRelease" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q, then the Dispatch credential's and the project release's",
 			narrowings, causeTimesContract-1, dropped)
 	}
 }

@@ -15,9 +15,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -92,6 +95,28 @@ const (
 // that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names. Every
 // Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
+// The third account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a Legion daemon's own pod, whose
+// entry fixes DaemonExchangeSession, the session a daemon of ExchangeProject writes Dispatch
+// under, and names the Rig's approver (Operator) as its person, since Dispatch refuses every
+// write of a token that names none (SIGN_IN_REQUIRED). It is an account of its own rather than
+// DaemonAccount, which a Rig lists for no exchange: the registration route refuses a pod token of
+// an account the exchange does not list (POD_ACCOUNT_NOT_LISTED), and a test of that refusal
+// presents the daemon's own login token.
+const (
+	DaemonExchangeAccount = "system:serviceaccount:legion-system:legion-daemon-exchange"
+	DaemonExchangeSession = "legion-daemon:" + ExchangeProject
+)
+
+// The fourth account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a pod of a second project,
+// OtherProject, whose entry fixes OtherProjectSession and names the Rig's approver as its person,
+// so a test holds a token that Dispatch serves for its person and that names a project other
+// than ExchangeProject.
+const (
+	OtherProjectAccount = "system:serviceaccount:other-ns:other-project-worker"
+	OtherProject        = "OTHER"
+	OtherProjectSession = "other-project-worker"
+)
 
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
@@ -440,9 +465,9 @@ const DeviceLifetime = 15 * time.Minute
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// ExchangeAudience, and a workflow run's, for githubAudience — and lists the four accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, and an unlisted one to be refused as.
+// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
 	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
@@ -464,6 +489,8 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession, Issuers: []string{""}},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson, Issuers: []string{""}},
+			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession, Issuers: []string{""}},
+			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession, Issuers: []string{""}},
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
@@ -561,6 +588,33 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// Introspect is what the broker's introspection reads token back as, asked as the Envoy listener
+// asks it: POST /v1/oauth/introspect with the token in a form, presenting ListenerToken. It fails
+// t on any answer but 200.
+func (r *Rig) Introspect(t *testing.T, token string) oauthwire.Introspection {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, r.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	if err != nil {
+		t.Fatalf("build the introspection request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+r.ListenerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer of POST /v1/oauth/introspect: %v", err)
+	}
+	var read oauthwire.Introspection
+	if err := json.Unmarshal(body, &read); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/oauth/introspect = %d %s, want 200 and an introspection (%v)", resp.StatusCode, body, err)
+	}
+	return read
 }
 
 // NewSession inserts a live session enrollment of operator's, under a launcher credential of its
