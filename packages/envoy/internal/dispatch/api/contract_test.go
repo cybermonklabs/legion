@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"

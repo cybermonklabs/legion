@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    A session's files, the graph node of each, an ask or a comment on one, and its direct messages with every reply under them follow the live agent view's rule, since what a session writes can hold whatever it read: a caller reads them only where it may read the session's whole conversation, while the agents list still shows every session it may see. With no private project an open viewer reads them all, as before. Migration `20261121151307_session_content_visible` creates the function that rule asks once per row.
+time: 2026-11-21T15:23:57.419407673Z
+custom:
+    Issue: pr4177

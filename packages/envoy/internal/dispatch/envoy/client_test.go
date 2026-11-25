@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -167,6 +168,70 @@ func TestSessionsMapsListenerRowsAndDefaultsMissingSlices(t *testing.T) {
 	for _, hidden := range []string{"port", "topics", "self_subscribed"} {
 		if strings.Contains(string(encoded), hidden) {
 			t.Fatalf("%s leaked into %s", hidden, encoded)
+		}
+	}
+}
+
+// TestSessionsDecodesEachSessionsProjects: a session row's projects, the listener's sorted list
+// of the projects the session's credential names, decode as the listener sent them, and a row
+// with no projects key, or a null one, decodes to no list at all (nil), never to an empty one: no
+// listener sends the key before it learns each session's projects, and a list it did not send is
+// one Dispatch does not know, which the session rule must not read as a credential that lists no
+// project (access.SessionClause). A row whose list is [] decodes to an empty list, which that rule
+// reads as a credential that lists none. The session as the route roster stores it keeps the two
+// apart: no projects key for the unknown list, "projects":[] for the empty one, and each reads
+// back as it was written.
+//
+// Control: normalize fills a nil list with []; the rows with no key and a null one decode [], the
+// stored row says "projects":[], and the test fails naming both.
+func TestSessionsDecodesEachSessionsProjects(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[` +
+			`{"session_id":"listed","machine_id":"m1","projects":["PRIV","PUB"],"last_seen":1700000000000},` +
+			`{"session_id":"empty","machine_id":"m1","projects":[],"last_seen":1700000000000},` +
+			`{"session_id":"absent","machine_id":"m1","last_seen":1700000000000},` +
+			`{"session_id":"null","machine_id":"m1","projects":null,"last_seen":1700000000000}]`))
+	}))
+	defer listener.Close()
+
+	sessions, err := New(listener.URL + "/").Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		projects []string
+		stored   string
+	}{
+		"listed": {[]string{"PRIV", "PUB"}, `"projects":["PRIV","PUB"]`},
+		"empty":  {[]string{}, `"projects":[]`},
+		"absent": {nil, ""},
+		"null":   {nil, ""},
+	}
+	if len(sessions) != len(want) {
+		t.Fatalf("sessions = %#v, want the %d rows sent", sessions, len(want))
+	}
+	for _, session := range sessions {
+		expected := want[session.SessionID]
+		if got := session.Projects; (got == nil) != (expected.projects == nil) || !slices.Equal(got, expected.projects) {
+			t.Errorf("session %s decodes projects %#v, want %#v", session.SessionID, got, expected.projects)
+		}
+		stored, err := json.Marshal(session)
+		if err != nil {
+			t.Fatalf("store session %s: %v", session.SessionID, err)
+		}
+		if expected.stored == "" && strings.Contains(string(stored), `"projects"`) {
+			t.Errorf("session %s is stored as %s, want no projects key for a list the listener did not send", session.SessionID, stored)
+		}
+		if expected.stored != "" && !strings.Contains(string(stored), expected.stored) {
+			t.Errorf("session %s is stored as %s, want it to carry %s", session.SessionID, stored, expected.stored)
+		}
+		var read Session
+		if err := json.Unmarshal(stored, &read); err != nil {
+			t.Fatalf("read session %s back: %v", session.SessionID, err)
+		}
+		if (read.Projects == nil) != (expected.projects == nil) || !slices.Equal(read.Projects, expected.projects) {
+			t.Errorf("session %s reads back from %s with projects %#v, want %#v", session.SessionID, stored, read.Projects, expected.projects)
 		}
 	}
 }

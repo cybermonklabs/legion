@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/singleflight"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -510,9 +511,12 @@ type relatedTerms struct {
 // they are what a reader recognises (Suggestions.SearchQuery), and the title is a few words where
 // a spec can be thousands.
 //
+// The statistics are read only for a project the reader sees (access.ProjectClause on $1): one it
+// does not see has none, so no lexeme of its items is priced or counted.
+//
 // Parameters: $1 project, $2 text, $3 excluded issue key (empty for none), $4 excluded document
-// artifact id (null for none), $5 the title.
-const relatedTermsSQL = `
+// artifact id (null for none), $5 the title, $6 the reader's viewer (relatedViewer).
+var relatedTermsSQL = `
 with body as (
   select search_document_text($2::text) as text
 ),
@@ -521,7 +525,7 @@ text_lexemes as (
     from body cross join lateral unnest(search_vector('', body.text)) u
 ),
 totals as (
-  select items, refreshed_at from search_term_totals where project_key = $1
+  select items, refreshed_at from search_term_totals where project_key = $1 and ` + access.ProjectClause("$1", "$6") + `
 ),
 own_items as (
   select i.search from issues i cross join totals t
@@ -594,16 +598,17 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 //
 // An item on no document (an issue's comment or ask) is never the excluded document's, so the
 // document test applies only when $4 names one: `is distinct from` a null $4 would leave out
-// every such item.
+// every such item. A project the reader does not see holds no lexeme (access.ProjectClause on
+// $1), a test of the one key the probe reads, made once.
 //
 // Parameters: $1 project, $2 lexemes, $3 excluded issue key (empty for none), $4 excluded document
-// artifact id (null for none).
-const relatedProbeSQL = `
+// artifact id (null for none), $5 the reader's viewer (relatedViewer).
+var relatedProbeSQL = `
 with probe as (
   select l.lexeme, quote_literal(l.lexeme)::tsquery as tq from unnest($2::text[]) l(lexeme)
 )
 select p.lexeme from probe p
- where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
+ where ` + access.ProjectClause("$1", "$5") + ` and (exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
                  from (select v.artifact_id from document_search v where v.search @@ p.tq offset 0) v
                  join artifacts a on a.id = v.artifact_id
@@ -621,7 +626,7 @@ select p.lexeme from probe p
                   and k.issue_key is distinct from $3
                   and ($4::uuid is null or coalesce(k.artifact_id, k.block_artifact_id) is distinct from $4::uuid))
     or exists (select 1 from messages m join issues i on i.key = m.issue_key
-                where m.search @@ p.tq and i.project_key = $1 and m.issue_key <> $3)`
+                where m.search @@ p.tq and i.project_key = $1 and m.issue_key <> $3))`
 
 var (
 	// relatedDigitsLexeme is a lexeme of digits and separators alone: a number, a version, a date
@@ -671,22 +676,17 @@ const (
 // summed df past relatedMatchBudget is skipped, and the next by score is weighed in its place. The
 // excluded owner's items count toward no df.
 //
-// df comes from the project's statistics (refreshSearchTermStats). A lexeme they do not hold, or
-// whose df the excluded owner's items bring to zero, is probed live, the relatedProbeLimit most
-// frequent in the text, and a hit counts as df 1, or is priced instead where the caller asks for
-// that (priceUnknownTerms). A project with no statistics is picked with N taken as 0: a probe
-// caller starts their refresh (ensureSearchTermStats) and probes the relatedProbeLimit most
-// frequent lexemes, as above, while a price caller starts no refresh and probes nothing, so no
-// lexeme is priced and each is taken at df 1, the fallback rarest when nothing is priced.
-// Each chosen term's surface is read from title alone (relatedTermsSQL).
+// Each chosen term's surface is read from title alone (relatedTermsSQL). Every read binds who's
+// viewer (relatedViewer), so a project who does not see prices and probes nothing.
 func (s *server) pickRelatedTerms(
-	ctx context.Context, q queryer, project, text, title string, exclude relatedExclusion, probe bool,
+	ctx context.Context, q queryer, who model.Actor, project, text, title string, exclude relatedExclusion, probe bool,
 ) (relatedTerms, error) {
 	var artifactID *string
 	if exclude.artifactID != "" {
 		artifactID = &exclude.artifactID
 	}
-	rows, err := q.Query(ctx, relatedTermsSQL, project, text, exclude.issueKey, artifactID, title)
+	viewer := relatedViewer(who)
+	rows, err := q.Query(ctx, relatedTermsSQL, project, text, exclude.issueKey, artifactID, title, viewer)
 	if err != nil {
 		return relatedTerms{}, err
 	}
@@ -726,7 +726,7 @@ func (s *server) pickRelatedTerms(
 	})
 	picked.TextLexemes = len(candidates)
 	if probe {
-		if err := probeRelatedCandidates(ctx, q, project, exclude.issueKey, artifactID, candidates); err != nil {
+		if err := probeRelatedCandidates(ctx, q, viewer, project, exclude.issueKey, artifactID, candidates); err != nil {
 			return relatedTerms{}, err
 		}
 	} else {
@@ -787,9 +787,9 @@ func (s *server) pickRelatedTerms(
 
 // probeRelatedCandidates counts live, as df 1 or 0, the relatedProbeLimit most frequent of the
 // candidates the statistics do not hold, marking each probed one known; the rest stay unknown and
-// are not picked.
+// are not picked. viewer is the reader's (relatedViewer).
 func probeRelatedCandidates(
-	ctx context.Context, q queryer, project, excludeIssue string, excludeArtifact *string, candidates []relatedCandidate,
+	ctx context.Context, q queryer, viewer any, project, excludeIssue string, excludeArtifact *string, candidates []relatedCandidate,
 ) error {
 	var unknown []*relatedCandidate
 	for index := range candidates {
@@ -811,7 +811,7 @@ func probeRelatedCandidates(
 		byLexeme[candidate.Lexeme] = candidate
 		candidate.known = true
 	}
-	rows, err := q.Query(ctx, relatedProbeSQL, project, lexemes, excludeIssue, excludeArtifact)
+	rows, err := q.Query(ctx, relatedProbeSQL, project, lexemes, excludeIssue, excludeArtifact, viewer)
 	if err != nil {
 		return err
 	}

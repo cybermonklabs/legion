@@ -8,13 +8,22 @@ import { useState } from "react";
 
 import { MultiSelect } from "./MultiSelect";
 
-function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
+function Host({
+  error,
+  onCreate,
+  options,
+}: {
+  error?: string;
+  onCreate?: (value: string) => void;
+  options: string[];
+}) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   return (
     <>
       <MultiSelect
         emptyMessage="Nothing here."
+        error={error}
         label="Labels"
         onChange={setSelected}
         onCreate={onCreate}
@@ -59,6 +68,24 @@ test("clicking rows toggles a multi-selection, the trigger counts it and Clear e
     await user.click(screen.getByRole("button", { name: "Clear labels" }));
     expect(screen.getByTestId("selected").textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Clear labels" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The rows scroll under a footer pinned to the popover's bottom edge, so an error is drawn in
+// that footer, in view of the row just pressed, beside Clear when there is one, and announced.
+test("an error is announced in the footer pinned below the rows, beside Clear", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host error="At most one label." options={["api", "docs"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Labels" }));
+    expect(screen.getByRole("alert").textContent).toBe("At most one label.");
+    expect(screen.getByRole("alert").closest(".sticky")).not.toBeNull();
+
+    await user.click(screen.getByRole("option", { name: "api" }));
+    const footer = screen.getByRole("button", { name: "Clear labels" }).closest(".sticky");
+    expect(footer?.contains(screen.getByRole("alert"))).toBe(true);
   } finally {
     view.unmount();
   }

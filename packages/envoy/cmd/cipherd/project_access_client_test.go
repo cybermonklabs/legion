@@ -114,7 +114,7 @@ func TestTheProjectAccessClientReusesItsConnectionsRoundAfterRound(t *testing.T)
 // of requests.MaySeeAtOnce questions at once, each about projects the client has not asked about,
 // and the second round opens no connection. Built on Go's default client, as a nil client would
 // build it, the second round opens all but two again, and this test fails. With no
-// BROKER_PROJECT_ACCESS_URL there is neither client, as interfaces main compares with nil.
+// BROKER_PROJECT_ACCESS_URL there is neither client: a nil *projectaccess.Client and a nil reader.
 func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("the-broker-account-token\n"), 0o600); err != nil {

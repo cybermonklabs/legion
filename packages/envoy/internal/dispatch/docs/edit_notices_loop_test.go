@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
 
@@ -19,7 +20,7 @@ import (
 // settlements the test drives through its own service.
 func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	return service
 }

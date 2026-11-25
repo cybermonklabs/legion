@@ -1613,7 +1613,7 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 		t.Fatalf("the stored document = %q, want it without the keystroke the room took inside the window", stored)
 	}
 
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("a read inside the window: %v", err)
 	}
@@ -1628,7 +1628,7 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 
 	releaseWindow()
 	waitForLandedAppends(t, service, artifactID)
-	if text, err := service.Text(context.Background(), artifactID); err != nil || !strings.Contains(text, "Bravo paragraph.") {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || !strings.Contains(text, "Bravo paragraph.") {
 		t.Fatalf("a read once the room's appends landed = %q, %v; want both paragraphs", text, err)
 	}
 }

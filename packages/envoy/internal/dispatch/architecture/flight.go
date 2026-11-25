@@ -11,12 +11,15 @@ package architecture
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -266,6 +269,19 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	if err != nil {
 		return model.ArchitectureSource{}, err
 	}
+	// While a project is private a source whose repository the repository rule hides from its
+	// project's readers imports nothing (repositoryRule), and every GitHub read of the sync is held
+	// to the source's repository (heldToItsRepository), a redirect off it answering as a repository
+	// the App is not installed on (asNotInstalled): an old name GitHub redirects would import
+	// another repository's prose.
+	private, hidden, err := i.repositoryRule(ctx, source.Project, source.Repo)
+	if err != nil {
+		return model.ArchitectureSource{}, err
+	}
+	if hidden {
+		return i.failed(ctx, parent, source, fmt.Errorf("%w on %s", githubapp.ErrNoInstallation, source.Repo))
+	}
+	ctx = heldToItsRepository(ctx, private, source.Repo)
 	owner, name, token, importErr := i.resolve(ctx, &source)
 	if importErr != nil {
 		// Each of the four steps of the sync that read GitHub -- resolve here, then Ref, Dir and
@@ -278,12 +294,14 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 		// import (Importer.Pushed's worker) started notes nothing. The content of the files (a note
 		// over notes.MaxFileSize, notes.Parse, the projection) is no GitHub read: last_error
 		// records it, and the attempt does not.
+		importErr = asNotInstalled(importErr, source.Repo)
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
 	flight.headAt = time.Now()
 	commit, importErr := i.github.Ref(ctx, token, owner, name, source.Branch)
 	if importErr != nil {
+		importErr = asNotInstalled(importErr, source.Repo)
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
@@ -294,6 +312,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir)
 	if importErr != nil {
+		importErr = asNotInstalled(importErr, source.Repo)
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
@@ -304,6 +323,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
 	if importErr != nil {
+		importErr = asNotInstalled(importErr, source.Repo)
 		// The client refuses a note over notes.MaxFileSize at two points, both
 		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
 		// a blob's decoded size after the read GitHub answered. Either is the source's content
@@ -326,6 +346,57 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 		return i.failed(ctx, parent, source, importErr)
 	}
 	return updated, importErr
+}
+
+// repositoryRule reads, in one statement, whether any project is private and, while one is,
+// whether the repository rule (refs.RepositoryHidden) hides repo from a reader of project: an open
+// reader who sees project and every public project and no other private project. The import of a
+// source is read by every reader of its project, the server's own import included (the pass and a
+// push's), so a source stored before the rule held source writes, or whose repository an issue of
+// a private project named later, imports nothing while the rule would hide its repository from
+// them; the sync records the words a repository the App is not installed on records, and asks
+// GitHub nothing. With no private project it reads no issue and hides nothing (R9).
+func (i *Importer) repositoryRule(ctx context.Context, project, repo string) (private, hidden bool, err error) {
+	if err := i.store.Pool.QueryRow(ctx, `
+		with deployment as (
+			select exists (select 1 from projects where visibility = 'private') as private
+		), reader as (
+			select jsonb_build_object('open', true, 'private', true,
+				'sees', (select coalesce(jsonb_agg(seen.key), '[]'::jsonb) from projects seen where seen.visibility = 'public' or seen.key = $1)) as viewer
+		)
+		select deployment.private, case when deployment.private then `+refs.RepositoryHidden("$2::text", "reader.viewer")+` else false end
+		from deployment, reader
+	`, project, repo).Scan(&private, &hidden); err != nil {
+		return false, false, fmt.Errorf("read whether the repository rule hides the source's repository: %w", err)
+	}
+	return private, hidden, nil
+}
+
+// heldToItsRepository is ctx with every GitHub request held to repo (githubapp.HoldToRepository)
+// while any project is private, as the GitHub proxy and the App-installation route hold theirs: a
+// redirect GitHub answers an old name of a renamed or transferred repository with is followed only
+// to repo itself, so a source never imports the prose of a repository the repository rule never
+// judged. With no private project a sync follows GitHub's redirects as before (R9). A stored name
+// GitHub does not allow is left to resolve, which refuses it.
+func heldToItsRepository(ctx context.Context, private bool, repo string) context.Context {
+	if !private {
+		return ctx
+	}
+	owner, name, err := refs.SplitGitHubRepo(repo)
+	if err != nil {
+		return ctx
+	}
+	return githubapp.HoldToRepository(ctx, owner, name)
+}
+
+// asNotInstalled is err, with a redirect off the source's repository (githubapp's
+// ErrRedirectedOffRepository, from a held read) answered as the error a repository the App is not
+// installed on answers with: what a sync of such a repository records and answers.
+func asNotInstalled(err error, repo string) error {
+	if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+		return fmt.Errorf("%w on %s", githubapp.ErrNoInstallation, repo)
+	}
+	return err
 }
 
 // failed records importErr on the source row and hands both back: the Sync

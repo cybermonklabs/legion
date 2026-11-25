@@ -4787,13 +4787,14 @@ func TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture(t *te
 // The fixture states a whole row, so it can only stay whole while it names every key
 // listenerwire.SessionInfo always writes, and while the keys a fixture row may lack are the ones
 // listenerwire.SessionInfo leaves out when they are empty. The fixture's session sits in no tmux
-// pane, and its registration named no plugin, no plugin build and no client instance, so its row
-// lacks exactly those keys. The keys are read from listenerwire.SessionInfo's own fields and json
-// tags, never from a value of it: a field added to listenerwire.SessionInfo later fails this test,
-// omitempty or not, as does a field that gains or loses omitempty, so neither the fixture nor the
-// list of keys a fixture row may lack can fall behind the struct unnoticed. A value with every
-// field set cannot hold that, since a field added after the value was written is left empty in it,
-// and an omitempty one is then absent from its keys.
+// pane, its registration named no plugin, no plugin build and no client instance, and the listener
+// records no project of its credential, so its row lacks exactly those keys. The keys are read
+// from listenerwire.SessionInfo's own fields and json tags, never from a value of it: a field added
+// to listenerwire.SessionInfo later fails this test, omitempty or not, as does a field that gains
+// or loses omitempty, so neither the fixture nor the list of keys a fixture row may lack can fall
+// behind the struct unnoticed. A value with every field set cannot hold that, since a field added
+// after the value was written is left empty in it, and an omitempty one is then absent from its
+// keys.
 func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	alwaysWritten, leftOutWhenEmpty := map[string]bool{}, map[string]bool{}
@@ -4826,7 +4827,7 @@ func TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys(t *
 			t.Errorf("the fixture row states %q, which listenerwire.SessionInfo does not always write", key)
 		}
 	}
-	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true}
+	mayLack := map[string]bool{"tmux_place": true, "plugin": true, "plugin_version": true, "client_instance_id": true, "projects": true}
 	for key := range leftOutWhenEmpty {
 		if !mayLack[key] {
 			t.Errorf("listenerwire.SessionInfo leaves %q out when it is empty, which is not a key a fixture row may lack; capture the fixture again or name it here", key)

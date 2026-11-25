@@ -708,8 +708,8 @@ func requireNoRouteOrCommandWritesAType(t *testing.T) {
 		}
 		if route.Path == "/api/v1/schema/blocks" {
 			schemaRoutes++
-			if route.Method != "GET" || route.Auth != "public" {
-				t.Errorf("the block schema route is %s %s (%s), want a public GET", route.Method, route.Path, route.Auth)
+			if route.Method != "GET" || route.Auth != "any" {
+				t.Errorf("the block schema route is %s %s (%s), want a GET any authenticated caller reads", route.Method, route.Path, route.Auth)
 			}
 		}
 	}
@@ -955,11 +955,11 @@ func setPointerTargets(t *testing.T, ctx context.Context, pool *store.Pool, targ
 // document at the requirement, and the requirement's backlink count, which counts the listed ones.
 func requirePointersListed(t *testing.T, ctx context.Context, pool *store.Pool, stage, requirement string, listed map[blockPointer]bool) {
 	t.Helper()
-	in, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: requirement})
+	in, err := refs.Edges(ctx, pool, model.ServerReader, refs.Query{Direction: "in", Kind: "block", ID: requirement})
 	if err != nil {
 		t.Fatalf("%s: read the edges in at %s: %v", stage, requirement, err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "block", []string{requirement}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.ServerReader, "block", []string{requirement}, nil)
 	if err != nil {
 		t.Fatalf("%s: count the backlinks of %s: %v", stage, requirement, err)
 	}
@@ -970,7 +970,7 @@ func requirePointersListed(t *testing.T, ctx context.Context, pool *store.Pool, 
 			want = 1
 			shown++
 		}
-		out, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "out", Kind: "artifact", ID: pointer.document})
+		out, err := refs.Edges(ctx, pool, model.ServerReader, refs.Query{Direction: "out", Kind: "artifact", ID: pointer.document})
 		if err != nil {
 			t.Fatalf("%s: read the edges out of %s: %v", stage, pointer.document, err)
 		}

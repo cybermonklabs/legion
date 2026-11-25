@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -36,11 +38,16 @@ func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 }
 
 // listMyAnswers returns the caller's real answer transitions (answerEventsQuery) and their replies
-// on asks, newest first. A reply the caller edited carries the time of the edit (edited_at), and
+// on asks, newest first, on the asks the caller may read (access.ItemOwnerClause): an answer given on a
+// project the caller no longer sees, or that its credential does not list, is not in its list. A reply the caller edited carries the time of the edit (edited_at), and
 // one the caller deleted carries its mark (deleted_at, deleted_by) and the empty body the delete
 // left, so the page says that the post is edited or deleted.
 func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -57,7 +64,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		       null::timestamptz as reply_edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by`,
 		// The canonical login on both halves: a row a build stored under a login before sign-in
 		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
-		`user_threads_login(e.actor->>'id') = $1`)+`
+		`user_threads_login(e.actor->>'id') = $1`, "$4")+`
 		), mine as (
 			select * from answered
 			union all
@@ -73,9 +80,10 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		join asks a on a.id = m.ask_id::uuid
 		left join issues i on i.key = a.issue_key
 		left join artifacts ar on ar.id = a.artifact_id
+		where `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4")+`
 		order by m.at desc, m.event_id desc nulls last, m.reply_id desc nulls last
 		limit $2 offset $3
-	`, model.CanonicalLogin(caller.ID), limit, offset)
+	`, model.CanonicalLogin(caller.ID), limit, offset, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

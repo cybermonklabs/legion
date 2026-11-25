@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -457,7 +456,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			ids = append(ids, fixture.commentBlock)
 		}
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			counts, err := BacklinkCounts(ctx, pool, model.Actor{}, toKind, ids, exclusions)
+			counts, err := BacklinkCounts(ctx, pool, serverReader, toKind, ids, exclusions)
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
@@ -472,7 +471,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 		}
 	}
 
-	counts, err := BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
+	counts, err := BacklinkCounts(ctx, pool, serverReader, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
 	if err != nil {
 		t.Fatalf("count the block-held issues' backlinks: %v", err)
 	}
@@ -487,7 +486,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := BacklinkCounts(ctx, database.Pool, model.Actor{}, "pull_request", []string{"x"}, nil); err == nil {
+	if _, err := BacklinkCounts(ctx, database.Pool, serverReader, "pull_request", []string{"x"}, nil); err == nil {
 		t.Fatal("counting the backlinks of a node kind with no declared arms answered without an error")
 	}
 	for _, kind := range nodeKinds {
@@ -537,26 +536,31 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 				if !ok {
 					t.Fatalf("no arms declared for %s, the kind nodeRegistry resolves", toKind)
 				}
-				// The acting credential rides as $3, as backlinkCountStatement binds it: an
-				// author who proves none, so every arm's predicate is the shape a reader of
-				// the project runs, and the plan is the one every count pays for.
-				seen := VisibilityArg(model.Actor{})
-				args := []any{shape.addresses, nodeKinds, seen}
+				// The viewer rides as $3, as backlinkCountStatement binds it. A generic plan is
+				// built without it, so every arm's predicate is in it. A custom plan is built
+				// knowing it, and the server's own viewer folds every project and party arm away
+				// at its `all` flag, so the custom plan is read for each of planReaders: alice and
+				// carol's token are the readers whose arms a member's count runs.
 				types := []string{shape.sqlType, "text[]", "jsonb"}
 				literals := []string{shape.literal, textArrayLiteral(nodeKinds), "null"}
 				if len(exclusions) > 0 {
-					args = append(args, exclusions)
 					types = append(types, "text[]")
 					literals = append(literals, textArrayLiteral(exclusions))
 				}
 				prepared++
 				name := fmt.Sprintf("backlink_count_%d", prepared)
-				for mode, plan := range map[string]json.RawMessage{
-					"custom": customPlan(t, connection, statement, args),
-					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
-						types, literals, planSettings...),
-				} {
-					if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+				plans := map[string]json.RawMessage{
+					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement, types, literals, planSettings...),
+				}
+				for _, reader := range planReaders("CORE") {
+					args := []any{shape.addresses, nodeKinds, VisibilityArg(reader.reader)}
+					if len(exclusions) > 0 {
+						args = append(args, exclusions)
+					}
+					plans["custom, read by "+reader.name] = customPlan(t, connection, statement, args)
+				}
+				for mode, plan := range plans {
+					if unkeyed := unkeyedScans(t, plan); len(unkeyed) > 0 {
 						t.Errorf("the %s backlink count over %s excluding %v reads %s under its %s plan, which no index serves:\n%s",
 							toKind, shape.name, exclusions, strings.Join(unkeyed, ", "), mode, plan)
 					}
@@ -595,6 +599,48 @@ func backlinkAddressShapes(ids []string) []backlinkAddressShape {
 		{name: "one address", one: true, addresses: ids[0], sqlType: "text",
 			literal: `'` + strings.ReplaceAll(ids[0], `'`, `''`) + `'::text`},
 	}
+}
+
+// fillMarker is the one-row table access.SessionClause's open arm reads to learn whether
+// session_projects is filled. No column of it is keyed, and none needs to be: the read names no
+// column of the row the clause tests, so the planner makes it an InitPlan, run at most once per
+// statement (access.TestTheFillMarkerIsReadOncePerStatement).
+const fillMarker = "session_projects_filled"
+
+// unkeyedScans is explaintest.ScansWithoutIndexCond over plan, less each scan of fillMarker that
+// begins an InitPlan: a read once per statement of a one-row table is no read an index would
+// serve. A scan of fillMarker anywhere else - once per row of what drives it - stays named.
+func unkeyedScans(t *testing.T, plan json.RawMessage) []string {
+	t.Helper()
+	unkeyed := explaintest.ScansWithoutIndexCond(t, plan)
+	for range initPlanScans(t, plan, fillMarker) {
+		if i := slices.Index(unkeyed, "Seq Scan on "+fillMarker); i >= 0 {
+			unkeyed = slices.Delete(unkeyed, i, i+1)
+		}
+	}
+	return unkeyed
+}
+
+// initPlanScans counts the scans of relation in plan whose node begins an InitPlan ("Parent
+// Relationship": "InitPlan").
+func initPlanScans(t *testing.T, plan json.RawMessage, relation string) int {
+	t.Helper()
+	var node struct {
+		Relation string            `json:"Relation Name"`
+		Parent   string            `json:"Parent Relationship"`
+		Plans    []json.RawMessage `json:"Plans"`
+	}
+	if err := json.Unmarshal(plan, &node); err != nil {
+		t.Fatalf("decode a plan node: %v", err)
+	}
+	scans := 0
+	if node.Relation == relation && node.Parent == "InitPlan" {
+		scans++
+	}
+	for _, child := range node.Plans {
+		scans += initPlanScans(t, child, relation)
+	}
+	return scans
 }
 
 // customPlan is the plan Postgres builds for statement knowing the values bound to it.

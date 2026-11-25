@@ -176,7 +176,17 @@ type Session struct {
 	TmuxPlace    *listenerwire.TmuxPlace `json:"tmux_place,omitempty"`
 	Roles        []string                `json:"roles"`
 	Capabilities []string                `json:"capabilities"`
-	LastSeen     int64                   `json:"last_seen"`
+	// Projects is the listener's sorted list of the projects the session's credential names (K6):
+	// [] for a credential that names none, and nil for a session the listener sent no list for, as
+	// every listener does until it learns each session's projects. The two stay apart, because a
+	// list Dispatch does not know is no credential that names none: the route roster stores nil as
+	// no projects key and [] as "projects":[] (omitzero), and the session rule passes a session with
+	// no history and no stored list to no viewer but its own while a project is private
+	// (access.SessionClause). Dispatch reads it there and serves it to no caller: agentResponse
+	// shadows it with a field nothing sets, and the OpenAPI document declares neither
+	// (api.unservedFields).
+	Projects []string `json:"projects,omitzero"`
+	LastSeen int64    `json:"last_seen"`
 	// State is StateLive, StateUnresponsive or StateGone, as the listener judged this record
 	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener
 	// that predates the field names none, and normalize reads that as StateLive: every session
@@ -186,7 +196,8 @@ type Session struct {
 }
 
 // normalize fills in what a listener may leave out: the id of the one session that was asked
-// about, the empty lists a decoder leaves nil, and the state an older listener does not name.
+// about, the empty lists a decoder leaves nil, and the state an older listener does not name. It
+// leaves Projects as the listener sent it: a list it did not send is unknown, never empty.
 func (s *Session) normalize(sessionID string) {
 	if s.SessionID == "" {
 		s.SessionID = sessionID
@@ -216,11 +227,24 @@ func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
 		TmuxPlace:    info.TmuxPlace,
 		Roles:        info.Roles,
 		Capabilities: info.Capabilities,
+		Projects:     projectsOf(info.Projects),
 		LastSeen:     info.LastSeen,
 		State:        string(info.State),
 	}
 	session.normalize(sessionID)
 	return session
+}
+
+// projectsOf is a session's projects as the listener sent them: nil for no list, and a list, never
+// nil, for one it sent, [] included.
+func projectsOf(sent *[]string) []string {
+	if sent == nil {
+		return nil
+	}
+	if *sent == nil {
+		return []string{}
+	}
+	return *sent
 }
 
 // SendInput is a targeted Dispatch delivery through the listener.
@@ -602,6 +626,13 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	}
 	holder.normalize(answer.Holder)
 	return holder, nil
+}
+
+// NoRoleHolder is the error Role answers for a role no session claims: the listener's own words
+// for it (cmd/listener writeRoleHolderError, roles.Unclaimed; TestNoRoleHolderIsTheListenersWords
+// holds the two equal), so a caller that must answer a role as unheld answers it as Role would.
+func NoRoleHolder(role string) error {
+	return fmt.Errorf("no holder for role %s", role)
 }
 
 // lapsedRoleHolder answers a role lookup the listener refused, having read nothing of its body

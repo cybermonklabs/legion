@@ -417,7 +417,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 					t.Fatalf("evict the document: %v", err)
 				}
 			}
-			markdown, err := service.Text(context.Background(), artifactID)
+			markdown, err := service.Text(context.Background(), everyReader, artifactID)
 			if err != nil {
 				t.Fatalf("read the %s: %v", where, err)
 			}

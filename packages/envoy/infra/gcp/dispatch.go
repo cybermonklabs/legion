@@ -13,13 +13,12 @@ import (
 
 	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-	"golang.org/x/net/idna"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
+	"golang.org/x/net/idna"
 )
 
 // dispatchType is the component's token. pulumi-go-provider derives the same one from the Dispatch
@@ -321,6 +320,27 @@ type DispatchArgs struct {
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
 
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
+	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
+	// one. Unset renders nothing.
+	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
+	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
+	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); a
+	// switch of one of these to private is its full switch, and PrivateBeforeFullSwitch names the
+	// other projects that can be made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each
+	// key once; empty or unset renders nothing. An entry that is not a project key is ignored, with
+	// a warning at preview naming it, as Dispatch's boot ignores and logs one.
+	PrivateProjects []string `pulumi:"privateProjects,optional"`
+	// PrivateBeforeFullSwitch are the keys of the projects the deployment makes private before
+	// their full switch (the private-projects spec's "Day one and the full switch"): Dispatch hides
+	// such a project in its own reads as any private project, while its namespace, stores and bus
+	// gate come with its full switch, so its switch to private needs no provisioning. Until then,
+	// the project's notifications on the hub reach any agent session that subscribes to them. It
+	// renders DISPATCH_PRIVATE_BEFORE_FULL_SWITCH, sorted and each key once; empty or unset renders
+	// nothing. An entry that is not a project key is ignored, with a warning at preview naming it,
+	// as Dispatch's boot ignores and logs one.
+	PrivateBeforeFullSwitch []string `pulumi:"privateBeforeFullSwitch,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -514,6 +534,12 @@ type DispatchArgs struct {
 	// namespace: only the component's own tailnet front door, which Tailscale Serve on 443 proxies
 	// through, reaches the app.
 	AllowedNamespaces []string `pulumi:"allowedNamespaces,optional"`
+	// AllowedApps names the apps, by their pods' app label, whose pods in the component's own
+	// namespace the app's NetworkPolicy admits on port 8766: one rule per app, beside the
+	// allowedNamespaces rule. The secrets broker, envoy-broker in production, runs in Dispatch's
+	// own namespace, which an allowedNamespaces entry would open to every pod. Unset or empty
+	// admits no such pod.
+	AllowedApps []string `pulumi:"allowedApps,optional"`
 
 	// AzureEmbedEndpoint turns on meaning search through Azure AI Foundry: DISPATCH_EMBEDDER=azure
 	// and DISPATCH_AZURE_EMBED_ENDPOINT, the base URL the embeddings route is appended to (such as
@@ -610,6 +636,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"projectOwnerFallback", args.ProjectOwnerFallback},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -768,6 +795,10 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	projectOwnerFallback                        string
+	privateProjects, privateProjectsIgnored     []string
+	privateBeforeFullSwitch                     []string
+	privateBeforeFullSwitchIgnored              []string
 	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1115,6 +1146,9 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
+		{"privateProjects", len(args.PrivateProjects) > 0},
+		{"privateBeforeFullSwitch", len(args.PrivateBeforeFullSwitch) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1146,6 +1180,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"frontDoorPdbMinAvailable", args.FrontDoorPdbMinAvailable != nil},
 		{"listenerPdbMinAvailable", args.ListenerPdbMinAvailable != nil},
 		{"allowedNamespaces", len(args.AllowedNamespaces) > 0},
+		{"allowedApps", len(args.AllowedApps) > 0},
 		{"azureEmbedEndpoint", args.AzureEmbedEndpoint != nil},
 		{"azureEmbedDeployment", args.AzureEmbedDeployment != nil},
 		{"azureEmbedTokensPerMinute", args.AzureEmbedTokensPerMinute != nil},
@@ -1480,6 +1515,12 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // letter, then up to 62 lowercase letters, digits or hyphens, the last not a hyphen
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// appLabelValueRule is a non-empty Kubernetes label value, which an allowedApps entry is: the app
+// label of the pods the app's NetworkPolicy admits. It is at most 63 characters, a letter or digit
+// at each end, with letters, digits, dashes, underscores and dots between. An empty value would
+// make a rule for pods labelled app="", and a value of another shape fails only at apply.
+var appLabelValueRule = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
 
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
@@ -1888,6 +1929,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.projectOwnerFallback = args.ProjectOwnerFallback
+	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
+	s.privateBeforeFullSwitch, s.privateBeforeFullSwitchIgnored = dispatchPrivateProjects(args.PrivateBeforeFullSwitch)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1984,7 +2028,51 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("allowedNamespaces", "allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
 	}
+	for i, app := range args.AllowedApps {
+		if !appLabelValueRule.MatchString(app) {
+			return dispatchSettings{}, core.InputErrorf("allowedApps", "allowedApps[%d] %q must be a pod's app label value: 1 to 63 letters, digits, dashes, underscores and dots, a letter or digit at each end", i, app)
+		}
+	}
 	return s, nil
+}
+
+// dispatchPrivateProjects is privateProjects or privateBeforeFullSwitch as
+// DISPATCH_PRIVATE_PROJECTS or DISPATCH_PRIVATE_BEFORE_FULL_SWITCH renders it: sorted and each key
+// once. An entry that is not a project key is never rendered: it is answered in ignored, in the
+// order given, and NewDispatch prints it at preview (dispatchIgnoredEntryWarnings), as Dispatch's
+// boot ignores and logs one. Ignoring it fails closed: it names no project, so the switch to
+// private of the project it meant is refused while no list names its key.
+func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
+	for _, entry := range entries {
+		if !contracts.ValidProjectKey(entry) {
+			ignored = append(ignored, entry)
+			continue
+		}
+		keys = append(keys, entry)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys), ignored
+}
+
+// dispatchIgnoredEntryWarnings are the warnings NewDispatch prints at preview, one for each entry
+// of privateProjects and of privateBeforeFullSwitch that is not a project key, in that order, each
+// naming what the entry would have done. Each is a warning, not an error: the Pulumi SDK reads an
+// error as a fatal condition (pulumi.Context.Log.Error), and the entry is ignored, not refused.
+func dispatchIgnoredEntryWarnings(s dispatchSettings) []string {
+	var warnings []string
+	for _, list := range []struct {
+		input, named string
+		ignored      []string
+	}{
+		{"privateProjects", "no project is provisioned by it", s.privateProjectsIgnored},
+		{"privateBeforeFullSwitch", "no project is made private before its full switch by it", s.privateBeforeFullSwitchIgnored},
+	} {
+		for _, entry := range list.ignored {
+			warnings = append(warnings, fmt.Sprintf("%s: %q is not a project key (%s), so it is ignored: %s, and Dispatch logs the same ERROR at boot",
+				list.input, entry, contracts.ProjectKeyRule, list.named))
+		}
+	}
+	return warnings
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.
@@ -2365,6 +2453,11 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	s, err := newDispatchSettings(args)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	for _, warning := range dispatchIgnoredEntryWarnings(s) {
+		if err := ctx.Log.Warn(warning, nil); err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
 	}
 	if err := providers.Require(ctx.Context(), dispatchType, "gcp", opts...); err != nil {
 		return nil, err

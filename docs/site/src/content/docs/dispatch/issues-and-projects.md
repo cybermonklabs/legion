@@ -200,6 +200,11 @@ may yet answer. A session that reads `gone` is unclaimed at once: its
 [running mark](/legion/dispatch/agents/#how-dispatch-shows-an-agent) is a hollow ring and the chip
 reads **not running**.
 
+A claim held by an agent or a person you may not see, such as an agent of a private project you
+are not on, reads as no claim: the issue, the List, the Board and the priority faults show
+nobody holding it, and a take is refused without naming the holder. A route to a role of a
+private project you do not see reads as no route.
+
 ## Creating an issue
 
 Press `c` anywhere. Pick the project, type a title of up to 1,000 characters, and optionally the

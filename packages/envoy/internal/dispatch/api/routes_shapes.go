@@ -257,6 +257,14 @@ type eventLogQuery struct {
 	Limit int `query:"limit"`
 }
 
+// accessGroupsQuery is GET /api/v1/access-groups's query: one page of the groups, in name order.
+type accessGroupsQuery struct {
+	// Limit is how many groups the page holds, 1 to 100, and 100 by default.
+	Limit int `query:"limit"`
+	// After is the group name the page starts after, the page before's next; absent, the first.
+	After string `query:"after"`
+}
+
 // issueReferencesQuery is GET /api/v1/issues/{key}/references's query.
 type issueReferencesQuery struct {
 	// Versions, `latest`, leaves each member's artifact.versions holding only its latest
@@ -574,6 +582,11 @@ var routeShapes = map[string]routeShape{
 		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentTypes: []string{"application/json"},
 	},
+	"GET /metrics": {
+		Status:             http.StatusOK,
+		Opaque:             "the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON",
+		OpaqueContentTypes: []string{"text/plain"},
+	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
@@ -623,6 +636,20 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
+	"GET /api/v1/projects/{key}/access":                   {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PATCH /api/v1/projects/{key}/access":                 {Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{}},
+	"PUT /api/v1/projects/{key}/access/people/{email}":    {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PUT /api/v1/projects/{key}/access/groups/{name}":     {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: model.AccessGroupPage{}, Params: accessGroupsQuery{}},
+	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
+	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
+	"GET /api/v1/access/projects/{key}/repositories":      {Status: http.StatusOK, Response: projectRepositoriesAnswer{}},
+	"GET /api/v1/access/private-projects":                 {Status: http.StatusOK, Response: privateProjectsAnswer{}},
+	// The owner's link for a person from outside, and the owner's Reset of one.
+	"POST /api/v1/projects/{key}/access/people/{email}/invitations": {Status: http.StatusCreated, Response: invitationAnswer{}},
+	"POST /api/v1/projects/{key}/access/people/{email}/reset":       {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},

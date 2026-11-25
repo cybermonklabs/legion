@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -15,12 +16,26 @@ import (
 // mayQueueForUnknownSession reports whether an attempt whose last try ended in failure is one
 // Dispatch queues itself (queueForUnknownSession): a message to a session, whose attempt names
 // that session, whose last try found no live session for it, which this process has a publisher
-// for, and which does not ask for a session that is running now.
+// for, which does not ask for a session that is running now, and whose writer may see that
+// session.
 //
 // "no live session" is the one answer that says neither the listener's registry nor its
 // known-session store holds the session: the registry read's 404 (resolveDeliveryTarget) and the
 // send's own 404 are that fact, so a person sees one outcome for it. A session either store holds
 // is the listener's to queue, and it answers the send stopped (deliveryOutcome).
+//
+// The resolve answers a session its reader may not see in those same words, before the listener is
+// asked (resolveDeliveryTarget), and marks it hidden: that answer is the reader's refusal and says
+// nothing of either store, so a hidden attempt is never queued. Nor is one whose session the
+// attempt's writer may not see (access.SessionClause, sessionHiddenFrom), judged once more here,
+// where the queue publishes onto that session's own subject: the writer is the request's reader -
+// the message's own send, a Retry, a keyed repeat, a broadcast's copy - or, for the delivery
+// sweep's resume, which has none, what the person who asked for the attempt sees now
+// (access.RecordedViewer). So a session nobody holds is queued only for a writer that would see
+// it once it acts: not for a restricted member, nor for an open viewer while a project is private,
+// since such a session has neither a project nor a listener record that says it is not of one
+// (access.SessionClause). With no private project an open writer sees every session, which costs
+// no read, and the message is queued as before (R9).
 //
 // queueForUnknownSession builds the subject from the attempt's session (attemptSessionID), and
 // for a record the registry calls gone that is the id the listener answered rather than the one
@@ -34,13 +49,48 @@ import (
 // send that asks for a running session (connectedOnly, a model or thinking switch) keeps it too,
 // since a switch stored for a session that is not running would apply at an unknown later time.
 func (s *server) mayQueueForUnknownSession(
-	message model.Message, pending pendingMessageDelivery, connectedOnly bool, failure string,
-) bool {
-	if s.deps.AgentPublisher == nil || connectedOnly || !strings.HasPrefix(failure, noLiveSessionPrefix) {
-		return false
+	ctx context.Context, message model.Message, actor model.Actor, pending pendingMessageDelivery,
+	connectedOnly bool, failure string,
+) (bool, error) {
+	if s.deps.AgentPublisher == nil || connectedOnly || pending.resolved.hidden ||
+		!strings.HasPrefix(failure, noLiveSessionPrefix) {
+		return false, nil
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
-	return err == nil && route.Kind == "session" && route.ID == pending.resolved.attemptSessionID
+	if err != nil || route.Kind != "session" || route.ID != pending.resolved.attemptSessionID {
+		return false, nil
+	}
+	writer, err := s.attemptWriter(ctx, actor)
+	if err != nil {
+		return false, err
+	}
+	hidden, err := s.sessionHiddenFrom(ctx, writer, route.ID)
+	if err != nil {
+		return false, err
+	}
+	return !hidden, nil
+}
+
+// attemptWriter is the writer of a delivery attempt as a read binds it: the request's reader where
+// one is in ctx (withReader), and otherwise actor, the person the attempt records asking for it,
+// with what that person sees now (access.RecordedViewer), which is all the delivery sweep, resuming
+// an attempt with no request behind it, knows of who wrote it. A server with no database answers
+// the closed viewer (closedViewer), failing closed.
+func (s *server) attemptWriter(ctx context.Context, actor model.Actor) (model.Actor, error) {
+	if reader, ok := readerFromContext(ctx); ok {
+		return reader, nil
+	}
+	writer := actor.Reader()
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		writer.Viewer = closedViewer()
+		return writer, nil
+	}
+	viewer, err := access.RecordedViewer(ctx, s.deps.Store.Pool, actor)
+	if err != nil {
+		return model.Actor{}, err
+	}
+	writer.Viewer = &viewer
+	return writer, nil
 }
 
 // queueForUnknownSession queues a targeted message for a session no store of the listener's holds:

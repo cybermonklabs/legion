@@ -113,7 +113,7 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 		if service.srv.GetDoc(artifactID) != nil {
 			t.Fatal("the document's room is resident before the read")
 		}
-		if text, err := service.Text(ctx, artifactID); err != nil || text != want {
+		if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != want {
 			t.Fatalf("read the stored history: %d bytes (%v), want the browser's %d", len(text), err, len(want))
 		}
 	})
@@ -241,13 +241,13 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 		if err := state.failure(); err != nil {
 			t.Fatalf("the browser's update failed the room: %v", err)
 		}
-		if text, err := service.Text(ctx, artifactID); err != nil || text != want {
+		if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != want {
 			t.Fatalf("the room renders %d bytes (%v), want the browser's %d", len(text), err, len(want))
 		}
 		if err := service.Evict(ctx, artifactID); err != nil {
 			t.Fatalf("evict the room: %v", err)
 		}
-		if text, err := service.Text(ctx, artifactID); err != nil || text != want {
+		if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != want {
 			t.Fatalf("the stored history renders %d bytes (%v), want the browser's %d", len(text), err, len(want))
 		}
 	})
@@ -303,7 +303,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	if after := versions(); after != before+1 {
 		t.Fatalf("the settlement wrote %d versions, want 1", after-before)
 	}
-	if stamped, err := service.Blocks(ctx, artifactID); err != nil || len(stamped) != blocks+1 {
+	if stamped, err := service.Blocks(ctx, serverReader, artifactID); err != nil || len(stamped) != blocks+1 {
 		t.Fatalf("the settled document has %d blocks with ids (%v), want %d", len(stamped), err, blocks+1)
 	}
 	stored, err := NewPgVersioned(service.store).Load(ctx, artifactID)

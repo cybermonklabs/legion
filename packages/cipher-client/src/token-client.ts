@@ -70,7 +70,9 @@ import {
 /**
  * How long before an access token's expiry the client trades again, so a renewal lands with the
  * token in hand still good and nothing of the caller's restarts. The broker mints a machine's
- * token for an hour or less.
+ * token for an hour or less. A token that lives less than this, such as a restricted member's
+ * machine login's 270 seconds, is traded again halfway through its life instead, as the Go
+ * client renews one (`renewalAt`, packages/envoy/internal/cipherclient/brokerclient.go).
  */
 export const DEFAULT_RENEW_BEFORE_MS = 5 * 60_000;
 
@@ -386,6 +388,10 @@ export class BrokerTokenClient {
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   readonly #nonce: DpopNonce = { value: "" };
   #held: BrokerToken | null = null;
+  /** When the token in hand is traded again: {@link DEFAULT_RENEW_BEFORE_MS} (or the client's
+   *  own) ahead of its expiry, or halfway through what was left of its life when it landed for a
+   *  token that lives less than that. */
+  #renewAt = 0;
   /** The retry loop under way (`#run`), so the callers that need a token make one trade per slot
    *  of its schedule however many they are. It runs on no caller's signal: each caller stops
    *  waiting for it on its own (`#joined`). */
@@ -447,7 +453,7 @@ export class BrokerTokenClient {
   }
 
   /**
-   * A live access token: the one in hand while it is good for longer than the renewal window, and
+   * A live access token: the one in hand until its renewal time (`#renewalAt`), and
    * otherwise the answer of this client's one retry loop (`#run`), which trades until a token
    * lands or a refusal no trade cures ends it. A caller never starts a second loop and never cuts
    * the loop's wait short, so however many callers ask — a NATS connection's every reconnect,
@@ -477,7 +483,7 @@ export class BrokerTokenClient {
     const waitForReady = options.waitForReady === true;
     const now = this.#now();
     const held = this.#held;
-    if (held !== null && now < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
+    if (held !== null && now < this.#renewAt) return held;
     if (held !== null && now < held.expiresAt.getTime() && this.#last !== null) return held;
     // A closed client trades no more, and says so to a caller with nothing live in hand.
     const closed = this.#closed.signal;
@@ -639,6 +645,7 @@ export class BrokerTokenClient {
         );
       }
       this.#held = token;
+      this.#renewAt = this.#renewalAt(token, this.#now());
       this.#last = null;
       this.#since = null;
       this.#failed = 0;
@@ -648,6 +655,16 @@ export class BrokerTokenClient {
       this.#retryWait = RETRY_FIRST_WAIT_MS;
       return token;
     }
+  }
+
+  /** When `token`, landed at `now`, is traded again: {@link DEFAULT_RENEW_BEFORE_MS} (or the
+   *  client's own) ahead of its expiry, or, for a token that lives less than that, halfway
+   *  through what is left of its life, so a short token is not traded again at every call. */
+  #renewalAt(token: BrokerToken, now: number): number {
+    const expires = token.expiresAt.getTime();
+    const ahead = expires - this.#renewBeforeMs;
+    if (ahead > now) return ahead;
+    return expires > now ? now + Math.floor((expires - now) / 2) : now;
   }
 
   /**

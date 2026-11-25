@@ -52,15 +52,20 @@ const (
 
 // itemBlockHeld is the join that reduces a link row r whose target is a block of an ask, a
 // comment or a message to that item, while the block is one of the item's current ones
-// (itemBlockCurrent): item_block is the item's kind and uuid, null for any other target and for
-// a block its item has removed. Each arm reads its blocks table through its hash index on
-// node_id, and only for its own block kind, whose to_kind test is a one-time filter.
-var itemBlockHeld = func() string {
+// (itemBlockCurrent): item_block is the item's kind and uuid, null for any other target, for a
+// block its item has removed, and for a block of an item the acting credential ($2) may not see.
+// Each arm reads its blocks table through its hash index on node_id, and only for its own block
+// kind, whose to_kind test is a one-time filter. Each arm holds its row to the item that owns it
+// (VisibleKind over the row's own item column), which a target's own predicate implies, so that
+// the statement binds the blocks table on its own alias, as the statement census of api reads a
+// binding. It is rendered at its first use, as the statements that splice it are.
+var itemBlockHeld = sync.OnceValue(func() string {
 	arms := make([]string, len(itemKinds))
 	for index, item := range itemKinds {
 		tables, _ := item.tables()
 		arms[index] = `select '` + string(item) + `', b.` + tables.item + `::text from ` + tables.blocks + ` b
-				where r.to_kind = '` + item.BlockKind() + `' and b.node_id = r.to_id and ` + itemBlockCurrent
+				where r.to_kind = '` + item.BlockKind() + `' and b.node_id = r.to_id and ` + itemBlockCurrent + `
+				  and ` + VisibleKind(string(item), `b.`+tables.item+`::text`, `$2`)
 	}
 	return `left join lateral (
 				` + strings.Join(arms, `
@@ -68,7 +73,7 @@ var itemBlockHeld = func() string {
 				`) + `
 				limit 1
 			) item_block (kind, id) on true`
-}()
+})
 
 // targetNode is the kind and the id of the node the target of a link row r counts as, beside
 // documentBlockHeld and itemBlockHeld: a document's block is its document, by ref_key, and a
@@ -90,33 +95,23 @@ func oneRowPerNode(own string) string {
 		group by f.node_kind, f.node_id`
 }
 
-// ownDocuments is the issue's own documents both statements of the read start from: those of the
-// issue whose key is $1 that the acting person, whose credential is $2, may see. A document
-// reserved for another author is no source of the out statement and no target of the in
-// statement, so it is neither a link's via nor reached through one (VisibleKind).
-func ownDocuments() string {
-	return `own_documents as (
-			select a.id, a.ref_key from artifacts a where a.issue_key = $1 and ` + VisibleKind("artifact", "a.ref_key", "$2") + `
-		)`
-}
-
-// linksOutQuery is the out statement of the references read of the issue whose key is $1, as the
-// acting person whose credential is $2 (VisibilityArg) reads it: every node the issue's own
-// content links to, read from the links of that content by their source. The issue's own content
-// is its documents and its items, those of each item kind (itemKinds: its comments, its messages
-// and its asks), each read by the issue's key. Its links are each one's own refs rows, read by
-// refs' primary key (from_kind, from_id); every link of its documents' blocks, mentions and the
-// pointers block_refs lists (blockRefListed), read from block_refs by its primary key's document;
-// and the links of the current blocks of each item whose own refs rows do not hold every mention
-// its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts, read from the kind's block
-// mentions table by its primary key's item (itemBlockLinks). A comment's or a message's own refs
-// rows hold every mention its blocks hold, so their block links need no read of their own. A
-// source whose block links are read so, a document or such an item, counts its own mention of a
-// target a block of it holds as that block's link and not again (heldByABlock), so a pointer's
-// target takes the pointer's kind alone. Each read is a lateral for one source, which `offset 0`
-// keeps a nested loop keyed by that source: pulled up into a join, it could be planned as a hash
-// or a merge join over a whole read of its table. Each item kind's items are read once by the
-// issue's key (own_<its items table>), for its sources and for the read of its block links alike.
+// linksOutQuery is the out statement of the references read of the issue whose key is $1: every
+// node the issue's own content links to, read from the links of that content by their source.
+// The issue's own content is its documents and its items, those of each item kind (itemKinds:
+// its comments, its messages and its asks), each read by the issue's key. Its links are each
+// one's own refs rows, read by refs' primary key (from_kind, from_id); every link of its
+// documents' blocks, mentions and the pointers blockRefListed lists, read from block_refs by
+// its primary key's document; and the links of the current blocks of each item whose own refs
+// rows do not hold every mention its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts,
+// read from the kind's block mentions table by its primary key's item (itemBlockLinks). A
+// comment's or a message's own refs rows hold every mention its blocks hold, so their block links
+// need no read of their own. A source whose block links are read so, a document or such an item,
+// counts its own mention of a target a block of it holds as that block's link and not again
+// (heldByABlock), so a pointer's target takes the pointer's kind alone. Each read is a lateral
+// for one source, which `offset 0` keeps a nested loop keyed by that source: pulled up into a
+// join, it could be planned as a hash or a merge join over a whole read of its table. Each item
+// kind's items are read once by the issue's key (own_<its items table>), for its sources and for
+// the read of its block links alike.
 //
 // heldByABlock probes block_refs by the mention's target and its document's id as text
 // (`artifact_id::text = from_id`), which block_refs_to_source keys by its three columns, to_kind,
@@ -137,18 +132,21 @@ func ownDocuments() string {
 // and its lowest via: a document of the issue by its uuid, the id its links are written under, an
 // item by its uuid (oneRowPerNode).
 //
-// A link is read only where the acting person may see both its ends. Its source is content of
-// the issue they may see (ownDocuments, and each item kind's items by that kind's predicate), and
-// a link a block holds counts only while they may see that block too; its target, as the link
-// spells it, is held to the predicate of its kind (VisibleEnd), so a link into a block they may
-// not see adds neither a kind nor a via to its document's row. The node the target counts as is
-// held to its predicate by the loader that names it (Closure, resolveNodes). The statement is
-// rendered at its first use and not as the variable is initialized, because the predicates it
-// binds read the registry, which init fills after every variable of the package (nodeRegistry):
-// rendered before that, every predicate would be `false` and the read empty.
+// It answers for the acting credential, $2 (VisibilityArg): a link is read only where the acting
+// person may see both its ends. Its source, the issue's own document or item, is read only where
+// they may see its node, and a source block only where they may see that block; its target is
+// held to them by the registry over the far end it names (VisibleEnd, over the to side's ids), a
+// block's included, before it is reduced to its document or item, whose node resolveNodes holds
+// to them again; and the issue itself is held to them in the statement (the registry's issue
+// predicate over $1, which names only parameters, so Postgres tests it once): an issue they may
+// not see has no references, whatever the caller read of it before. It is rendered at its first
+// use and not as the variable is initialized, because the predicates it binds read the registry,
+// which init fills after every variable of the package (nodeRegistry): rendered before that,
+// every predicate would be `false` and the read empty.
 var linksOutQuery = sync.OnceValue(func() string {
+	visibleDocument := VisibleKind("artifact", `o.ref_key`, `$2`)
 	ownItems := make([]string, 0, len(itemKinds))
-	sources := []string{`select 'artifact', o.id::text from own_documents o`}
+	sources := []string{`select 'artifact', o.id::text from own_documents o where ` + visibleDocument}
 	// blockLinksRead is every kind of source whose block links an arm of links reads: a
 	// document's, and an item's whose own refs rows do not hold them.
 	blockLinksRead := []string{`'artifact'`}
@@ -157,16 +155,18 @@ var linksOutQuery = sync.OnceValue(func() string {
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from block_refs r
 				where r.artifact_id = o.id and ` + blockRefListed("r") + `
-				  and ` + VisibleKind("block", "r.from_node", "$2") + `
+				  and ` + VisibleKind("block", `r.from_node`, `$2`) + `
 				offset 0
-			) r`}
+			) r
+			where ` + visibleDocument}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		own := `own_` + tables.items
+		visibleItem := VisibleKind(string(item), `o.id::text`, `$2`)
 		ownItems = append(ownItems, own+` as (
-			select x.id from `+tables.items+` x where x.issue_key = $1 and `+VisibleKind(string(item), "x.id::text", "$2")+`
+			select x.id from `+tables.items+` x where x.issue_key = $1
 		)`)
-		sources = append(sources, `select '`+string(item)+`', o.id::text from `+own+` o`)
+		sources = append(sources, `select '`+string(item)+`', o.id::text from `+own+` o where `+visibleItem)
 		if item.refsHoldBlockLinks() {
 			continue
 		}
@@ -176,12 +176,15 @@ var linksOutQuery = sync.OnceValue(func() string {
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from `+itemBlockLinks(item)+`
 				where r.`+tables.item+` = o.id and `+itemBlockCurrent+`
-				  and `+VisibleKind(item.BlockKind(), "r.from_node", "$2")+`
+				  and `+VisibleKind(item.BlockKind(), `r.from_node`, `$2`)+`
 				offset 0
-			) r`)
+			) r
+			where `+visibleItem)
 	}
 	return `
-		with ` + ownDocuments() + `,
+		with own_documents as (
+			select a.id, a.ref_key from artifacts a where a.issue_key = $1
+		),
 		` + strings.Join(ownItems, `,
 		`) + `,
 		sources (kind, id) as (
@@ -211,26 +214,27 @@ var linksOutQuery = sync.OnceValue(func() string {
 			select ` + targetNode + `, r.kind, r.via_kind, r.via_id
 			from links r
 			` + documentBlockHeld + `
-			` + itemBlockHeld + `
+			` + itemBlockHeld() + `
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
-			  and ` + VisibleEnd("r.to_kind", "r.to_id", true, "$2") + `
+			  and ` + VisibleEnd(`r.to_kind`, `r.to_id`, true, `$2`) + `
+			  and ` + VisibleKind("issue", `$1`, `$2`) + `
 		)` + oneRowPerNode(`select row(o.kind, o.id) from own o`)
 })
 
-// linksInQuery is the in statement of the references read of the issue whose key is $1, as the
-// acting person whose credential is $2 (VisibilityArg) reads it: every node that links to the
-// issue or to its own content, read from the links into them by their target. It reads the
-// issue's own targets once (targets): the issue node by its key, its documents by ref_key and
-// their current blocks (document_blocks, by its primary key's document), and its asks, comments
-// and messages by the issue's key and their current blocks (itemBlockCurrent). Then it reads each
-// link table once for each kind of target, `to_kind = <kind> and to_id = any(<the ids of that
-// kind>)` (keys), through the table's index of targets (refs_to, block_refs_to_source,
-// ask_block_refs_to, comment_block_refs_to, message_block_refs_to), in a lateral that `offset 0`
-// keeps a nested loop keyed by the kind, as the out statement keeps its reads: a source block of
-// an item while it is current (itemBlockLinks, itemBlockCurrent), a block's pointer while
-// block_refs lists it (blockRefListed), and an item's own mention of a target that a block of
-// that item holds as that block's link alone (heldByABlock).
+// linksInQuery is the in statement of the references read of the issue whose key is $1: every
+// node that links to the issue or to its own content, read from the links into them by their
+// target. It reads the issue's own targets once (targets): the issue node by its key, its
+// documents by ref_key and their current blocks (document_blocks, by its primary key's document),
+// and its asks, comments and messages by the issue's key and their current blocks
+// (itemBlockCurrent). Then it reads each link table once for each kind of target, `to_kind =
+// <kind> and to_id = any(<the ids of that kind>)` (keys), through the table's index of targets
+// (refs_to, block_refs_to_source, ask_block_refs_to, comment_block_refs_to,
+// message_block_refs_to), in a lateral that `offset 0` keeps a nested loop keyed by the kind, as
+// the out statement keeps its reads: a source block of an item while it is current
+// (itemBlockLinks, itemBlockCurrent), a block's pointer while blockRefListed lists it, and an
+// item's own mention of a target that a block of that item holds as that block's link alone
+// (heldByABlock).
 //
 // Each link's source is reduced to its node: a document's block to its document and a block of
 // an item to the item. A source document, or a source block's document, is named by its ref_key,
@@ -240,27 +244,36 @@ var linksOutQuery = sync.OnceValue(func() string {
 // document's ref_key or an item's uuid. The issue and its own content are left out (targets).
 // Its rows are one for each node, with the kinds of its links and its lowest via (oneRowPerNode).
 //
-// A link is read only where the acting person may see both its ends. Its target is one of the
-// targets they may see, each held to the predicate of its kind, so a node that links into content
-// of the issue reserved for another author is not listed through it; its source is held to the
-// predicate of the node it counts as (VisibleEnd), and a link a block holds counts only while
-// they may see that block too. It is rendered at its first use, as linksOutQuery is.
+// It answers for the acting credential, $2 (VisibilityArg), as linksOutQuery does: a target is
+// read only where the acting person may see it (a block where they may see the block and its
+// document or item), so no row names a via hidden from them; and a link is read only where they
+// may see its source and its target, each held to them in the arm that reads the link, on the
+// columns of the row that name them, as the statement census of api reads a binding
+// (TestEveryProjectReadBindsTheFragmentPerStatement): a refs row by its source (VisibleEnd, over
+// the ref_key a document's row is named by, which the document's own row is held to as well) and
+// its target; a block's pointer by its document's row and its source block; and an item block's
+// link by its item and its source block. A clause over the source the arms have made, in far,
+// would hold the same rows, but the census cannot trace the source's id through the expression
+// that names it, and so finds every table of the arms unbound. The issue itself is held to them
+// (the registry's issue predicate over $1). It is rendered at its first use, as linksOutQuery is.
 var linksInQuery = sync.OnceValue(func() string {
+	visibleDocument := VisibleKind("artifact", `o.ref_key`, `$2`)
+	visibleSourceDocument := VisibleKind("artifact", `a.ref_key`, `$2`)
 	targets := []string{
-		`select 'issue', $1::text where ` + VisibleKind("issue", "$1::text", "$2"),
-		`select 'artifact', o.ref_key from own_documents o`,
+		`select 'issue', $1::text`,
+		`select 'artifact', o.ref_key from own_documents o where ` + visibleDocument,
 		`select 'block', d.node_id from own_documents o join document_blocks d on d.artifact_id = o.id
-			where ` + VisibleKind("block", "d.node_id", "$2"),
+			where ` + visibleDocument + ` and ` + VisibleKind("block", `d.node_id`, `$2`),
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
-		visibleItem := VisibleKind(string(item), "x.id::text", "$2")
+		visibleItem := VisibleKind(string(item), `x.id::text`, `$2`)
 		targets = append(targets,
 			`select '`+string(item)+`', x.id::text from `+tables.items+` x where x.issue_key = $1 and `+visibleItem,
 			`select '`+item.BlockKind()+`', b.node_id
 			from `+tables.items+` x join `+tables.blocks+` b on b.`+tables.item+` = x.id
 			where x.issue_key = $1 and `+itemBlockCurrent+` and `+visibleItem+`
-			  and `+VisibleKind(item.BlockKind(), "b.node_id", "$2"))
+			  and `+VisibleKind(item.BlockKind(), `b.node_id`, `$2`))
 	}
 	// byTarget reads the links of from, its link table aliased r, that end at a target of each
 	// kind of keys and meet condition, as rows of their source node (columns), their kind and
@@ -279,21 +292,39 @@ var linksInQuery = sync.OnceValue(func() string {
 		byTarget(`r.from_kind, case when r.from_kind = 'artifact' then src.ref_key else r.from_id end, r.kind, r.to_kind, r.to_id`,
 			`refs r
 				left join lateral (
-					select a.ref_key from artifacts a where r.from_kind = 'artifact' and a.id::text = r.from_id limit 1
+					select a.ref_key from artifacts a where r.from_kind = 'artifact' and a.id::text = r.from_id
+					  and `+visibleSourceDocument+`
+					limit 1
 				) src on true`,
-			`not `+heldByABlock("r")),
+			`not `+heldByABlock("r")+`
+				  and `+VisibleEnd(`r.from_kind`, `case when r.from_kind = 'artifact' then src.ref_key else r.from_id end`, true, `$2`)+`
+				  and `+VisibleEnd(`r.to_kind`, `r.to_id`, true, `$2`)),
+		// A block's pointer is held to its document in the arm's own scope: the lateral names the
+		// document that owns the pointer, the join states that it does (src.id = r.artifact_id), and
+		// the arm holds that document to the reader by its ref_key, as the out statement joins
+		// block_refs to own_documents and holds them; and its target is held to the reader in the
+		// arm too, as the refs arm holds its own, so the census reads blockRefListed's arguments as
+		// bound. A clause inside the lateral would hold the same rows, but the census reads a
+		// lateral's clauses as binding its own rows alone.
 		byTarget(`'artifact', src.ref_key, r.kind, r.to_kind, r.to_id`,
 			`block_refs r
-				cross join lateral (select a.ref_key from artifacts a where a.id = r.artifact_id limit 1) src`,
-			blockRefListed("r")+` and `+VisibleKind("block", "r.from_node", "$2")),
+				join lateral (
+					select a.id, a.ref_key from artifacts a where a.id = r.artifact_id limit 1
+				) src on src.id = r.artifact_id`,
+			VisibleEnd(`r.to_kind`, `r.to_id`, true, `$2`)+` and `+blockRefListed("r")+`
+				  and `+VisibleKind("block", `r.from_node`, `$2`)+`
+				  and `+VisibleKind("artifact", `src.ref_key`, `$2`)),
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		links = append(links, byTarget(`'`+string(item)+`', r.`+tables.item+`::text, r.kind, r.to_kind, r.to_id`,
-			itemBlockLinks(item), itemBlockCurrent+` and `+VisibleKind(item.BlockKind(), "r.from_node", "$2")))
+			itemBlockLinks(item), itemBlockCurrent+` and `+VisibleKind(item.BlockKind(), `r.from_node`, `$2`)+`
+				  and `+VisibleKind(string(item), `r.`+tables.item+`::text`, `$2`)))
 	}
 	return `
-		with ` + ownDocuments() + `,
+		with own_documents as (
+			select a.id, a.ref_key from artifacts a where a.issue_key = $1
+		),
 		targets (kind, id) as (
 			` + strings.Join(targets, `
 			union all
@@ -310,9 +341,9 @@ var linksInQuery = sync.OnceValue(func() string {
 		far (node_kind, node_id, kind, via_kind, via_id) as (
 			select r.node_kind, r.node_id, r.kind, ` + targetNode + `
 			from links r
-			` + itemBlockHeld + `
+			` + itemBlockHeld() + `
 			where r.node_id is not null
-			  and ` + VisibleEnd("r.node_kind", "r.node_id", true, "$2") + `
+			  and ` + VisibleKind("issue", `$1`, `$2`) + `
 		)` + oneRowPerNode(`select row(t.kind, t.id) from targets t`)
 })
 
@@ -351,10 +382,10 @@ type linkRow struct {
 // id. Members are the documents of Links, each at depth 1 with its row's via, by ref_key. Every
 // statement it sends, through q, starts with ClosureTag.
 //
-// It answers for who: a link whose source or target who may not see is no link of the read, so a
-// node is never listed through, or named as the via of, a node reserved for another author, and
-// such a node is never listed itself, since resolveNodes names only the nodes who may see
-// (VisibleKind, VisibleEnd).
+// It answers for who: a link whose source or target who may not see is no link of the read, so
+// no row is reached through, or names as its via, a node reserved for another author or of a
+// project who does not see, and such a node is never a row or a member (linksOutQuery,
+// linksInQuery, and resolveNodes' loaders, each binding the registry's predicates).
 func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (References, error) {
 	tagged := taggedQueryer{q}
 	out, err := readLinkRows(ctx, tagged, linksOutQuery(), who, issueKey)
@@ -385,7 +416,7 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 	return References{Members: members, Links: related(out, nodes), LinkedFrom: related(in, nodes)}, nil
 }
 
-// readLinkRows runs statement, the out or the in statement, for issueKey as who reads it, and
+// readLinkRows runs statement, the out or the in statement, for issueKey as who reads it and
 // answers its rows.
 func readLinkRows(ctx context.Context, q Queryer, statement string, who model.Actor, issueKey string) ([]linkRow, error) {
 	rows, err := q.Query(ctx, statement, issueKey, VisibilityArg(who))

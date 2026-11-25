@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,7 +26,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -86,6 +86,10 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -201,6 +205,27 @@ type bootConfig struct {
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
 	OIDCAudience string
+	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
+	// provisioned as private, sorted and each once (privateProjectsSetting). A switch of one of them
+	// to private is its full switch. Only these and PrivateBeforeFullSwitch's can be made private;
+	// the boot and the maintenance sweep report a private project neither names, by key, and
+	// /healthz says only that one exists, naming none (reportPrivateProjects,
+	// unprovisionedPrivateProjectReason).
+	PrivateProjects []string
+	// PrivateProjectsIgnored is each entry of DISPATCH_PRIVATE_PROJECTS that is no project key, in
+	// the order given: never read as a key, and logged at boot as one ERROR line each
+	// (reportIgnoredPrivateProjects).
+	PrivateProjectsIgnored []string
+	// PrivateBeforeFullSwitch is DISPATCH_PRIVATE_BEFORE_FULL_SWITCH: the keys of the projects
+	// this deployment makes private before their full switch, read as PrivateProjects is. Such a
+	// project goes private with no provisioning and no bus record, and a complete store; the boot
+	// names each that is private in an INFO line, and /healthz says only that one exists, naming
+	// none (reportPrivateProjects, privateBeforeFullSwitchReason). A key PrivateProjects names too
+	// is left off, since it takes its full switch, so the two lists are disjoint.
+	PrivateBeforeFullSwitch []string
+	// PrivateBeforeFullSwitchIgnored is each entry of DISPATCH_PRIVATE_BEFORE_FULL_SWITCH that is no
+	// project key, in the order given, logged at boot as PrivateProjectsIgnored's are.
+	PrivateBeforeFullSwitchIgnored []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -282,6 +307,8 @@ func main() {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
 	}
+	reportIgnoredPrivateProjects(privateProjectsVariable, boot.PrivateProjectsIgnored)
+	reportIgnoredPrivateProjects(privateBeforeFullSwitchVariable, boot.PrivateBeforeFullSwitchIgnored)
 	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
 	// a machine with none refuses to start, naming the setting, and a metadata server that does
 	// not answer later fails only the call it was asked for, which its delivery tries again.
@@ -470,6 +497,28 @@ func main() {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
 	}
 
+	// Every project has an owner (INFRA-3862): a project the access migration left with none is
+	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
+	// refuses, naming each and both repairs.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
+	// Whether any project is private, read once here, after the database's open and migrate and
+	// before the first loop and the repository seed, then every 30 s (privateProjectsState): every
+	// response says it (Dispatch-Private-Projects). This first read does not fail open: a failure
+	// ends the boot, as a database that will not open does.
+	privateState, err := startPrivateProjectsState(ctx, database.Pool, boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
+	if err != nil {
+		slog.Error("dispatch: read the private projects", "error", err)
+		os.Exit(1)
+	}
+	// What the two lists say of private projects, reported and never refused: Dispatch runs as one
+	// process, so an exit here would stop every project, and the owner's repair through the API
+	// with it. Each condition fails closed for its own projects (reportPrivateProjects). The
+	// store's check is the maintenance loop's, as it starts.
+	reportPrivateProjects(privateState)
+
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
 		slog.Error("dispatch: resolve web dist dir", "error", err)
@@ -525,7 +574,7 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
@@ -1235,7 +1284,8 @@ func main() {
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries,
+		boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1446,7 +1496,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		DatabaseURL:          strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
+
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1537,6 +1589,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
+	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get(privateProjectsVariable))
+	boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored = privateProjectsSetting(env.get(privateBeforeFullSwitchVariable))
+	// A key both settings name takes its full switch, so it is DISPATCH_PRIVATE_PROJECTS' alone: this
+	// is the one place the overlap is settled, and every reader gets two disjoint lists
+	// (api.NewDeps refuses lists that are not).
+	boot.PrivateBeforeFullSwitch = slices.DeleteFunc(boot.PrivateBeforeFullSwitch, func(key string) bool {
+		_, provisioned := slices.BinarySearch(boot.PrivateProjects, key)
+		return provisioned
+	})
 	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -1824,15 +1885,18 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot and serverURL filled in (documentDeps).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, serverURL, built))
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's outside origin. serverURL loses one
+// trailing `/` first, as api.NewDeps trims it, so the document service and the API read a server
+// URL ending in `//` alike. The settings tests read its answer, as they build the router through
+// appContextOptions, so dropping a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting,
+// TestDocumentDepsReadLinksAsTheAPIDoes).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -1996,6 +2060,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
+	built.PrivateProjects = boot.PrivateProjects
+	built.PrivateBeforeFullSwitch = boot.PrivateBeforeFullSwitch
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
 	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
@@ -2169,23 +2235,6 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 	return extra
 }
 
-// dispatchHandler mounts the three probes the process serves - /healthz, /livez and /metrics -
-// above every dashboard and API route, so each is answered whatever the router is doing. Go's
-// ServeMux prefers the longer pattern, so "GET /healthz", "GET /livez" and "GET /metrics" win
-// over the router's "/", which is also what keeps a scrape of /metrics from falling through to
-// the SPA shell the router answers an unknown path with. /livez answers 204 and touches nothing:
-// it says only that the process answers, for a liveness or startup probe, which must not wait on
-// or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
-// so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.Handle("GET /metrics", registry.Handler())
-	mux.Handle("/", handler)
-	return mux
-}
-
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports
 // them: the sign-in issuer's code flow and the service-account token verifier, each nil when boot
 // configures none.
@@ -2229,13 +2278,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2369,8 +2419,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record
@@ -2398,7 +2451,17 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // api/request_keys.go): the deploy check reads it (scripts/e2e/lib/dispatch-keyed-comment.ts), since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+//
+// `degraded` lists fixed reason codes, and is absent while none holds, so a deployment with none
+// answers the body it always did: `private_project_unprovisioned` while the database holds a
+// private project neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names,
+// and then `private_before_full_switch` while it holds a project private before its full switch
+// (privateProjectsState.BeforeFullSwitch), each as the last read, cached 30 s, found it. Each is a
+// fixed code: /healthz answers a caller with no credential, so it names no key and gives no count
+// (R2); the operator reads the keys in reportPrivateProjects' lines, which the boot writes, so a
+// project made private after the boot is named at the next one. Neither decides ok: such a
+// project stays private, and a probe that failed for it would take every project out of service.
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2454,6 +2517,17 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		if !ok {
 			status = http.StatusServiceUnavailable
 		}
+		// Never counted against ok: an unprovisioned private project stays private, a project
+		// private before its full switch is private by the operator's choice, and a probe that
+		// failed for either would take every project out of service. The state's last read
+		// decides both, so a probe adds no read.
+		var degraded []string
+		if databaseOK && len(privateState.Unprovisioned()) > 0 {
+			degraded = append(degraded, unprovisionedPrivateProjectReason)
+		}
+		if databaseOK && len(privateState.BeforeFullSwitch()) > 0 {
+			degraded = append(degraded, privateBeforeFullSwitchReason)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
@@ -2469,10 +2543,12 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int               `json:"schema_version"`
 			OutboxPublisher bool               `json:"outbox_publisher"`
 			IdempotencyKeys bool               `json:"idempotency_keys"`
+			Degraded        []string           `json:"degraded,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			Degraded: degraded,
 		})
 	}
 }

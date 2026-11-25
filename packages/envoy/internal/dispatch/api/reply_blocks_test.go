@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // describeReplyBlock is a reply_block as a failure message prints it: its JSON, which gives each
@@ -617,7 +618,7 @@ func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
 	askReply := insert("ask_id", askID, "On the ask.")
 	for _, id := range []string{reply, askReply} {
 		owed := oweBlockGrammar(t, database, "comment", id)
-		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, text.NewOrigins("https://dispatch.example")); err != nil || !indexed {
 			t.Fatalf("reindex comment %s = %v (%v), want it indexed", id, indexed, err)
 		}
 	}

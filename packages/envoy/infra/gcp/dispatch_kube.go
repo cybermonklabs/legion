@@ -17,7 +17,6 @@ import (
 	policyv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/policy/v1"
 	schedulingv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/scheduling/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
 )
@@ -793,6 +792,17 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
 	}
+	if s.projectOwnerFallback != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
+	}
+	// Only a non-empty list renders: unset and empty leave the pod as it always was, so a stack
+	// that provisions no private project renders no setting a binary that predates it would read.
+	if len(s.privateProjects) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", strings.Join(s.privateProjects, ",")))
+	}
+	if len(s.privateBeforeFullSwitch) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH", strings.Join(s.privateBeforeFullSwitch, ",")))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
@@ -934,6 +944,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// policies add up.
 	if len(args.LoadBalancerSourceRanges) > 0 {
 		appIngress = append(appIngress, ingressFrom(8766, ipBlockPeers(args.LoadBalancerSourceRanges)))
+	}
+	// Each allowed app is a rule of its own, admitting the pods of this namespace that wear its
+	// app label: a workload such as the secrets broker runs in Dispatch's own namespace, which an
+	// allowedNamespaces entry would open to every pod.
+	for _, app := range args.AllowedApps {
+		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(app)}))
 	}
 	// The front door is a pod of this namespace, which no namespace selector covers, so without
 	// this rule Serve reaches the app at no port at all. Without a front door there is no such pod

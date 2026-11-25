@@ -1189,56 +1189,85 @@ hold_supervise_table_tests()
 
 
 # ---------------------------------------------------------------- the envoy race lane
-# The three jobs that run packages/envoy's concurrent packages under the race detector, declared
-# once: each job's step name, its -timeout, and the packages the step names, in the order it names
-# them. Everything the lane decides is built from this list - the three steps' own texts, the
-# envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
-# of the plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
+# The jobs that run packages/envoy's concurrent packages under the race detector, declared once:
+# each job's step name, its -timeout, and the packages the step names, in the order it names
+# them. Everything the lane decides is built from this list - the steps' own texts, the envoy-go
+# unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists of the
+# plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
 # so a package added to the lane reaches all of them or the check goes red. internal/dispatch/pmdoc
 # is not in the lane: it runs plain only.
 class RacePackage(NamedTuple):
     """A package of the lane, named under packages/envoy. A `tree` package is the one a step names
     as `./<name>/...`, that directory and every package under it; any other is `./<name>/`, the
-    package alone."""
+    package alone. A `counted` package its job runs in a step of its own through database-skips.sh
+    (RACE_COUNTED_STEP), which fails on any skip of it, rather than in the job's race step."""
 
     name: str
     tree: bool = False
+    counted: bool = False
 
 
 class RaceJob(NamedTuple):
-    """One job of the lane: the ci.yaml job, its race step's name and -timeout, and its packages."""
+    """One job of the lane: its id, its race step's name and -timeout, and its packages. A job with
+    a `caller` is a second job of the file ci.yaml's job of that id calls, on a runner of its own,
+    selected and gated with it; any other is ci.yaml's job of its own id."""
 
     job: str
     step: str
     timeout: str
     packages: tuple
+    caller: str = ""
 
 
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
-            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials, the NATS auth service and the sign-in code flow",
-            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
-                    RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
-                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
+            "Race-test delivery, the bus, the listener, the registry store, the session cache, kvwatch, the NATS "
+            "credentials and the sign-in code flow",
+            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/bus"),
+                    RacePackage("cmd/listener"), RacePackage("internal/store"), RacePackage("internal/session"),
+                    RacePackage("internal/kvwatch", tree=True), RacePackage("natscred"),
+                    RacePackage("internal/cipher/natscallout", counted=True), RacePackage("internal/oidc"))),
+    RaceJob("envoy-go-race-store", "Race-test the Dispatch store", "60m",
+            (RacePackage("internal/dispatch/store", tree=True),), caller="envoy-go-race"),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
 
-def race_pkgs(job):
-    """The package arguments of a race job's step, in the order it names them."""
-    return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
+def race_pkgs(job, counted=False):
+    """The package arguments of a race job's race step, in the order it names them, or with
+    `counted` those of its counted step (RACE_COUNTED_STEP)."""
+    return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages if p.counted == counted]
 
 
 def race_step(job):
-    """The one go command of a race job's step, pinned to the text this declaration builds."""
+    """The one go command of a race job's race step, pinned to the text this declaration builds and
+    cited in the file that holds the job: its caller's, where it has one."""
     pkgs = race_pkgs(job)
     text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
-    return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+    where = at(job.job, job.step, job_file(job.caller or job.job))
+    return run(ENVOY, pkgs, f"{where}: {text}", step=job.step, text=text, race=True)
+
+
+# envoy-go-race runs its counted package, the NATS auth service (internal/cipher/natscallout), in a
+# step of its own through database-skips.sh, which counts the skips of that same run and fails on
+# any: a test of that package opens the broker's Postgres (hold_budget_test.go) and skips without
+# BROKER_TEST_DATABASE_URL, and a step that runs without -v prints nothing for a skip. The job's
+# race step keeps its other packages, and the envoy-go-race-store job's step the store's, some of
+# whose tests skip in every CI run by design (a measurement run by hand, a stored shape a later
+# migration refuses), which the counter would count. The step's -timeout is its own: the package
+# took 46 s under -race on a dev box, so 10 minutes still names a hung test before the job's
+# timeout-minutes cuts it off.
+RACE = RACE_JOBS["envoy-go-race"]
+RACE_COUNTED_STEP = "Race-test the NATS auth service and count its skips"
+RACE_COUNTED_TIMEOUT = "10m"
+RACE_COUNTED_SCRIPT = ("scripts/database-skips.sh --var BROKER_TEST_DATABASE_URL "
+                       f"--race --timeout {RACE_COUNTED_TIMEOUT} " + " ".join(race_pkgs(RACE, counted=True)))
+if any(p.counted for job in ENVOY_RACE_LANE if job is not RACE for p in job.packages):
+    raise ValueError("a counted package is in a race job other than envoy-go-race, whose gate alone runs the "
+                     "counted step: it would run in no step of its job")
 
 
 # The architecture-note and spec-file rules and the commands that run them, which envoy-go-build
@@ -1385,6 +1414,10 @@ hold_counted_in_unit_run()
 RACE_API = RACE_JOBS["envoy-go-race-api"]
 RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
                    f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
+
+# envoy-go-race-store, the second job of ci-job-envoy-go-race.yaml: race_step's plain go test of the
+# store's tree on a runner of its own, under a -timeout of its own (that file says how it is sized).
+RACE_STORE = RACE_JOBS["envoy-go-race-store"]
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -1784,6 +1817,23 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
 
+# The private-projects acceptance job, the step that runs c-blob-unchanged's driver, and the build
+# of this tree that the driver's two-build harness makes (its whole line, so the pin is exact); the
+# steps that run project-access.sh --all-public and --private-by-sql, and the two go commands that
+# driver holds.
+PROJECT_ACCESS = "dispatch-project-access"
+PROJECT_ACCESS_BLOB_STEP = "Compare what every caller reads at the merge base and at this tree"
+PROJECT_ACCESS_STEP = "Read PRIV's objects as its listed callers, every project public"
+PROJECT_ACCESS_PRIVATE_STEP = ("Read and write every route as the callers PRIV is hidden from, "
+                               "PRIV made private by the store write")
+PROJECT_ACCESS_CONNECTIONS_STEP = "Read the connections the sweep's stacks' Postgres must allow"
+PROJECT_ACCESS_DRIVER = "packages/dispatch/e2e/acceptance/project-access.sh"
+PROJECT_ACCESS_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/" ./cmd/dispatch ./internal/testnats/cmd/natsd ||'
+PROJECT_ACCESS_PROBES = ('go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes '
+                         '>"$work/probes.json" 2>"$work/probes.err" ||')
+TWO_BUILDS = "scripts/e2e/lib/two-builds.sh"
+TWO_BUILDS_HEAD_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/dispatch-head" ./cmd/dispatch ||'
+
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
 # plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
@@ -1798,7 +1848,6 @@ CLAIM_MODEL_TIMEOUT = "40m"
 CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run "
                       f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
                       f"{CLAIM_MODEL_PACKAGE}")
-
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
@@ -1832,6 +1881,7 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
+BROWSER_MP_GOOGLE = "Browser-test Google sign-in, outside sign-in, passkeys and the leaver hold"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
@@ -1854,14 +1904,18 @@ BROWSER_RECORD_STEP = "What the run left behind"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The six steps that run the browser suite, named together wherever a Run or a read cites the
+# The visual job's second browser step: the same rows in reverse order (e2e/visual-order.ts).
+BROWSER_VISUAL_REVERSE_SPECS = "Browser-test dispatch dashboard against its baselines, rows in reverse order"
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the six names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
-    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} and "
-    f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
+    f"{at_browser(BROWSER_MP_GOOGLE, BROWSER_MP)}, "
+    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} and "
+    f"{at_browser(BROWSER_VISUAL_REVERSE_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"

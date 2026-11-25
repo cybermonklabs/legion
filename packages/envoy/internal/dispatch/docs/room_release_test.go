@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The room cap counts live rooms, and the service forgets a document's state once its room has
@@ -45,7 +46,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 		appendThroughAPI(t, service, id)
 	}
 	for _, id := range readIDs {
-		if _, err := service.Text(context.Background(), id); err != nil {
+		if _, err := service.Text(context.Background(), serverReader, id); err != nil {
 			t.Fatalf("read document %s: %v", id, err)
 		}
 	}
@@ -200,11 +201,11 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   20 * time.Millisecond,
 	})
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second

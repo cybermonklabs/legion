@@ -204,19 +204,27 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// Only a token an operator's entry mapped to one project names that project as the one it
-	// may write, which is today's named-scope rule; a named token naming none (the shared
-	// public-session account's, and an account entry's naming no person) writes, as a token
-	// naming no project does, wherever Dispatch's own rules let it, and ciphertoken refuses a
-	// named token naming two.
-	// A token acting as its person carries the list
-	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
-	// dev box session's person writes wherever they may, and the token of a machine naming a
-	// service and no person names no project at all. Nor does a read-only token, whose project
-	// scope none names no project and writes none.
-	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
-		project := caller.Projects[0]
-		actor.Project = &project
+	// A token's list is its credential's, which the one rule of what a caller sees reads
+	// (access.CredentialCovers): for a full member's token it decides only which private projects
+	// the token reaches, so while the deployment holds no private project it changes nothing the
+	// token did before projects could be private (R9); for a restricted member's token it narrows
+	// every project (R3). A token held to one project names that project: one an operator's entry
+	// mapped, today's named-scope rule, and a restricted member's machine login's (the broker's
+	// exchange.Set.Machine); ciphertoken refuses a named token naming two. A full member's such
+	// token has its writes held to that project as they were before, whatever the deployment holds
+	// (NamedProject; namedProjectOf), and a restricted member's is held by its list, which covers
+	// that project alone. A token acting as its person carries the list its trade asked for
+	// (ciphertoken.Caller.Projects), which holds no write by name, since a dev box session's person
+	// writes wherever they may. Every other token carries no list: a named token naming none (the
+	// shared public-session account's, and an account entry's naming no person), which reads and writes as a token naming no project does;
+	// the token of a machine naming a service and no person, which names no project at all; and a
+	// read-only token, whose project scope none names no project and writes none.
+	switch {
+	case caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
+		actor.Credential.Projects = caller.Projects
+		actor.Credential.NamedProject = caller.Projects[0]
+	case caller.ProjectScope == ciphertoken.ProjectScopePerson && len(caller.Projects) > 0:
+		actor.Credential.Projects = caller.Projects
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

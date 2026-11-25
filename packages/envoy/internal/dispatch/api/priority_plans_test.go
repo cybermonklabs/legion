@@ -14,7 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -179,7 +179,7 @@ func readPriorityPlans(t *testing.T, served *server, plans *explainedStatements,
 	plans.take(t)
 	// The route reads with an empty list when the request names no project, never nil, which
 	// pgx would send as null.
-	body, err := served.readPriorities(context.Background(), []string{}, summary)
+	body, err := served.readPriorities(context.Background(), refs.VisibilityArg(everyReader), []string{}, summary)
 	if err != nil {
 		t.Fatalf("read the priorities (summary %t): %v", summary, err)
 	}

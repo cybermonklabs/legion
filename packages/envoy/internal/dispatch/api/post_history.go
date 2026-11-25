@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -332,7 +331,7 @@ func (s *server) getCommentHistory(w http.ResponseWriter, r *http.Request) {
 // message is edited or deleted, and that rule asks for a session on a thread with no issue
 // alone, so it costs this read nothing.
 func (s *server) getMessageHistory(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.readableMessageThread(w, r); !ok {
+	if _, _, ok := s.readableMessageThread(w, r); !ok {
 		return
 	}
 	s.writePostHistory(w, r, refs.ItemMessage)

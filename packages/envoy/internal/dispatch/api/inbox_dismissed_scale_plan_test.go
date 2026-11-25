@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -552,13 +551,15 @@ func dismissedScaleStatements() []dismissedScaleExplained {
 		// The two write routes sort the rows they matched by thread id, which is the lock order
 		// markInboxReadThreads writes down and not an order any index owes them, so what each is
 		// held to is that nothing sorts by the state's own order. The dismissal's read of the
-		// rows a request named binds the ids alone and answers each row's own version: what the
-		// page drew in them is the request's, written over that answer in the server rather
-		// than sent to this read (readInboxDismissThreads).
+		// rows a request named binds the ids and the viewer alone and answers each row's own
+		// version: what the page drew in them is the request's, written over that answer in the
+		// server rather than sent to this read (readInboxDismissThreads). Each Reply read binds
+		// the viewer last, as the list's does (inboxReplyMatchQuery); the Agent read is the shape
+		// of a reader that sees every object, as the list's Agent reads above are.
 		{"120-thread dismiss", "reply rows", inboxDismissNamedThreads,
 			"user_threads_pkey", "user_threads", "replied_at", ""},
 		{"mark all read", "reply rows", inboxReadReplyThreads, "user_threads_unread", "user_threads", "replied_at", ""},
-		{"mark all read", "agent rows", inboxReadAgentThreads, "messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
+		{"mark all read", "agent rows", inboxReadAgentThreads.every, "messages_direct_roots", "", "dismissed_at", "user_agent_thread_dismissed"},
 	}
 }
 
