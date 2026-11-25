@@ -2195,7 +2195,7 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, r
 // second time. A reader whose claim failed or retired will hold its role no more, and the row
 // finishes undelivered.
 func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload record.CINews) error {
-	if payload.Reader == nil || r.ciNewsAsRoleMessage {
+	if payload.Reader == nil || r.ciNewsAsRoleMessage || payload.Purpose == record.CINewsState {
 		return r.deliverRoleMessage(ctx, row, payload.Role, payload.Body)
 	}
 	if r.notices == nil {
