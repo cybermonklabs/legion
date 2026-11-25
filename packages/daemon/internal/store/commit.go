@@ -518,7 +518,7 @@ func (e *outcomeUnknownError) Unwrap() []error { return []error{e.lost, e.status
 
 // notCommittedError is TransactWith's answer for a commit whose reply was lost and which the store
 // then says did not commit: the transaction it names and the commit's error. Nothing of the
-// transaction landed, so running the write again is safe.
+// transaction landed, so running the write again is safe (transactUntilCommitted).
 type notCommittedError struct {
 	xid  string
 	lost error
@@ -719,4 +719,68 @@ func runWatchedHooks(xid string, hooks []func()) {
 			hook()
 		}()
 	}
+}
+
+// transactUntilCommitted runs write in Transact until one run commits, and returns nil then. A run
+// whose outcome is unknown is waited for (pollOutcome) and taken as that outcome. A run that did
+// not commit runs again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax, only when
+// its failure passes (retryable); any other error, a definite error of write included, is
+// returned at once. When ctx ends first, or the pool closes while it waits for an outcome, it
+// returns the last run's error, so a run whose outcome is still unknown answers
+// ErrCommitOutcomeUnknown. write must be safe to run again after a run that did not commit.
+//
+// A run whose outcome was unknown and that the store then says committed returns nil while its
+// hooks are the watcher's (watchOutcome), which may run them after transactUntilCommitted returns.
+func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
+		err := Transact(ctx, pool, write)
+		if err == nil {
+			return nil
+		}
+		var unknown *outcomeUnknownError
+		switch {
+		case errors.As(err, &unknown):
+			switch result, _ := pollOutcome(ForConcurrentWorker(ctx), pool, unknown.xid, 0); result {
+			case outcomeCommitted:
+				return nil
+			case outcomeUnknown:
+				return err
+			}
+		case !retryable(err):
+			return err
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+}
+
+// retryable reports whether a run that did not commit failed for a reason that passes, so its
+// write is worth running again: the store said a run whose reply was lost did not commit
+// (notCommittedError), nothing reached the server (pgconn.SafeToRetry), or the server refused the
+// run for a reason of its own state: a connection failure (class 08), a serialization failure or
+// a deadlock (class 40), too few resources (class 53), or a server stopping or starting (57P01,
+// 57P02, 57P03). A definite error of the write, ErrNestedAcquire and every other answer are not.
+func retryable(err error) bool {
+	var notCommitted *notCommittedError
+	if errors.As(err, &notCommitted) || pgconn.SafeToRetry(err) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code[:min(2, len(pgErr.Code))] {
+	case "08", "40", "53":
+		return true
+	}
+	switch pgErr.Code {
+	case "57P01", "57P02", "57P03":
+		return true
+	}
+	return false
 }
