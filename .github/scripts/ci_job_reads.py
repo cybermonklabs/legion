@@ -128,6 +128,7 @@ RETRY_FIRST_PROXY = "Start the recovering fault for install-changie on github.co
 RETRY_FIRST_REPORT = "What install-changie's curl did under the recovering fault on github.com"
 RETRY_GO_STEP = "Download packages/envoy's Go modules under the recovering fault on proxy.golang.org"
 IMAGES_WORKER_STEP = "Build the worker image under the recovering fault"
+IMAGES_WORKER_STAMP_STEP = "Read the contract entries' merge order"
 BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
@@ -2178,6 +2179,8 @@ RETRY_IMAGE_READS = reads(
     (FAULT_PROXY, f"{at(IMAGES_WORKER_JOB, 'Start the recovering fault for the worker image build', RETRY_FILE)} and every "
                   f"other image build's proxy step run it, bound to the docker bridge"),
     (RETRY_RIG, f"{at(IMAGES_WORKER_JOB, IMAGES_WORKER_STEP, RETRY_FILE)} builds through it"),
+    ("scripts/daemon-contract-order.sh", f"{at(IMAGES_WORKER_JOB, IMAGES_WORKER_STAMP_STEP, RETRY_FILE)} runs it for the "
+                                         f"stamp the worker image's build refuses to build without"),
 )
 
 

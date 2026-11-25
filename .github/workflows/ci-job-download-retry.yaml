@@ -909,43 +909,24 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The worker image's build under the same recovering fault, in a job of its own and five times:
-  # each of the five runs of the matrix below is a runner job of its own, shown as
-  # download-retry-images-worker and -worker-2 to -worker-5 (`run`). With the other builds of
-  # download-retry-images above, one job would come to 29272 + 4650 = 33922 s, above the 360
-  # minutes GitHub gives a job on a hosted runner (dispatch://INFRA-1545, round 63). The rig, the
-  # coalesced outages, the price each report holds the build to and the note on what each run
-  # faults are the download-retry-images job's, and the `# why:` above the report step names the
-  # key. Run 1 lists every host any run lists, registry.yarnpkg.com among them although no run
-  # reaches it: neither by-host list of job 138666740482 names it, and INFRA-1310's architect
-  # ruled at 04:17Z that it stays. It lists the 7 hosts of Oh My Pi's model catalog too, which
-  # runtime 40/40's `legion probe-image` reaches, and run 1 faults them or not as stage timing
-  # falls: that fetch is no retried call, so the run that faulted them alone drove no retry, and
-  # its report failed on the attempt check (job 138996340757). They stay in run 1 by the same
-  # architect's 05:59Z ruling. Runs 2 to 5 each list one cluster of hosts alone, so its first
-  # request opens an outage where the build reaches it.
-  #
-  # It pulls no base image in a step of its own: BuildKit pulls the worker Dockerfile's FROM
-  # images inside the build, as worker-image.yaml's own build does, through the daemon's own
-  # configuration and not the build's http_proxy argument, so no pull meets the fault. Each is
-  # an image this repository publishes, so a failed pull is a fault of its own package, seen and
-  # not retried over (exception (a) of .github/scripts/check-download-retry.sh). The pulls' time
-  # is inside the build's report budget, whose measured term is worker-image.yaml's key for the
-  # same build with the same pulls.
+  # The worker image's build under the same recovering fault, in a job of its own and five times.
+  # why: .github/ci-notes/ci-job-download-retry.md#the-worker-images-job-of-its-own
   #
   # timeout-minutes (ci-budgets.md's Budgets note): each run is a runner job of its own, so this
   # key bounds one run, whose unretried duration is what it costs when nothing outside its own
-  # injected faults goes wrong — the faulted build at the 15833 s its report step enforces, and
-  # about 200 s of checkout, bypass clearing and rig steps, which is 16033 s — and the rule adds
-  # its single slowest retried step, the worker Dockerfile's longest single ladder, its
-  # `go mod download` at 5 x 900 + 150 = 4650 s, a fault window of its own outside the injected
-  # ones, above the ci-ok report's 2460 s (ci-budgets.md's Budgets note, "The ci-ok report").
-  # So 16033 + 4650 = 20683 s -> 345 min, for each of the five runs.
+  # injected faults goes wrong — the faulted build at the 15833 s its report step enforces, about
+  # 200 s of checkout, bypass clearing and rig steps, and the stamp step's blobless fetch, about
+  # 30 s (main's #5399 measured a whole blobless clone of this repository from GitHub at about
+  # 30 s on 2026-11-24), which is 16063 s — and the rule adds its single slowest retried step,
+  # the worker Dockerfile's longest single ladder, its `go mod download` at 5 x 900 + 150 =
+  # 4650 s, a fault window of its own outside the injected ones, above the ci-ok report's 2460 s
+  # (ci-budgets.md's Budgets note, "The ci-ok report").
+  # So 16063 + 4650 = 20713 s -> 346 min, for each of the five runs.
   download-retry-images-worker:
     if: inputs.download_retry_images == 'true'
     name: download-retry-images-${{ matrix.run }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 345
+    timeout-minutes: 346
     strategy:
       fail-fast: false
       matrix:
@@ -978,6 +959,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # why: .github/ci-notes/ci-job-download-retry.md#the-worker-images-job-of-its-own
+      - name: Read the contract entries' merge order
+        id: contract_order
+        run: |
+          head=$(git rev-parse HEAD)
+          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          stamp=$(bash scripts/daemon-contract-order.sh --stamp "$head")
+          if [ -z "$stamp" ]; then
+            echo "::error::scripts/daemon-contract-order.sh printed no stamp for $head, whose Dockerfile requires one"
+            exit 1
+          fi
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+
       # G = 80 + 150 = 230 s, for every run: the inline retry's last sleep, and the longest single
       # attempt of a retried call in these builds, rounded up to the next whole 10 s. That attempt
       # is the go-modules stage's `go mod download`'s attempt 4, which ran from 78.1 s to 224.3 s,
@@ -995,6 +989,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh build ${{ matrix.run }}
           --build-arg LEGION_REVISION=${{ github.sha }}
+          --build-arg LEGION_CONTRACT_ORDER=${{ steps.contract_order.outputs.stamp }}
           --tag legion-${{ matrix.run }}:download-retry
           --file packages/daemon/docker/worker.Dockerfile
       - name: What the worker image build did under the recovering fault

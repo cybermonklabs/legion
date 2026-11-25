@@ -95,12 +95,13 @@ The builds do not fit one job. With its 300 s of base image pulls, the 900 s smo
 with the single slowest retried step that the Budgets note adds, the worker image's 4650 s ladder,
 to 33922 s, above the 360 minutes GitHub gives a job on a hosted runner. So the worker image's
 build runs in a job of its own, download-retry-images-worker, five times: the five runs of its
-matrix are five runner jobs, so its one key bounds one run, at 200 + 15833 = 16033 s and
-16033 + 4650 = 20683 s, 345 minutes. The other builds stay in download-retry-images, at
+matrix are five runner jobs, so its one key bounds one run, at 200 + 30 + 15833 = 16063 s, the
+30 s being its step that fetches the history the worker build's contract stamp is read from, and
+16063 + 4650 = 20713 s, 346 minutes. The other builds stay in download-retry-images, at
 1400 + 4263 + 3360 + 2208 + 2208 = 13439 s and 13439 + 3150 = 16589 s, 277 minutes, which was 240
 (11231 + 3150 = 14381 s) until round 65 added the browser image's second run; 3150 s is the longest
 single ladder of the three Dockerfiles that job builds. Each key is the whole minute strictly
-above its sum, 16589 s being 276.48 minutes and 20683 s 344.72, and each job's comment derives it.
+above its sum, 16589 s being 276.48 minutes and 20713 s 345.22, and each job's comment derives it.
 
 The Envoy and held-port arms take each build's own measured time, which envoy-smoke's key names,
 rather than the 1200 s that key carries for its whole job: that term holds both builds and the
@@ -123,6 +124,35 @@ one job held the four builds at 347 minutes: 16160 + 4650 = 20810 s. In images j
 Round 63 added 70 s for each listed host the build reached, 10880, 5053, 5211 and 2086 s, at
 263 and 282 minutes for the two jobs, and in jobs 138409597020 and 138409597173 (at fbcc6647)
 the four took 1024, 362, 213 and 192 s under a window per host.
+
+## The worker image's job of its own
+
+download-retry-images-worker builds the worker image under the same recovering fault as
+download-retry-images, in a job of its own and five times: each of the five runs of its matrix is
+a runner job of its own, shown as download-retry-images-worker and -worker-2 to -worker-5 (`run`).
+The section above says why one job cannot hold this build with the others (dispatch://INFRA-1545,
+round 63). The rig, the coalesced outages, the price each report holds the build to and what each
+run faults are download-retry-images', and the `# why:` above the report step names the key. THE
+FIVE WORKER RUNS below says which hosts each run lists and why run 1 lists every host, and THE
+STATED LIMIT says which RUN lines no run faults.
+
+It pulls no base image in a step of its own: BuildKit pulls the worker Dockerfile's FROM images
+inside the build, as worker-image.yaml's own build does, through the daemon's own configuration
+and not the build's http_proxy argument, so no pull meets the fault. Each is an image this
+repository publishes, so a failed pull is a fault of its own package, seen and not retried over
+(exception (a) of .github/scripts/check-download-retry.sh). The pulls' time is inside the build's
+report budget, whose measured term is worker-image.yaml's key for the same build with the same
+pulls.
+
+Its first step after the checkout reads the stamp of the commit's contract entries in main's merge
+order, which the worker Dockerfile's go stage links into `legion` and refuses to build without
+(main's #5399, scripts/daemon-contract-order.sh). The checkout is one commit deep, and the order
+needs HEAD's history back to main's first-parent line and main's own, so the step fetches both with
+no blob, as worker-image.yaml's step of the same name does, and hands the stamp to the build as
+LEGION_CONTRACT_ORDER. It runs before the proxy starts, so it meets no fault: the fault is the
+build's alone. That fetch and the stamp took 8 s from a one-commit-deep clone of main's d41b74eb
+in an issue pod on 2026-11-25; the job's key counts the 30 s main's #5399 measured for a whole
+blobless clone of this repository.
 
 ## The image arms' outages and their coverage
 

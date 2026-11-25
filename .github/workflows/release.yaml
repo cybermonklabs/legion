@@ -141,16 +141,13 @@ jobs:
 
   # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
   legion_build:
-    # Only main releases, as .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
-    # says; a workflow_dispatch on main runs it as a push does.
     needs: ref
     if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/release.md#the-release-jobs-budgets
     # 900 + 10800 = 11700 s -> 196 min.
     timeout-minutes: 196
-    # contents: read is for the checkout; nothing here writes to the repository, a registry or a
-    # release.
+    # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     permissions:
       contents: read
     outputs:
@@ -180,11 +177,7 @@ jobs:
           STEP_TIMEOUT_MINUTES: 181
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
-      # The stamp of this commit's contract entries in main's merge order, which the build links in
-      # (.github/scripts/release-build-legion.sh says why it refuses to build without one). The
-      # checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch
-      # into refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads.
-      # As the tags are, it is read before setup-go, so no dependency code has run yet.
+      # why: .github/ci-notes/release.md#why-legion_build-reads-the-contract-order-before-setup-go
       - name: Read the contract entries' merge order
         id: contract_order
         if: steps.version.outputs.skip != 'true'
@@ -231,13 +224,7 @@ jobs:
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
 
-      # `legion version` names the release, the commit and the linked plugin pair. Then `legion
-      # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
-      # the stamp's count of ids, L the greatest number of
-      # packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
-      # stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
-      # and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
-      # here even where its ids fall in the stamp's order.
+      # why: .github/ci-notes/release.md#what-legion_builds-smoke-test-holds
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
@@ -319,8 +306,7 @@ jobs:
     # why: .github/ci-notes/release.md#the-release-jobs-budgets
     # 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
-    # contents: read is for the checkout; nothing here writes to the repository, a registry or a
-    # release.
+    # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     permissions:
       contents: read
     outputs:
@@ -429,8 +415,7 @@ jobs:
           STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
-  # The private-name check of the changelog entries pi_envoy_build rendered, as legion_names says;
-  # publish's pi-envoy steps run only when it succeeded.
+  # why: .github/ci-notes/release.md#what-legion_names-checks
   pi_envoy_names:
     needs: pi_envoy_build
     if: always() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true'
@@ -453,8 +438,7 @@ jobs:
     # why: .github/ci-notes/release.md#the-release-jobs-budgets
     # 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
-    # contents: read is for the checkout; nothing here writes to the repository, a registry or a
-    # release.
+    # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     permissions:
       contents: read
     outputs:
@@ -515,9 +499,7 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
-      # The committed manifest declares no contract number: the pack writes the one of this tree
-      # (scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
-      # manifest, as it writes the version.
+      # why: .github/ci-notes/release.md#why-pi_legion_build-writes-the-contract-number
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
         env:
@@ -535,8 +517,7 @@ jobs:
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # As in pi_envoy_build, for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-          # gives. This job's tree is discarded, so the committed manifest keeps its repository.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           jq --arg u "$url" '.repository.url = $u' \
             packages/pi-legion/package.json > tmp.json \
@@ -569,8 +550,7 @@ jobs:
           STEP_TIMEOUT_MINUTES: 46
         run: .github/scripts/release-push.sh no-credential
 
-  # The private-name check of the changelog entries pi_legion_build rendered, as legion_names
-  # says; publish's pi-legion steps run only when it succeeded.
+  # why: .github/ci-notes/release.md#what-legion_names-checks
   pi_legion_names:
     needs: pi_legion_build
     if: always() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true'
@@ -593,8 +573,7 @@ jobs:
     # why: .github/ci-notes/release.md#the-release-jobs-budgets
     # 900 + 3416 = 4316 s -> 72 min.
     timeout-minutes: 72
-    # contents: read is for the checkout; nothing here writes to the repository, a registry or a
-    # release.
+    # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     permissions:
       contents: read
     outputs:
@@ -770,7 +749,7 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     env:
-      JOB_TIMEOUT_MINUTES: 101 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
+      JOB_TIMEOUT_MINUTES: 101
     outputs:
       # Whether pi-envoy and pi-legion each published or had nothing to release in this run.
       pair_ok: ${{ steps.pair.outputs.ok }}
@@ -778,8 +757,6 @@ jobs:
       version: ${{ steps.legion_release.outputs.version }}
       tag: ${{ steps.legion_release.outputs.tag }}
     steps:
-      # For release-push.sh and the tags, with every tag (legion's existing-tag check reads them).
-      # No credential is left in the checkout: the deploy key reaches the push steps alone.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -792,8 +769,6 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Each artifact goes under the runner's temporary directory, outside the checkout, so no
-      # package's reset of the checkout removes it and no git command sees it.
       - name: "pi-envoy: Download the tarball"
         id: pi_envoy_download
         if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' && needs.pi_envoy_names.result == 'success' }}
@@ -819,8 +794,6 @@ jobs:
           tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-envoy-v "$VERSION" "$RUNNER_TEMP/pi-envoy-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
-      # The tarball is pi_envoy_build's bytes, never a repack here: npm publish is handed the .tgz,
-      # so no package script (prepack) runs in this job.
       - name: "pi-envoy: Publish to npm"
         id: pi_envoy_npm
         if: ${{ !cancelled() && steps.pi_envoy_handed.outcome == 'success' }}
@@ -871,8 +844,6 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
 
-      # The entries pi_envoy_build rendered from this release's fragments, under $RUNNER_TEMP as the
-      # tarball is, outside the checkout.
       - name: "pi-envoy: Download the changelog entries"
         id: pi_envoy_notes
         if: ${{ !cancelled() && steps.pi_envoy_release.outcome == 'success' && needs.pi_envoy_build.outputs.notes == 'true' }}
@@ -1145,7 +1116,6 @@ jobs:
           PI_LEGION_VERSION: ${{ needs.pi_legion_build.outputs.version }}
           PI_LEGION_RELEASED: ${{ steps.pi_legion_release.outcome }}
         run: |
-          # why: .github/ci-notes/release.md#what-the-pair-steps-pair_released-answers
           pair_released() {
             released=''
             [ "$1" = success ] || return 1
@@ -1319,8 +1289,7 @@ jobs:
     needs: [worker_image, publish]
     if: always() && needs.worker_image.result == 'success'
     uses: ./.github/workflows/worker-image.yaml
-    # The same scopes as worker_image, for the same reason: the grant must cover every
-    # `permissions:` block worker-image.yaml declares, the build's this call skips included.
+    # why: .github/ci-notes/release.md#why-the-worker-image-call-declares-every-scope-worker-imageyaml-names
     permissions:
       contents: read
       packages: write
@@ -1353,7 +1322,7 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     env:
-      JOB_TIMEOUT_MINUTES: 56 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
+      JOB_TIMEOUT_MINUTES: 56
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       IMAGE: ${{ needs.worker_image.outputs.image }}
       DIGEST: ${{ needs.worker_image.outputs.digest }}
