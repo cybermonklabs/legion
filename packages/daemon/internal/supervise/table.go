@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -390,17 +389,8 @@ type UpdatePush struct {
 // of the issue: the zero push pushes to the issue's branch, as every role did before a fix ran
 // beside the other steps, and every other push names only its own branch.
 func updatePushStep(push UpdatePush) string {
-	switch {
-	case push.FixReads:
-		return "1. A fix of this issue reads its failed job, and you run that fix next. Its task names the branch that you push to. Push nothing to this issue's branch now."
-	case push.OwnFix:
-		return fmt.Sprintf("1. Push every commit of your fix that you want to keep to the branch %[1]s, not to this issue's branch: run jj -R \"$LEGION_WORKSPACE-fix\" bookmark set %[1]s -r @-, then jj -R \"$LEGION_WORKSPACE-fix\" git push --remote origin --bookmark %[1]s. Push to this issue's branch only when your fix ends. On the new pod, the daemon gives you your fix's task again, and the start of that task makes your fix's working copy first.", push.Branch)
-	case push.Branch != "":
-		return "1. This step keeps its own branch until it ends. Push nothing to this issue's branch. Push every commit that you want to keep to the branch " + push.Branch + ": " +
-			workspace.BesidePushCommand(push.Branch) + ". On the new pod, the daemon gives you your task again, and that task names the branch of your pushed commits where the daemon holds a push of it."
-	default:
-		return "1. Push every commit that you want to keep to this issue's branch."
-	}
+	_ = push
+	return "1. Push every commit that you want to keep to this issue's branch."
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose

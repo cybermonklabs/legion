@@ -2744,18 +2744,10 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
-	pushes, err := s.pushesOf(ctx, issue)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.log.Error("supervise: read where each role of the update round pushes; asking again at the next sweep",
-				"issue", issue, "round", round, "roles", namesOf(asking), "error", err)
-		}
-		return
-	}
 	reasons := roundReasons(group, round)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		push := pushes[c.Role]
+		push := supervise.UpdatePush{}
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound, push),
 			Branch: push.Branch, OwnFix: push.OwnFix, FixReads: push.FixReads}
 	}
