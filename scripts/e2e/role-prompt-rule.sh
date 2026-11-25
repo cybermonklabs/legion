@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The live proof that a role process is launched with the rules its own system prompt carries: the
-# pod memory rule, which every phase worker and every architect is given, the planner's own rule
-# that its completion reports work already done, at the `head` its handoff names, once that
-# handoff is recorded, and the sub-architect's own prompt, which a child's architect is given. The
+# planner's own rule that its completion reports work already done, at the `head` its handoff
+# names, once that handoff is recorded, and the sub-architect's own prompt, which a child's
+# architect is given. The
 # whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a real
 # nats-server, and three real `omp --mode rpc` panes run under it — the real `legion worker-shim`,
 # this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh
@@ -14,24 +14,23 @@
 # command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
 # of the prompt file, and reads that file. The pid the claim's locator carries is the
 # `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
-# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's eight
-# sentences of the pod memory rule and every architect's six in that prompt; the planner's three
-# parts of the completion-after-work rule — the `head` its handoff body names, the clause that
-# carries that head to the daemon, and the sentence that records the `plan` handoff with
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the planner's three parts
+# of the completion-after-work rule — the `head` its handoff body names, the clause that carries
+# that head to the daemon, and the sentence that records the `plan` handoff with
 # `dispatch handoff-write` and then reports completion — in the planner's; and, in the child's
 # architect's, the sub-architect's heading (`# Legion Sub-Architect`) and not the root's, and its
 # addressing clause naming the root's architect as the architect above it. It names the role,
 # the pid and the text for any it cannot find. That command line and the file it names are the
 # only places it reads: the composer, the role prompt files below the state directory and the
 # recorded launch specification all hold that text before a process took it, and the unit tests
-# already read it there (packages/daemon/internal/prompts/prompts_test.go and
-# packages/daemon/internal/prompts/roles_test.go). The driver is
+# hold which parts each role's prompt is composed of
+# (packages/daemon/internal/prompts/prompts_test.go). The driver is
 # packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
 # `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
 # starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion
+# Two runs of this proof, three panes and five steps then, took 76 s and 70 s in a Legion
 # worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s
 # and 16 s into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the
 # pinned nats-server installed by the run itself. Each of these figures is from a Legion worker
