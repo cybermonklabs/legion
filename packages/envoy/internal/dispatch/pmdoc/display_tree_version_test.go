@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -63,6 +64,7 @@ func corpusDisplayTreeHash(t *testing.T) string {
 // version that stored it stands at DisplayTreeVersion, so a change to a tree that left the
 // number alone would serve readers a tree this build no longer makes.
 func TestDisplayTreeVersionGoldenHoldsTheCorpus(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("testdata", "display-tree-version.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -103,7 +105,11 @@ func TestSetDisplayTreeVersionForTestMovesTheVersionAndPutsItBack(t *testing.T) 
 // for the same text read again, and none for a snippet, whose tree is cut per query and stored
 // by nobody.
 func TestDisplayTreeBuildsCountsTheReadsAndNotTheSnippets(t *testing.T) {
-	const markdown = "A line counted by the display tree build counter and read nowhere else.\n"
+	// The display cache is the process's and keeps what an earlier run of this test read, so each
+	// run reads a text of its own: under -count=2 a fixed text was already held on the second run,
+	// which counted 0 builds where it wanted 1.
+	markdown := fmt.Sprintf("A line counted by the display tree build counter and read nowhere else, run %d.\n",
+		displayTreeBuildsRuns.Add(1))
 	before := DisplayTreeBuilds()
 	DisplayJSON(markdown, DisplayLatest)
 	if built := DisplayTreeBuilds() - before; built != 1 {
@@ -118,3 +124,7 @@ func TestDisplayTreeBuildsCountsTheReadsAndNotTheSnippets(t *testing.T) {
 		t.Errorf("a snippet left the count at %d builds, want the 1 the text cost", built)
 	}
 }
+
+// displayTreeBuildsRuns numbers TestDisplayTreeBuildsCountsTheReadsAndNotTheSnippets's runs in
+// this process, so each reads a text no cache holds yet.
+var displayTreeBuildsRuns atomic.Int64
