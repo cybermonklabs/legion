@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useMemo, useState } from "react";
 
-import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
+import { askSnoozeRequest, askUnsnoozeRequest, type WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
@@ -23,8 +23,9 @@ export interface AskSnoozeWrite {
   failedPress: AskSnoozePress | undefined;
   /** True while the newest save is out, until Dispatch decides it or the reader stops it. */
   pending: boolean;
-  /** Whether the newest save is out past its deadline (`AskWrites.late`): still `pending`, but
-   *  the controls it holds are let go. */
+  /** Whether the newest save is out past its deadline, or waits its turn on its ask's snooze line
+   *  behind a write that is (`AskWrites.late`): still `pending`, but the controls it holds are
+   *  let go. */
   late: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
@@ -61,6 +62,14 @@ function snoozeMethod({ until }: AskSnoozePress): WriteMethod {
 /** The ask a press of a snooze is of. */
 function snoozeAsk({ askId }: AskSnoozePress): string {
   return askId;
+}
+
+/** The line every snooze write of `askId` goes out on (`WriteSpec.target`): a row's own
+ *  (`useAskSnoozeWrites`) and the bar's (`useAskSnoozeMany`) alike. Writes to one target go out
+ *  in press order, so of the snooze writes of one ask an older one never lands after a newer one
+ *  and overwrites the reader's newer choice. */
+export function askSnoozeTarget(askId: string): string {
+  return `ask-snooze:${askId}`;
 }
 
 /** Every row's snooze write in one Inbox (`useAskSnoozeWrites`). */
@@ -108,10 +117,19 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
  * it, with its Retry. A refused or stopped write holds no row: the rollback has put the row's
  * moment back, and the next read of the Inbox places it.
  *
- * Each press carries the ask it is of: a Retry runs the newest render's `write` with the press's
- * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. The Retry of a
- * press the reader stopped makes that press again under its key; the Retry of a press Dispatch
- * refused is a new press of the same values (`useAskWrites`).
+ * Every snooze write of one ask, a row's and the bar's (`useAskSnoozeMany`), goes out on that
+ * ask's one line (`askSnoozeTarget`), in press order: a press waits its turn while an earlier
+ * write of the ask is still being tried. The bar lets its controls go once its writes are past
+ * their deadline (offline, say), so the reader can pick a moment on a row whose bulk snooze is
+ * still out; sent at once, that pick could land first and the bulk's write after it, putting
+ * back the moment the reader has just replaced. On the line it waits, and lands last. A write on
+ * a line is made from its request alone (`askSnoozeRequest`, `askUnsnoozeRequest`): what goes out
+ * once its turn comes, and what a press waiting its turn is kept as for a reload.
+ *
+ * Each press carries the ask it is of: a Retry runs the newest render's `request` with the
+ * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. The Retry
+ * of a press the reader stopped makes that press again under its key; the Retry of a press
+ * Dispatch refused is a new press of the same values (`useAskWrites`).
  *
  * The caller of `submit` and `retry` hears whether the server took that press (`onSettled`),
  * which is how a row's Snooze hands the reader on once its snooze lands (R8): of each ask's
@@ -138,11 +156,10 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
   // before the press.
   const writes = useAskWrites(snoozeAsk, {
     holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey] }),
-    method: snoozeMethod,
-    write: (press: AskSnoozePress, bounds) =>
-      press.until === null
-        ? api.unsnoozeAsk(press.askId, bounds)
-        : api.snoozeAsk(press.askId, press.until, bounds).then(() => undefined),
+    // On the ask's snooze line, with the bar's writes of it, in press order (`askSnoozeTarget`).
+    target: ({ askId }: AskSnoozePress) => askSnoozeTarget(askId),
+    request: ({ askId, until }: AskSnoozePress) =>
+      until === null ? askUnsnoozeRequest(askId) : askSnoozeRequest(askId, until),
     // The row says why its snooze was refused, not the shell's pending-writes notice.
     inline: true,
     label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
@@ -247,7 +264,10 @@ export interface AskSnoozeManyWrite {
  * event, and the hold waits for none of it. Since a write that never answers - offline - is
  * tried until the reader stops it, the set's writes are read in the store under the keys they
  * were made with (`late`), so the controls the set holds let go once every one of them still out
- * is past its deadline.
+ * is past its deadline. That lets the reader pick a moment on a row while the bar's write of its
+ * ask is still out: each ask's write goes out on that ask's snooze line (`askSnoozeTarget`), the
+ * line a row's own snooze of it goes out on (`useAskSnoozeWrites`), so the row's pick waits its
+ * turn behind the bar's write and lands after it, rather than being overwritten by it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -299,7 +319,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
               label: "Ask snoozed",
               presentation: "indicator",
               request,
-              target: `ask-snooze:${id}`,
+              target: askSnoozeTarget(id),
             });
             // Each ask's write leaves `out` as it is decided, beside the set's own wait for all
             // of them, which this branch does not lengthen.

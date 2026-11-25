@@ -8,11 +8,12 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { watchMoves } from "../../__tests__/laid-out-rows";
-import { answerAskSnoozes } from "../../__tests__/send-answers";
+import { answerAskSnoozes, answerAskUnsnoozes } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
 import type { InboxRow, IssueDetails } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { writesOf } from "../writes/write-store";
 import { SnoozeWrites } from "./ask-snooze-fixture";
 import { Inbox } from "./Inbox";
 import { InboxDrawer } from "./InboxDrawer";
@@ -293,9 +294,9 @@ test("a snooze that lands hands the focus to the next row", async () => {
 
 // A row's own snooze write that never answers - offline, each try failing at the network - holds
 // Un-snooze and the list until its deadline and no longer: past it the write is still tried, and
-// a press then saves again.
+// a press then saves again, behind it on the ask's snooze line, so it never lands before it.
 test("Un-snooze lets go at the snooze write deadline and saves again", async () => {
-  const unsnooze = spyOn(api, "unsnoozeAsk").mockRejectedValue(
+  const unsnooze = answerAskUnsnoozes().mockRejectedValue(
     new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({
@@ -337,7 +338,15 @@ test("Un-snooze lets go at the snooze write deadline and saves again", async () 
     });
     await user.keyboard("{Enter}");
     await tick(1_000);
-    expect(sent(), "a press past the deadline saves again").toBe(2);
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .filter((row) => row.label === "Ask brought back now")
+        .map((row) => row.status),
+      "a press past the deadline saves again, behind the late one"
+    ).toEqual(["late", "queued"]);
+    expect(sent(), "the press behind the late one, before its turn").toBe(1);
+    expect(button, "Un-snooze, behind the late save").not.toHaveAttribute("aria-disabled");
   } finally {
     realClock();
     view.unmount();
@@ -348,7 +357,8 @@ test("Un-snooze lets go at the snooze write deadline and saves again", async () 
 
 // The bar's Snooze write over a row that never answers - offline, each try failing at the network
 // - holds that row's Snooze until its deadline and no longer: past it the bar's write is still
-// tried, and a pick from the row then saves a snooze of its own.
+// tried, and a pick from the row then saves a snooze of its own, behind the bar's on the ask's
+// snooze line, so the bar's never lands after it and puts back the moment the row replaced.
 test("a row's Snooze lets go at the bar's snooze write deadline and saves again", async () => {
   const reads = readsOf(ROWS);
   const snoozeAsk = answerAskSnoozes().mockRejectedValue(
@@ -390,7 +400,15 @@ test("a row's Snooze lets go at the bar's snooze write deadline and saves again"
     });
     await user.keyboard("{Enter}{Enter}");
     await tick(1_000);
-    expect(sent(), "a pick from the row past the deadline saves again").toBe(2);
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .filter((row) => row.label === "Ask snoozed")
+        .map((row) => row.status),
+      "a pick from the row past the deadline saves again, behind the bar's late one"
+    ).toEqual(["late", "queued"]);
+    expect(sent(), "the row's pick behind the bar's late one, before its turn").toBe(1);
+    expect(trigger, "the row's Snooze, behind the late save").not.toHaveAttribute("aria-disabled");
   } finally {
     realClock();
     view.unmount();

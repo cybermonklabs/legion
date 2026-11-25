@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useLayoutEffect, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { pickIn } from "../../__tests__/issue-picks";
+import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { ShortcutHelpOpener } from "../issue-page/shortcut-help-opener";
@@ -186,7 +187,7 @@ test("Snooze inside the drawer folds the row into Later and gives the next row t
   });
   let served: InboxRow[] = [issueAsk(), second];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });

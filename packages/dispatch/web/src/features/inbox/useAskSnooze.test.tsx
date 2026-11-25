@@ -22,6 +22,7 @@ import { issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
+const LATER = "2026-11-21T09:00:00Z";
 
 /**
  * `use` beside the Inbox's read and under the Inbox's snooze writes, under Dispatch's own client
@@ -858,4 +859,75 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
     hook.unmount();
     getInbox.mockRestore();
   }
+});
+
+// A row's snooze and a bulk snooze of one ask go out on that ask's one line, in press order. A
+// bulk snooze Dispatch does not answer - the page is offline - goes late at its deadline, and the
+// bar lets its controls go, so the reader can pick another moment on the row while it is still
+// out. Sent at once, that pick could land first and the bulk snooze land after it, leaving the
+// ask at the bulk's moment rather than the reader's newest one. So the row's request waits its
+// turn: it goes out only once the bulk's is decided, and the Inbox ends at the row's moment.
+test("a row's snooze of an ask a late bulk snooze is out on goes out once the bulk's is decided, and the row's moment, pressed last, is the one that stays", async () => {
+  await onFakeClock(async () => {
+    const served = { rows: [issueAsk({ id: "ask-1" })] };
+    /** Each snooze request Dispatch was sent, in order: its moment, and how it is answered. */
+    const sent: { readonly answer: (answer: AskSnooze) => void; readonly until: string }[] = [];
+    answerAskSnoozes().mockImplementation((_id, { snoozed_until: until }) => {
+      const answer = Promise.withResolvers<AskSnooze>();
+      sent.push({ answer: answer.resolve, until });
+      return answer.promise;
+    });
+    const moments = () => sent.map(({ until }) => until);
+    const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+      many: useAskSnoozeMany(),
+      one: useAskSnooze("ask-1"),
+    }));
+    try {
+      await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null]));
+      let submitted: Promise<{ failed: readonly AskSnoozeFailure[] }> | undefined;
+      act(() => {
+        submitted = hook.result.current.write.many.submit(["ask-1"], UNTIL);
+      });
+      await waitFor(() => expect(moments()).toEqual([UNTIL]));
+
+      // Dispatch has not answered the bulk snooze by its deadline: the bar lets its controls go.
+      await jump(SEND_DEADLINE_MS);
+      await waitFor(() => expect(hook.result.current.write.many.late).toBe(true));
+
+      // The reader picks a later moment on the row. The row moves to it at once, and its request
+      // waits behind the bulk's, which is still out.
+      await act(async () => {
+        hook.result.current.write.one.submit(LATER);
+        await settle();
+      });
+      expect(hook.result.current.write.one.pending).toBe(true);
+      expect(snoozedUntil(hook.result.current.inbox)).toEqual([LATER]);
+      expect(moments()).toEqual([UNTIL]);
+
+      // Dispatch takes the bulk snooze: the row's request goes out only now, and the row keeps
+      // the reader's moment while it is out.
+      served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL })];
+      await act(async () => {
+        sent[0]?.answer({ snoozed_until: UNTIL });
+        await settle();
+      });
+      expect(await submitted).toEqual({ failed: [] });
+      await waitFor(() => expect(moments()).toEqual([UNTIL, LATER]));
+      expect(snoozedUntil(hook.result.current.inbox)).toEqual([LATER]);
+
+      // Dispatch takes the row's snooze last, and the Inbox ends at its moment.
+      served.rows = [issueAsk({ id: "ask-1", snoozed_until: LATER })];
+      await act(async () => {
+        sent[1]?.answer({ snoozed_until: LATER });
+        await settle();
+      });
+      await waitFor(() => expect(hook.result.current.write.one.pending).toBe(false));
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+      expect(snoozedUntil(hook.result.current.inbox)).toEqual([LATER]);
+      expect(moments()).toEqual([UNTIL, LATER]);
+    } finally {
+      hook.unmount();
+      getInbox.mockRestore();
+    }
+  });
 });

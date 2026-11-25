@@ -169,6 +169,14 @@ export const answerAskSnoozes = () =>
     (id: string, body: { snoozed_until: string }, bounds: WriteBounds) => Promise<AskSnooze>
   >("PUT", "/api/v1/me/asks/*/snooze");
 
+/** `DELETE /api/v1/me/asks/{id}/snooze` (`askUnsnoozeRequest`): called with the ask, no body and
+ *  the bounds. */
+export const answerAskUnsnoozes = () =>
+  answerRoute<(id: string, body: undefined, bounds: WriteBounds) => Promise<void>>(
+    "DELETE",
+    "/api/v1/me/asks/*/snooze"
+  );
+
 /** `POST /api/v1/agents/{session}/messages` (`agentMessageRequest`). */
 export const answerAgentMessages = () =>
   answerRoute<

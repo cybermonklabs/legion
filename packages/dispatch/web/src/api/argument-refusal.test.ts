@@ -46,6 +46,11 @@ const refusals: readonly Refusal[] = [
     method: "snoozeAsk",
   },
   {
+    call: (api) => api.unsnoozeAsk("", bounds),
+    message: "/api/v1/me/asks/{id}/snooze has no value for {id}",
+    method: "unsnoozeAsk",
+  },
+  {
     call: (api) => api.markThreadRead("", timestamp, bounds),
     message: "/api/v1/me/threads/{id}/read has no value for {id}",
     method: "markThreadRead",

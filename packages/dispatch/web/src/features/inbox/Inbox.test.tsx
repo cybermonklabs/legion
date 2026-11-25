@@ -33,6 +33,7 @@ import {
 } from "../../__tests__/list-picks";
 import {
   answerAskSnoozes,
+  answerAskUnsnoozes,
   answerInboxDismisses,
   answerIssuePatches,
 } from "../../__tests__/send-answers";
@@ -3282,7 +3283,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(async (id) => {
+  const unsnoozeAsk = answerAskUnsnoozes().mockImplementation(async (id) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
@@ -3316,7 +3317,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
       within(later as HTMLElement).getByRole("button", { name: "Un-snooze CORE-2: Which format?" })
     );
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (2)"]));
-    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", keyedAttempt);
+    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", undefined, keyedAttempt);
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(screen.getByRole("button", { name: /Blocked on you: 2 items/ })).toBeTruthy();
   } finally {
@@ -3548,7 +3549,10 @@ test("a snooze's Retry is of the ask its press was of, under its key, from the c
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
     view.rerender(drawn("ask-a"));
-    snoozeAsk.mockImplementation(async (_id, { snoozed_until }) => ({ snoozed_until }));
+    // Dispatch answers the Retry once its request is read, inside `act`: the landing moves the
+    // list's state, and an answer given at once could land as the click settles, outside `act`.
+    const retried = Promise.withResolvers<{ snoozed_until: string }>();
+    snoozeAsk.mockImplementation(() => retried.promise);
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(1_000);
 
@@ -3556,6 +3560,10 @@ test("a snooze's Retry is of the ask its press was of, under its key, from the c
     const again = snoozeAsk.mock.calls.at(-1);
     expect(again?.[0]).toBe("ask-a");
     expect(again?.[2]?.key).toBe(stoppedKey);
+    await act(async () => {
+      retried.resolve({ snoozed_until: again?.[1]?.snoozed_until ?? "" });
+      await settle();
+    });
   } finally {
     realClock();
     view.unmount();
@@ -3817,7 +3825,7 @@ test("an Un-snooze press keeps its button held in Later through the commit after
   let served: InboxRow[] = [askA, askB, askC];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const landing = Promise.withResolvers<void>();
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(async (id) => {
+  const unsnoozeAsk = answerAskUnsnoozes().mockImplementation(async (id) => {
     await landing.promise;
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
@@ -4772,7 +4780,7 @@ test("a press on the Snooze of a row the bar's Snooze is saving writes nothing, 
     served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
     return { snoozed_until: until };
   });
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockResolvedValue(undefined);
+  const unsnoozeAsk = answerAskUnsnoozes().mockResolvedValue(undefined);
   const getAsk = mockAskReads(rows);
   const marked = [
     ["ask-a", "CORE-1: Which approach?"],
@@ -5290,7 +5298,7 @@ test("a snooze or an un-snooze out says so in the control's status, which says n
   const snoozed = Promise.withResolvers<{ snoozed_until: string }>();
   const snoozeAsk = answerAskSnoozes().mockImplementation(() => snoozed.promise);
   const unsnoozed = Promise.withResolvers<void>();
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(() => unsnoozed.promise);
+  const unsnoozeAsk = answerAskUnsnoozes().mockImplementation(() => unsnoozed.promise);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -10708,7 +10716,7 @@ for (const { name, press } of [
     let served: InboxRow[] = rows;
     const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
     const refusal = Promise.withResolvers<never>();
-    const unsnoozeAsk = spyOn(api, "unsnoozeAsk")
+    const unsnoozeAsk = answerAskUnsnoozes()
       .mockImplementationOnce(() => refusal.promise)
       .mockImplementationOnce(async (id) => {
         served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));

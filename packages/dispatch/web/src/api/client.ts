@@ -612,6 +612,11 @@ export function askSnoozeRequest(id: string, snoozedUntil: string) {
   );
 }
 
+/** `DELETE /api/v1/me/asks/{id}/snooze`: brings the row back now (`unsnoozeAsk`). */
+export function askUnsnoozeRequest(id: string) {
+  return writeRequest("delete", "/api/v1/me/asks/{id}/snooze", { id });
+}
+
 /** `PUT /api/v1/me/threads/{id}/read`: a thread's read mark (`markThreadRead`). */
 export function threadReadRequest(threadId: string, readThrough: string) {
   return writeRequest(
@@ -1369,7 +1374,7 @@ export class DispatchApiClient {
   /** `DELETE /api/v1/me/asks/{id}/snooze`: bring the row back now. A row that is not snoozed
    *  answers the same 204. */
   async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
+    await this.send(askUnsnoozeRequest(id), bounds);
   }
 
   /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who

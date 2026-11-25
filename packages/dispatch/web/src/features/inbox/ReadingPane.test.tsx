@@ -15,6 +15,7 @@ import { pickIn } from "../../__tests__/issue-picks";
 import { keyHintOf } from "../../__tests__/key-hints";
 import { pickNamed } from "../../__tests__/list-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -1114,7 +1115,7 @@ test("a question in no document is today's card", async () => {
 test("the head's Snooze writes through the list's snooze writes, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
-  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => held.promise);
   const { snoozesOut, view } = renderPane({ ask: issueAsk() });
 
   try {
