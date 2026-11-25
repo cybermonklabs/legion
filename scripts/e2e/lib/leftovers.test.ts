@@ -181,7 +181,7 @@ host.test(
 // user's process, and the trap runs after `exit 3`, which the walk read as a find a signal ended.
 // From such a trap the find's own status decides: the leftover a working directory names is named
 // as outside one, and a find a signal ends is reported with its own 137.
-test.skipIf(skip)(
+host.test(
   "from an EXIT trap after `exit 3` it names the leftover a working directory names as outside one, and reports a find a signal ends with that find's 137",
   async () => {
     const runDir = mkdtempSync(`/tmp/${prefix}.${goneDriver()}.`);
