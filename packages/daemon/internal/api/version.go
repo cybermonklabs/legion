@@ -3675,9 +3675,9 @@ package api
 // of the workspace check's outbox row, `launcher` and `close` (`record.IssueWorkspaceCheck`). An
 // outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and the
 // rollback deletes those rows first (docs/kubernetes.md, "Rolling back the release that keeps no
-// saved workspace"). R6 adds one migration, 20261123231000_idle_release_declines_told_pod
+// saved workspace"). R6 adds one migration, 20261125023041_idle_release_declines_told_pod
 // (`idle_release_declines.told_pod`, whether the architect was told of a pod), beside R7's
-// 20261124041455 below. No shape of `GET /legion/v1/state` moves.
+// 20261125023100 below. No shape of `GET /legion/v1/state` moves.
 //
 // R7 of the same issue rides this entry and moves no wire of its own: an update round reads the
 // workspace before every replacement, through a role's shim or through the launcher's read
@@ -3702,7 +3702,7 @@ package api
 // R7's review fixes (GPT-6.1 Sol's and the Legion reviewer's reads of #5285 at 0259f8af, and
 // spec v23) ride this entry too, and move no contract: none of them changes a shape a plugin,
 // a pane, a pod's init or launcher container, or the launcher wire reads. They add the store
-// table `pod_replacements` (migration 20261124041455), a record that only this daemon reads and
+// table `pod_replacements` (migration 20261125023100), a record that only this daemon reads and
 // writes, which is no wire or answer shape; the reason a pod's account drift gives
 // (`runtime.BreakingDrift` in front of it), which is a round's recorded reasons and an update
 // ask's text, both free text to every reader; and the words of `supervise.UpdateTask` and of
@@ -3718,7 +3718,9 @@ package api
 // (22.16.2 and 22.14.1 by their registry tags, and one digest the registry's newest 6,000 versions
 // do not list), and no release carries the migration. The fix of the Legion reviewer's Important 1
 // at 7da847c0 (a finish takes every record of its target) is a store query, and moves no contract
-// either.
+// either. The forward merge of 2026-11-25 gave both migrations new versions above main's newest,
+// 20261124143026, in place of 20261123231000 and 20261124041455, which no release carries and no
+// known database applied, for the reason above.
 // (This entry took 238 at first, above main's 219 at 7cb1f229367c: a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 493 open pull requests of this
 // repository, made between 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237
@@ -3734,7 +3736,8 @@ package api
 // to 257 and 261 declared, and nothing at 265. The forward merge of 2026-11-24 that brought in
 // b530b5a2 brought main's 250 and 256 (#5349) in below it, and a reading of the head of each of the
 // 485 open pull requests, made between 19:05:17Z and 19:06:17Z, found 257, 261 and 262 declared
-// above main's 256 and 265 by this change's pull request alone. That is a reading and never the
+// above main's 256 and 265 by this change's pull request alone. The forward merge of 2026-11-25
+// that brought in e546d760 found main still at 256. That is a reading and never the
 // rule: read main's own number and every open head again at the next forward merge rather than
 // from this line.)
 const DaemonAPIVersion = 265

@@ -1,4 +1,4 @@
--- 20261123231000_idle_release_declines_told_pod.up.sql — the decline of an issue's idle release
+-- 20261125023041_idle_release_declines_told_pod.up.sql — the decline of an issue's idle release
 -- records the pod the issue's architect was told of, as a fact of its own.
 --
 -- What this adds: idle_release_declines.told_pod, the pod the architect's workspace-kept notice
@@ -19,5 +19,5 @@
 -- column and deletes this migration's version row, so a roll forward runs this file again.
 --
 -- alter table public.idle_release_declines drop column if exists told_pod;
--- delete from public.schema_version where version = 20261123231000;
+-- delete from public.schema_version where version = 20261125023041;
 alter table idle_release_declines add column if not exists told_pod text;

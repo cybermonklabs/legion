@@ -94,7 +94,7 @@ func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reas
 	if err != nil {
 		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
 	}
-	at := keptMoment(read.at, append(slices.Clone(group), s.viewedGroup(after, issue)...))
+	at := keptMoment(read.at, append(slices.Clone(group), s.noticeGroup(claimsOf(after, issue))...))
 	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
 		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
 		if err != nil {
@@ -229,7 +229,7 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 		}
 		return
 	}
-	group := s.viewedGroup(claims, issue)
+	group := s.noticeGroup(claimsOf(claims, issue))
 	keep, found, err := s.keptDeclineOf(ctx, issue, pod)
 	if err != nil {
 		if ctx.Err() == nil {

@@ -1,4 +1,4 @@
--- 20261124041455_pod_replacements.up.sql — the record of each replacement of an issue pod that may
+-- 20261125023100_pod_replacements.up.sql — the record of each replacement of an issue pod that may
 -- have taken a disk, kept from before the act until the issue's architect's notice of it is queued.
 --
 -- What this adds: pod_replacements, one row per destructive act on an issue's pod, keyed by the
@@ -31,7 +31,7 @@
 -- and deletes this migration's version row, so a roll forward runs this file again.
 --
 -- drop table if exists public.pod_replacements;
--- delete from public.schema_version where version = 20261124041455;
+-- delete from public.schema_version where version = 20261125023100;
 create table if not exists pod_replacements (
     project text not null check (project <> ''),
     operation text not null check (operation <> ''),

@@ -16,11 +16,11 @@ const keepsNoWorkspaceRelease = "the release that keeps no saved workspace"
 
 // toldPodVersion is the version of the migration that adds idle_release_declines.told_pod, whose
 // way back a rollback past keepsNoWorkspaceVersion runs first.
-const toldPodVersion = 20261123231000
+const toldPodVersion = 20261125023041
 
 // podReplacementsVersion is the version of the migration that adds pod_replacements, whose way
 // back a rollback past keepsNoWorkspaceVersion runs first of all, before toldPodVersion's.
-const podReplacementsVersion = 20261124041455
+const podReplacementsVersion = 20261125023100
 
 // The release before's two writes of workspace_bundles, as its store made them: the save's insert
 // (PutWorkspaceBundle), which names every column the save wrote, and the take's record of an

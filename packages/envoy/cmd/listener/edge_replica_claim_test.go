@@ -50,6 +50,7 @@ func edgeProcessCall(t *testing.T, caller *ciphertokentest.Caller, edge *listene
 // message reaches it through A before the claim, and a claim through B of a role of another
 // project is refused and moves nothing.
 func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	shared := startListenerProcess(t, binary, uri, "replica-claim-shared")
