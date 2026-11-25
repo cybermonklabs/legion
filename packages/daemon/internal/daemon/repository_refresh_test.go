@@ -1465,6 +1465,7 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 // zeta/tools, where its listing, read before the answer, showed it: the interleaving
 // TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen met about once in five.
 func TestARecoveryListedBeforeGitHubAnswersRecordsTheIssueWhereItResolvesAfter(t *testing.T) {
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	const key = "LEGION-1510"
@@ -1541,6 +1542,7 @@ func (d *heldListing) ListIssues(ctx context.Context, project string, statuses [
 // the `from` unread, so the root was never recorded and the refresher listed the project on its
 // backoff for the life of the daemon.
 func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const key, from, to = "LEGION-1530", "legacy/widgets", "acme/widgets"
 	// The transfer has happened: neither role App is installed on the name the repository moved
@@ -1593,6 +1595,7 @@ func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testi
 // marker held with the entry beside it. Before, every pass deferred the root again and left
 // stranger/tools unread, so the root was never recorded.
 func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing.T) {
+	t.Parallel()
 	github := newNamedGitHub(t, map[string]string{
 		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", "orbit/gadgets": "orbit/gadgets@main",
 		"stranger/old-tools": "301 stranger/tools", strangerRepo: strangerNamed + "@trunk",
@@ -1645,6 +1648,7 @@ func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing
 // The negative control is the Warn's call taken out of deferUnreadIssues: the pass then logs no
 // line, and this test fails on the missing Warn.
 func TestARecoveryPassItsBoundEndedLogsTheIssuesItDeferredInOneWarn(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewJSONHandler(&logged, nil))}
 	attempt, end := context.WithCancel(context.Background())

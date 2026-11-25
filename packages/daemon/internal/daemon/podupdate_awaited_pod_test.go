@@ -157,6 +157,7 @@ func (r *podUpdateRig) retryLaunch() {
 // member that did not answer the round: its worker died in the pod, so what it did not push went
 // with the pod (lostClaims).
 func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
 	rig.drifts(podUpdateExchangeDrift)
@@ -218,6 +219,7 @@ func TestPodUpdateReplacesThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
 // the pod waits on its answer, and the pod is replaced through its process, not through the
 // waiting claim's locator. The waiting claim is recorded in the round and asked nothing.
 func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
@@ -320,6 +322,7 @@ func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]a
 // is the one that names the implementer on the issue, and it names it only where its read found
 // work or failed (workspaceRead.tells), as it names a claim the round passed over.
 func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t,
 		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1}, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found work")
@@ -341,6 +344,7 @@ func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) 
 // through the tester, and the issue is written nothing, since the read found nothing that went
 // with the pod.
 func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testing.T) {
+	t.Parallel()
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t, runtime.WorkspaceWork{Head: passedOverHead}, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found no work")
 	if messages := rig.messages(); len(messages) != 0 {
@@ -360,6 +364,7 @@ func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testin
 // The controls are the message's list built as either of those two lists joined: this test then
 // fails, and its message names the planner last, or first.
 func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
+	t.Parallel()
 	failed := func(role claim.Role) podUpdateRole {
 		return podUpdateRole{role: role, state: supervise.StateFailed, session: true, contract: readyWorker(role).contract}
 	}
@@ -389,6 +394,7 @@ func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
 // replacement through the tester makes no read of the workspace, the line names no claim under
 // notWaitedFor or waitingOnThePodNotWaitedFor, and the issue is written nothing.
 func TestPodUpdateSkipsTheWorkspaceReadForAWaitingMemberThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	token, tester := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -463,6 +469,7 @@ func TestPodUpdateSkipsTheWorkspaceReadForAWaitingMemberThatAnsweredWhileItsMach
 // The control is a line with one of the two fields empty: this test then fails and names that
 // field.
 func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
@@ -506,6 +513,7 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 // The negative controls are #4392 before its fix, where the round read the workspace through the
 // waiting implementer, the read failed, and the message said that the read failed.
 func TestPodUpdateMakesNoReadThroughAClaimWhoseLaunchWaitsOnThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon),
@@ -580,6 +588,7 @@ func wantToldUnanswered(t *testing.T, messages []string, named ...string) {
 // process (viaProcess), so whether a role process ran in the pod chooses the sentence
 // (workspaceRead.noProcess), not who replaced it.
 func TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles(t *testing.T) {
+	t.Parallel()
 	round := podUpdateRound
 	planner := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RolePlanner), Issue: podUpdateIssue, Role: claim.RolePlanner,
 		State: supervise.StateSuspended, Session: "ses_planner", UpdateRound: round}
@@ -648,6 +657,7 @@ func registeredIn(c supervise.Claim, set supervise.RegisteredPods) supervise.Cla
 // one pod, and an awaited pod other than a process's is two pods, a replacement in flight. Its
 // drift is read through the awaited locator, which carries the claim's own token.
 func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		group []supervise.Claim
 		pod   string
@@ -715,6 +725,7 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 // shared workspace. A claim with neither is not named. A claim with no session that waits on
 // another pod is not a way to find this round's pod, so the round is not posted to it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
+	t.Parallel()
 	round := podUpdateRound
 	clock := roundClock{now: podUpdateStart, grace: podUpdateGrace}
 	inPod := supervise.RegisteredPods{Pods: []string{podUpdatePod}}
@@ -821,6 +832,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 // the process it records or the pod its launch waits on (podKnown). Each row writes that locator
 // from the pod and the generation it built its claim with (runningIn, waitingOn).
 func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
+	t.Parallel()
 	round := podUpdateRound
 	waiting := waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true)
 	elsewhere := waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, true)
@@ -880,6 +892,7 @@ func TestTheRoundReplacesThePodThroughAClaimWhoseLaunchWaitsOnIt(t *testing.T) {
 // the pod through a waiting claim that never registered there). What it records at the
 // end, a process in the new pod and no wait on the round's pod, decides nothing.
 func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued})
 	token := rig.tokens[claim.RoleImplementer]
 	rig.drifts(podUpdateExchangeDrift)
@@ -966,6 +979,7 @@ func TestPodUpdateNamesNothingForAClaimWithNoSessionWhoseOwnRetryReplacesThePod(
 // there, so workOnRoundPod answers no for both, and the issue is written nothing about
 // either. By the end both record a process in the new pod, which decides nothing.
 func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheReplacement(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
@@ -1071,6 +1085,7 @@ func TestPodUpdateNamesNothingForAnotherClaimWithNoSessionWhoseRetryFollowsTheRe
 // (docs/kubernetes.md: every end of a round names a role that had not answered only where that
 // role's unpushed work may be on the round's pod's disk).
 func TestPodUpdateNamesNoClaimRefusedForThePodWithNoSessionWhenThePodDies(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued},
 		readyWorker(claim.RoleTester),
