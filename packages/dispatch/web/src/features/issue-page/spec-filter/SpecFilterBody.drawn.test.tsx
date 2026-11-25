@@ -2619,9 +2619,12 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
 
 /** The page a hold case reads, which happy-dom does not lay out: its size observers, which the
  *  case calls by hand (`resize`); its boxes - the column heads from 0 to 31 px, each element the
- *  case's own `boxOf` gives a box, and every other at 200 px; and `window.scrollBy`, which moves
- *  nothing and keeps each call (`scrolledBy`). `restore` gives every one back. */
-function layOutPage(boxOf: (element: HTMLElement) => DOMRect | undefined) {
+ *  case's own `boxOf` gives a box, and every other at 200 px; and `window.scrollBy`, which calls
+ *  the case's optional `scroll` and records each call (`scrolledBy`). `restore` gives each back. */
+function layOutPage(
+  boxOf: (element: HTMLElement) => DOMRect | undefined,
+  scroll?: (delta: number) => void
+) {
   const sizes = installResizeObserver();
   const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
@@ -2629,7 +2632,11 @@ function layOutPage(boxOf: (element: HTMLElement) => DOMRect | undefined) {
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
   });
-  const scrolls = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(
+    (options?: number | ScrollToOptions) => {
+      if (typeof options === "object") scroll?.(options.top ?? 0);
+    }
+  );
   return {
     resize: sizes.resize,
     restore: () => {
@@ -2641,6 +2648,49 @@ function layOutPage(boxOf: (element: HTMLElement) => DOMRect | undefined) {
     scrolledBy: (): unknown[] => scrolls.mock.calls.map((call): unknown => call[0]),
   };
 }
+
+test("a drag over an unfocused statement's words gives it the focus and moves no page", async () => {
+  const user = userEvent.setup();
+  const page = layOutPage((element) =>
+    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+      ? new DOMRect(0, -200, 600, 3 * window.innerHeight)
+      : undefined
+  );
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2", { text: "The page draws r2." })])
+  );
+  try {
+    const first = rowOf(view, "spec#b-r1");
+    const tall = rowOf(view, "spec#b-r2");
+    const words = within(tall).getByText("The page draws r2.");
+    act(() => first.focus());
+    expect(tall).not.toHaveFocus();
+
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    await waitFor(() => expect(tall.className).toContain(pageFocusedRow));
+    expect(tall).toHaveFocus();
+    expect(window.getSelection()?.toString()).toBe("The page");
+    page.resize(tall);
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the press placed the tall statement").toEqual([]);
+
+    await user.keyboard("{ArrowUp}");
+    expect(first).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(tall).toHaveFocus();
+    expect(page.scrolledBy(), "the later key did not place the tall statement").toContainEqual({
+      top: -200 - 31 - 8,
+    });
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
 
 // A key or a press holds the item it leaves the focus in where it stands while the page grows
 // (`holdWhereItStands`), and does not bring it on screen again by the page's rule, which puts an
@@ -2762,19 +2812,62 @@ test("a page that grows above a held statement keeps the statement where it stan
   }
 });
 
-// A placing that comes after the press - the focus the press gave, taken once the press is over,
-// or the browser scrolling into view what took the focus - moves the page, and where the statement
-// stands after it is where the hold keeps it: the hold scrolls the page back over no such placing,
-// and the page growing afterwards scrolls it by as far as the statement moved from there. The
-// placing is given as the browser makes it: the statement's box moves to 8 px, and the window says
-// it scrolled.
+test("a hold keeps the row where the reader left it when the page scrolls it of its own accord", async () => {
+  const user = userEvent.setup();
+  let contentTop = 200;
+  let scroll = 0;
+  let limit = 95;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2"
+        ? new DOMRect(0, contentTop - scroll, 600, 48)
+        : undefined,
+    (delta) => {
+      scroll = Math.min(scroll + delta, limit);
+    }
+  );
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    act(() => rowOf(view, "spec#b-r1").focus());
+    await user.keyboard("{ArrowDown}");
+    expect(rowOf(view, "spec#b-r2")).toHaveFocus();
+    page.resize(document.body);
+
+    // The page scrolls without a reader act, then draws more content above the row.
+    scroll = 50;
+    act(() => window.dispatchEvent(new Event("scroll")));
+    contentTop += 120;
+    page.resize(document.body);
+    expect(page.scrolledBy(), "the page's scroll changed the target of the hold").toEqual([
+      { top: 70 },
+    ]);
+    expect(contentTop - scroll).toBe(225);
+
+    // The first correction hit the end of the page. More content below the row gives it room.
+    limit = 200;
+    page.resize(document.body);
+    expect(contentTop - scroll).toBe(200);
+    expect(page.scrolledBy()).toEqual([{ top: 70 }, { top: 25 }]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    page.restore();
+  }
+});
+
+// The focus task after a press places a statement below the heads. The hold uses the top after
+// that placing, and a later resize corrects only the movement from there.
 test("a placing after the press counts as where the held statement stands", async () => {
   const user = userEvent.setup();
-  let top = 200;
-  const page = layOutPage((element) =>
-    element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
-      ? new DOMRect(0, top, 600, 48)
-      : undefined
+  let top = 15;
+  const page = layOutPage(
+    (element) =>
+      element.dataset.nodeId === "spec#b-r2" && element.hasAttribute("data-spec-statement")
+        ? new DOMRect(0, top, 600, 48)
+        : undefined,
+    (delta) => {
+      top -= delta;
+    }
   );
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
   try {
@@ -2785,18 +2878,17 @@ test("a placing after the press counts as where the held statement stands", asyn
     if (bullet === null) throw new Error("the statement draws no bullet");
     await user.click(bullet);
     await waitFor(() => expect(pressed.className).toContain(pageFocusedRow));
-    top = 8;
-    act(() => {
-      window.dispatchEvent(new Event("scroll"));
-    });
+    expect(top).toBe(39);
     page.resize(document.body);
-    expect(page.scrolledBy(), "the hold scrolled the page back over the placing").toEqual([]);
+    expect(page.scrolledBy(), "the hold scrolled the page back over the placing").toEqual([
+      { top: -24 },
+    ]);
     top += 40;
     page.resize(document.body);
     expect(
       page.scrolledBy(),
       "the hold left the placed statement where the page's growth pushed it"
-    ).toEqual([{ top: 40 }]);
+    ).toEqual([{ top: -24 }, { top: 40 }]);
   } finally {
     view.unmount();
     read.mockRestore();

@@ -78,7 +78,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
-import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
+import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import { treeItemOf, useAddressLanding } from "./address-landing";
@@ -411,18 +411,39 @@ export function SpecFilterBody({
   // cell still holds the focus; a key's move takes it at once. Each item is the statement's or
   // the cell's element, which says whether it still holds the focus, with what taking the focus
   // does for it.
-  const press = usePressFocus<{ readonly item: HTMLElement; readonly take: () => void }>(
-    ({ take }) => take(),
+  type ItemFocus = {
+    readonly item: HTMLElement;
+    readonly take: () => void;
+    readPlacement?: () => void;
+  };
+  const pendingFocus = useRef<ItemFocus | undefined>(undefined);
+  const [readPressPlacement, setReadPressPlacement] = useState<(() => void) | undefined>();
+  // The rows' layout effects run before this one, so their placing belongs to the press.
+  useLayoutEffect(() => readPressPlacement?.(), [readPressPlacement]);
+  const press = usePressFocus<ItemFocus>(
+    (focus) => {
+      pendingFocus.current = undefined;
+      focus.take();
+      if (focus.readPlacement !== undefined) setReadPressPlacement(() => focus.readPlacement);
+    },
     ({ item }) => item.contains(document.activeElement)
   );
+  const focusItem = useCallback(
+    (item: HTMLElement, take: () => void) => {
+      const focus = { item, take };
+      pendingFocus.current = focus;
+      press.focus(focus);
+    },
+    [press]
+  );
   const focusStatement = useCallback(
-    (item: HTMLElement, node: TreeNode) => press.focus({ item, take: () => takeFocus(node) }),
-    [press, takeFocus]
+    (item: HTMLElement, node: TreeNode) => focusItem(item, () => takeFocus(node)),
+    [focusItem, takeFocus]
   );
   const focusCell = useCallback(
     (item: HTMLElement, decision: SpecDecision | undefined, open: string | undefined) =>
-      press.focus({ item, take: () => takeCell(decision, open) }),
-    [press, takeCell]
+      focusItem(item, () => takeCell(decision, open)),
+    [focusItem, takeCell]
   );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
   // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
@@ -509,12 +530,14 @@ export function SpecFilterBody({
   const keyInTree = useRef<globalThis.KeyboardEvent | undefined>(undefined);
   const holdFocusedItem = (item: HTMLElement) => {
     if (editingRow !== undefined && item.dataset.rowKey === editingRow) return;
-    holdWhereItStands(item, landingHold);
+    return holdWhereItStands(item, landingHold);
   };
   const pressedWords = useRef<HTMLElement | null>(null);
-  // The statement a press on its words is opening the editor in, from the click until the editor
-  // opens, which does not place itself on screen meanwhile (`Statement`'s `openingFromPress`).
-  const [openingFromPress, setOpeningFromPress] = useState<string | undefined>(undefined);
+  // A press on words already on screen gives the row focus without placing it, even
+  // if it selects text or opens no editor. The next reader act restores normal placing.
+  const [wordsPressRow, setWordsPressRow] = useState<string | undefined>(undefined);
+  const wordsPressActs = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => wordsPressActs.current?.abort(), []);
 
   useTreeKeymap({
     container: tree,
@@ -688,20 +711,20 @@ export function SpecFilterBody({
             const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
             if (node === undefined) return;
             const at = pressInWords(words, event.clientX, event.clientY);
-            // The press's focus can draw a frame before the editor opens. Neither places the
-            // row on screen: the reader pressed words that were already on screen.
-            setOpeningFromPress(node.id);
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
-              setOpeningFromPress(undefined);
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
               edit(rowKey, node, at);
             }, 0);
             return;
           }
-          holdFocusedItem(item);
+          const readPlacement = holdFocusedItem(item);
+          const pending = pendingFocus.current;
+          if (readPlacement !== undefined && pending?.item === item) {
+            pending.readPlacement = readPlacement;
+          }
         }}
         // A focus on the tree itself - the page's `t s` lands here - goes on to the tab-stop
         // row; where the view draws no row it stays here.
@@ -750,8 +773,14 @@ export function SpecFilterBody({
         // statement they did not press.
         onMouseDown={(event) => {
           press.onMouseDown();
-          pressedWords.current =
+          const words =
             event.button === 0 && !event.defaultPrevented ? statementWordsAt(event.target) : null;
+          pressedWords.current = words;
+          const row = words?.closest<HTMLElement>("[data-spec-statement]")?.dataset.nodeId;
+          wordsPressActs.current?.abort();
+          wordsPressActs.current =
+            row === undefined ? undefined : abortOnReaderAct(() => setWordsPressRow(undefined));
+          setWordsPressRow(row);
           if (
             event.target instanceof Element &&
             event.target.closest('[role="treeitem"]') === null
@@ -772,8 +801,8 @@ export function SpecFilterBody({
                 decision={decision}
                 key={statement.node.id}
                 marked={marked}
-                openingFromPress={openingFromPress === statement.node.id}
                 statement={statement}
+                wordsPress={wordsPressRow === statement.node.id}
               />
             )}
             group={group}
@@ -1363,26 +1392,25 @@ function Statement({
   focused,
   marked,
   onFocus,
-  openingFromPress,
   report,
   rowKey,
   statement,
   tabStop,
+  wordsPress,
 }: SpecRowProps & {
   context: boolean;
   decision: SpecDecision | undefined;
   /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
-  /** Whether a press on its words is opening the editor in it, which leaves it where it stands
-   *  until the editor opens: the reader pressed words already on screen. */
-  openingFromPress: boolean;
+  /** Whether a press on the statement's words gives it focus without placing it. */
+  wordsPress: boolean;
   statement: SpecStatement;
 }): ReactNode {
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);
-  const press = useOnScreenUnderHeads(row, focused, editing === undefined && !openingFromPress);
+  const press = useOnScreenUnderHeads(row, focused, editing === undefined && !wordsPress);
   useOutOfTabOrder(words, editing === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.

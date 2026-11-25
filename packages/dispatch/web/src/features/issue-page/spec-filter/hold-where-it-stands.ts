@@ -14,13 +14,11 @@ const CELL_WORDS = "[data-spec-cell-words]";
  * What the reader sees of a decision cell is its words (`CELL_WORDS`), and of a statement the
  * statement itself.
  *
- * Where it stands is read as the hold starts, and again after every scroll of the page the hold
- * did not make itself: a placing that comes after the act, in whatever order it comes - the
- * press's focus, taken in a task after the press ends (`usePressFocus`), placing a statement
- * pressed outside its words by the page's rule, or the browser scrolling a link the focus went to
- * into view - is then where the item stands, and the hold never scrolls the page back over it.
- * The reader's own scrolls end the hold, as the acts they come from do. A scroll is the hold's
- * own where it leaves the page where the hold's last `scrollBy` left it.
+ * The hold reads the item's top after the act's placing. A key's hold starts at keyup, after
+ * the browser has scrolled any focused link into view. For a press that takes focus in a
+ * later task, the caller reads the top again once that focus has been drawn and placed.
+ * Other scrolls do not change the target. If a correction is clamped at the end of the page,
+ * the next resize still corrects toward the original top.
  *
  * It does not bring the item on screen, as the outline's hold does (`IssueTree.tsx`'s
  * `holdOnScreen`): a key that moves the focus to an item places it by the page's rule as it moves
@@ -37,22 +35,17 @@ const CELL_WORDS = "[data-spec-cell-words]";
 export function holdWhereItStands(
   item: HTMLElement,
   held: RefObject<AbortController | undefined>
-): void {
+): (() => void) | undefined {
   held.current?.abort();
   const hold = abortOnReaderAct();
   held.current = hold;
-  if (typeof ResizeObserver === "undefined") return;
+  if (typeof ResizeObserver === "undefined") return undefined;
   const seen = item.querySelector<HTMLElement>(CELL_WORDS) ?? item;
   let stood = seen.getBoundingClientRect().top;
-  // Where the hold's own last scroll left the page, undefined until it makes one.
-  let scrolledTo: number | undefined;
-  window.addEventListener(
-    "scroll",
-    () => {
-      if (window.scrollY !== scrolledTo) stood = seen.getBoundingClientRect().top;
-    },
-    { signal: hold.signal }
-  );
+  // While the hold places the item, the browser must not anchor the viewport to another row.
+  const page = document.documentElement.style;
+  const anchoring = page.overflowAnchor;
+  page.overflowAnchor = "none";
   const grown = new ResizeObserver(() => {
     if (!item.contains(document.activeElement)) {
       hold.abort();
@@ -61,8 +54,15 @@ export function holdWhereItStands(
     const moved = seen.getBoundingClientRect().top - stood;
     if (moved === 0) return;
     window.scrollBy({ top: moved });
-    scrolledTo = window.scrollY;
   });
   grown.observe(document.body);
-  hold.signal.addEventListener("abort", () => grown.disconnect());
+  hold.signal.addEventListener("abort", () => {
+    grown.disconnect();
+    page.overflowAnchor = anchoring;
+  });
+  return () => {
+    if (!hold.signal.aborted && item.contains(document.activeElement)) {
+      stood = seen.getBoundingClientRect().top;
+    }
+  };
 }
