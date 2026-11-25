@@ -122,7 +122,7 @@ History: what the filters file was before the changes job computed its filters. 
 step hands the action is still a plain scalar for the reason below, and the environment-variable
 cap it records is why no filter goes back into a workflow's own text.
 
-Every path filter .github/workflows/ci.yaml's `changes` job selects jobs by, in one file.
+Every path filter `.github/workflows/ci.yaml#changes` job selects jobs by, in one file.
 
 That job's one dorny/paths-filter step hands .github/ci-filters.yaml's path over as its `filters` input, and
 the action reads the file off the disk against GITHUB_WORKSPACE. It takes the input as a path
@@ -273,14 +273,17 @@ The daemon-go job: what its two Go steps read together — the plain step, which
 tests every package of packages/daemon but the five concurrent ones, and the race
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
-packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:454, and what their tests read
-outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:42,1511, internal/intake/intake_test.go:984,990,1088), the
-agents internal/prompts/roles_test.go:100 stats, the GitHub App helper
-internal/api/real_github_test.go:117 sources, and the examples and
-docs its tests hold to the code (cmd/legion/config_example_test.go:455,
-internal/config/controller_test.go:216, internal/config/kubernetes_test.go:1803).
+packages they compile, the Dispatch server `packages/daemon/internal/testbuild/testbuild.go#buildEnvoy` builds
+for `packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go#startScratchDispatchOn`, and what their
+tests read outside the daemon: the contracts fixtures `packages/daemon/internal/api/state_golden_test.go#goldenPath`,
+`packages/daemon/internal/api/state_golden_test.go#golden`,
+`packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
+read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
+stats, the GitHub App helper
+`packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
+docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test.go#stageShippedExample`,
+`packages/daemon/internal/config/controller_test.go#TestLoadControllerReadsTheShippedExample`,
+`packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod`).
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
@@ -296,7 +299,7 @@ a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
 
 ## daemon_go_tests: pi-legion's agents: internal/prompts/roles_test.go stats `agents/<name>.md`.
 
-pi-legion's agents: internal/prompts/roles_test.go's TestEveryTaskAgentARolePromptDispatchesIsShipped
+pi-legion's agents: `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
 stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
@@ -373,7 +376,7 @@ packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
 `bun run check:api` renders schemas/dispatch-openapi.json into
 src/dispatch-api.generated.ts and compares, and reads no Go at all
-(scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
+(`packages/contracts/scripts/gen-api.ts#schemaFile`), so the Go that document is emitted from is not named here:
 a change to it is judged by envoy-go-build's `openapi --check`, whose filter
 (envoy_go_build) selects both that Go and this document, so either one alone
 starts the job.
@@ -528,9 +531,9 @@ runs no unit test.
 
 The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
-condition, so check-ts-filters.sh holds this filter to both. The two suites that
-import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
-local-instance-support.test.ts:2-5, run in this job's test step and in no other,
+condition, so check-ts-filters.sh holds this filter to both. The two suites of
+`e2e/__tests__` that import it, `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#startFakeDispatch` and
+`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -552,7 +555,7 @@ the same helper, so both filters hold the same patterns.
 ## dispatch_browser: dispatch_ui's set, which the SPA and the e2e helpers load,
 
 dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
-dispatch command its rows spawn (e2e/dispatch-cli.ts:8,39), dispatch_two_builds_go's
+dispatch command its rows spawn through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` and `packages/dispatch/e2e/dispatch-cli.ts#runDispatch`, dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 (`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
 
@@ -609,12 +612,12 @@ two.
 ## dispatch_browser: The one markdown fixture table: the browser row each
 
 The one markdown fixture table: the browser row each of the seven parity families
-whose shapes the corpus holds keeps reads it at
-`web/src/__tests__/pmdoc-fixtures.ts:48`, whose path is the new URL at :44. This
+whose shapes the corpus holds keeps reads it through `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`
+in `web/src/__tests__`: pmdocFixtures parses the file whose path is the new URL of TABLE_PATH. This
 entry declares that read explicitly and selects nothing on its own: the
 `*dispatch_server` anchor this filter takes already matches it through its
 own 'packages/envoy/internal/dispatch/pmdoc/**', as it does the block schema
-e2e/engine-reading.ts:13 reads. Measured with ci_filter_coverage.changes_filters
+`packages/dispatch/e2e/engine-reading.ts#blockSchema` reads. Measured with ci_filter_coverage.changes_filters
 and workflow_paths.PathsFilter under both quantifiers: this filter covers the
 table with the entry and without it, where dispatch-ui's own entry for this same
 path covers it only with, that filter naming no anchor that reaches the table.
@@ -722,17 +725,18 @@ TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
 The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:137) and the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:48), each committed beside the package whose
+backs' (`packages/daemon/internal/textcheck/way_back_doc_test.go#assertTheExtractIsTheGuidesBlock`) and the troubleshooting page's refusal table's
+(`packages/daemon/internal/textcheck/troubleshooting_refusals_doc_test.go#TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable`), each committed beside the package whose
 own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
 not match.
 
 ## dispatch_memory: `go test -tags memory ./cmd/dispatch`. memory_profile_test.go
 
-`go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
-when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
-not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
-in-process NATS (its line 47).
+`go test -tags memory ./cmd/dispatch`.
+`packages/envoy/cmd/dispatch/memory_profile_test.go#TestProfileTheColdEditOfTheHeaviestDocuments` reads three guides only
+when DISPATCH_EDIT_PROFILE_OUT is set, which CI never sets, so they are
+not here. `packages/envoy/cmd/dispatch/nats_unreachable_test.go#testnats.Start`, which carries no tag, starts the
+in-process NATS.
 
 ## dispatch_two_builds_go: The two-build job's Go step alone, behind a gate of
 
@@ -753,7 +757,7 @@ change that starts the step, and the browser half,
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
-that holds each server's socket (run-server.sh:37, e2e/harness-start.ts). Of
+that holds each server's socket (`packages/dispatch/e2e/run-server.sh#held_port`, e2e/harness-start.ts). Of
 packages/contracts it reads the manifest whose build:dispatch its contracts build runs
 (*bun_install holds it) and the modules of the dispatch_two_builds filter's `BEGIN listed` block.
 
@@ -965,7 +969,7 @@ would start it for nothing.
 ## proof_sdk_offline: The proof-sdk-offline job: a frozen install behind a
 
 The proof-sdk-offline job: a frozen install behind a proxy that answers 504
-for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
+for every host the proof editor's old `github:sjawhar/proof-sdk` route, pinned to a commit, used.
 What can send that install to one of those hosts again is every file the install
 reads, which is the shared group bun_install, so the filter names it whole rather than
 the four sites of it this job is really about: bun.lock, which a reintroduced
@@ -986,7 +990,7 @@ The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
 the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
 packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
-search_text_test.go:106-122 walks (its //ci:reads line declares
+`packages/envoy/internal/dispatch/store/search_text_test.go#TestSearchTextKeepsEveryLexeme` walks (its //ci:reads line declares
 packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
@@ -1467,10 +1471,10 @@ action's `changes:` and the ci-ok job itself. A step that read one of them for a
 job is gated on the list: ci-ok's CI_OK_SELECTED_BY maps a job to the output that is `'true'`
 when changes selects it, and the list is never `'true'`, so each job
 keeps an output of its own and that map needs no change.
-.github/scripts/ci-router-outputs.test.sh evaluates each gated step's `if:` through ci.yaml's
-`with:` as GitHub would (`ci_router_outputs.py --steps`): with each filter matched alone, the
-steps that run are exactly the steps naming that filter, and every one runs on a dispatched run
-and when changes did not succeed.
+.github/scripts/ci-router-outputs.test.sh evaluates each gated step's `if:` through the `with:`
+that ci.yaml's calling job passes, as GitHub would (`ci_router_outputs.py --steps`): with each
+filter matched alone, the steps that run are exactly the steps naming that filter, and every one
+runs on a dispatched run and when changes did not succeed.
 
 ## Why the browser image's build carries no full-ci term
 
@@ -1542,7 +1546,7 @@ A slow suite (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-o
 is held back through its job's `changes` output. The merge queue runs it on the
 tree the change lands as, and that is where its result normally comes from; a pull request runs
 it only when it carries the label `full-ci`, or that one when it carries its `lane:<output>`
-label (the next entry). Each such output is false on a pull-request run without the label, so
+label (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). Each such output is false on a pull-request run without the label, so
 the skip is one `changes` chose: ci-ok reads it as it reads any other output, and no job's `if:`
 knows about the label. The label is read
 from the pull request the run's own event carries, so it takes effect at the next push,
@@ -1552,6 +1556,77 @@ pull request's run in progress. Take the label off once the run it was added for
 since every later push would run the slow suites again, unless a `ci_check` of the issue
 names one of them: without the label that job's own check run (`test`) concludes `skipped`,
 no job of the file it calls starts, and the run the check names (`test / test`) is absent.
+
+## A citation names a symbol, never a line
+
+A line number names whatever line a later edit moves there, and nothing reads a citation of a
+file the citing change does not touch, so a line-number citation in the CI's own files drifted
+with the next merge that edited the cited file (dispatch://INFRA-4017). A citation under .github
+is therefore one exact token on one line: a backtick, the path of a tracked file from the
+repository root as git ls-files prints it, a hash, a name, a backtick, as in
+`.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its path.
+
+.github/scripts/ci_citations.py reads every tracked text file under .github as plain text, and
+claims this much and no more:
+- a token whose path is no tracked file fails, and so does a token whose name its file's code
+  does not hold. The code is the cited file as its language's own scanner reads it: Python's
+  tokenize, the typescript package's parser for TypeScript and JavaScript (one bun run of
+  .github/scripts/ci_citations_code.ts), go/scanner for Go (one go run of
+  .github/scripts/ci_citations_code.go), and for shell, YAML and the other hash-comment kinds a
+  pass that removes a hash comment outside quotes. So a rename fails the change that makes it
+  even when a comment keeps the old name. In Python, TypeScript, JavaScript and Go an identifier
+  must be one of the file's identifier tokens, so a string or a Python docstring that keeps the
+  old name holds nothing either. Any other name, such as a quoted test title, must be text of
+  the code whose ends run into no longer word: a letter, a digit, an underscore or a hyphen
+  right beside an end that is one of those means a longer word, so setup-go is held by neither
+  setup-golang nor setup-go-x;
+- a code span that starts with a path word and goes on with a hash, a colon or two colons and a
+  name, and is no token, fails: a citation in that span is either a token, which is held, or
+  refused, never skipped. A code span is read as CommonMark pairs one, from its backticks to the
+  next run of as many, over every line of its paragraph, so a span over three lines is read as
+  one over two is. A token wrapped onto another line is refused rather than joined, for a token
+  is one line so that a search for it finds every citation of its name, and where a wrap fell,
+  at a space or inside a word, and what comment marker it added, is a guess. In a span's line
+  break a comment marker is one only where a space or the line's end follows it, so a token
+  wrapped just before its hash is refused too. A path word followed by a space alone is a
+  command, such as `.github/scripts/release-push.sh release`, and is read as prose;
+- a path word followed right away by a hash and a name, outside a token, fails: a token with its
+  backticks left off, or one inside a code span that other text starts. A Markdown file's path,
+  a hash and a heading's anchor, as this note's links are written, is a link and passes. Inside
+  a code span that the path does not start, a colon after it is a command's or an annotation's,
+  such as ::error file=ci.yaml::x, and is read as prose, as a space before a hash is;
+- a line number written beside a path word fails, in each spelling its docstring lists, a line
+  that wraps between the path and the number included. A spelling it does not list passes: a
+  colon and a space before the number, an @ before it, "ln" or "around line" are none of them.
+  The rule is the listed spellings, not every way to write a line;
+- a backticked text that is no token fails only where it stands beside a path word: right after
+  it (after nothing, a possessive, a comma, a colon or an opening parenthesis, on the path's line
+  or wrapped onto the next), or followed by in, of or from and the path word, because either is
+  the shape of a name written beside its path, which no check could hold. A citation is
+  rewritten as a token, and a text that is no citation is reworded so that it does not stand
+  beside the path. Any other backticked text is read as prose and is not checked, so a citation
+  written further from its path, as in "ci.yaml holds, among others, the `x` output", is
+  neither held nor refused. That is the stated limit of this rule, and the test shows it.
+
+A path word is the path of a tracked file, the end of one that holds a slash or a dot, or a
+capitalised file name such as CODEOWNERS. A backticked text with a hash in it that is no citation
+reads as a token whose path names no file, so it is written without the backticks or reworded.
+A name is chosen so that the rename of what the citation means fails it, and so is text the
+cited code holds once: a word every such file holds, such as a YAML key like if: or a shell
+case's command word, is no such name, and nor is text that another part of the same file holds
+too, which the rename of the part the citation means leaves standing. The release command of
+release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#release)`: that file
+holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
+of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
+its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
+since another string of that file holds the file name alone. Nothing outside .github is read.
+The check runs in the lint job, which every pull request and merge group runs, since a rename
+can be in any file of the repository, after the job's setup-go and its bun install, which its
+scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The
+TypeScript scanner's bun run resolves typescript from this repository, where the scanner
+stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile fills
+from bun.lock. A local run with no node_modules does not fail on that: Bun installs typescript
+itself into its own cache, at the version the root package.json and bun.lock give.
 
 ## A lane label turns on one slow suite on a pull request
 
@@ -1616,7 +1691,7 @@ the outputs the slow suites run behind. On a pull request without that
 label each of those is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
-(.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
+(`.github/scripts/ci-ok.jq#selection`). It gates no job and needs no plumbing of its
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
@@ -2096,7 +2171,7 @@ that job's last step, the ci-ok report.
 
 ## What the lane input reads
 
-dispatch-browser.yaml's `lane`, which each of its two callers here passes as a literal:
+`.github/workflows/dispatch-browser.yaml#lane`, which each of its two callers here passes as a literal:
 dispatch-browser-pr `pull-request`, which runs the two projects a pull request is held to over
 the `@pr` rows, and dispatch-browser `full`, which runs every project, the three `-alone` ones,
 the two-process job and the visual review over every row. Which lane a run gets is which caller
@@ -2246,10 +2321,11 @@ own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
-Dispatch store's tests
-(store_test.go:28) and delivery's take their databases from storetest.Open
-(storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
-cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
+Dispatch store's tests take their databases from
+`packages/envoy/internal/dispatch/store/store_test.go#testDatabaseURL` and delivery's from storetest.Open
+(`packages/envoy/internal/dispatch/store/storetest/storetest.go#Open`), each of which reads
+DISPATCH_TEST_DATABASE_URL and skips without it, and
+`packages/envoy/cmd/listener/dispatch_resolution_test.go#migratedDispatchDatabase` gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
@@ -2270,7 +2346,7 @@ Its own filter is the closure of this one package, not packages/envoy/**, so a c
 elsewhere in the module does not start this job. No Bun: no test file here runs it, and no
 job of this lane installs it. It runs under -race because a read that walks a live document
 without its lock races the room's peers, which no ordinary run shows
-(TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:39,
+(`packages/envoy/internal/dispatch/docs/live_read_race_test.go#TestReadsOfALiveDocumentRunBesideItsPeers`,
 LEGION-499).
 
 The same run is the package's run under Go's cleanup detector: GODEBUG=checkfinalizers=1 makes
@@ -2504,7 +2580,7 @@ runs a second time, in a file small enough to start when this one is too large t
 
 The proof that no install of this repository fetches the proof editor's upstream sources over
 the network: a frozen install runs behind a proxy that answers HTTP 504 for the hosts of the
-old `github:sjawhar/proof-sdk#<sha>` route, and the job fails when the proxy's log holds a
+old `github:sjawhar/proof-sdk` route, pinned to a commit, and the job fails when the proxy's log holds a
 single refusal. The steps, and why those hosts, are in the called file.
 
 ## Why the worker-image job grants every scope the called workflow declares
@@ -2534,7 +2610,7 @@ actions: read and checks: write of its ci-ok-report step) and its `attest` job's
 and attestations: write. That `attest` job runs whenever the build pushed, whatever the
 event, a pull request's run included, because the two-push order .github/ci-images.yaml's
 header describes has a pull request's run push the image the rows then pin
-(browser-image.yaml's `attest` job says why).
+(`.github/workflows/browser-image.yaml#attest` job says why).
 
 ## The pr-title job: what it checks, and why it posts nothing
 
