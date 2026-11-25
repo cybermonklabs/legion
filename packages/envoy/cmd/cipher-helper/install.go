@@ -299,9 +299,10 @@ WantedBy=default.target
 	// the helper would otherwise refuse every registration until its drain bound passes, and an
 	// undrain that reaches a new helper changes nothing. It does not while a job for the unit is
 	// still queued, as after a restart that outlived restartTimeout, whose job systemd keeps when
-	// its client is killed: a session that registered after an undrain would lose its grants when
-	// that job stops the helper, which is what the drain is for. The drain then ends with that
-	// restart, or at the helper's own bound (helper.DefaultDrainBound).
+	// its client is killed, nor when it cannot read whether one is: a session that registered
+	// after an undrain would lose its grants when that job stops the helper, which is what the
+	// drain is for. The drain then ends with that restart, or at the helper's own bound
+	// (helper.DefaultDrainBound).
 	before, beforeErr := mainPID()
 	restartErr := restartHelper()
 	after, afterErr := mainPID()
