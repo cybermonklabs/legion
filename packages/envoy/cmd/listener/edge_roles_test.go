@@ -39,6 +39,7 @@ import (
 // The role rule: an edge session claims and reads only a role of its token's projects, the
 // project contracts.ClaimProject gives it, and its claim is keyed by contracts.RoleClaimKey.
 func TestEdgeHoldsRolesToTheTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_roles"
 	token := rig.personToken(sessionID, "PRIV")
@@ -74,6 +75,7 @@ func mustClaimProject(t *testing.T, role, requested string) string {
 // the same name under no project (lead-reviewer), which keeps its bare key. Each is read, and
 // reached by a publish and by the role lane, under its own project.
 func TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, nil)
 	requireFreeFormRoleUnderItsProject(t, rig, "ses_ff_bare", "ses_ff_priv", "ses_ff_sender")
 }
@@ -82,6 +84,7 @@ func TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject(t *te
 // its token's project, and a role of the same name under no project, claimed elsewhere, keeps its
 // own holder. The edge refuses the bare name, which works for no project, to claim and to publish.
 func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const bare = "ses_edge_ff_bare"
 	rig.placeElsewhere(t, bare, "INFRA")
@@ -114,6 +117,7 @@ func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
 // publish route refuses it 400, as POST /v1/roles/set refuses the claim of that role under PRIV.
 // Control: a message on the role's own lane, before and after, reaches its holder.
 func TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, nil)
 	const holder, sender, role = "ses_lane_infra_holder", "ses_lane_sender", "legion-infra-reviewer"
 	holderToken, senderToken := rig.personToken(holder, "INFRA"), rig.personToken(sender, "INFRA")
@@ -163,6 +167,7 @@ func TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole(t *testing.T) {
 // published (roleLaneProjectError's branch of resolveRoleForward before this row), the sentinel is
 // the first exception, and the row fails.
 func TestARoleLaneDropOfALegionRoleOfAnotherProjectReportsNoHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, nil)
 	conn := rig.harness.client.Conn
 	exceptions, err := conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">")
@@ -326,6 +331,7 @@ func (kv stalledSessionReadKV) NewestFromLeader(ctx context.Context, key string)
 // where the read's own error names the session it read. Control: with edge mode off each answer
 // names its holder.
 func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const reader, peer, foreign, gone = "ses_edge_answer_reader", "ses_edge_answer_peer", "ses_edge_answer_pub", "ses_edge_answer_pub_gone"
 	const foreignInstance, goneInstance = "instance-of-the-pub-process", "instance-of-the-gone-process"
@@ -462,6 +468,7 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 // leader read that confirms a holder the scope shows (edgeScope.holderConfirmed) finds a writer's
 // record. Control: with edge mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	var scope *edgeScope
 	if rig.edgeOn() {
@@ -657,6 +664,7 @@ func TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo(t *test
 // (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the session
 // after the registration, and the row fails.
 func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
 	const infraRole, privRole = "legion-infra-infra-9-reviewer", "legion-priv-priv-9-tester"
@@ -719,6 +727,7 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 // control: the frame rule off at the relay (edgeWithholds back to the base's GitHub-only verdict)
 // lets the INFRA forward through, and the row fails naming it.
 func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
 	rig.placeElsewhere(t, sessionID, "INFRA")
@@ -760,6 +769,7 @@ func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T)
 // the cached row's) and reading no bucket, the claim stands, and the row fails; with either one
 // off alone, the other still frees the claim.
 func TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const moved, infraRole = "ses_edge_role_refill", "legion-infra-infra-7-reviewer"
 	rig.placeElsewhere(t, moved)
@@ -791,6 +801,7 @@ func TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills(t *testing.T
 // mode off, and with the release taking the copy's refusal as no claims (no read of the bucket),
 // the claim still names the session after the registration, and the row fails.
 func TestAnEdgeReleasesAClaimNoRowNamesWhileTheClaimViewRefills(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const moved, infraRole = "ses_edge_role_unnamed", "legion-infra-infra-8-reviewer"
 	rig.placeElsewhere(t, moved)
@@ -832,6 +843,7 @@ func TestAnEdgeReleasesAClaimNoRowNamesWhileTheClaimViewRefills(t *testing.T) {
 // the release's failure answered as a bus that did not answer (writeBusUnavailable), the text
 // check fails.
 func TestAnEdgeRegistrationWhoseRoleReleaseFailsIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const moved, infraRole = "ses_edge_release_fails", "legion-infra-infra-6-reviewer"
 	rig.placeElsewhereFollowing(t, moved, []string{}, contracts.RoleTopicPrefix+infraRole)
