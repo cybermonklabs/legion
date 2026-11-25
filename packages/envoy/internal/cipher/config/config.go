@@ -897,10 +897,10 @@ type Config struct {
 	ExchangeGitHubAudience string
 	// BROKER_EXCHANGE_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
 	// projected token, whitespace-separated <service account>=<project>=<person>[=<session>]
-	// entries, such as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com,
-	// or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]
-	// entries, such as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com==first,second.
-	// The token minted for a pod of the account may write that one project, a project key that
+	// entries, such as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com, or
+	// <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, such
+	// as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com==first,second. The
+	// token minted for a pod of the account may write that one project, a project key that
 	// exchange.NewSet refuses the start over when it is not one, acts for that person, and writes
 	// under the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>, or <service
@@ -910,8 +910,13 @@ type Config struct {
 	// names its issuers): a job's own account, whose tokens name no person and no project and act
 	// as the account itself, which Dispatch records their writes under. An entry naming a project
 	// and no person is refused: an entry that names a project names its person, so no token held to
-	// a project is personless. An entry names its issuers, by their names in
-	// BROKER_K8S_OIDC_ISSUER, in a fifth "="-separated field, after its session field (empty for
+	// a project is personless. An entry whose fixed session is legion-daemon:<its own project> is a
+	// Legion daemon's own: the token minted for its pods holds the OAuth scope legion-status too.
+	// Dispatch reads that scope (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of
+	// a Legion issue's status needs it or the person scope, but for a status write of the architect
+	// of an issue above, which writes with its own broker token. No other token the exchange mints
+	// holds legion-status, whatever session it carries. An entry names its issuers, by their names
+	// in BROKER_K8S_OIDC_ISSUER, in a fifth "="-separated field, after its session field (empty for
 	// none). A session may hold "=", so the broker reads everything after an entry's third "=" as
 	// its session where that holds no "=", and otherwise as the session up to its last "=" and the
 	// issuer field after it. So an entry written as four fields whose session holds "=" is read as

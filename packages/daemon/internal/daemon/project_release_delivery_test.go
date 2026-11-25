@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -770,8 +771,8 @@ func TestARowTheProjectReleaseHoldsSpendsNoAttempt(t *testing.T) {
 				return githubrest.Client{}, githubPullRequest{}, errors.New("GitHub answered 502")
 			},
 			// Every read fails, so the row applies no answer of GitHub's.
-			applyMergeability: func(context.Context, githubrest.Client, record.PullRequest, githubPullRequest, time.Time, string) error {
-				return errors.New("a failed read applies no mergeability")
+			applyMergeability: func(context.Context, githubrest.Client, record.PullRequest, githubPullRequest, time.Time, string) (intake.PullRequestMergeability, error) {
+				return intake.PullRequestMergeability{}, errors.New("a failed read applies no mergeability")
 			},
 			mergeStateWait: func() time.Duration { return time.Second }}
 	}

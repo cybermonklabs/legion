@@ -196,6 +196,116 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch serviceaccounts in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch pods in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch pods in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "bind roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "escalate roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update roles.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "patch rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "update rolebindings.rbac.authorization.k8s.io in dispatch, guarding dispatch/envoy-broker"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
       "role": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -416,116 +526,6 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "create serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "create serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create pods in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "create pods in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "create pods in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch serviceaccounts in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch pods in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch pods in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch pods in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "bind roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "escalate roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "update roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "update roles.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "create rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "update rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "update rolebindings.rbac.authorization.k8s.io in secrets-broker, guarding secrets-broker/secrets-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide on cluster example-grade/us-east1/grade-cluster",
       "role": "create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -726,431 +726,431 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "escalate roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "bind roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "bind clusterroles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "get pods/exec in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "get pods/attach in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "get pods/portforward in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update pods in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update replicationcontrollers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update pods/ephemeralcontainers in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update deployments.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update replicasets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update statefulsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update daemonsets.apps in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update jobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "update cronjobs.batch in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "get secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "list secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "watch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "patch secrets in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -2016,21 +2016,21 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "create serviceaccounts/token addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
-      "role": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "right": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
+      "role": "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
-        "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+        "impersonate serviceaccounts addon-manager in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },
@@ -2083,6 +2083,112 @@
         "container.secrets.get"
       ],
       "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
+    }
+  ],
+  "credited": [
+    {
+      "principal": "system:serviceaccount:legion:worker",
+      "right": "create pods/portforward in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "policy": "broker-pod-connect",
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    }
+  ],
+  "residuals": [
+    {
+      "principal": "system:serviceaccount:legion:worker",
+      "right": "create pods/portforward in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
     }
   ],
   "unknown": [
