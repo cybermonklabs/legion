@@ -58,14 +58,17 @@ import { type ApiRequests, expectLoadSettled } from "./traffic";
  *   body's facts, each by the label its `<dt>` draws and the value its `<dd>` draws.
  * - `counts`: what a folded row counts (`[data-node-count]`), then the body's line of what the
  *   coverage read counts for a requirement.
- * - `body`: what the row draws while it has the focus beyond its line, read with the focus on it
- *   as the tree's keys put it there (`focusRow` does it by id, which a node drawn under two parents
- *   shares, so this moves it by place): who made the node where the line names nobody ("Author
- *   unknown") or names an agent by its role's word (its whole title), the words drawn whole, an
- *   ask's options with their own words and its answer, and every other line `[data-node-body]`
- *   draws. Never a control: not the row's acts (`[data-row-acts]`), not Keep and Change
- *   (`DecisionActions`), not the control that keeps the body open, nor any line that holds a
- *   control.
+ * - `body`: what the row draws beyond its line. The recorder read it on F's page, which drew it on
+ *   the focused row alone, with the focus on each row in turn as the tree's keys put it there
+ *   (`drawnRowReadings`; `focusRow` does it by id, which a node drawn under two parents shares, so
+ *   this moves it by place). The rows read it from each row's face with no focus
+ *   (`drawnRowFaces`), since the page draws on every unfolded row what that body drew (R11), and
+ *   a row whose face holds nothing draws no face and reads no author line, no line and no fact.
+ *   Either way: who made the node where the line names nobody ("Author unknown") or names an
+ *   agent by its role's word (its whole title), the words drawn whole, an ask's options with
+ *   their own words and its answer, and every other line `[data-node-body]` draws. Never a
+ *   control: not the row's acts (`[data-row-acts]`), not Keep and Change (`DecisionActions`), not
+ *   the control that keeps the body open, nor any line that holds a control.
  *
  * `seedKeys` and `keyedRows` name each row by what the seed returned, or a check or a plan task
  * no field names by the block id the seed wrote, rather than by an id the server minted (a
@@ -182,7 +185,10 @@ interface PageRow extends Omit<RowReading, "body" | "gaps"> {
 interface PageRead {
   /** The tie word of a chip naming another parent of the row (`CONTROL_LABELS.also_under`). */
   readonly alsoUnder: string;
-  /** The place of the one row to read with its body, or null to read every row and no body. */
+  /** Whether every row is read with the body its face draws, with no focus (`drawnRowFaces`). */
+  readonly faces: boolean;
+  /** The place of the one row to read with its body, or null to read every row: with the body
+   *  its face draws where `faces`, and else with no body. */
   readonly focused: number | null;
 }
 
@@ -208,6 +214,7 @@ export async function drawnRowReadings(
   // walk below fails where a row moved before its body was read.
   const drawn = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
+    faces: false,
     focused: null,
   });
   if (!bodies) return drawn.map((row) => readingOf(row, null));
@@ -217,6 +224,21 @@ export async function drawnRowReadings(
   }
   await focusThePage(page);
   return readings;
+}
+
+/**
+ * Every row of the page in drawing order, each with the body its face draws, read with no focus
+ * and in one pass over the page (R11): the page draws on every unfolded row's face what F's page
+ * drew in the focused row's body, and a row whose face holds nothing reads no author line, no
+ * line and no fact. One reading of the rows at this instant, as `drawnRowReadings`' is.
+ */
+export async function drawnRowFaces(page: Page): Promise<RowReading[]> {
+  const drawn = await page.evaluate(readPageRows, {
+    alsoUnder: CONTROL_LABELS.also_under,
+    faces: true,
+    focused: null,
+  });
+  return drawn.map((row) => readingOf(row, row.body));
 }
 
 /** The body row `index` draws once it holds the focus. */
@@ -230,6 +252,7 @@ async function focusedBody(page: Page, index: number, row: PageRow): Promise<Pag
   // row, and a row other than the one read before means the rows moved, not a page still drawing.
   const [focused] = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
+    faces: false,
     focused: index,
   });
   if (focused === undefined || focused.id !== row.id || focused.rowKey !== row.rowKey) {
@@ -268,10 +291,11 @@ function readingOf(row: PageRow, body: PageBody | null): RowReading {
 }
 
 /**
- * Reads the rows in the browser: every row with no body, or the one row `focused` names with its
- * body. It runs inside the page, so it names nothing outside itself.
+ * Reads the rows in the browser: every row with no body, every row with the body its face draws
+ * (`faces`), or the one row `focused` names with its body. It runs inside the page, so it names
+ * nothing outside itself.
  */
-function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
+function readPageRows({ alsoUnder, faces, focused }: PageRead): PageRow[] {
   // A control's words are no reading of the node: its label is the page's, and what it says
   // after a press (a copy's "Copied") is the press's.
   const controls = "button, input, select, textarea, form, [role='alert'], [aria-live]";
@@ -304,11 +328,14 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
     const level = Number(row.getAttribute("aria-level") ?? "");
     return Number.isInteger(level) && level > 0 ? level : null;
   });
+  // A row's body: what its face draws (`faces`), where a row with nothing under its words draws no
+  // face and reads no author line, no line and no fact; or what the focused row's body draws, which
+  // a row that draws none fails to read.
   const bodyOf = (row: Element): PageBody | null => {
     const body = row.querySelector("[data-node-body]");
-    if (body === null) return null;
+    if (body === null && !faces) return null;
     const lines: string[] = [];
-    for (const part of body.children) {
+    for (const part of body?.children ?? []) {
       if (part.matches("[data-node-author], [data-node-author-title], dl")) continue;
       if (part.matches(controls) || part.querySelector(controls) !== null) continue;
       const line = text(part);
@@ -327,9 +354,9 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
               text: answer.querySelector("[data-answer-text]")?.textContent ?? null,
             },
       author: text(
-        body.querySelector(":scope > [data-node-author], :scope > [data-node-author-title]")
+        body?.querySelector(":scope > [data-node-author], :scope > [data-node-author-title]")
       ),
-      facts: [...body.querySelectorAll(":scope > dl > dt")].map((label) => ({
+      facts: [...(body?.querySelectorAll(":scope > dl > dt") ?? [])].map((label) => ({
         name: text(label),
         value: textWithout(label.nextElementSibling, controls) ?? "",
       })),
@@ -390,7 +417,7 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
       words: wordsOf(row),
     };
   };
-  if (focused === null) return rows.map((row, index) => read(row, index, false));
+  if (focused === null) return rows.map((row, index) => read(row, index, faces));
   const row = rows[focused];
   return row === undefined ? [] : [read(row, focused, true)];
 }

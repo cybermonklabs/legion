@@ -640,6 +640,64 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
   expect(filterSignals(root, "").spec.count).toBe(2);
 });
 
+/** The Spec view read holding the statements r1 and r2, and the tree its own answer builds
+ *  (`TreeViews.trees`), each statement worded as the view's. */
+function specViewOf(): { readonly answer: TreeAnswer; readonly tree: TreeNode } {
+  return {
+    answer: treeAnswer(
+      [
+        viewNode("r1", "requirement", "query", { in: "spec" }),
+        viewNode("r2", "requirement", "query", { in: "spec" }),
+      ],
+      [],
+      { view: "spec" }
+    ),
+    tree: node("CORE-1", "issue", [
+      statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The view's r1." }),
+      statement("spec#b-r2", [], { readId: "CORE-1/spec#r2", text: "The view's r2." }),
+    ]),
+  };
+}
+
+/** Each row `preset` draws of `root`, by its id, with its words. */
+function rowWords(root: TreeNode, preset: Preset): [string, string][] {
+  return treeRows(presetView(root, preset, "").root)
+    .slice(1)
+    .flatMap((row): [string, string][] =>
+      row.kind === "node" ? [[row.node.id, row.node.text]] : []
+    );
+}
+
+// R4, R5: a filter draws its view read's rows whatever the outline read holds. A node of its view
+// answer the outline's tree holds no node of is drawn as the node of the tree the view's answer
+// builds alone (`TreeViews.trees`): with the outline read not sent, as on Spec loaded cold below
+// 1024 px (R13), the outline's tree is the issue alone and Spec still draws each statement.
+test("a filter draws a node its view answer holds that the outline's tree lacks", () => {
+  const { answer, tree } = specViewOf();
+  const cold = node("CORE-1", "issue", [], { views: { spec: answer, trees: { spec: tree } } });
+  expect(rowWords(cold, "spec")).toEqual([
+    ["spec#b-r1", "The view's r1."],
+    ["spec#b-r2", "The view's r2."],
+  ]);
+});
+
+// R4: where the outline's tree and the tree the view's answer builds both hold a node, the filter
+// draws the outline's, so a row reads as it does in the outline; the view's own tree gives the
+// node the outline's lacks.
+test("a filter draws the outline's node where the outline's tree and its view's both hold it", () => {
+  const { answer, tree } = specViewOf();
+  const root = node(
+    "CORE-1",
+    "issue",
+    [statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The outline's r1." })],
+    { views: { spec: answer, trees: { spec: tree } } }
+  );
+  expect(rowWords(root, "spec")).toEqual([
+    ["spec#b-r1", "The outline's r1."],
+    ["spec#b-r2", "The view's r2."],
+  ]);
+});
+
 // Two documents of an issue that has not converted can hold one block id, and each block is a row
 // of its own document's id: a filter draws the view's node as the tree's node of that same
 // document, never as the other document's block that shares its read id, though the tree holds

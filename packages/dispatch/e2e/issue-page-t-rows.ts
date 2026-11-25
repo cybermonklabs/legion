@@ -1,16 +1,24 @@
 import { type Browser, expect, type Page } from "@playwright/test";
 
-import type { Actor, DispatchEvent, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type {
+  Actor,
+  DispatchEvent,
+  IssueDetails,
+  IssueTreeNode,
+  IssueTreeRead,
+} from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, getIssueEvents, listIssueAsks } from "./api";
+import { getIssue, getIssueEvents, listComments, listIssueAsks } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle } from "./issue-page";
-import { expectIssuePageDrawn, unfoldEveryBranch } from "./issue-page-g";
+import { expectIssuePageDrawn } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
+  drawnRowFaces,
   drawnRowReadings,
   fixtureSeed,
   type KeyedRow,
@@ -50,9 +58,9 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * from the issue's tree read (`GET /api/v1/issues/{key}/tree`) and each filter from that read's
  * view (`?view=`), read on the real stack. Each row turns the new page on for alice with `phase`
  * (1440 by 900), seeds one of the issues of `e2e/issue-layout-seed.ts`, opens it with
- * `gotoIssue`, and reads it through `unfoldEveryBranch`, `pickPreset`, `watchApiRequests` and
- * `expectLoadSettled` (`e2e/traffic.ts`), the helpers of `e2e/issue-page-t.ts` and
- * `e2e/issue-page-t-tree.ts`, and the steps and comparisons of this file.
+ * `gotoIssue`, and reads it through `pickPreset`, `watchApiRequests` and `expectLoadSettled`
+ * (`e2e/traffic.ts`), the helpers of `e2e/issue-page-t.ts` and `e2e/issue-page-t-tree.ts`, and
+ * the steps and comparisons of this file.
  *
  * The rows are the four of the Verification document's browser checks, by their titles. They
  * stand in four spec files that hold only their rows, each about a minute of one browser shard
@@ -62,12 +70,13 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *    per seed, so the check's `-g` runs all 14 and each ends inside CI's nine minutes:
  *    `e2e/issue-page-t-same-rows-a.e2e.ts` holds the first nine of `SEEDS` in their order
  *    (`SAME_ROWS_A_SEEDS`) and `e2e/issue-page-t-same-rows-b.e2e.ts` the last five
- *    (`SAME_ROWS_B_SEEDS`), a split by time (`SAME_ROWS_A`). Each row stands under the node the
- *    answer names as its parent, or its nearest drawn ancestor, in the answer's order; that is
- *    read from the answer and never from the fixture, so the check's control fails on the parent
- *    first. Every other reading is the fixture's (`e2e/fixtures/issue-page-t-rows.json`), by
- *    key, as the page opens and with every branch open, and each time is its source's in this
- *    run.
+ *    (`SAME_ROWS_B_SEEDS`), a split by time (`SAME_ROWS_A`). It reads Graph (`/graph`) as it
+ *    opens, every node unfolded and each row's face drawn (R11), with no key pressed. Each row
+ *    stands under the node the answer names as its parent, or its nearest drawn ancestor, in the
+ *    answer's order; that is read from the answer and never from the fixture, so the check's
+ *    control fails on the parent first. Every other reading is the fixture's
+ *    (`e2e/fixtures/issue-page-t-rows.json`) with every branch open, by key, and each time is its
+ *    source's in this run.
  * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once", and Plan,
  *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's:
  *    the page's reads are refreshed by events, never by age. It is in
@@ -167,48 +176,65 @@ function canonical(value: unknown): string {
 
 /** What row 1 reads of one seed's page. */
 interface OutlineRead {
+  /** The ids of the comments the comments read anchors to a node's text. */
+  readonly anchored: ReadonlySet<string>;
   readonly answer: IssueTreeRead;
   readonly decisions: DecisionsRead | undefined;
   readonly keys: ReadonlyMap<string, string>;
-  readonly opened: readonly RowReading[];
   readonly reads: TreeIdReads;
   readonly rows: readonly RowReading[];
   readonly slugs: readonly string[];
 }
 
-/** Opens the seeded issue and reads it as the recorder did: the rows as the page opens, once two
- *  readings agree, then every row once every branch is open, with its body where `bodies`; and
- *  what the page received of the tree read and the decisions read. */
-async function readOutline(
-  page: Page,
-  seeded: SeededIssue,
-  { bodies = true }: { readonly bodies?: boolean } = {}
-): Promise<OutlineRead> {
+/** Opens the seeded issue on Graph (`/graph`, R10) and reads every row as Graph opens, with no
+ *  key pressed, once two readings agree, each with the body its face draws (`drawnRowFaces`):
+ *  Graph opens with every node unfolded and each row's face drawn whatever the focus (R11). And
+ *  what the page received of the tree read, Graph's read, and of the decisions read, and which
+ *  comments the comments read anchors to text. */
+async function readOutline(page: Page, seeded: SeededIssue): Promise<OutlineRead> {
   const tree = treeAnswerOf(page);
   const decisions = decisionsReadOf(page, seeded.key);
   const traffic = watchApiRequests(page);
-  await gotoIssue(page, `/issues/${seeded.key}`);
+  await gotoIssue(page, presetPath(seeded.key, "graph"));
   await expectIssuePageDrawn(page);
-  const opened = await steadily(page, traffic, `${seeded.key} as the page opens`, () =>
-    drawnRowReadings(page, { bodies: false })
+  const rows = await steadily(page, traffic, `${seeded.key} as Graph opens`, () =>
+    drawnRowFaces(page)
   );
-  await unfoldEveryBranch(page);
-  const unfolded = await steadily(page, traffic, `${seeded.key} with every branch open`, () =>
-    drawnRowReadings(page, { bodies: false })
-  );
-  const rows = bodies ? await drawnRowReadings(page) : unfolded;
   const answer = await heldAnswer(tree, `${seeded.key}'s tree read`);
-  const reads = await idReadsOf(seeded.key);
+  const [reads, comments] = await Promise.all([idReadsOf(seeded.key), listComments(seeded.key)]);
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
   return {
+    anchored: new Set(comments.flatMap((comment) => (comment.anchor === null ? [] : [comment.id]))),
     answer,
     decisions: decisions.read(),
     keys: seedKeys(seeded, slugs),
-    opened,
     reads,
     rows,
     slugs,
   };
+}
+
+/**
+ * The keys of the fixture's rows that are comments on a node's text, which R2 lets Graph draw as
+ * no row, since the margin beside that node draws them (root R41): a comment the comments read
+ * anchors to text that the answer hangs under a node other than the issue, and each comment the
+ * answer hangs under such a comment, a reply in its thread. A comment anchored in a document whose
+ * block the answer holds no node of hangs under the issue, has no node for a margin to stand
+ * beside, and is a row.
+ */
+function textCommentKeys(outline: OutlineRead): ReadonlySet<string> {
+  const nodes = new Map((outline.answer.nodes ?? []).map((node) => [node.id, node]));
+  const onText = (node: IssueTreeNode | undefined, passed: Set<string>): boolean => {
+    if (node?.supertag !== "comment" || node.parent === null || passed.has(node.id)) return false;
+    passed.add(node.id);
+    if (outline.anchored.has(node.id)) return node.parent.supertag !== "issue";
+    return node.parent.supertag === "comment" && onText(nodes.get(node.parent.id), passed);
+  };
+  const keys = new Set<string>();
+  for (const [id, key] of outline.keys) {
+    if (onText(nodes.get(id), new Set())) keys.add(key);
+  }
+  return keys;
 }
 
 /** A node of the answer by the id its row carries: of the nodes the tree draws by one id, the
@@ -346,6 +372,26 @@ const READINGS = [
 /** What the fixture compares of a row that takes its place from it (`placedByFixture`). */
 const PLACE = ["parentKey", "level"] as const satisfies readonly (keyof KeyedRow)[];
 
+/**
+ * What row 1 compares of `row`'s `field`, for a row of the page and of the fixture alike. The
+ * fixture holds F's page, which drew a node's text whole, with its author line, its facts, its
+ * gap sentences and its counts, in the focused row's body alone, its line's words cut; the page
+ * draws every node's text whole on its row and the rest on its face, whatever the focus (R11),
+ * and its reading takes each row's body from that face (`drawnRowFaces`). So a row's words are
+ * the words its body drew wherever the reading holds a body, and its body is what that body drew
+ * beside them: its author line, its other lines, and an ask's options and answer. A child issue's
+ * row is its key, its title and its status (R14), so its face draws no author line where F's body
+ * drew "Author unknown": a child's body is compared without it.
+ */
+function compared(row: KeyedRow, field: keyof KeyedRow): unknown {
+  if (field === "words") return row.body?.words ?? row.words;
+  if (field !== "body" || row.body === null) return row[field];
+  const { answer, author, lines, options } = row.body;
+  return row.kind.type === "child_issue"
+    ? { answer, lines, options }
+    : { answer, author, lines, options };
+}
+
 /** Whether `row` of the fixture is a section that restates a person's answer: a decision the
  *  fixture draws under an answered question. */
 function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
@@ -368,8 +414,10 @@ function rowName(row: KeyedRow): string {
  * How `readings` differ from the fixture's rows `recorded`, each row matched by its key (and, for
  * a node drawn under two parents, by its parent's key first): every reading but its place, and
  * the place too for a row the fixture places (`placedByFixture`); then each time against its
- * source in this run. Once the seeds' decisions are nodes (`nodes`, `decisionNodesGate`), the two
- * differences the check names are allowed: the section that restates a person's answer is no
+ * source in this run. A comment on a node's text, which R2 lets Graph draw as no row since the
+ * margin beside that node draws it, is no row the fixture holds the page must draw
+ * (`textCommentKeys`). Once the seeds' decisions are nodes (`nodes`, `decisionNodesGate`), the two
+ * differences the check names are allowed too: the section that restates a person's answer is no
  * row, and the answered question's row carries its `shaped` ties as chips beside the fixture's.
  */
 function differences(
@@ -402,13 +450,13 @@ function differences(
       ? [...READINGS, ...PLACE]
       : READINGS;
     for (const field of fields) {
-      const theirs = match[field];
+      const theirs = compared(match, field);
       const mine =
         field === "chips" && nodes && row.kind.type === "ask" && row.state?.token === "answered"
           ? row.chips.filter((chip) =>
               match.chips.some((kept) => canonical(kept) === canonical(chip))
             )
-          : row[field];
+          : compared(row, field);
       if (canonical(mine) !== canonical(theirs)) {
         found.push(
           `${where}, ${rowName(row)} draws its ${field} as ${canonical(mine)}, and the fixture ` +
@@ -417,9 +465,10 @@ function differences(
       }
     }
   }
+  const onText = textCommentKeys(outline);
   for (const rows of unmatched.values()) {
     for (const row of rows) {
-      if (nodes && restatesAnAnswer(row, recorded)) continue;
+      if (onText.has(row.key) || (nodes && restatesAnAnswer(row, recorded))) continue;
       found.push(`${where}, ${rowName(row)} is a row of the fixture the page does not draw`);
     }
   }
@@ -529,8 +578,10 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   expect(unnamed, "the answered question's row carries a chip for each node it shaped").toEqual([]);
 }
 
-/** Row 1 on the seed `name`, which `seed` seeds: each row stands under the parent the tree read
- *  answers, as the page opens and with every branch open, and reads as the reads drew it. */
+/** Row 1 on the seed `name`, which `seed` seeds: as Graph opens, each row stands under the parent
+ *  the tree read answers, and reads as the reads drew it. The fixture's `opened` rows are F's page
+ *  as it opened, folded to the frontier, and Graph opens with every node unfolded (R11), so the
+ *  rows as Graph opens are read against the fixture's `rows`, F's page with every branch open. */
 export async function expectSameRows(
   browser: Browser,
   name: string,
@@ -541,17 +592,13 @@ export async function expectSameRows(
     owedUnless(await convertedGate(page, seeded.key));
     const outline = await readOutline(page, seeded);
     expect(
-      firstRowOutOfPlace("as the page opens", outline.opened, outline) ??
-        firstRowOutOfPlace("with every branch open", outline.rows, outline),
+      firstRowOutOfPlace("as Graph opens", outline.rows, outline),
       "each row stands under the parent the tree read answers"
     ).toBeUndefined();
     const recorded = fixtureSeed(name);
     const nodes = decisionsAreNodes(outline.answer, outline.decisions);
     expect(
-      [
-        ...differences("as the page opens", outline.opened, recorded.opened, outline, nodes),
-        ...differences("with every branch open", outline.rows, recorded.rows, outline, nodes),
-      ],
+      differences("as Graph opens", outline.rows, recorded.rows, outline, nodes),
       "each row reads as the reads drew it"
     ).toEqual([]);
   });
@@ -567,7 +614,7 @@ export async function expectSameRowsDecisions(
   await phase(browser, seed, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     owedUnless(await convertedGate(page, seeded.key));
-    const outline = await readOutline(page, seeded, { bodies: false });
+    const outline = await readOutline(page, seeded);
     owedUnless(decisionNodesGate(outline.answer, outline.decisions));
     expectDecisionsFromNodes(outline, fixtureSeed(name));
   });
@@ -588,6 +635,27 @@ export async function firstLoad(page: Page, traffic: ApiRequests, key: string) {
     total: traffic.total(),
   }));
   return traffic.requests.slice(0, total);
+}
+
+/** The most requests under `/api/` a first load sends (root R21). */
+export const LOAD_BOUND = 40;
+
+/**
+ * The view reads R4 sends with a load of Conversation of `issue`, whose Conversation's read
+ * answered `answer`: a filter's view read goes with the load only where Conversation's read does
+ * not hold that filter's nodes - Plan's always, Spec's where the issue is a child, and
+ * Verification's where the issue is a parent and `answer` holds no check of an issue under it
+ * (spec R4 and R5, decision 441).
+ */
+export function loadViews(issue: IssueDetails, answer: IssueTreeRead): TreeView[] {
+  const lacksChildChecks = !(answer.nodes ?? []).some(
+    (node) => node.supertag === "check" && node.issue !== undefined && node.issue !== issue.key
+  );
+  return [
+    "plan",
+    ...(issue.parent === null ? [] : ["spec" as const]),
+    ...((issue.children ?? []).length > 0 && lacksChildChecks ? ["verification" as const] : []),
+  ];
 }
 
 /** The kind of a version's author the server counts as a person (`recordEditNotice`,

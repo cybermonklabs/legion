@@ -487,7 +487,30 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
     [named, reads, unnamed]
   );
-  const root = useMemo(() => (views === undefined ? built : { ...built, views }), [built, views]);
+  // Each view answer held, built into a tree of its own over the same reads, the names among them
+  // once they are in (`TreeViews.trees`): its filter draws a node of the view the outline's tree
+  // holds no node of from it, so a view draws its own read's rows whatever the outline read holds
+  // (R4, R5).
+  const trees = useMemo(() => {
+    const held: Partial<Record<TreeFilter, TreeNode>> = {};
+    for (const [filter, answer] of [
+      ["plan", plan],
+      ["spec", spec],
+      ["verification", verification],
+    ] as const) {
+      if (answer === undefined) continue;
+      held[filter] = builtTree({
+        ...reads,
+        tree: answer,
+        ...(named === undefined ? {} : { targets: named }),
+      });
+    }
+    return held;
+  }, [named, plan, reads, spec, verification]);
+  const root = useMemo(
+    () => (views === undefined ? built : { ...built, views: { ...views, trees } }),
+    [built, trees, views]
+  );
   return useMemo(
     () => ({
       blocksHeld: read.blocksHeld,

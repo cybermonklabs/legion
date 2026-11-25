@@ -156,9 +156,11 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
   ).toEqual([]);
 }
 
-/** The tree read, which the tree's tasks and statements and the documents' blocks are built from
- *  (`useIssueTree.ts`): its first page, with no view, of whatever issue it reads. */
-const BLOCKS_READ = "**/api/v1/issues/*/tree";
+/** The Plan view's read of the tree, `?view=plan`, which the view's tasks and the plan's blocks
+ *  are built from (`tree-read/tree-read.ts`' `blocksOf`), of whatever issue it reads: each of its
+ *  pages. */
+const BLOCKS_READ = (url: URL): boolean =>
+  /^\/api\/v1\/issues\/[^/]+\/tree$/.test(url.pathname) && url.searchParams.get("view") === "plan";
 
 /** Before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
