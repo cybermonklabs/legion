@@ -11695,3 +11695,163 @@ test("Take out of epic with the row now at the place of the row marked last cut 
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, to the nearest edge) and 13:21Z,
+// which counts this row: the least scroll shows the checkbox whole by the least distance, with no
+// room added for the foot the bar left. Measured at 7deb75af in builds Jobs infra-3135-f-h1-qgpz2
+// (the List) and infra-3135-f-h2-n8pwt (the Inbox), in Chromium, Firefox and WebKit at 390x664:
+// with the checkbox of the row marked last cut by the window's bottom edge, Clear selection
+// scrolls the window 80 px past the cut - 86 px for a cut of 6 px on the project List, 85 px for
+// 4.5 px and 92 px for 11.5 px on the Inbox - and leaves the checkbox 80 px above the window's
+// bottom. Cut by the window's top edge, the same press scrolls the cut alone. 5ae79d88
+// (infra-3135-f-b1-q7ttr, infra-3135-f-b2-jwrlv) centred the checkbox instead, 372 px and 369 px.
+// The landing shows the checkbox with `scrollIntoView({ block: "nearest" })`
+// (components/focus-place.ts:528, through `landWhole` from components/SelectionBar.tsx:314), and
+// the engine keeps clear of the root's `scroll-padding-bottom: 5rem`, which main sets below
+// 1280 px for the review sheet at the foot of the screen (web/src/styles.css:415).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): forty issues and thirty asks seeded, and three Clear selection presses read once the window settles.
+test("at 390 the selection bar's return to the row marked last, with its checkbox cut by the window's bottom edge, scrolls the window no further than the cut, on the project List and the Inbox, as it does with the checkbox cut by the window's top edge @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "WIN", name: "Window" });
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ project: "WIN", title: `Window row ${index}` });
+  }
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  /** The rect of the element `selector` finds and the window's scroll. */
+  const standing = (selector: string) =>
+    page.evaluate((selector) => {
+      const own = document.querySelector(selector)?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        scrollY: window.scrollY,
+        top: own?.top ?? Number.NaN,
+      };
+    }, selector);
+  /** Whether the focused element is the one `selector` finds. */
+  const focusedIs = (selector: string) =>
+    page.evaluate(
+      (selector) => document.activeElement === document.querySelector(selector),
+      selector
+    );
+  const landings: { ok: boolean; text: string }[] = [];
+  /** Presses Clear selection in `bar` and reads how far the checkbox `selector` finds moved,
+   *  against the cut it stood at before the press. */
+  const clearAndRead = async (
+    where: string,
+    bar: Locator,
+    selector: string,
+    edge: "bottom" | "top"
+  ) => {
+    const before = await standing(selector);
+    const cut = edge === "bottom" ? before.bottom - 664 : -before.top;
+    await bar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    await expect
+      .poll(() => focusedIs(selector), { message: `${where}: the focus is not on the checkbox` })
+      .toBe(true);
+    await settledScrollTop(page);
+    await nextFrames(page);
+    // One read is the answer: the bar has gone, the focus has landed on the checkbox and the
+    // window has held still, so nothing moves the focus or the window after this.
+    const after = await standing(selector);
+    const moved = Math.abs(after.top - before.top);
+    const scrolled = Math.round(after.scrollY - before.scrollY);
+    landings.push({
+      ok: after.top >= -1 && after.bottom <= 665 && moved <= cut + 1,
+      text:
+        `${where}: the checkbox was cut by ${Math.round(cut * 10) / 10} px, and the window ` +
+        `scrolled ${scrolled} px, leaving it at top ${Math.round(after.top * 10) / 10} to bottom ` +
+        `${Math.round(after.bottom * 10) / 10}`,
+    });
+  };
+
+  // The project List: the table's box stands below the window's middle and runs past its bottom,
+  // and the box scrolls the checkbox of the row marked last to half its height below that bottom.
+  const issueBar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  const issueRows = page.locator("[data-issue-row]");
+  await openIssuesTab(page, "WIN", "List");
+  await expect.poll(() => issueRows.count()).toBeGreaterThanOrEqual(12);
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+  });
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  // The rows read once the box has held still; they only name the row marked, one in the middle.
+  const order = await issueRows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-issue-row") ?? "")
+  );
+  const issue = order[Math.floor(order.length / 2)] ?? "";
+  const issueMark = page.getByRole("checkbox", { exact: true, name: `Select ${issue}` });
+  await issueMark.focus();
+  await page.keyboard.press("Space");
+  await expect(issueMark).toBeChecked();
+  await issueMark.evaluate((mark) => {
+    const scroller = mark.closest<HTMLElement>('[data-testid="issues-table-scroll"]');
+    window.scrollBy(0, (scroller?.getBoundingClientRect().top ?? 0) - (window.innerHeight - 260));
+    const own = mark.getBoundingClientRect();
+    scroller?.scrollBy(0, own.top - (window.innerHeight - own.height / 2));
+  });
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  await clearAndRead(
+    "project List with the checkbox cut by the window's bottom edge",
+    issueBar,
+    `[data-issue-row="${issue}"] input[type="checkbox"]`,
+    "bottom"
+  );
+
+  // The Inbox: the window scrolls its rows, and the checkbox of the row marked last stands cut by
+  // 30% of its height at the window's bottom edge, then at its top edge.
+  const rowBar = page.getByRole("toolbar", { name: "Selected rows" });
+  for (const edge of ["bottom", "top"] as const) {
+    await page.goto("/?group=none");
+    await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+    // The rows read once the poll above found the list drawn; they only name the rows marked.
+    const ids = await page
+      .locator("[data-inbox-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+    const upper = ids[12] ?? "";
+    const lower = ids[13] ?? "";
+    // The lower row first, so the row marked last is the upper one.
+    for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+    await expect(rowBar).toBeVisible();
+    await inboxRow(page, upper)
+      .getByRole("checkbox")
+      .first()
+      .evaluate((mark, edge) => {
+        const own = mark.getBoundingClientRect();
+        window.scrollBy(
+          0,
+          edge === "bottom"
+            ? own.bottom - (window.innerHeight + own.height * 0.3)
+            : own.top + own.height * 0.3
+        );
+      }, edge);
+    await settledScrollTop(page);
+    await clearAndRead(
+      `Inbox with the checkbox cut by the window's ${edge} edge`,
+      rowBar,
+      `[data-inbox-row="${upper}"] input[type="checkbox"]`,
+      edge
+    );
+  }
+  // A scroll past the cut moves the reader's rows further than showing the checkbox needs, here
+  // by the room main keeps for a foot sheet that neither page draws.
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
