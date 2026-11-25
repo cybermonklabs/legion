@@ -4,7 +4,8 @@ import { dirname, isAbsolute, resolve } from "node:path";
 // The comparison that scripts/e2e/step-models-check.sh runs once it has read each issue's step
 // records with `dispatch steps`. It joins each record to the daemon's log lines of the reads the
 // record used. Between those reads it counts the responses of the record's agent in the agent's
-// own transcript. The section "step-models-check.sh" of scripts/e2e/README.md says what it prints.
+// own transcript, with the response that holds the step's completion call. The section
+// "step-models-check.sh" of scripts/e2e/README.md says what it prints.
 //
 //   bun scripts/e2e/lib/step-models-check.ts --steps <KEY> <file> [--steps <KEY> <file> …] \
 //     --daemon-log <file> --agents <file> [--lower-one]
@@ -24,6 +25,31 @@ export interface Response {
   at: bigint;
   /** False for a response that ended in an error, and for one that no model wrote. */
   counts: boolean;
+  /** True where the response holds a completion call: the call with which an agent ends a step. */
+  completes: boolean;
+}
+
+/**
+ * The ops of a completion call. The daemon's end line says `endedBy` `agent` only for the facts
+ * these two make (`endedBy` in packages/daemon/internal/workflow/step_models.go).
+ */
+const COMPLETION_OPS: readonly unknown[] = ["handoff_complete", "sign_off"];
+
+/**
+ * Whether a message's content holds a completion call: a block of `type` that calls `tool` with
+ * one of the completion ops in its arguments, `field`.
+ */
+function holdsCompletion(content: unknown, type: string, tool: string, field: string): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((value) => {
+    const block = object(value);
+    return (
+      block !== null &&
+      block.type === type &&
+      block.name === tool &&
+      COMPLETION_OPS.includes(object(block[field])?.op)
+    );
+  });
 }
 
 /** The message of the daemon's log line for each read that a step's start or end used. */
@@ -93,6 +119,8 @@ function transcriptLines(path: string, what: string): Array<[number, Json]> {
 /**
  * An Oh My Pi session file. Each `message` entry of the role `assistant` is a response, named
  * `<provider>/<model>`, at the entry's `timestamp`. It counts unless its stop reason is `error`.
+ * It holds a completion call where a `toolCall` block of its content calls `legion`, as the
+ * session names the tool of packages/pi-legion, with a completion op in its `arguments`.
  * A `model_change` entry holds its model too. A `model_usage` entry is an upkeep call and holds none.
  */
 function ompTranscript(path: string): Transcript {
@@ -123,6 +151,7 @@ function ompTranscript(path: string): Transcript {
       time: String(entry.timestamp),
       at,
       counts: message.stopReason !== "error",
+      completes: holdsCompletion(message.content, "toolCall", "legion", "arguments"),
     });
     held.add(model);
   }
@@ -132,10 +161,12 @@ function ompTranscript(path: string): Transcript {
 /**
  * A Claude Code transcript or `stream-json` output. Each assistant line belongs to one response,
  * once by its `message.id`, named `anthropic/<model>`, at the time of its last line. It counts
- * unless its model is `<synthetic>`. A `system` `init` line holds its model too. So does an
- * assistant line's `requestedModel`, the model Claude Code asked for, which a session transcript
- * writes in place of an `init` line. A line whose `parent_tool_use_id` is a string, or whose
- * `isSidechain` is true, is a subagent's and holds none.
+ * unless its model is `<synthetic>`. It holds a completion call where a `tool_use` block of any of
+ * its lines calls `mcp__legion__legion` with a completion op in its `input`: the `legion` tool of
+ * packages/claude-envoy under its MCP server `legion`. A `system` `init` line holds its model too.
+ * So does an assistant line's `requestedModel`, the model Claude Code asked for, which a session
+ * transcript writes in place of an `init` line. A line whose `parent_tool_use_id` is a string, or
+ * whose `isSidechain` is true, is a subagent's and holds none.
  */
 function claudeTranscript(path: string): Transcript {
   const what = "the Claude Code transcript";
@@ -170,11 +201,13 @@ function claudeTranscript(path: string): Transcript {
         `line ${line} of ${what} ${path} gives response ${message.id} the model ${model}, and an earlier line gives it ${seen.model}`,
       ]);
     }
+    const completes = holdsCompletion(message.content, "tool_use", "mcp__legion__legion", "input");
     responses.set(message.id, {
       model,
       time: String(entry.timestamp),
       at,
       counts: message.model !== "<synthetic>",
+      completes: completes || seen?.completes === true,
     });
     held.add(model);
     if (typeof entry.requestedModel === "string") held.add(`anthropic/${entry.requestedModel}`);
@@ -459,24 +492,35 @@ function joinedReads(step: StepLine, reads: ReadLine[]): { starts: ReadLine[]; e
 /** A read is within 2 s of a response where either of its gaps is under 2 s. */
 const NEAR = 2_000_000_000n;
 
-/** The nanoseconds since the last response that ended at or before `at`, and to the next one. */
+/**
+ * The nanoseconds since the last response that ended at or before `at`, and to the next one. Each
+ * leaves out the response `leftOut`, where one is given.
+ */
 function gapsOf(
   at: bigint,
-  responses: Response[]
+  responses: Response[],
+  leftOut: Response | null
 ): { before: bigint | null; after: bigint | null } {
   let before: bigint | null = null;
   let after: bigint | null = null;
   for (const response of responses) {
+    if (response === leftOut) continue;
     if (response.at <= at) before = at - response.at;
     else if (after === null) after = response.at - at;
   }
   return { before, after };
 }
 
+function seconds(nanoseconds: bigint): string {
+  return (Number(nanoseconds) / 1e9).toFixed(3);
+}
+
 /** The two reads a comparison can take a step on. */
 interface Window {
   start: ReadLine;
   end: ReadLine;
+  /** On a step that its agent ended, the response that holds its completion call, else null. */
+  completion: Response | null;
 }
 
 /** A record of a claim the agents file names: its reads, and why a comparison cannot take it. */
@@ -491,39 +535,92 @@ interface Judged {
   why: string;
 }
 
-function readGaps(side: string, reads: ReadLine[], responses: Response[]): string {
+function readGaps(
+  side: string,
+  reads: ReadLine[],
+  responses: Response[],
+  leftOut: Response | null
+): string {
   if (reads.length === 0) return `no ${side} read`;
   if (reads.length > 1) return `${reads.length} ${side} reads`;
   const [read] = reads;
   if (read.final) return `${side} read ${read.readTime}: final totals`;
-  const { before, after } = gapsOf(read.readAt, responses);
+  const { before, after } = gapsOf(read.readAt, responses, leftOut);
   const last =
     before === null
       ? "no response ended before it"
-      : `the last response ended ${(Number(before) / 1e9).toFixed(3)} s before it`;
-  const next =
-    after === null ? "none after it" : `the next ${(Number(after) / 1e9).toFixed(3)} s after it`;
+      : `the last response ended ${seconds(before)} s before it`;
+  const next = after === null ? "none after it" : `the next ${seconds(after)} s after it`;
   return `${side} read ${read.readTime}: ${last}, ${next}`;
 }
 
-/** Why no comparison can take the step on its reads, or "" where one can. */
-function whyNot(starts: ReadLine[], ends: ReadLine[], responses: Response[]): string {
-  if (starts.length !== 1) return `it has ${starts.length} start reads, not one`;
-  if (ends.length !== 1) return `it has ${ends.length} end reads, not one`;
+/**
+ * The response that holds the step's completion call. It is found by that call, never by how near
+ * its time lies to a read: the last such response after the start read and up to the end read.
+ * Where there is none, it is the next response after the end read, where that one holds the call,
+ * since the clock of the agent's machine may run ahead of the daemon's. Null where neither holds
+ * it.
+ */
+function completionOf(responses: Response[], start: ReadLine, end: ReadLine): Response | null {
+  let found: Response | null = null;
+  for (const response of responses) {
+    if (response.at <= start.readAt) continue;
+    if (response.at > end.readAt) return found ?? (response.completes ? response : null);
+    if (response.completes) found = response;
+  }
+  return found;
+}
+
+/**
+ * Why no comparison can take the step on its reads, or "" where one can. On a step that its agent
+ * ended, with one start read and one end read of one launch and neither final, it also gives the
+ * response that holds the completion call, or null. The 2 s test of the end read leaves that
+ * response out, and every other response keeps the 2 s test at both reads. Where no response holds
+ * the call, the end read leaves out nothing.
+ */
+function whyNot(
+  starts: ReadLine[],
+  ends: ReadLine[],
+  responses: Response[]
+): { why: string; completion?: Response | null } {
+  if (starts.length !== 1) return { why: `it has ${starts.length} start reads, not one` };
+  if (ends.length !== 1) return { why: `it has ${ends.length} end reads, not one` };
   const [start] = starts;
   const [end] = ends;
-  if (start.final) return "its start read is final totals";
-  if (end.final) return "its end read is final totals";
+  if (start.final) return { why: "its start read is final totals" };
+  if (end.final) return { why: "its end read is final totals" };
   if (start.claim !== end.claim || start.generation !== end.generation) {
-    return "its two reads name two launches";
+    return { why: "its two reads name two launches" };
   }
-  for (const read of [start, end]) {
-    const { before, after } = gapsOf(read.readAt, responses);
+  const completion = end.endedBy === "agent" ? completionOf(responses, start, end) : undefined;
+  const leftOut = completion ?? null;
+  for (const [read, without] of [
+    [start, null],
+    [end, leftOut],
+  ] as const) {
+    const { before, after } = gapsOf(read.readAt, responses, without);
     if ((before !== null && before < NEAR) || (after !== null && after < NEAR)) {
-      return `a response ended within 2 s of its ${read.side} read`;
+      return { why: `a response ended within 2 s of its ${read.side} read`, completion };
     }
   }
-  return "";
+  return { why: "", completion };
+}
+
+/**
+ * What a step's `GAP:` line says of the completion's response, where `whyNot` looked for one: then
+ * `ends` holds the one end read.
+ */
+function leftOutText(completion: Response | null | undefined, ends: ReadLine[]): string {
+  if (completion === undefined) return "";
+  if (completion === null) {
+    return " No response holds the completion call, so the end read leaves out none.";
+  }
+  const [end] = ends;
+  const [gap, side] =
+    completion.at <= end.readAt
+      ? [end.readAt - completion.at, "before"]
+      : [completion.at - end.readAt, "after"];
+  return ` The end read leaves out the response of ${completion.time}, which holds the completion call and ended ${seconds(gap)} s ${side} it.`;
 }
 
 function countsText(answers: Answer[]): string {
@@ -538,13 +635,15 @@ function totals(answers: Answer[]): Map<string, number> {
   return by;
 }
 
-/** The transcript's counted responses after the start read and up to the end read, by model. */
+/**
+ * The transcript's counted responses by model: those after the start read and up to the end read,
+ * and the completion's response wherever its time lies.
+ */
 function countedBetween(responses: Response[], window: Window): Answer[] {
   const counted: Answer[] = [];
   for (const response of responses) {
-    if (!response.counts || response.at <= window.start.readAt || response.at > window.end.readAt) {
-      continue;
-    }
+    const between = response.at > window.start.readAt && response.at <= window.end.readAt;
+    if (!response.counts || !(between || response === window.completion)) continue;
     const answer = counted.find((entry) => entry.model === response.model);
     if (answer === undefined) counted.push({ model: response.model, calls: 1 });
     else answer.calls++;
@@ -700,14 +799,18 @@ function stepModelsCheck(argv: string[]): { lines: string[]; code: number } {
       transcripts.set(step.agent, transcript);
     }
     const { starts, ends } = joinedReads(step, reads);
-    const why = whyNot(starts, ends, transcript.responses);
+    const { responses } = transcript;
+    const { why, completion } = whyNot(starts, ends, responses);
+    const leftOut = completion ?? null;
+    const startGaps = readGaps("start", starts, responses, null);
+    const endGaps = readGaps("end", ends, responses, leftOut);
     judged.push({
       step,
       agent,
       transcript,
       ends,
-      window: why === "" ? { start: starts[0], end: ends[0] } : null,
-      gaps: `${readGaps("start", starts, transcript.responses)}. ${readGaps("end", ends, transcript.responses)}.`,
+      window: why === "" ? { start: starts[0], end: ends[0], completion: leftOut } : null,
+      gaps: `${startGaps}. ${endGaps}.${leftOutText(completion, ends)}`,
       why,
     });
   }
