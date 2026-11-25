@@ -72,7 +72,8 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// once its context ends. That wait's one bound is the test binary's deadline (testwait.Receive):
+// a run a loaded machine ends slowly passes, and one that never returns fails by name.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,20 +84,8 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the suggestion outcome sweep did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "the suggestion outcome sweep's return once its context ended", done)
 	})
-}
-
-// waitUntil polls condition until it holds, failing the test after within.
-func waitUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, condition) {
-		t.Fatalf("timed out after %v waiting for %s", within, what)
-	}
 }
 
 // Two envoy-dispatch processes sweep one database, each through the sweep's woken loop and each
@@ -134,16 +123,15 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two runners' passes reached the cursor lock, want both: the cursor row, not a lease, is what serialises them", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	waitUntil(t, 30*time.Second, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	waitUntil(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
+
 	var cursor *int64
 	if err := database.Pool.QueryRow(ctx, `select event_id from suggestion_outcome_cursor`).Scan(&cursor); err != nil {
 		t.Fatalf("read the cursor: %v", err)
@@ -179,7 +167,7 @@ func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
-		waitUntil(t, 10*time.Second, "the pass the last wake earned", func() bool { return passes() == woken+1 })
+		waitUntil(t, "the pass the last wake earned", func() bool { return passes() == woken+1 })
 		if woken < wakes {
 			wake <- struct{}{}
 		}

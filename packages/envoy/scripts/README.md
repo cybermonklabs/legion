@@ -1569,9 +1569,11 @@ which has no statement pair: it times one whole pass of the release before this 
 pass of this build with no change, and eleven rounds each preceded by a hundred item writes
 outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
 database it measures and leaves them there, so run it after the statement timings.
+Its verdict is the wall time of those passes, which a loaded machine moves as much as the code
+does, so it also needs `DISPATCH_BENCH_TIMING` set, and it skips without it.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> DISPATCH_BENCH_TIMING=1 \
   go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
 ```
 

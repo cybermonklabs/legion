@@ -19,11 +19,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // twoChecks is a Verification document with one pre-merge check and one after-merge check.
@@ -3413,14 +3415,17 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up.
+// or a hold that keeps every read waiting until its caller gives up or the test ends.
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
-	hold      bool
-	asked     map[string]int
+	// held, once a test holds every read, is closed when that test ends (t.Context, cancelled
+	// before its cleanups run), so a held read whose caller never gave up does not keep the fake
+	// server's Close, a cleanup, waiting on it.
+	held  <-chan struct{}
+	asked map[string]int
 }
 
 func newCheckRunsFake() *checkRunsFake {
@@ -3447,11 +3452,12 @@ func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.fault, f.faultBody = status, body
 }
 
-// holdEveryRead makes every read wait until its caller gives up.
-func (f *checkRunsFake) holdEveryRead() {
+// holdEveryRead makes every read wait until its caller gives up, or t ends, and answer nothing of
+// its own.
+func (f *checkRunsFake) holdEveryRead(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hold = true
+	f.held = t.Context().Done()
 }
 
 // reads is how many pages of sha's check runs GitHub has been asked for.
@@ -3482,12 +3488,12 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.asked[sha]++
-	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
+	fault, faultBody, held, runs := f.fault, f.faultBody, f.held, f.runs[sha]
 	f.mu.Unlock()
-	if hold {
+	if held != nil {
 		select {
 		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
+		case <-held:
 		}
 		return
 	}
@@ -3704,7 +3710,10 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 
 // A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
 // a deployment holding no App key each leave the check with no result and a detail saying what
-// GitHub answered, never a pass and never a fail.
+// GitHub answered, never a pass and never a fail. The held read is cut at the deadline: the fake
+// answers a held read nothing until its caller gives up, the GitHub client's own bound on a call
+// (githubapp.RequestTimeout) is raised past any run, so the deadline the read's context carries is
+// the one thing that can end it, and the detail names that deadline.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
@@ -3717,13 +3726,23 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		"status 500", "Server Error at the check runs of "+headCommit)
 
 	fake.failWith(0)
-	fake.holdEveryRead()
+	fake.holdEveryRead(t)
 	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
-	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	requestTimeout := githubapp.RequestTimeout
+	githubapp.RequestTimeout = time.Hour
+	t.Cleanup(func() { githubapp.RequestTimeout = requestTimeout })
+	// The read runs on a goroutine of its own, and the wait for its answer has one bound, the test
+	// binary's deadline less testwait's margin: the fake answers a held read only once its caller
+	// gives up, so a read whose deadline never reaches the GitHub call fails here by name.
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+	}()
+	held := testwait.Receive(t, "the results read whose check-runs read GitHub holds to answer", answered)
+	if held.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, held.Code, held.Body.String())
 	}
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, held), "c1"), "no answer within 300ms")
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {

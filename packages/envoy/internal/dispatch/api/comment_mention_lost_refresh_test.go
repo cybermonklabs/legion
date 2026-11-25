@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A claim refresh whose statement commits and whose answer is lost - the connection drops after
@@ -63,7 +64,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			// waits for its retry under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh whose answer is lost", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the waiting one")
-			<-timers
+			testwait.Receive(t, "the waiting send's timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			recorded := func() time.Time {
 				sender.mu.Lock()
@@ -170,7 +171,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			// waits for its retry under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
 			waitingOne := postMentionOfS1(t, handler, issue.Key, "the waiting one")
-			runRetry := <-timers
+			runRetry := testwait.Receive(t, "the waiting send's timer", timers)
 			key := mentionKey{comment: waitingOne, target: "session:s1", attempt: 1}
 			if tc.outage {
 				down.Store(true)

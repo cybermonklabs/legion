@@ -9,10 +9,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/modeltoken"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // modelTokenTimeout bounds one sign-in, and stays under Oh My Pi's 10 s limit on an apiKey command.
-const modelTokenTimeout = 8 * time.Second
+// It is a variable so that this package's tests can give it their own deadline (programbound): a
+// stand-in Cognito a loaded machine made slower than 8 s would fail the sign-in.
+var modelTokenTimeout = 8 * time.Second
+
+func init() {
+	programbound.Register(&modelTokenTimeout)
+}
 
 // newModelTokenCommand is `legion model-token` (internal/modeltoken): it prints the access token
 // alone on stdout, or exits 1 with the reason on stderr and nothing on stdout.
@@ -40,7 +47,7 @@ func newModelTokenCommand(stdout, stderr io.Writer) *cobra.Command {
 				return 1
 			}
 		}
-		signingIn, cancel := context.WithTimeout(ctx, modelTokenTimeout)
+		signingIn, cancel := context.WithTimeout(ctx, programbound.Of(&modelTokenTimeout))
 		defer cancel()
 		token, err := modeltoken.Token(signingIn, cfg)
 		if err != nil {
