@@ -216,6 +216,10 @@ type Engine struct {
 	noAskAtWay                 bool
 	askAtWayWithNoRules        bool
 	wayFromRecordedHead        bool
+	// noEndBesideDelete takes out the deletion of the branches beside a task's fixes that its move
+	// into the retro with no hold queues, at a transition and at the release of an end hold
+	// (queueTaskEnd). Only a test sets it.
+	noEndBesideDelete bool
 
 	// For a task's CI news (ci_news.go), each the fault its test plants first: assignFromSettlement
 	// gives the implementer a repair assignment of each failed run of a settlement (reportRuns);
