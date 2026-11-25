@@ -665,15 +665,12 @@ type fixRigWatch struct {
 	checkReads, githubRequests      int
 	outbox                          map[int64]string
 	daemonLog, dispatchLog, notices int
+	issueLog                        int
 	failed                          map[string]bool
 }
 
 // fixRigWatchPoll is how often the watcher reads.
 const fixRigWatchPoll = 50 * time.Millisecond
-
-// fixRigOutboxKinds are the outbox rows of each issue the watcher follows.
-var fixRigOutboxKinds = []string{string(record.OutboxKindStepRecord), string(record.OutboxKindDispatchStatus),
-	string(record.OutboxKindPlanRecord), string(record.OutboxKindFixJobRead), string(record.OutboxKindNotice), string(record.OutboxKindSupervise)}
 
 // fixRigDaemonLines are the messages of the daemon's log whose lines are facts of the walk: the
 // supervise machine's hold of a phase task for another claim's turn (supervise/delivery.go,
@@ -779,6 +776,30 @@ func (w *fixRigWatch) poll() {
 	}
 	w.daemonLog = w.logLines("daemon-log", r.logs.String(), w.daemonLog, fixRigDaemonLines)
 	w.dispatchLog = w.logLines("dispatch-log", r.dispatch.output.String(), w.dispatchLog, []string{"check states", "check_states"})
+	w.issueLog = w.issueLines(r.logs.String(), w.issueLog)
+}
+
+// issueLines logs each line of the daemon's log past offset that the outbox or a supervise machine
+// wrote of an issue of the run, at any level, so a row or a delivery that waits names where, and
+// answers the offset of the text it read through: the last whole line. A claim's lines name the
+// issue's key in the claim token, in lower case.
+func (w *fixRigWatch) issueLines(text string, offset int) int {
+	end := strings.LastIndexByte(text, '\n') + 1
+	if end <= offset {
+		return offset
+	}
+	for line := range strings.SplitSeq(text[offset:end], "\n") {
+		if !strings.Contains(line, `"msg":"outbox`) && !strings.Contains(line, `"msg":"supervise`) {
+			continue
+		}
+		for _, walked := range w.issues {
+			if strings.Contains(line, walked.key) || strings.Contains(line, strings.ToLower(walked.key)+"-") {
+				w.r.fact("daemon-issue-log", "%s", fixRigCut(line, 700))
+				break
+			}
+		}
+	}
+	return end
 }
 
 // pollDaemon reads the daemon's store, for each issue of the run.
@@ -808,20 +829,30 @@ func (w *fixRigWatch) pollDaemon(ctx context.Context) {
 			w.fail("processed_events", err)
 		}
 	}
-	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text from outbox where issue = any($1) and kind = any($2) order by id`, keys, fixRigOutboxKinds)
+	outbox, err := r.st.Pool().Query(ctx, `select id, kind, payload::text, attempts, due_at, lease_until, last_error from outbox
+		where issue = any($1) order by id`, keys)
 	if err != nil {
 		w.fail("the outbox", err)
 		return
 	}
 	standing := map[int64]bool{}
 	var id int64
-	var kind, payload string
-	if _, err := pgx.ForEachRow(outbox, []any{&id, &kind, &payload}, func() error {
+	var attempts int
+	var kind, payload, lastError string
+	var due time.Time
+	var lease *time.Time
+	if _, err := pgx.ForEachRow(outbox, []any{&id, &kind, &payload, &attempts, &due, &lease, &lastError}, func() error {
 		standing[id] = true
 		if _, seen := w.outbox[id]; !seen {
 			w.outbox[id] = kind
 			r.fact("outbox-row", "the outbox holds %s row %d: %s", kind, id, fixRigCut(payload, 600))
 		}
+		leased := "none"
+		if lease != nil {
+			leased = lease.UTC().Format("15:04:05.000")
+		}
+		w.changed(strconv.FormatInt(id, 10), "outbox-row-state", fmt.Sprintf("the %s row %d: attempts %d, due %s, leased until %s, last error %q",
+			kind, id, attempts, due.UTC().Format("15:04:05.000"), leased, fixRigCut(lastError, 300)))
 		return nil
 	}); err != nil {
 		w.fail("the outbox", err)
