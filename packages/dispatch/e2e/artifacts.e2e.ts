@@ -406,7 +406,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(10);
+  await expect(tabs).toHaveCount(11);
   const insideTablist = async (tab: Locator) => {
     const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
     expect(listBox).not.toBeNull();
@@ -447,6 +447,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
+    "Dashboard",
     "Spec",
     "Verification",
     "Plan",
@@ -484,7 +485,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { name: "Spec" });
+  const specTab = page.getByRole("tab", { exact: true, name: "Dashboard" });
   await expect(specTab).toBeFocused();
   await insideTablist(specTab);
   expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -493,15 +494,16 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
   await expect.poll(masked).toBe(false);
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
-  // At 1280 px every tab fits beside the hidden margin, and Activity, chosen there, is whole. The
-  // margin coming back narrows the tablist with no change of tab, and Activity, which it left past
-  // the trailing edge, is brought back whole and clear of the fade.
+  // At 1280 px beside the hidden margin, Activity, chosen there, is whole and clear of the fade.
+  // The margin coming back narrows the tablist with no change of tab, and Activity, which it left
+  // past the trailing edge, is brought back whole and clear of the fade.
   await page.getByRole("button", { name: "Hide margin" }).click();
   await expect(page.getByTestId("margin-rail")).toBeVisible();
   const activityTab = page.getByRole("tab", { name: "Activity" });
   await activityTab.click();
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
-  await expect.poll(masked).toBe(false);
+  // The eleventh tab, Dashboard (spec R1), leaves the strip one tab wider than 1280 px holds.
+  await wholeAndClearOfFade(activityTab);
   await page.getByRole("button", { name: "Show margin" }).click();
   await expect.poll(masked).toBe(true);
   await wholeAndClearOfFade(activityTab);
@@ -556,7 +558,7 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
     "aria-selected",
     "true"
   );
-  await expect(tablist.getByRole("tab")).toHaveCount(10);
+  await expect(tablist.getByRole("tab")).toHaveCount(11);
   // The comment margin loads after the first paint, and until it is drawn the tablist is wider
   // and every tab fits: a resting point read then would be the start, and the strip moves again
   // once the margin arrives. So the resting point is read only with the margin drawn.

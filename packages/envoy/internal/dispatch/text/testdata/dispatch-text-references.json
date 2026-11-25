@@ -160,6 +160,13 @@
     ]
   },
   {
+    "body": "The dashboard tab: dispatch://CORE-45/dashboard and https://dispatch.test/issues/CORE-46/dashboard.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
     "body": "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
     "refs": [
       "dispatch://CORE-47",

@@ -273,12 +273,16 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
   },
-  // The Inbox's reading column: one reply box, under a comment thread or a message thread.
+  // The Inbox's reading column: one reply box, under a comment thread or a message thread. A
+  // thread item of Dashboard draws the same box under the same thread.
   {
     box: "inbox-thread-reply",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/dashboard/ThreadItem.tsx",
+      "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
+    ],
     issueRows: true,
     reach: "Reply",
     write: "comment",
@@ -287,7 +291,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "inbox-thread-reply",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/inbox/ThreadBody.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/dashboard/ThreadItem.tsx",
+      "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
+    ],
     issueRows: true,
     reach: "Reply",
     write: "message-reply",

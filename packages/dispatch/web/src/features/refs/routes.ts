@@ -36,6 +36,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "dashboard" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -170,6 +171,7 @@ export type IssueTab =
   | "artifacts"
   | "activity"
   | "decisions"
+  | "dashboard"
   | "collaborators";
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */

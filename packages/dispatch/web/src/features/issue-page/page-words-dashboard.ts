@@ -64,6 +64,8 @@ export const DASHBOARD_WORDS = freeze({
   },
   /** Under the 20 entries a tile's list draws: the control that draws the next 20. */
   next_twenty: "Show the next 20",
+  /** A thread item's link to the whole thread at its own address. */
+  thread_link: "Open the whole thread",
 } as const);
 
 /** The phase track's words (R3): the eight steps in the track's order, and the words a phase

@@ -7,7 +7,9 @@ body: |-
   none. Each check of `GET /api/v1/issues/{key}/results` carries `serves`, the references its
   block's `serves` attribute names, each as the block writes it and in the block's order, and none
   where the block names none. Both members are optional, so a client of an earlier build reads the
-  answers as before.
+  answers as before. A reference to the issue page's Dashboard tab, `dispatch://<KEY>/dashboard`
+  or the page's `/issues/<KEY>/dashboard`, reads as the issue, as a reference to each other tab of
+  the page does.
 time: 2026-11-25T20:43:11Z
 custom:
     Issue: INFRA-5702

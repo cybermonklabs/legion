@@ -34,6 +34,8 @@
 // - Agents at work: a `list` with one `listitem` per role that holds a claim, in the order the
 //   Legion state gives, each its role and then its role words.
 
+import { DISPATCH_WRITING_BOXES } from "@legion/contracts";
+
 import { DECLARED_WORDS, wordsIn } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/statement-rules";
 import {
@@ -471,7 +473,12 @@ test("each item is acted on in place and leaves the list and the count", async (
 
   // The approval request, answered with Approve.
   const request: WaitingItem = { id: seed.asks.approval.id, kind: "approval" };
-  await itemOf(waiting, request).getByRole("button", { exact: true, name: "Approve" }).click();
+  // The ask body answers an approval request as every surface does: its Approve option, then
+  // Answer.
+  await itemOf(waiting, request)
+    .getByRole("radio", { name: /^Approve/ })
+    .check();
+  await itemOf(waiting, request).getByRole("button", { exact: true, name: "Answer" }).click();
   await gone(request);
   await expect
     .poll(async () => (await getArtifact(seed.specArtifactId)).approval?.state)
@@ -479,7 +486,9 @@ test("each item is acted on in place and leaves the list and the count", async (
 
   // The stale Verification approval, approved again at the newest version.
   const stale: WaitingItem = { id: seed.verificationArtifactId, kind: "stale" };
-  await itemOf(waiting, stale).getByRole("button", { exact: true, name: "Approve" }).click();
+  await itemOf(waiting, stale)
+    .getByRole("button", { name: /^Approve v\d+$/ })
+    .click();
   await gone(stale);
   await expect
     .poll(async () => {
@@ -723,6 +732,15 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
 
   const tab = page.getByRole("tab", { exact: true, name: "Dashboard" });
   await expect(tab, "today's page draws no Dashboard tab").toBeVisible();
+  // The shell's own polls - the reads of no issue that today's page with no Dashboard made as it
+  // loaded, the agents registry and the credential requests among them - repeat on their own
+  // clock, on either page, at any time after: a window the control page polled in is no window
+  // this page polls in. A read of the issue is held to the windows below.
+  const shellPolls = new Set(
+    shell.requests
+      .filter((sent) => !sent.route.includes("/issues/"))
+      .map((sent) => `${sent.method} ${sent.route}`)
+  );
   reads.reset();
   shell.reset();
   await tab.click();
@@ -732,7 +750,9 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
   await expectLoadSettled(reads);
   const shellRoutes = new Set(shell.requests.map((sent) => `${sent.method} ${sent.route}`));
   const dashboards = reads.requests.filter(
-    (sent) => !shellRoutes.has(`${sent.method} ${sent.route}`)
+    (sent) =>
+      !shellRoutes.has(`${sent.method} ${sent.route}`) &&
+      !shellPolls.has(`${sent.method} ${sent.route}`)
   );
   expect(
     dashboards
@@ -757,7 +777,11 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
   await expectLoadSettled(reads);
   expect(
     reads.requests
-      .filter((sent) => !shellRoutes.has(`${sent.method} ${sent.route}`))
+      .filter(
+        (sent) =>
+          !shellRoutes.has(`${sent.method} ${sent.route}`) &&
+          !shellPolls.has(`${sent.method} ${sent.route}`)
+      )
       .filter(
         (sent) =>
           !(sent.method === "GET" && sent.path === "/api/v1/agents") &&
@@ -820,12 +844,22 @@ test("every text node of Dashboard is a number, a name, a time, a declared word 
   });
   const records = await recordTexts(seed);
   const names = new Set(seed.names.flatMap(wordsIn));
+  // The words the shared controls Dashboard draws carry as their own, the same on every surface:
+  // each writing box's hint (`DISPATCH_WRITING_BOXES`, the shared field reads its own), and the
+  // one approval control's actions, which name the version they approve (`doc/ApprovalChip.tsx`,
+  // R5).
+  const hints = new Set(DISPATCH_WRITING_BOXES.map((row) => row.hint));
+  const shared = (text: string) => hints.has(text) || /^Approve v\d+$/.test(text);
+  // A reference in a record's words is drawn by its target's name, which a chip cuts to its
+  // room with an ellipsis: the words before it are the target's own.
+  const cut = (text: string) => text.replace(/…$/u, "");
   const explained = ({ text, time }: { text: string; time: boolean }) =>
     time ||
+    shared(text) ||
     wordsIn(text).every(
       (word) => DECLARED_WORDS.includes(word) || /^v?\d+$/.test(word) || names.has(word)
     ) ||
-    records.some((record) => record.includes(text));
+    records.some((record) => record.includes(cut(text)));
   expect(
     drawn.filter((node) => !explained(node)).map((node) => node.text),
     "Dashboard draws text that is no number, name, time, declared word or record's text"
