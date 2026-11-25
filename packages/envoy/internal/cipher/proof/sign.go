@@ -91,8 +91,8 @@ func SignLauncher(key *ecdsa.PrivateKey, launcherID, method, url string, now tim
 // is no part of the request's target (RFC 9110 section 4.2.4). The broker checks a proof against
 // its public URL followed by the path the request reached it at (the url Verifier.Verify is given,
 // internal/cipher/api's proofSubject), which holds none of the three, so a proof signed over the
-// whole URL of a request to an address with a query or a user name is refused. Every signer of a
-// request this module sends to the broker signs TargetURI of that request's URL.
+// whole URL of a request to an address with a query or a user name is refused. agent-secrets, its
+// helper and the token client (cipherclient) each sign TargetURI of the URL their request asks.
 func TargetURI(u *url.URL) string {
 	target := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}
 	return target.String()

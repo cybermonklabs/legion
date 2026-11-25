@@ -47,16 +47,15 @@ func New(raw string) Address {
 // Raw is the address as configured, credential included. It builds a request to the broker: its
 // URL, which Join builds from it (no caller joins a path onto it by hand), the URL its proof signs,
 // the audience of a request object it carries, and the OAuth endpoints. Five callers read it for
-// anything else, and none of them prints it: the helper's check that a URL it is asked to sign is
-// one of its operator routes (internal/cipher/helper's operatorRoute), agent-secrets-helper's
-// check that an address is set (its serve), the token client's trim of the address it is given
-// (cipherclient.New), agent-secrets' check that a broker whose settings it acts on is https or
-// loopback (requireTrustedBrokerURL), and its check that an id it prints by its shape is no value
-// the address holds (addressHolds). Every caller keeps what it answers out of every output - a log
-// field, an error's text, a line on stderr - since printing it is the leak this type exists to
-// prevent: a message names the address through the Address itself, a request URL built from it
-// through Call, and that request's error through Error or Cause, or through Named where the URL
-// ends in what a caller typed.
+// anything else, and none of them prints it: agent-secrets-helper's check that an address is set
+// (its serve), the token client's trim of the address it is given (cipherclient.New),
+// agent-secrets' check that a broker whose settings it acts on is https or loopback
+// (requireTrustedBrokerURL), and its two checks of an id it prints by its shape: that the address
+// could carry no credential (plainAddress) and does not hold the id (addressHolds). Every caller
+// keeps what it answers out of every output - a log field, an error's text, a line on stderr -
+// since printing it is the leak this type exists to prevent: a message names the address through
+// the Address itself, a request URL built from it through Call, and that request's error through
+// Error or Cause, or through Named where the URL ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""

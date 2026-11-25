@@ -99,7 +99,7 @@ func signRequestFor(key *ecdsa.PrivateKey, base cipheraddr.Address, details []re
 
 // errAddressNotURL is signRequestFor's refusal of a broker address that is no absolute URL with a
 // host.
-var errAddressNotURL = errors.New("the broker's address is not a valid URL")
+var errAddressNotURL = errors.New(addressNotURL)
 
 // helperSigner asks agent-secrets-helper, over its unix socket, to sign for this process's
 // registered machine session. The helper resolves the session (and its enrollment id) from the

@@ -79,17 +79,18 @@ func grantExpiry(expires *time.Time) string {
 // grantColumns is the table's header: one name for each cell grantRow builds, in that order.
 var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
 
-// grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
-// such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
-// print: a cell of one field - the granted time, the approver, the decider, the operator - as the
-// field prints itself (fieldCell, cipheraddr.Address.WordsOf), as the rule reads it on one line
-// with the credentials the list's request carried redacted (each field is held as
-// redact.RemoteText with the answer's record), Go-quoted where a control character in it, a tab
-// among them, would start a line of its own or split the cell, and not at all beside an address
-// that carries a credential; the grant id, as every id the broker answers prints (idWordsOf), still
-// whole there where it is a UUID the address does not hold. A cell of several fields - the
-// secrets, the session - is each field's reading joined, read by the rule again as one cell
-// (cipheraddr.Address.Words), as is the expiry.
+// grantRow is one grant's cells, in grantColumns' order. Each cell is the broker's, so it prints
+// as the broker's address base lets its answer print: a cell of one field - the granted time, the
+// approver, the decider, the operator - as the field prints itself (fieldCell,
+// cipheraddr.Address.WordsOf), "-" beside a clean address where the grant carries no such value,
+// as the rule reads it on one line with the credentials the list's request carried redacted (each
+// field is held as redact.RemoteText with the answer's record), Go-quoted where a control character
+// in it, a tab among them, would start a line of its own or split the cell, and not at all beside
+// an address that carries a credential; the grant id, as every id the broker answers prints
+// (idWordsOf), still whole there where it is a UUID the address does not hold. A cell of several
+// fields - the secrets, the session - is each field's reading joined, read by the rule again as
+// one cell (cipheraddr.Address.Words), since the joined text is text of its own, and so is the
+// expiry.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone

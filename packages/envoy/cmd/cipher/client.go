@@ -83,6 +83,10 @@ func newClient(baseURL cipheraddr.Address) *client {
 	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
 
+// addressNotURL is the fixed words of every refusal of a broker address that is no absolute URL
+// with a host (target, send, signRequestFor): they print no part of the address.
+const addressNotURL = "the broker's address is not a valid URL"
+
 // target is path's URL at the broker: path, with the query of this client's own it may end in,
 // joined onto the address as configured (cipheraddr.Address.Join), so the address's path stays
 // ahead of path and its own query ahead of path's, where path appended to the address's text would
@@ -92,7 +96,7 @@ func newClient(baseURL cipheraddr.Address) *client {
 func (c *client) target(method, path string) (*url.URL, error) {
 	target, err := c.baseURL.Join(path)
 	if err != nil {
-		return nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, path, errNothingSent, ""}
+		return nil, &unreachableError{addressNotURL, c.baseURL, method, path, errNothingSent, ""}
 	}
 	return target, nil
 }
@@ -218,7 +222,8 @@ func (e *apiError) terminalCode() string {
 func (e *apiError) Permanent() bool { return e.terminalCode() != "" }
 
 // do sends method to path at the broker (target) and, on a 2xx response, returns its answer
-// (*redact.Answer); any other status decodes the broker's error envelope into an *apiError.
+// (*redact.Answer); any other status is an *apiError: the broker's error envelope decoded, or, for
+// a 3xx, the redirect this client does not follow.
 func (c *client) do(ctx context.Context, method, path string, body []byte, headers map[string]string) (*redact.Answer, error) {
 	_, answer, err := c.doStatus(ctx, method, path, body, headers)
 	return answer, err
@@ -237,14 +242,12 @@ func (c *client) doStatus(ctx context.Context, method, path string, body []byte,
 
 // send is one request of method to target, a URL target built, answered as doStatus answers it.
 //
-// A failure names the call by its URL without the query, as its proof does: the queries this
-// client sends are the address's own, which no clean address holds, and the one it builds itself
-// (GetRequest's wait), and the redactor prints no URL that holds a query, so a read that asked the
-// broker to hold it would otherwise name neither its call nor its cause.
+// A failure names the call by the URL its proof names (proof.TargetURI), without the query: the
+// queries this client sends are the address's own, which no clean address holds, and the one it
+// builds itself (GetRequest's wait), and the redactor prints no URL that holds a query, so a read
+// that asked the broker to hold it would otherwise name neither its call nor its cause.
 func (c *client) send(ctx context.Context, method string, target *url.URL, body []byte, headers map[string]string) (int, *redact.Answer, error) {
-	called := *target
-	called.RawQuery = ""
-	named, query := called.String(), target.RawQuery
+	named, query := proof.TargetURI(target), target.RawQuery
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -252,14 +255,15 @@ func (c *client) send(ctx context.Context, method string, target *url.URL, body 
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {
 		// target parsed the URL already, so what fails here is the method, or the URL as String
-		// writes it. With a base that prints as written, the error says which (through Error,
-		// which prints it as net/url wrote it only where that is clean). With any other base, the
-		// parser's own text could quote a bad escape in a password, so the message says only that
-		// the address is not valid.
+		// writes it, which url.Parse can refuse where it took the address (an escape in an IPv6
+		// zone). With a base that prints as written, the error says which (through Error, which
+		// prints it as net/url wrote it only where that is clean). With any other base, the
+		// parser's own text quotes the URL, its user information included, so the message says
+		// only that the address is not valid.
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent, ""}
+		return 0, nil, &unreachableError{addressNotURL, c.baseURL, method, named, errNothingSent, ""}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

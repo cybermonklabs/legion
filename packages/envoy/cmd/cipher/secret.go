@@ -1108,12 +1108,12 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 			pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), cipherclient.SignInCommand, name, secretType)
 		return
 	}
-	route := redact.NotPrinted
+	shown := redact.NotPrinted
 	if target, err := s.broker.baseURL.Join("/v1/secrets/" + name + "/reread"); err == nil {
-		route = s.broker.baseURL.Call(target.String())
+		shown = s.broker.baseURL.Call(target.String())
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: %s took the reread of %s, but how it serves %s was not checked (%v), so this exit 0 says only that the write stands. To check it, run `curl -s -X POST -H \"Proof: $(agent-secrets sign --method POST --url %s)\" %s` where this command has a broker identity (`%s`)\n",
-		form, s.src.brokerAt(), name, name, unsigned, route, route, cipherclient.SignInCommand)
+		form, s.src.brokerAt(), name, name, unsigned, shown, shown, cipherclient.SignInCommand)
 }
 
 // printReread prints the broker's answer to a reread of name: taken and nothing more (a call with
