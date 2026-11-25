@@ -29,7 +29,7 @@ const DEFAULT_PAGE_SIZE = 50;
 const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
 
 /** The ids a column had before, each with the id it has now, which an older link names: its sort
- *  and its filter are read under the column's id now (`readTableView`). */
+ *  is read under the column's id now (`readTableView`). */
 export type FormerColumnIds = ReadonlyMap<string, string>;
 
 const NO_FORMER_IDS: FormerColumnIds = new Map();
@@ -37,7 +37,7 @@ const NO_FORMER_IDS: FormerColumnIds = new Map();
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a
  *  column the table does not have is left where it is: it is another table's, or an older
  *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. A
- *  sort or a filter under an id of `formerIds` is read as the column's id now. */
+ *  sort under an id of `formerIds` is read as the column's id now. */
 export function readTableView<Row>(
   params: URLSearchParams,
   prefix: string,
@@ -56,12 +56,8 @@ export function readTableView<Row>(
     })
     .filter(({ id }) => ids.includes(id));
   const filters = columns.flatMap((column) => {
-    const named = [
-      column.id,
-      ...[...formerIds].flatMap(([from, to]) => (to === column.id ? [from] : [])),
-    ];
-    const values = named.map((id) => params.getAll(key(`f.${id}`))).find((all) => all.length > 0);
-    if (values === undefined || !hasFilter(column)) return [];
+    const values = params.getAll(key(`f.${column.id}`));
+    if (values.length === 0 || !hasFilter(column)) return [];
     return [{ id: column.id, value: column.text === undefined ? values : (values[0] ?? "") }];
   });
   const group = params.get(key("group")) ?? "";
@@ -81,8 +77,8 @@ export function readTableView<Row>(
 
 /** `params` with this table's controls rewritten to `view`, leaving every other table's and
  *  every other parameter alone. A control at its default writes nothing, so a shared link
- *  carries what the reader changed and nothing else; a filter under an id of `formerIds` goes,
- *  since `view` holds it under the column's id now. */
+ *  carries what the reader changed and nothing else; an older link's filter under an id of
+ *  `formerIds` goes from the address. */
 export function writeTableView<Row>(
   params: URLSearchParams,
   prefix: string,

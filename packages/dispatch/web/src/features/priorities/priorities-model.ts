@@ -164,7 +164,8 @@ export const PRIORITY_PHONE_HIDDEN = phoneHidden(PRIORITY_COLUMNS);
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];
 /** The id the backlog column had before, with the id it has now: a reader's stored width, place
- *  and visibility of it, and an older link's sort or filter by it, are read under `backlog`
- *  (`renameStoredColumns`, `readTableView`). A count has no filter, so an older link's filter
- *  by it filters nothing, as one by `backlog` does. */
+ *  and visibility of it, and an older link's sort by it, are read under `backlog`
+ *  (`renameStoredColumns`, `readTableView`). An older link's filter by it is not read, as it names
+ *  no column of the table, and goes from the address at the next change (`writeTableView`): it
+ *  filters nothing, as one by `backlog` does, since a count has no filter. */
 export const PRIORITY_FORMER_IDS: ReadonlyMap<string, string> = new Map([["parked", "backlog"]]);

@@ -1589,8 +1589,9 @@ test("an older link sorted by the backlog column under its former id sorts by it
   }
 });
 
-// A count has no filter (`hasFilter`): an older link's filter of the backlog column under its
-// former id is read as the column's, and filters nothing, as a filter under its id now does.
+// An older link's filter of the backlog column under its former id names no column of the table,
+// so it is not read, and one under its id now is of a count, which has no filter (`hasFilter`):
+// each filters nothing.
 test.each([
   "parked",
   "backlog",

@@ -10,8 +10,9 @@
  *  after the first starts from a storage seeded as the release before left it: each table moves
  *  its layout on its first render (`moveTableStore` and `renameStoredColumns`,
  *  `web/src/features/project/issues-table-storage.ts`), and the priorities table reads an
- *  address's column id the same way (`PRIORITY_FORMER_IDS`), and no filter at all for a count
- *  column, which has none (`readTableView`,
+ *  address's sort by the column's former id the same way (`PRIORITY_FORMER_IDS`), and no filter
+ *  of that column under either id: one under the former id names no column the table has, and
+ *  the column, a count, has none (`readTableView`,
  *  `web/src/features/priorities/priority-table-view.ts`). */
 import { expect, type Page } from "@playwright/test";
 
@@ -137,8 +138,9 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   // The third load, from a layout that hid the backlog column under its former id, at an older
   // link's filter on that column at the count the first priority's row holds: the column stays
   // hidden, under its id now. The fourth, from the same layout, at the same count under the
-  // column's id now: the column hidden there too. A count has no filter (`hasFilter`), so each
-  // filter, read as the column's, filters nothing: both loads show the same rows, and they are
+  // column's id now: the column hidden there too. Neither filter filters anything: the one under
+  // the former id names no column the table has, so it is not read, and the one under the id now
+  // is of a count, which has no filter (`hasFilter`). Both loads show the same rows, and they are
   // every row the table holds, the second priority's, whose count is 0, among them.
   const heldCount = 1;
   const priorityRow = priorities.getByRole("row", { name: new RegExp(scene.priority) });
