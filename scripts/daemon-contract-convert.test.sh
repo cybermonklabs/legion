@@ -210,22 +210,29 @@ tree_with() {
   rm -f "$scratch/index"
 }
 
-# refused WHAT TEXT... -- OPTION... runs the script with OPTION... on the branch of the current
-# directory, and fails unless it exits non-zero, leaves the branch as it was, and prints each TEXT.
-refused() {
-  local what=$1 at status=0 text texts=()
+# fails WHAT TEXT... -- OPTION... runs the script with OPTION... on the branch of the current
+# directory, its output in $scratch/fails.txt, and fails unless it exits non-zero and prints each
+# TEXT.
+fails() {
+  local what=$1 status=0 text texts=()
   shift
   while [ "$1" != -- ]; do texts+=("$1"); shift; done
   shift
-  at=$(git rev-parse HEAD)
-  bash "$root/scripts/daemon-contract-convert.sh" "$@" >"$scratch/refused.txt" 2>&1 || status=$?
-  [ "$status" != 0 ] || { cat "$scratch/refused.txt"; fail "$what exits 0"; }
-  [ "$(git rev-parse HEAD)" = "$at" ] && [ -z "$(git status --porcelain)" ] ||
-    { cat "$scratch/refused.txt"; fail "$what changed the branch: HEAD $(git rev-parse --short HEAD), want ${at:0:10}"; }
+  bash "$root/scripts/daemon-contract-convert.sh" "$@" >"$scratch/fails.txt" 2>&1 || status=$?
+  [ "$status" != 0 ] || { cat "$scratch/fails.txt"; fail "$what exits 0"; }
   for text in "${texts[@]}"; do
-    grep -qF -- "$text" "$scratch/refused.txt" || { cat "$scratch/refused.txt"; fail "$what is refused, but not with: $text"; }
+    grep -qF -- "$text" "$scratch/fails.txt" || { cat "$scratch/fails.txt"; fail "$what fails, but not with: $text"; }
   done
-  echo "refused, exit $status: $(cat "$scratch/refused.txt")"
+  echo "exit $status: $(cat "$scratch/fails.txt")"
+}
+
+# refused WHAT TEXT... -- OPTION... runs fails, and fails unless the branch is as it was too.
+refused() {
+  local at
+  at=$(git rev-parse HEAD)
+  fails "$@"
+  [ "$(git rev-parse HEAD)" = "$at" ] && [ -z "$(git status --porcelain)" ] ||
+    fail "$1 changed the branch: HEAD $(git rev-parse --short HEAD), want ${at:0:10}"
 }
 
 # git's identity is the test's own, so the test needs no configuration of the machine it runs on.
@@ -575,17 +582,12 @@ grep -qF '"convert_probe_edited"' "$api/answers.go" || fail "the conflicting bra
 git add -A
 git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), which edits the row entry $k moved"
 conflict_commit=$(git rev-parse HEAD)
-status=0
-bash "$root/scripts/daemon-contract-convert.sh" --base "$branch" >"$scratch/convert-conflict.txt" 2>&1 || status=$?
-[ "$status" != 0 ] || { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts exits 0"; }
 branch_at=$(git rev-parse "$branch")
-for text in "the merge of $branch conflicts in:" "  $api/answers.go" "merge $branch (${branch_at:0:10}) by hand"; do
-  grep -qF -- "$text" "$scratch/convert-conflict.txt" ||
-    { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts does not print: $text"; }
-done
+fails "the conversion whose merge of $branch conflicts" \
+  "the merge of $branch conflicts in:" "  $api/answers.go" "merge $branch (${branch_at:0:10}) by hand" -- --base "$branch"
 [ "$(git rev-parse HEAD^)" = "$conflict_commit" ] && ! git rev-parse -q --verify HEAD^2 >/dev/null && [ -z "$(git status --porcelain)" ] ||
-  { cat "$scratch/convert-conflict.txt"; fail "the conversion whose merge of $branch conflicts is not committed alone on the branch"; }
-echo "PASS: the merge of $branch conflicts in $api/answers.go; the conversion is committed alone, and the script says: $(grep -F 'by hand' "$scratch/convert-conflict.txt")"
+  fail "the conversion whose merge of $branch conflicts is not committed alone on the branch"
+echo "PASS: the merge of $branch conflicts in $api/answers.go; the conversion is committed alone, and the script says: $(grep -F 'by hand' "$scratch/fails.txt")"
 git checkout -q "$branch_stacked"
 
 step "the second branch: numbered entries $k and $((k + 1)), each adding one field to one request"
