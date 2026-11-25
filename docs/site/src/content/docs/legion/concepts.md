@@ -476,9 +476,10 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   sessions its `Omp-Session` lines name, so a commit with no such line has no agent maker. The
   daemon reads the change from GitHub's compare of the pull request's base and the head, every
   page, and where it cannot read every commit, no commit has a reader. Where GitHub gives no answer
-  at all (a 5xx, a timeout), nothing is decided yet: the run stands as it is, and the writers' sweep
-  reads again; after 3 sweeps in a row with no answer the daemon logs one WARN naming the head. A
-  pass or a verdict at an earlier commit counts at no later head.
+  at all (a 5xx, a timeout), nothing is decided yet: the daemon's run stands as it is, and the
+  writers' sweep reads again; after 3 sweeps in a row with no answer the change counts as unread,
+  the head is `failure`, and the daemon logs one WARN naming the head. A pass or a verdict at an
+  earlier commit counts at no later head.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's

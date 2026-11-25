@@ -27,7 +27,9 @@
 // the same head, and a comment lifts nothing. A head that holds no verdict and no refusal
 // concludes nothing, and nothing is written on it, so it cannot merge. A Legion head where each
 // check and step passed, no refusal stands, and GitHub gave no answer to the read of the change's
-// commits is undecided: no decision yet, so nothing is written and a run written before stands.
+// commits is undecided: no decision yet, so the daemon writes no run of its own there, and the run
+// it wrote before stands, until GitHub answers or the writer's bound on no answer makes the change
+// unread (the daemon's boundUnanswered).
 package verdict
 
 import (
@@ -43,7 +45,8 @@ import (
 const CheckName = "legion-verdict"
 
 // Conclusion is what legion-verdict concludes on a head: success, failure, None, which writes no
-// check, or Undecided, which writes nothing and leaves the check as it stands.
+// check, or Undecided, which writes no run of the daemon's own and leaves its earlier one as it
+// stands.
 type Conclusion string
 
 const (
@@ -52,8 +55,9 @@ const (
 	Failure Conclusion = "failure"
 	// Undecided is no decision yet: on a Legion head where each check reads yes and every step
 	// passed, GitHub gave no answer at all to the read of the change's commits (Inputs.Unanswered),
-	// and no refusal stands. It is never written: a run written before stands until a read is
-	// answered.
+	// and no refusal stands. It is never written as a conclusion: the daemon's run written before
+	// stands until a read is answered, and a head the writers' sweeps find so on their bound's
+	// passes in a row is decided as one whose change cannot be read (ChangeUnread).
 	Undecided Conclusion = "undecided"
 )
 
@@ -92,8 +96,9 @@ const (
 	// each), a plan with no testing step and no review step among them, whose commits no agent reads.
 	NoReader Reason = "a commit with no reader"
 	// ChangeUnread is a head where GitHub answered that the daemon cannot read every commit of the
-	// change (Inputs.Unread), so no commit has a reader. No answer at all is no such answer, and
-	// decides nothing yet (Undecided).
+	// change (Inputs.Unread), so no commit has a reader, or where the writers' sweeps found no
+	// answer at all on their bound's passes in a row. One read with no answer is no such answer,
+	// and decides nothing yet (Undecided).
 	ChangeUnread Reason = "change unread"
 )
 
@@ -156,7 +161,7 @@ type Inputs struct {
 	// Unread is whether GitHub answered that the daemon cannot read every commit of the change, so
 	// no commit has a reader. Unanswered is whether GitHub gave no answer at all to the read, which
 	// decides nothing yet (Undecided). The two stay apart: no answer is no answer that the commits
-	// cannot be read.
+	// cannot be read, until the writer's bound on no answer (ChangeUnread).
 	Unread, Unanswered bool
 	// CIReviewer is the bot login the repository's entry names as its ci_reviewer, "" for none.
 	CIReviewer string

@@ -17,9 +17,13 @@ body: |-
       that head, and each commit of the change has a reader, an agent of such a step whose claim
       made none of it, read from GitHub's compare of the base and the head; `failure` on a check
       that fails, a review step's `changes`, or, once every check and step has passed, a commit with
-      no reader, which the run's title names and its summary lists. On another head
-      it is the named CI reviewer's or a side reviewer's review, or a person's approval. A person's
-      request for changes refuses either. The daemon writes over another writer's run or status of
+      no reader, which the run's title names and its summary lists, or a change GitHub answers it
+      cannot serve (`404`, `422`). Where GitHub gives no answer to that compare (a 5xx, a timeout, a
+      rate limit), nothing is decided yet and the daemon's run stands; after 3 sweeps in a row with
+      no answer the change counts as unread, the head and its merge group get `failure`, and the
+      daemon logs one WARN naming the head. On another head it is the named CI reviewer's or a side
+      reviewer's review, or a person's approval. A person's request for changes refuses either. The
+      daemon writes over another writer's run or status of
       that name, sweeps the repositories at boot and every 10 minutes, and writes on each merge
       group's commit. In token mode it writes nothing and logs why once.
     - Each review step gives its own verdict, and the daemon takes it only from that step's agent.

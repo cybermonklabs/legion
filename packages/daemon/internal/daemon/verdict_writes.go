@@ -19,21 +19,23 @@ import (
 // branch, where no verdict stands, once while the App is in token mode, each time a merge-state
 // read goes on after waiting its bound on its issue's write, each write that fails, naming what
 // repairs it, and once a head's change has had no answer from GitHub on noAnswerSweeps of the
-// writers' sweep's passes in a row.
+// writers' sweeps in a row, when the head is decided failure.
 const (
 	verdictAppIDNotANumber = "verdict: github_apps.implement.app_id is no number, so the writer of legion-verdict tells no check run as the App's, its own among them, and writes nothing; set it to the App's id"
 	otherProjectsHead      = "verdict: the head is another project's issue branch, of whose steps this daemon holds none, so no verdict stands there"
 	verdictTokenMode       = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
 	verdictReadWentOn      = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
 	verdictWriteFailed     = "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes writes it again"
-	verdictNoAnswer        = "verdict: GitHub has given no answer to the read of a head's change on several sweeps in a row, so nothing is decided there and legion-verdict stays as it stands"
+	verdictNoAnswer        = "verdict: GitHub has given no answer to the read of a head's change on 3 of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
 )
 
-// noAnswerSweeps is how many of the writers' sweep's passes in a row may find GitHub giving no
-// answer to the read of one head's change before the writer warns (verdictNoAnswer): 3 passes, 10
-// minutes apart (verdictSweepInterval), are 30 minutes, longer than the short outages of GitHub that
-// end by themselves, and well inside the merge queue's 180-minute timeout, so an operator hears of a
-// head left undecided before its group times out.
+// noAnswerSweeps is how many of the writers' sweeps in a row may find GitHub giving no answer to
+// the read of one head's change before the head is decided failure, as for a change GitHub answers
+// cannot be read (boundUnanswered), and the writer warns (verdictNoAnswer, whose text and
+// troubleshooting.md name the number): 3 sweeps, 10 minutes apart (verdictSweepInterval), are 30
+// minutes, longer than the short outages of GitHub that end by themselves, and well inside the merge
+// queue's 180-minute timeout, so the queue removes a group whose head GitHub never answers for, and
+// the owner hears of it, before the group times out.
 const noAnswerSweeps = 3
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -73,9 +75,12 @@ type verdictWriter struct {
 	// project's issue branch, with that issue, which the daemon has logged once and decides as a
 	// head no verdict stands at.
 	foreign map[string]string
-	// unanswered is, by repository (lowercased) and head, how many of the writers' sweep's passes
-	// in a row found GitHub giving no answer to the read of the head's change (countUnanswered).
-	unanswered map[string]int
+	// unanswered is, by repository (lowercased) and head, each head the writers' sweep listed in
+	// its last pass of the head's repository, with how many passes in a row found GitHub giving no
+	// answer to the read of the head's change (countUnanswered); sweeps counts the passes, each of
+	// which sweepBegun numbers.
+	unanswered map[string]unansweredHead
+	sweeps     uint64
 	// tokenMode logs once that the App is in token mode (appauth.ErrNoVerdictToken).
 	tokenMode sync.Once
 }
@@ -113,7 +118,7 @@ func newVerdictWriter(entries []config.VerdictRepository, appID string, log *slo
 		}
 	}
 	return &verdictWriter{entries: entries, appID: id, bound: issueRead, pending: map[string]int{}, ended: make(chan struct{}),
-		wake: make(chan struct{}, 1), foreign: map[string]string{}, unanswered: map[string]int{}}
+		wake: make(chan struct{}, 1), foreign: map[string]string{}, unanswered: map[string]unansweredHead{}}
 }
 
 // entry is the verdict_repositories entry that names repository, compared without case as GitHub
@@ -251,38 +256,70 @@ func (v *verdictWriter) markForeign(repository string, number int, issue string)
 	return true
 }
 
-// countUnanswered keeps, by repository and head, how many of the writers' sweep's passes in a row
-// found the head undecided: one more where undecided and sweep are set, none where undecided is not
-// set, since any decision of the head is an answer, and the count as it stands for a write a fact or
-// a merge group asked for. It answers the count, and whether it has just reached noAnswerSweeps,
-// which is the one time a run of such passes is warned of.
-func (v *verdictWriter) countUnanswered(repository, head string, undecided, sweep bool) (int, bool) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	key := unansweredKey(repository, head)
-	switch {
-	case !undecided:
-		delete(v.unanswered, key)
-		return 0, false
-	case !sweep:
-		return v.unanswered[key], false
-	}
-	v.unanswered[key]++
-	return v.unanswered[key], v.unanswered[key] == noAnswerSweeps
+// unansweredHead is what the writer keeps of a head the writers' sweep listed: how many of its passes
+// in a row found GitHub giving no answer to the read of the head's change, the pass that last listed
+// the head, and the pass that last counted it, so the pull requests of one head count once a pass.
+type unansweredHead struct {
+	count           int
+	listed, counted uint64
 }
 
-// pruneUnanswered forgets the count of every head of repository that listed, the heads the writers'
-// sweep's list of the repository's open pull requests holds, does not hold: a head that closed or
-// moved on is written by no sweep again, and its count would stay in memory until a restart.
-func (v *verdictWriter) pruneUnanswered(repository string, listed map[string]int) {
+// sweepBegun numbers a new pass of the writers' sweep over repository, whose list of open pull
+// requests holds the heads listed, and keeps each listed head for that pass. A head the list does
+// not hold, as one whose pull request closed or moved on, is forgotten: no sweep writes it again, so
+// its count would stay in memory until a restart, and listed again it counts from none.
+func (v *verdictWriter) sweepBegun(repository string, listed map[string]int) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.sweeps++
 	prefix := unansweredKey(repository, "")
 	for key := range v.unanswered {
 		if head, ok := strings.CutPrefix(key, prefix); ok && listed[head] == 0 {
 			delete(v.unanswered, key)
 		}
 	}
+	for head := range listed {
+		key := unansweredKey(repository, head)
+		kept := v.unanswered[key]
+		kept.listed = v.sweeps
+		v.unanswered[key] = kept
+	}
+}
+
+// countUnanswered counts decided, a write's decision of head of repository, in the head's run of
+// passes with no answer, sweep being whether the writers' sweep asked for the write. A sweep's write
+// of an undecided head counts one, once in the pass that listed the head, however many pull requests
+// stand there. A sweep's write of a head decided otherwise starts the count again, and so does any
+// write whose read of the change GitHub answered. A fact's or a merge group's write of an undecided
+// head, or one that read no change, leaves the count as it stands: GitHub has not answered. It
+// answers the count, and whether this write brought it to noAnswerSweeps, the one time a run of such
+// passes is warned of.
+func (v *verdictWriter) countUnanswered(repository, head string, decided verdictDecision, sweep bool) (int, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	key := unansweredKey(repository, head)
+	kept, listed := v.unanswered[key]
+	switch {
+	case decided.conclusion == verdict.Undecided && sweep && listed && kept.counted != kept.listed:
+		kept.count++
+		kept.counted = kept.listed
+		v.unanswered[key] = kept
+		return kept.count, kept.count == noAnswerSweeps
+	case decided.conclusion == verdict.Undecided:
+		return kept.count, false
+	case listed && (sweep || decided.answered):
+		kept.count = 0
+		v.unanswered[key] = kept
+	}
+	return 0, false
+}
+
+// unansweredCount is how many of the writers' sweeps in a row found GitHub giving no answer to the
+// read of head's change (countUnanswered), which a merge group of a pull request at that head reads.
+func (v *verdictWriter) unansweredCount(repository, head string) int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.unanswered[unansweredKey(repository, head)].count
 }
 
 // unansweredKey names head of repository in the writer's unanswered counts.
@@ -380,12 +417,15 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // project: another project's issue head holds no verdict here (decideVerdict). It creates its own
 // check run or turns each run of the one App to the head's conclusion, the runs its record holds
 // among them, and writes its conclusion over each status of the one App its record does not hold
-// (spec R19, writeDecided). A success this daemon wrote stands only while the head's verdict does:
-// a write a fact asks for on a head with no verdict now, of its pull request or over every open pull
-// request there, turns that success to failure. Where the pull request's own verdict is none and
-// the daemon wrote no success there, it writes nothing and reads nothing of GitHub. Where GitHub
-// gave no answer to a read the decision needs, the head is undecided (verdict.Undecided): nothing is
-// written, and a run written before stands until a read is answered (undecided).
+// (spec R19, writeDecided). A run this daemon wrote stands only while the head's verdict does: a
+// write a fact asks for on a head with no verdict now, of its pull request or over every open pull
+// request there, turns that run to failure, and writes its output for the head as it is now. Where
+// the pull request's own verdict is none and the daemon wrote nothing there, it writes nothing and
+// reads nothing of GitHub. Where GitHub gave no answer to a read the decision needs, the head is
+// undecided (verdict.Undecided): no run of the daemon's own is written, and one written before
+// stands until a read is answered, while the writers' sweep still writes over each run and status
+// of the App its record does not hold (writeDecided); and once noAnswerSweeps of its sweeps in a row
+// found the head so, it is failure, as a change the daemon cannot read (boundUnanswered).
 //
 // Once a pass writes a Legion head's success, or turns its run or status to success, the issue's
 // merge state is read once more, a ladder's wait later (mergeStateWait): GitHub can answer the read
@@ -400,9 +440,10 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 	}
 	written := verdictTarget{repository: target.repository, number: target.number, head: target.head}
 	decided, err := w.decideHead(ctx, entry, target, written)
-	if err != nil || w.undecided(target, decided) {
+	if err != nil {
 		return err
 	}
+	decided = w.boundUnanswered(target, decided)
 	changed, err := w.writeDecidedChanged(ctx, written, decided, target.overForeign)
 	if err != nil {
 		return err
@@ -420,9 +461,14 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 
 // decideHead is what writeVerdictOver writes on target's head, written being that head of target's
 // pull request: the pull request's decision (decideVerdict), made over every open pull request at
-// the head unless it is failure or the sweep found the pull request alone there (atHead), and
-// failure where that is none and the newest run or status this daemon wrote there concluded success
-// (wroteSuccess). The write reads the open pull requests at the head once (headPulls).
+// the head unless the sweep found the pull request alone there (atHead), and failure where that is
+// none and the daemon wrote a run or status there (newestWrite): a success stands only while the
+// head's verdict does, and a failure's output is written again for the head as it is now, so a
+// failure for a commit with no reader no longer says each check reads yes once one does not. A
+// failure is made over the others too, for the head's output alone (headOutput): its conclusion
+// needs no other read, so where the others cannot be read the pull request's own failure stands, as
+// its no decision yet does, which writes no run of the daemon's own. The write reads the open pull
+// requests at the head once (headPulls).
 func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRepository, target, written verdictTarget) (verdictDecision, error) {
 	pulls := &headPulls{}
 	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head, pulls)
@@ -431,19 +477,23 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	}
 	standing, read := false, false
 	if decided.conclusion == verdict.None && !target.overForeign {
-		if standing, err = w.wroteSuccess(ctx, written); err != nil || !standing {
+		if standing, err = w.wroteAt(ctx, written); err != nil || !standing {
 			return decided, err
 		}
 		read = true
 	}
-	if decided.conclusion != verdict.Failure && !target.alone {
-		if decided, err = w.atHead(ctx, entry, target.repository, target.number, decided, pulls); err != nil {
+	if !target.alone {
+		combined, err := w.atHead(ctx, entry, target.repository, target.number, decided, pulls)
+		switch {
+		case err == nil:
+			decided = combined
+		case decided.conclusion != verdict.Failure && decided.conclusion != verdict.Undecided:
 			return verdictDecision{}, err
 		}
 	}
 	if decided.conclusion == verdict.None && !target.overForeign && !read {
 		// Another pull request at the head turned the pull request's own verdict to none there.
-		if standing, err = w.wroteSuccess(ctx, written); err != nil {
+		if standing, err = w.wroteAt(ctx, written); err != nil {
 			return verdictDecision{}, err
 		}
 	}
@@ -453,16 +503,33 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 	return decided, nil
 }
 
-// undecided is whether decided, of target's head, is no decision yet (verdict.Undecided): GitHub
-// gave no answer to a read the decision needs, so the writer writes nothing and leaves any earlier
-// run as it stands, and the next write or sweep reads again (readCommits). So that a head does not
-// stay undecided silently, it counts the writers' sweep's passes in a row that found the head so,
-// and logs one WARN naming the repository, the head, the count and the last error once the count
-// reaches noAnswerSweeps (countUnanswered). Any other decision of the head starts the count again.
-func (w *workflowRuntime) undecided(target verdictTarget, decided verdictDecision) bool {
-	undecided := decided.conclusion == verdict.Undecided
-	if sweeps, warn := w.verdicts.countUnanswered(target.repository.String(), target.head, undecided, target.overForeign); warn {
+// wroteAt is whether the store records a run or a status the daemon wrote on target's head
+// (newestWrite).
+func (w *workflowRuntime) wroteAt(ctx context.Context, target verdictTarget) (bool, error) {
+	newest, err := w.newestWrite(ctx, target)
+	return newest != verdict.None, err
+}
+
+// boundUnanswered is decided, the decision of target's head, with no answer bounded (readCommits):
+// it counts the decision (countUnanswered), and an undecided head whose count has reached
+// noAnswerSweeps is one whose change the daemon cannot read, so failure (unreadAfterNoAnswer); the
+// WARN that says so, naming the repository, the head, the count and the last error, is logged once,
+// when the count reaches the bound. Every other decision is left as it is.
+func (w *workflowRuntime) boundUnanswered(target verdictTarget, decided verdictDecision) verdictDecision {
+	sweeps, reached := w.verdicts.countUnanswered(target.repository.String(), target.head, decided, target.overForeign)
+	if decided.conclusion != verdict.Undecided || sweeps < noAnswerSweeps {
+		return decided
+	}
+	if reached {
 		w.log.Warn(verdictNoAnswer, "repository", target.repository.String(), "head", target.head, "sweeps", sweeps, "error", decided.unanswered)
 	}
-	return undecided
+	return unreadAfterNoAnswer(decided)
+}
+
+// unreadAfterNoAnswer is decided, a head the writers' sweeps found undecided noAnswerSweeps times
+// in a row, as one whose change the daemon cannot read: failure for that reason
+// (verdict.ChangeUnread), which the run's title and summary name.
+func unreadAfterNoAnswer(decided verdictDecision) verdictDecision {
+	decided.conclusion, decided.reason, decided.noReader = verdict.Failure, verdict.ChangeUnread, nil
+	return decided
 }

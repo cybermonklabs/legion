@@ -128,14 +128,14 @@ func (w *workflowRuntime) sweepVerdicts(ctx context.Context, boot bool) {
 // each status of the one App its record does not hold. A legion/<KEY> head of another project's
 // issue is swept too, as a head no verdict stands at (spec R4, R19). A head the list shows no
 // other open pull request at is written alone, with no read of the pull requests at its commit
-// (atHead). Once the list is read, the writer forgets the count of sweeps with no answer of every
-// head of the repository the list does not hold (pruneUnanswered), so a head that closed or moved
-// on keeps no count in memory. Last, it reads the merge queue's group branches
-// (gh-readonly-queue/) and queues a write on each group's commit (queueMergeGroupWrite); a branch
-// whose name gives no pull request is logged and written on by nobody, since no pull request's
-// verdict can decide its group. Every write is made by the writer's one goroutine (writeVerdicts),
-// so a write the sweep queues runs beside no other write, and decides its head from the record as
-// it stands when the write is made.
+// (atHead). Once the list is read, the writer numbers the pass and forgets the count of sweeps with
+// no answer of every head of the repository the list does not hold (sweepBegun), so a head counts
+// once a pass and a head that closed or moved on keeps no count in memory. Last, it reads the merge
+// queue's group branches (gh-readonly-queue/) and queues a write on each group's commit
+// (queueMergeGroupWrite); a branch whose name gives no pull request is logged and written on by
+// nobody, since no pull request's verdict can decide its group. Every write is made by the writer's
+// one goroutine (writeVerdicts), so a write the sweep queues runs beside no other write, and decides
+// its head from the record as it stands when the write is made.
 //
 // At boot it also asks for a read of the merge state of each issue of this project whose success,
 // as this daemon recorded writing it, stands at its pull request's head (readStandingSuccess): a
@@ -168,7 +168,7 @@ func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.Verd
 	for _, pull := range pulls {
 		atHead[pull.HeadRefOid]++
 	}
-	w.verdicts.pruneUnanswered(entry.Repository.String(), atHead)
+	w.verdicts.sweepBegun(entry.Repository.String(), atHead)
 	for _, pull := range pulls {
 		key, issueBranch := claim.BranchIssue(pull.HeadRefName)
 		ours := issueBranch && claim.KeyOfProject(w.dispatchProject, key)

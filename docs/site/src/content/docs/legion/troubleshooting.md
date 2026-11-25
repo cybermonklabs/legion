@@ -1611,17 +1611,32 @@ These arrive as messages on the Dispatch issue:
   commit. A commit's makers are the sessions its `Omp-Session` lines name, read against the
   sessions the daemon records for each claim, and a claim that records no session reads no commit.
   Where the daemon cannot read every commit of the change from GitHub's compare of the base and
-  the head, no commit has a reader, and the run's summary says so. Where GitHub gives no answer at
-  all (a 5xx, a timeout), nothing is decided yet: the run stands as it is, and the writers' sweep
-  reads again; after 3 sweeps in a row with no answer the daemon logs one WARN naming the head. A
-  task whose plan has no testing step and no review step ends here too. No push or move back cures
-  it: the merger merges nothing, sends nothing back and tells the task's owner once for that head,
-  naming each commit with no reader, and the owner asks a person, who can merge that head by a
+  the head, no commit has a reader, and the run's summary says so: GitHub answered a `404` or a
+  `422`, or gave no answer on 3 sweeps in a row (the next entry). A task whose plan has no testing
+  step and no review step ends here too. No push or move back cures it: the merger merges nothing,
+  sends nothing back and tells the task's owner once for that head, naming each commit with no
+  reader, and the owner asks a person, who can merge that head by a
   break-glass merge: a GitHub owner turns the ruleset's rule off for that one merge and on again
   right after it.
   The run is the daemon's own check run on the head, and its summary names each commit with no
   reader:
   `gh api 'repos/<owner>/<repo>/commits/<head>/check-runs?check_name=legion-verdict' --jq '.check_runs[] | [.conclusion, .output.title, .output.summary]'`.
+- **The daemon logs `verdict: GitHub has given no answer to the read of a head's change on 3 of the
+  writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there,
+  until GitHub answers`.** Each check reads yes and every step of the task passed at the head, and
+  GitHub gave no answer to the daemon's read of the change's commits: a 5xx, a timeout, a rate
+  limit, a `401`, a `403` that is no rate limit, or a read token that could not be minted. Each such
+  read logs `verdict: GitHub gave no answer to the read of the change's commits, so this read
+  decides nothing; the next write or sweep reads it again`, with GitHub's answer in `error`. One
+  read with no answer decides nothing: the daemon writes no run of its own on the head, the run it
+  wrote before stands, a merge group of the head's pull request gets no run either, and the writers'
+  sweep still writes over another writer's run or status of the App there. The bound is 3 sweeps in
+  a row, 30 minutes: on the third the head is `failure`, with the title `legion-verdict: failure (a
+  commit with no reader)` and a summary that says the daemon could not read every commit of the
+  change, the merge group gets `failure` too, and this WARN names the repository, the head, the count
+  (`sweeps`) and the last error, once. Any answer of GitHub's decides the head again and starts the
+  count over. Read `error`: a `401` or `403` means the App's installation cannot read the repository,
+  and a 5xx or a rate limit is GitHub's own trouble, which ends by itself.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
   branch, `legion/<KEY>`. The issue moves on only on an open pull request, or one the daemon

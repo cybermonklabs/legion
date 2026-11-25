@@ -43,9 +43,9 @@ const (
 //
 // GitHub lists the pull requests of a commit (GET /commits/{sha}/pulls), and only the open ones whose
 // head is that commit are decided, each by decideVerdict; pulls is the write's one read of that list
-// (headPulls). A failure needs no other read, and the callers ask for none then. The reason of a
-// failure for a commit with no reader, and the commits it names, stay only where the head's
-// conclusion is the pull request's own.
+// (headPulls). The run's output is the head's too, whichever pull request's write makes it
+// (headOutput), so two writes of one head never write it two ways. Every write of a head that is not
+// alone there asks atHead, a failure among them, for that output.
 func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, decided verdictDecision,
 	pulls *headPulls) (verdictDecision, error) {
 	if decided.head == currentHead {
@@ -55,7 +55,7 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 	if err != nil {
 		return verdictDecision{}, err
 	}
-	at := []verdictDecision{decided}
+	at, numbers := []verdictDecision{decided}, []int{number}
 	for _, other := range others {
 		if other == number {
 			continue
@@ -64,12 +64,11 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 		if err != nil {
 			return verdictDecision{}, err
 		}
-		at = append(at, each)
+		at, numbers = append(at, each), append(numbers, other)
 	}
 	combined := decided
-	if combined.conclusion = headConclusion(at); combined.conclusion != decided.conclusion {
-		combined.reason, combined.noReader = "", nil
-	}
+	combined.conclusion = headConclusion(at)
+	combined.kind, combined.reason, combined.noReader = headOutput(at, numbers, combined.conclusion)
 	combined.unanswered = nil
 	for _, each := range at {
 		if combined.conclusion == verdict.Undecided && combined.unanswered == nil {
@@ -79,8 +78,33 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 	return combined, nil
 }
 
+// headOutput is what the run's output at one head names (verdictOutput), from the decisions of the
+// open pull requests there, numbers being each one's number, and the head's conclusion: the kind of
+// head, a Legion one where any of them is a Legion head; and the reason of a failure and the
+// commits it names, those of the Legion pull request of the lowest number whose own conclusion is
+// the head's, none where no Legion decision concludes so. The choice is the same for every pull
+// request's write of the head.
+func headOutput(at []verdictDecision, numbers []int, conclusion verdict.Conclusion) (kind string, reason verdict.Reason, noReader []string) {
+	kind = at[0].kind
+	chosen := -1
+	for i, decided := range at {
+		if decided.kind != headLegion {
+			continue
+		}
+		kind = headLegion
+		if decided.conclusion == conclusion && (chosen < 0 || numbers[i] < numbers[chosen]) {
+			chosen = i
+		}
+	}
+	if chosen < 0 {
+		return kind, "", nil
+	}
+	return kind, at[chosen].reason, at[chosen].noReader
+}
+
 // headConclusion is legion-verdict's conclusion at one head from the decisions of the open pull
-// requests there (atHead).
+// requests there (atHead). A Legion pull request whose own verdict is none there leaves the head none
+// before any decision still to come: whatever GitHub answers for another, that head cannot succeed.
 func headConclusion(at []verdictDecision) verdict.Conclusion {
 	legion, legionPassed, outsidePassed, undecided := false, true, false, false
 	for _, decided := range at {
@@ -96,9 +120,11 @@ func headConclusion(at []verdictDecision) verdict.Conclusion {
 		}
 	}
 	switch {
+	case legion && !legionPassed:
+		return verdict.None
 	case undecided:
 		return verdict.Undecided
-	case legion && legionPassed || !legion && outsidePassed:
+	case legion || outsidePassed:
 		return verdict.Success
 	}
 	return verdict.None
@@ -160,8 +186,10 @@ func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.
 // verdictDecision is what decideVerdict decided of a head: the head, legion-verdict's conclusion
 // there, on a Legion head the reason of a failure no check and no step refused (verdict.Reason, which
 // the run's output names) with each commit of the change that has no reader there, the kind of head
-// (headLegion, headOutside), on a Legion head of this project the issue that owns it, and, where
-// the conclusion is verdict.Undecided, the error of the read GitHub gave no answer to.
+// (headLegion, headOutside), on a Legion head of this project the issue that owns it, whether
+// GitHub answered the read of the change's commits (answered: the commits, or that they cannot be
+// read), and, where the conclusion is verdict.Undecided, the error of the read GitHub gave no
+// answer to.
 type verdictDecision struct {
 	head       string
 	conclusion verdict.Conclusion
@@ -169,6 +197,7 @@ type verdictDecision struct {
 	noReader   []string
 	kind       string
 	issue      string
+	answered   bool
 	unanswered error
 }
 
@@ -243,6 +272,7 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 		return w.otherProjectsHead(repository, number, other, head), nil
 	case legion != nil:
 		unanswered := w.readCommits(ctx, repository, number, legion, pulls)
+		decided.answered = verdict.StepsPassed(legion.in) && unanswered == nil
 		decided.conclusion, decided.reason = verdict.Decide(legion.in)
 		if decided.reason == verdict.NoReader {
 			decided.noReader = verdict.CommitsWithNoReader(legion.in)
@@ -380,7 +410,7 @@ func checksAt(held record.HeadStates) []verdict.Check {
 // be read, so it finds no reader of any, and changeUnanswered where GitHub gave no answer to the read.
 const (
 	changeUnread     = "verdict: the change's commits could not be read, so no commit has a reader"
-	changeUnanswered = "verdict: GitHub gave no answer to the read of the change's commits, so nothing is decided at this head yet; the next write or sweep reads it again"
+	changeUnanswered = "verdict: GitHub gave no answer to the read of the change's commits, so this read decides nothing; the next write or sweep reads it again"
 )
 
 // errChangeRefused marks a reading of the change that GitHub answered and that cannot be the change:
@@ -399,13 +429,17 @@ var errChangeRefused = errors.New("GitHub's answer holds no reading of the chang
 //     concludes failure, as C2 asks (verdict.Inputs.Unread);
 //   - no answer at all (a transport error, a timeout, a 5xx, a rate limit, a read token not
 //     minted) is no decision yet (verdict.Inputs.Unanswered, verdict.Undecided): the writer writes
-//     nothing, leaves any earlier run as it stands, and the next write or sweep reads again; a 401,
-//     or a 403 that is no rate limit, is read so too, which decides nothing and is seen, since the
-//     writer warns after noAnswerSweeps sweeps (undecided).
+//     no run of its own, leaves its earlier run as it stands, and the next write or sweep reads
+//     again; a 401, or a 403 that is no rate limit, is read so too. No answer is bounded: once
+//     noAnswerSweeps of the writers' sweeps in a row found no answer at the head, the change counts
+//     as unread there too, and the head concludes failure as for a definite answer, until GitHub
+//     answers (boundUnanswered). One outage is not yet a change that cannot be read; a compare that
+//     never answers is.
 //
-// Merging the two would turn a success that stands into failure, and start the merger's notice to
-// the owner, on an outage of GitHub's rather than on an answer about the change. readCommits answers
-// the error of a read GitHub gave no answer to, nil otherwise; the line it logs says why.
+// Merging the two at once would turn a success that stands into failure, and start the merger's
+// notice to the owner, on an outage of GitHub's rather than on an answer about the change.
+// readCommits answers the error of a read GitHub gave no answer to, nil otherwise; the line it logs
+// says why.
 func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead, pulls *headPulls) error {
 	if !verdict.StepsPassed(read.in) {
 		return nil
@@ -430,16 +464,24 @@ func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Rep
 }
 
 // changeRefused is whether err, a read of the change that did not give its commits, is GitHub's
-// definite answer that they cannot be read (readCommits): GitHub's 404 or 422 that is no rate
-// limit, or an answer that holds no reading of the change (errChangeRefused). Every other error is
-// no answer; a mint's error carries no *githubrest.Answer (appauth.AnswerError), so a read token
-// not minted is no answer either.
+// definite answer that they cannot be read (readCommits): GitHub's 404 or 422 that is no rate limit
+// (rateLimited), or an answer that holds no reading of the change (errChangeRefused). Every other
+// error is no answer; a mint's error carries no *githubrest.Answer (appauth.AnswerError), so a read
+// token not minted is no answer either.
 func changeRefused(err error) bool {
 	var answer *githubrest.Answer
 	if errors.As(err, &answer) {
-		return !answer.RateLimited && (answer.Status == http.StatusNotFound || answer.Status == http.StatusUnprocessableEntity)
+		return !rateLimited(answer) && (answer.Status == http.StatusNotFound || answer.Status == http.StatusUnprocessableEntity)
 	}
 	return errors.Is(err, errChangeRefused)
+}
+
+// rateLimited is whether answer is a rate limit of GitHub's, on whatever status: githubrest marks
+// one on a 403 or a 429 alone (Answer.RateLimited), and GitHub's headers or its secondary limit's
+// words on a 404 or a 422 are that limit too (githubrest.RateLimitSignals), and no answer about the
+// change.
+func rateLimited(answer *githubrest.Answer) bool {
+	return answer.RateLimited || answer.Limit.Remaining == "0" || answer.Limit.RetryAfter != "" || githubrest.NamesSecondaryLimit(answer.Body)
 }
 
 // compareBase is the branch pull request number merges into, with which its head's change is
