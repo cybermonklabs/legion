@@ -33,7 +33,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when it reads as a wish to stop the tree. |
-| `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names. Mostly cold bytes in `scratch/tmp` or a workspace: ask the pod's roles on their topics to delete by exact path what they no longer need. Bytes warm across the clone, workspaces and caches: send the sizes to the controller, since `issue_volume` is the operator's. A trimmer that switched itself off leaves the pod with no disk protection: carry it as findings.md says. |
+| `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names. Mostly cold bytes in `scratch/tmp` or a workspace: ask the pod's roles on their topics to delete by exact path what they made and no longer need. Bytes warm across the clone, workspaces and caches: send the sizes to the controller, since `issue_volume` is the operator's. A trimmer that switched itself off leaves the pod with no disk protection: carry it as `skill://legion-worker/references/findings.md` says. |
 | A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
 
 ## A capped pull request
@@ -54,4 +54,4 @@ Read what every counted round found, choose one, act on it, and post the rounds 
 - **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
   A later notice accepts again only when its round found less.
 
-A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in `skill://legion-architect/references/design-gate.md`), never instead of the choice.
+A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in design-gate.md), never instead of the choice.

@@ -7,7 +7,7 @@ Your role prompt gives the `COMMENT` review, the verdict, the thread rule, the C
 
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
 2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
-   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change, or, for a merge of the base, what *A merge of the base is reviewed for what it changed* below names.
+   Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change, or, for a merge of the base, what the section below on it names.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt reads them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
    Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
@@ -49,7 +49,7 @@ A read GitHub refuses leaves the required set unknown: tell the architect, send 
 ### A required item with no run at the head
 
 Never send `approve` while a required item has no run at the head; sort it in this order.
-Cases 2, 3, 4 and 6 end: tell the architect, send no `approve`, and wait with a `WAITING` line naming what you wait on.
+Cases 2, 3, 4 and 6 end: tell the architect and wait with a `WAITING` line naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first.
    `DIRTY` takes a forward merge, the implementer's before `merging` and the merger's in it: the daemon asks for it and names the new head.
@@ -61,13 +61,14 @@ Cases 2, 3, 4 and 6 end: tell the architect, send no `approve`, and wait with a 
    A job reports its `name:` or key, ` (<matrix values>)` after it for a matrix job, `<calling job> / <job>` for a reusable workflow's; for `code_scanning`, the analysis jobs report under their own names and the `CodeQL` run is the code-scanning App's.
    Tell the architect why, close the pull request, wait a minute, and reopen it at the same head (the close's own run can cancel a quicker reopen's).
    Send `approve` only once the item's run concluded green.
+   One close and reopen covers every item of the head: name the others to the architect in the same message.
    A head with any item in case 2 or 3 takes no remedy, and an item with no run once the reopen's runs concluded is never reopened.
 6. Anything else.
 
 ### The issue's checks
 
 - `approve` is gated by the issue's own `before_merge` checks, as your role prompt says;
-  a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says.
+  a `ci_check` check as ci-checks.md says.
   With no earlier tester step, the implementer's evidence for each is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and send no `changes` for it.
 
@@ -94,4 +95,4 @@ Review it as above, post a `COMMENT` review, and `envoy_publish` `approve` or `c
 - A staging pass is no production pass.
 
 - Report each look's verdict as your role prompt says.
-  A `fail` follows `skill://legion-worker/references/findings.md`: file no issue.
+  A `fail` follows findings.md: file no issue.
