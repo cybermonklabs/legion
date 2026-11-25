@@ -11942,3 +11942,121 @@ test("at 390 the selection bar's return to the row marked last, with its checkbo
     landings.map((landing) => landing.text).join("; ")
   ).toEqual(landings.map(() => true));
 });
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 13:01Z ("a count
+// is drawn once every read it counts has answered; a read that a count does not count never hides
+// it") and 17:5xZ (F5: while a Claimed-by narrowing that needs the agent registry is on, and
+// before the registry's first read answers or settles on its error, no column draws a count;
+// after that the per-value rule applies). Measured at 5a444912 in builds Job
+// infra-3135-f8-h1-sn5q6, in Chromium, Firefox and WebKit at 1440x900: with the agent list
+// (`GET /api/v1/agents`) refused every time and Nobody or lapsed picked, the header filters draw
+// their counts once the page says it could not check which claims have lapsed, and lose them
+// again while each later poll of the list is out: Assignee offers "alice" where it offered
+// "alice, 2 issues" a moment before. The list has never answered, so each poll's read puts the
+// registry's query back to pending (`isError` false, `known` false), and
+// `registryPending = wantsFree && !registry.known && !registry.isError` (IssuesTable.tsx:505)
+// then hides every column's count, where the registry's first read settled long before. The rows
+// the list holds are the same before and during that read: every claim counts as held while no
+// read has answered. The control: before the poll, with the list's first read settled on its
+// error, the same filters draw these counts.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): one project on the List, read with the agent list refused, and one poll of the list held.
+test("with the agent list refused, the project List's header filters keep each count the list does not decide while a later poll of the list is out @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const alice = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(alice.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+  const bob = await createIssue({ project: "CORE", title: "Signal tower" });
+  await patchIssue(bob.key, { assignee: "bob", priority: 2 });
+  const more = await createIssue({ project: "CORE", title: "Ferry ramp" });
+  await patchIssue(more.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+  // The agent list answers 500 while `holding` is false, and is held, unanswered, while it is true.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.fulfill({
+        body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+        contentType: "application/json",
+        status: 500,
+      });
+    }
+  );
+  /** Each option of one header filter, by its accessible name, read once it holds `count`, in
+   *  sorted order: an option that draws a count is named by its `aria-label` (`alice, 2 issues`),
+   *  and one that draws none by its label's own text (`alice`), its check mark left out. */
+  const headerFilterOptions = async (header: string, count: number): Promise<string[]> => {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${header}(?:: \\d+ picked)?$`, "u"),
+    });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map(
+        (element) =>
+          element.getAttribute("aria-label") ??
+          Array.from(element.children)
+            .filter((child) => child.getAttribute("aria-hidden") !== "true")
+            .map((child) => child.textContent ?? "")
+            .join("")
+            .trim()
+      )
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names.sort();
+  };
+  // The counts that read the issues alone, which answered.
+  const filters = [
+    { count: 2, header: "Assignee", wanted: ["alice, 2 issues", "bob, 1 issue"] },
+    { count: 2, header: "Priority", wanted: ["P1, 2 issues", "P2, 1 issue"] },
+    { count: 1, header: "Labels", wanted: ["alpha, 2 issues"] },
+  ];
+  /** What each filter offers that is not one of its wanted counts, written for a message. */
+  const lacking = async (where: string): Promise<string[]> => {
+    const wrong: string[] = [];
+    for (const { count, header, wanted } of filters) {
+      const offered = await headerFilterOptions(header, count);
+      for (const want of wanted)
+        if (!offered.includes(want))
+          wrong.push(
+            `${where}: ${header} offers ${offered.join(" | ")} where it should hold "${want}"`
+          );
+    }
+    return wrong;
+  };
+  await page.goto("/projects/CORE/issues?unclaimed=1");
+  for (const key of [alice.key, bob.key, more.key])
+    await expect(page.locator(`[data-issue-row="${key}"]`)).toBeVisible();
+  // The control: the list's first read has settled on its error, as the page says, and every
+  // count the list does not decide is drawn.
+  await expect(page.getByTestId("unclaimed-unchecked")).toBeVisible();
+  await expect.poll(() => lacking("first read refused"), { timeout: 10_000 }).toEqual([]);
+  // The shell's next poll of the list (every 15 s, `AGENT_REGISTRY_POLL_MS`) is held: its read is
+  // out while the filters are read again.
+  holding = true;
+  await expect
+    .poll(() => held.length, { message: "a later poll of the agent list", timeout: 20_000 })
+    .toBeGreaterThan(0);
+  const whileOut = await lacking("a later poll held");
+  holding = false;
+  for (const route of held.splice(0))
+    await route
+      .fulfill({
+        body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+        contentType: "application/json",
+        status: 500,
+      })
+      .catch(() => undefined);
+  expect(whileOut, whileOut.join("; ")).toEqual([]);
+});
