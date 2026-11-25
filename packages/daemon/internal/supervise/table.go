@@ -233,16 +233,17 @@ type StalePlugin struct {
 }
 
 // RecordedDeath is a restored claim whose stored record says the process it records died: the
-// daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
-// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
-// parked, so a restart lost it. The boot raises it once for every such claim, beside the
-// unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
-// the restart's own wave rather than waiting for the runtime to report the death again
-// (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
-// on — a roles container that restarted — which is a probe interval after boot, by which time the
-// boot's wave holds the pacing and a relaunch raised then goes in behind all of it. Generation is
-// the claim's generation as the boot read it, so a claim a launch has moved on since is decided
-// nothing (relaunchRecordedDeath).
+// daemon before this one judged that process gone and decided its end (Claim.DeathCharged) —
+// charged its death, or found its pod ended from outside it and charged nothing
+// (endedFromOutside) — and the relaunch that end raised lived in that daemon's memory alone, a
+// wake the pacing parked, so a restart lost it. The boot raises it once for every such claim,
+// charged as the end was (relaunchRecordedDeath), beside the unfinished launches it relaunches
+// (internal/daemon's launchUnfinished), so that relaunch enters the restart's own wave rather than
+// waiting for the runtime to report the death again (dispatch://INFRA-5472). That report needs the
+// pod's launcher to reconnect when the pod lives on — a roles container that restarted — which is
+// a probe interval after boot, by which time the boot's wave holds the pacing and a relaunch
+// raised then goes in behind all of it. Generation is the claim's generation as the boot read it,
+// so a claim a launch has moved on since is decided nothing (relaunchRecordedDeath).
 //
 // Turn is the moment the boot reserved for that relaunch in the wake pacing, as RequestSpawn.Turn
 // is for an unfinished launch: the boot reserves the turns of both in one pass, in the order their

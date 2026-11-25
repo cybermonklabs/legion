@@ -198,7 +198,10 @@ type Claim struct {
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// prompt that tells it can be a relaunch, a wake and a daemon restart away, and a newer
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
-	// whose let-gos ended nothing worth telling records none.
+	// whose let-gos ended nothing worth telling records none, but where an end from outside the
+	// pod ended its last process: that end always leaves a record of its launch, told already
+	// where there was nothing to tell, which the boot's replay of the end reads (markFromOutside,
+	// relaunchRecordedDeath).
 	EndedWork EndedWork
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
@@ -462,16 +465,19 @@ type Claim struct {
 	// refused or parked relaunch left standing over its dead process, and the boot reads this
 	// record to raise that relaunch again at once (RecordedDeath, relaunchRecordedDeath), rather
 	// than wait for the sweep's next report of the process, which is the second report of a
-	// death this record says was charged. Charged a second time, the one death walks the claim
-	// to the deaths limit and fails the worker for one dead process, in the very window the claim
-	// is waiting to be relaunched out of — the window both recovery doors reach it in, the
-	// fresh session by stopping it and starting it again (api's refuseWorkingClaim,
-	// freshSession). Every write of it is made where the decision it records is made, because
-	// the windows that leave such a claim are the windows where nothing else writes the claim at
-	// all: died writes the charge with the count it charged, and the report that finds the
-	// process running again writes the clear (judge, reportedProcess). The read a recovery makes
-	// of the process records what it finds as such a report does, and writes that clear in the
-	// same write (ReadProcess).
+	// death this record says was charged. The replay raises the relaunch the decision raised: a
+	// death's after its launch failure, and an end from outside the pod's charged nothing, which
+	// the claim's record of what that end ended tells apart (EndedWork, markFromOutside). Charged
+	// a second time, the one death walks the claim to the deaths limit and fails the worker for
+	// one dead process, in the very window the claim is waiting to be relaunched out of — the
+	// window both recovery doors reach it in, the fresh session by stopping it and starting it
+	// again (api's refuseWorkingClaim, freshSession). Every write of it is made where the decision
+	// it records is made, because the windows that leave such a claim are the windows where
+	// nothing else writes the claim at all: died writes the charge with the count it charged, an
+	// end from outside the pod writes it with the record of that end (endedFromOutside), and the
+	// report that finds the process running again writes the clear (judge, reportedProcess). The
+	// read a recovery makes of the process records what it finds as such a report does, and
+	// writes that clear in the same write (ReadProcess).
 	//
 	// It is of the process the claim records, as ProcessGone is, and goes with it: letGo clears
 	// it with the process it is about, and the claim written there records no process for a
@@ -3902,6 +3908,16 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // death, takes nothing back and stops nothing, and the report that comes later decides nothing
 // while the relaunch waits (judge, launchWaits), or is fenced off once it has run (fence).
 //
+// An end from outside the pod decides its process the same way and charges nothing
+// (endedFromOutside), and the claim's record of what that end ended says so: it is of the launch
+// the claim records, with endFromOutside as its cause (markFromOutside, recordedFromOutside),
+// where a death's record names the death, is of an earlier launch, or is none. Such an end is
+// relaunched as that end relaunched it, through launch, which charges no launch failure and waits
+// no backoff, with endFromOutside as what ended the process, so the record the next process is
+// told says its pod was ended from outside it. Relaunched as a death, it would be charged a launch
+// failure and its backoff for an end that charges nothing, and a let-go that found no record of
+// that end would tell the next process that the process died (endRecordedDeath).
+//
 // It raises nothing over a claim whose record moved since the boot read it: a launch started the
 // next generation, or a report found the process running, which clears the charge
 // (reportedProcess). Nor over one that already holds a launch (launchMet), which is a report of
@@ -3916,12 +3932,15 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // would not launch at its own moment, so the move asks nothing of a hold.
 //
 // It writes one line for each claim whose relaunch it raises or moves, which is what the boot's
-// count of recorded deaths is read against.
+// count of recorded deaths is read against; endedFromOutside on that line says whether the end
+// it relaunches is one from outside the pod.
 func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	recorded := ev.(RecordedDeath)
+	outside := m.recordedFromOutside()
 	relaunching := func() {
 		m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
-			"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
+			"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause,
+			"endedFromOutside", outside)
 	}
 	switch {
 	case m.claim.Generation != recorded.Generation || !m.claim.DeathCharged || m.claim.Locator == nil:
@@ -3937,6 +3956,9 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	relaunching()
+	if outside {
+		return m.launchAfter(ctx, false, false, false, recorded.Turn, endFromOutside)
+	}
 	return m.relaunchDeath(ctx, endRecordedDeath(m.claim.LastDeathCause), m.endUncharged("died"), recorded.Turn)
 }
 

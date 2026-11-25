@@ -22,9 +22,10 @@ import (
 // bootRelaunch is one claim launchUnfinished relaunches: its machine, the turn reserved for it in
 // the wake pacing (the zero time for none yet), and how its release ended.
 //
-// death is whether the relaunch is of the death the claim's record charges rather than of an
-// unfinished launch: such a claim records its process, so it has no uncertain launch to release
-// and reads released from the start, and generation is the claim's generation its replay names.
+// death is whether the relaunch is of the end the claim's record decided — a death charged, or an
+// end from outside the pod charged nothing — rather than of an unfinished launch: such a claim
+// records its process, so it has no uncertain launch to release and reads released from the
+// start, and generation is the claim's generation its replay names.
 type bootRelaunch struct {
 	token      claim.Token
 	m          *supervise.Machine
@@ -154,10 +155,12 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 }
 
 // recordedDeaths is the claims of claims, as the boot restored them, whose record says the process
-// they record died: a live claim with its death charged (supervise.Claim.DeathCharged) and a
-// locator. The daemon before this one judged each process gone and charged its death, and the
-// relaunch it raised for it lived in its memory alone, a wake the pacing parked, which the restart
-// lost (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
+// they record died: a live claim with its end decided (supervise.Claim.DeathCharged) and a
+// locator. The daemon before this one judged each process gone and decided its end — charged its
+// death, or found its pod ended from outside it and charged nothing, which the replay tells apart
+// by the claim's record of that end (supervise's relaunchRecordedDeath) — and the relaunch it
+// raised for it lived in its memory alone, a wake the pacing parked, which the restart lost
+// (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
 // (relaunchUnfinished), rather than when the runtime next reports the death: in a pod that lives
 // on — its roles container restarted — that report waits for the pod's launcher to reconnect, a
 // probe interval after boot, which put every such relaunch behind the whole of the boot's wave.
@@ -172,7 +175,7 @@ func recordedDeaths(claims []supervise.Claim) []claim.Token {
 	return deaths
 }
 
-// recordedDeath is token's relaunch for the death its record charges, as the boot's pass takes it
+// recordedDeath is token's relaunch for the end its record decided, as the boot's pass takes it
 // (launchUnfinished), and false for a claim that no longer stands over that death as the machine
 // holds it now: a report of the death that came first and raised its relaunch already (a wake
 // waiting), a launch since, a report that found the process running, or a suspension held for the

@@ -402,7 +402,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		abandoned = encoded
 	}
 	// Null is a claim no let-go of whose process ended anything worth telling; one that did
-	// records what it ended, for the next process to be told (supervise's EndedWork, recordEnd).
+	// records what it ended, for the next process to be told (supervise's EndedWork, recordEnd),
+	// and an end from outside the pod records its launch's end whatever it ended, told where it
+	// ended nothing worth telling (supervise's markFromOutside).
 	var endedWork []byte
 	if c.EndedWork.Cause != "" {
 		encoded, err := json.Marshal(c.EndedWork)

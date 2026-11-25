@@ -928,6 +928,9 @@ A claim whose process the daemon found dead before the restart is on that list a
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in
 the restart's own wave and in one order with the launches the previous daemon did not finish,
 without waiting for the runtime to report the death a second time.
+A claim whose pod something outside it ended is on that list too: its record says that end was
+charged nothing, so the boot relaunches it charged nothing, in its own session, and its role is
+told that its pod was ended from outside it.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and

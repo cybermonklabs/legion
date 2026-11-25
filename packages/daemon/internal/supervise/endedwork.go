@@ -24,7 +24,9 @@ import (
 // since that prompt can be a relaunch, a wake and a daemon restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
-// none: Cause is empty.
+// none: Cause is empty. The one exception is an end from outside the pod, which leaves a record of
+// its launch's end whatever that end ended, told already where it ended nothing worth telling, so
+// the boot's replay after a restart reads the end as one from outside the pod (markFromOutside).
 type EndedWork struct {
 	// At is when the process was let go, and Cause why: a sentence the daemon writes, beginning
 	// with what the decision that let the process go found (the cause constants and functions
@@ -83,9 +85,10 @@ type EndedWork struct {
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
-	// abandonment of that session ended (forgetSession). A record not yet told is replaced by a
-	// newer one only as the union of the two (joined), so what the earlier let-go ended is not
-	// lost before anyone reads it.
+	// abandonment of that session ended (forgetSession) and for the record an end from outside the
+	// pod leaves of an end that ended nothing worth telling (markFromOutside). A record not yet
+	// told is replaced by a newer one only as the union of the two (joined), so what the earlier
+	// let-go ended is not lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -277,8 +280,9 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // untold again and the record written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
-// launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
-// it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
+// launch's, the suspension's, the failure's, the retirement's, the death's charge, or the decision
+// of an end from outside the pod (endedFromOutside) — carries it, and the untelling with it. So it
+// costs the relaunch one read and waits for nothing else.
 //
 // death is the kind of the cause the runtime read of a death this let-go records, whose cause
 // opens with the daemon's plain sentence of it (endDied, EndedWork.Death), and "" for every other
