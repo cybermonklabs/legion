@@ -158,6 +158,12 @@ func endStalled(bound time.Duration, inTurn bool) string {
 	return fmt.Sprintf("its claim showed no progress for %s", bound)
 }
 
+// endTurnPastBound is the cause of the controller keeper's end of a controller turn open longer
+// than its bound (turnPastBound, dispatch://INFRA-2045 R2), with that bound.
+func endTurnPastBound(bound time.Duration) string {
+	return fmt.Sprintf("its turn stayed open longer than %s, so the daemon ended it", bound)
+}
+
 // endSuspended is a suspension's cause, naming who suspended the claim.
 func endSuspended(by SuspendSource) string { return fmt.Sprintf("it was suspended (%s)", by) }
 

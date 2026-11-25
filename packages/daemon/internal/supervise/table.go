@@ -277,6 +277,24 @@ type StallBackstop struct {
 	Step     StepRecord
 }
 
+// TurnPastBound is the controller keeper's word that the project controller's turn has been open
+// longer than its bound (`controller_turn_bound_minutes`, internal/daemon's controllerKeeper,
+// dispatch://INFRA-2045 R2): the daemon ends that launch as its stall backstop ends a stalled turn
+// (replaceProcess), whether or not steps still arrive in the turn, since a turn that kept making
+// steps for hours and never ended is what the stall backstop, which measures silence, cannot see.
+// The keeper posts it at every look that finds the turn still open past the bound, so a stop the
+// runtime refuses is tried again without a timer of its own, as StallBackstop is re-posted.
+//
+// Bound is the bound the turn passed, and TurnStart the start of the turn the keeper read
+// (Claim.LastTurnStart): the machine acts only on that same turn, still open and still past the
+// bound when the decision runs (turnPastBound), because a turn that ended and a new one that began
+// since the keeper's read are the controller working.
+type TurnPastBound struct {
+	Claim     claim.Token
+	Bound     time.Duration
+	TurnStart time.Time
+}
+
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
@@ -622,9 +640,15 @@ type RequestOperatorRetry struct {
 // worker is relaunched by the workflow's start of its phase, so the two halves of that retry have
 // different owners — which session the claim starts on is the operator's to say, and when it
 // starts is the workflow's.
+//
+// Why is the reason the abandoned session is recorded under (AbandonedSession.Why), which the
+// fresh agent is told in its first prompt: the controller keeper's reason for its replacement of
+// a session older than its age (internal/daemon's controllerKeeper). "" is the operator's own
+// forget, recorded under the words that name the command.
 type RequestForgetSession struct {
 	Claim   claim.Token
 	Session string
+	Why     string
 }
 
 // RequestDeliver gives the claim a task. ID is a durable outbox delivery id when an outbox row
@@ -757,6 +781,7 @@ func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
 func (RecordedDeath) isEvent()        {}
 func (StallBackstop) isEvent()        {}
+func (TurnPastBound) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
 func (PodUpdateSignalled) isEvent()   {}
@@ -834,6 +859,7 @@ const (
 	onStalePlugin   eventKind = "stale_plugin"
 	onRecordedDeath eventKind = "recorded_death"
 	onStallBackstop eventKind = "stall_backstop"
+	onTurnPastBound eventKind = "turn_past_bound"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
@@ -878,6 +904,8 @@ func kindOf(ev Event) eventKind {
 		return onRecordedDeath
 	case StallBackstop:
 		return onStallBackstop
+	case TurnPastBound:
+		return onTurnPastBound
 	case PodUpdateOpen:
 		return onPodUpdateOpen
 	case PodUpdateEnded:
@@ -1215,6 +1243,16 @@ func fillTable(t *builder) {
 	t.ignore(onStallBackstop, "the claim is in no turn, so its record names no turn to end",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
 	t.ignore(onStallBackstop, noProcess, gone...)
+
+	// The controller keeper's end of a controller turn open past its bound (dispatch://INFRA-2045
+	// R2), from the one state a turn runs in, to the same destinations as the stall backstop's:
+	// the machine re-reads the turn before it acts (turnPastBound), and a held suspension ends in
+	// a suspension rather than a relaunch (replaceProcess, endHeld).
+	t.row(onTurnPastBound, "the turn stayed open past its bound: end the launch, keep the task owed, and bring the session back", turnPastBound,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateWorking)
+	t.ignore(onTurnPastBound, "the claim is in no turn, so no turn of it is open past the bound",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
+	t.ignore(onTurnPastBound, noProcess, gone...)
 
 	// The update round over the process holding this claim: opened and kept open by the daemon's
 	// sweep, and ended once the replacement it waited for has been made. inRound is every state a
@@ -2238,6 +2276,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
+	// A finished turn is the session working: its run of ended launches starts again, and it is
+	// a session that has finished a turn (SessionRun, dispatch://INFRA-2045 R1).
+	m.claim.SessionRun = SessionRun{TurnFinished: true}
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -2590,6 +2631,9 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		// A launch retired at its deadline is charged a launch failure, so it is an end of the
+		// session's launch (SessionRun, dispatch://INFRA-2045 R1).
+		m.sessionEnded("its agent " + never)
 		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, time.Time{})
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
@@ -2692,6 +2736,11 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// (Machine.lostCause): the first launch after this ready continues a session of its own.
 	m.lostCause = ""
 	m.claim.LastReady = m.deps.Clock.Now()
+	// The controller's fresh session says ready: one line names it beside the session it
+	// replaced, for as long as the replacement has not been told to it (dispatch://INFRA-2045 R4).
+	if a := m.claim.Abandoned; m.claim.Role == claim.RoleController && a.Tells() {
+		m.log.Info(freshSessionReadyLine, "oldSession", a.Session, "newSession", m.claim.Session, "reason", a.Why)
+	}
 	// The pending cause and the last start failure go with the launch failures they name: the
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
@@ -2934,13 +2983,15 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
-// `legion claims forget-session`, and the half of `legion claims retry --fresh-session` that is
-// the claim's rather than the workflow's (api's retryClaim). It launches nothing — whatever starts
-// the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
-// rather than resuming the turns the operator asked to leave behind. The comparison runs under
-// the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session. A session the claim records but does not hold is cleared only once the Envoy
-// listener no longer names it as the claim's role holder (mayForget).
+// `legion claims forget-session`, the half of `legion claims retry --fresh-session` that is
+// the claim's rather than the workflow's (api's retryClaim), and the controller keeper's
+// replacement of a session older than its age, which names its reason (RequestForgetSession.Why).
+// It launches nothing — whatever starts the claim next, for a phase worker the workflow's own
+// start of its phase, spawns a fresh agent rather than resuming the turns the operator asked to
+// leave behind. The comparison runs under the machine lock, so a decision that changed the claim
+// since an operator saw it cannot clear a later session. A session the claim records but does not
+// hold is cleared only once the Envoy listener no longer names it as the claim's role holder
+// (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if !m.claim.HoldsSession(request.Session) {
@@ -2951,9 +3002,13 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.mayForget(ctx, "forget-session"); err != nil {
 		return err
 	}
-	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
-		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
-	m.forgetSession("an operator cleared it with `legion claims forget-session`, so this claim starts fresh")
+	why, asker := request.Why, "the keeper's ask"
+	if why == "" {
+		why, asker = "an operator cleared it with `legion claims forget-session`, so this claim starts fresh", "the operator's ask"
+	}
+	m.log.Info("supervise: forgetting the recorded session at "+asker, "session", m.claim.Session,
+		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State), "why", why)
+	m.forgetSession(why)
 	return m.persist(ctx)
 }
 

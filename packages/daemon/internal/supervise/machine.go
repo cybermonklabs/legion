@@ -194,6 +194,12 @@ type Claim struct {
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
 	Abandoned AbandonedSession
+	// SessionRun is what the record says of the recorded session since it last finished a turn:
+	// how many of its launches ended in a way the machine charges, how the last of them ended,
+	// and whether the session has finished a turn at all (SessionRun, dispatch://INFRA-2045 R1).
+	// It is persisted, so a daemon restart reads the count the daemon before it kept, and it goes
+	// with the session it is of (forgetSession).
+	SessionRun SessionRun
 	// EndedWork is what the last let-go of the claim's process ended of the work its agent had
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// prompt that tells it can be a relaunch, a wake and a daemon restart away, and a newer
@@ -3102,6 +3108,10 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// The roll edge's mark names the process an earlier release started, which this launch has
 	// let go; the process the launch starts is this release's own (refusedEarlierRelease).
 	m.refusedEarlierRelease = 0
+	// The launch that follows the controller session's second end in a row starts a fresh
+	// session, once the process it replaces is let go and what that process ended recorded
+	// (replaceEndedSession, dispatch://INFRA-2045 R1).
+	m.replaceEndedSession(ctx)
 	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested}, nil)
 }
 
@@ -3855,6 +3865,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.relaunchDeath(ctx, ended, uncharged, time.Time{})
 	}
 	m.claim.DeathCharged = true
+	// The death the machine charges is an end of the session's launch (SessionRun), counted in
+	// the decision that charges it, once for the one process; an end charged nothing — the roll
+	// edge's, a resume by Oh My Pi's own lookup that never registered — is not.
+	if !uncharged {
+		m.sessionEnded(diedEnding(slices.Contains(unready, m.claim.State), m.claim.LastDeathCause))
+	}
 	if m.chargeDeath() {
 		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
@@ -4090,15 +4106,18 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has three callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has four callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
-// one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
-// needs a new session; and the operator's forget-session (forgetSession, the table's), which
-// `legion claims retry --fresh-session` and the controller's fresh_session run (api's
-// freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
-// (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier forget
-// the machine keeps for the fresh agent's launches; Machine.lostCause says why one that drops
-// nothing keeps it. startFresh sets the cause of its own forget after this call.
+// one a Claude Code claim records with no transcript file; the launch's replaceEndedSession, for
+// the project controller's session whose launches keep ending before it finishes a turn
+// (SessionRun); retry, when freshSession says the retry needs a new session; and the forget of a
+// recorded session (forgetSession, the table's): the operator's forget-session, which `legion
+// claims retry --fresh-session` and the controller's fresh_session run (api's freshSession), and
+// the controller keeper's replacement of a session older than its age (internal/daemon's
+// controllerKeeper). It clears the claim's mark of a start by Oh My Pi's own lookup with the
+// session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
+// forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
+// drops nothing keeps it. startFresh sets the cause of its own forget after this call.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -4114,19 +4133,20 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // nothing left to say, and its next send retires it (sendPending).
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
-// that process later: the launch's startFresh runs after the launch let the old process go
-// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
-// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
-// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
-// let-go records nothing for a claim that records no process (recordEnd), so the next record
-// written is of the fresh session's own process.
+// that process later: the launch's startFresh and replaceEndedSession run after the launch let the
+// old process go (launchNow, letGo), and retry's fresh session and the table's forget-session
+// reach only a claim that runs nothing — queued, suspended, failed or retired — whose process the
+// suspension, the failure or the retirement already let go (suspended, fail, retire), or that
+// never had one. A let-go records nothing for a claim that records no process (recordEnd), so the
+// next record written is of the fresh session's own process.
 //
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
 // makes a fresh session a recovery the controller can repeat (api's freshSession). Without it a
 // claim that was told once would never be told again until a turn of it ended with no error at
-// all.
+// all. The session's run of ended launches goes with it too (SessionRun): the new session has
+// ended no launch and finished no turn.
 //
 // why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
 // provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
@@ -4155,6 +4175,7 @@ func (m *Machine) forgetSession(why string) {
 	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
+	m.claim.SessionRun = SessionRun{}
 }
 
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
@@ -4944,6 +4965,8 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case StallBackstop:
 		return ev.Claim
+	case TurnPastBound:
+		return ev.Claim
 	case PodUpdateOpen:
 		return ev.Claim
 	case PodUpdateEnded:
@@ -5009,5 +5032,6 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }

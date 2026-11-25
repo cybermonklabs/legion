@@ -1832,7 +1832,13 @@ func interruptedTask(cause string) string {
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
 // section). It names the session that was left behind and why in the words the claim recorded,
 // and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// phases wrote on the Dispatch issue.
+//
+// The controller works no checkout and has no architect, so it is told neither: its sentence
+// (controllerAbandonedTask) names the session it replaces and why, and says that Envoy messages
+// sent to that session may be lost, before the start message its keeper sends it
+// (dispatch://INFRA-2045 R4).
+//
 // last is whether this sentence is the last one before the task, and so ends in the task's own
 // instruction: in front of a task with no record's sentence after it. Where the record's sentence
 // follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
@@ -1846,17 +1852,33 @@ func interruptedTask(cause string) string {
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, last bool) string {
-	read := "read the issue"
-	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
-			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+	if c.Role == claim.RoleController {
+		return controllerAbandonedTask(c, last)
 	}
+	read := fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
+		"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
+		claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
 		c.Abandoned.Session, c.Abandoned.Why, read)
+	if last {
+		sentence += " Then continue the task."
+	}
+	return sentence + "\n\n"
+}
+
+// controllerAbandonedTask is abandonedTask for the project's controller: the session it replaces
+// and why, quoted as abandonedTask quotes them, that the old session's work is gone, and that an
+// Envoy message sent to the old session may never reach this one, so the controller reads the
+// records its start procedure reads rather than wait for a message it may never get.
+func controllerAbandonedTask(c Claim, last bool) string {
+	sentence := fmt.Sprintf("The session this controller ran before this one, %q, was replaced by this one: %q. "+
+		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
+		"gone, and Envoy messages sent to that session may be lost, so read the daemon's state and the Dispatch "+
+		"records your start procedure reads before you act on any of that session's work.",
+		c.Abandoned.Session, c.Abandoned.Why)
 	if last {
 		sentence += " Then continue the task."
 	}
