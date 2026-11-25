@@ -59,11 +59,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Records is the one write a draw makes: the answers drawn for a unit, onto that unit's own issue
-// key, each written once and never again (record.Store.PutAssignments). The one method is named
-// here rather than taken as record.Store, so this package reads no record beyond the draw's own
-// write and no caller leaks its store into it; each caller's store satisfies it as it stands.
+// Records is what a draw reads and writes of the records: the unit's own issue record, read
+// before anything is drawn (record.Store.Issue), and the answers drawn for a unit, onto that
+// unit's own issue key, each written once and never again (record.Store.PutAssignments). The two
+// methods are named here rather than taken as record.Store, so no caller leaks its store into this
+// package; each caller's store satisfies it as it stands.
 type Records interface {
+	Issue(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error)
 	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []record.Assignment) (int, error)
 }
 
@@ -76,16 +78,31 @@ type Records interface {
 // at is the instant every answer of this call records, read once by the caller's clock, and
 // source is the random source a `random` mode is drawn with (Draw). Each answer carries the
 // `plan` of the arm drawn (config.Variant.Plan), so an issue keeps how it is done for its whole
-// life; a draw into no arm, under mode off, records no plan. An experiment of another
-// unit is passed over, and a declared list that holds none of this unit writes nothing, which is
-// no error. Writing no row is no business of this helper's either: an experiment the key already
-// holds a row for keeps the arm it has been running under, and a key the daemon holds no record
-// of — an operator's spawn — takes no row at all (record.Store.PutAssignments).
+// life; a draw into no arm, under mode off, records no plan. An experiment of another unit is
+// passed over, and a declared list that holds none of this unit reads and writes nothing, which
+// is no error. Otherwise key's own record is read first, in tx, where a record the caller wrote
+// earlier in the same transaction — putNewRoot's root, recordChild's child — is already there to
+// find, and a key the daemon holds no record of — an operator's spawn of a tree the daemon never
+// recorded — is drawn for nothing (INFRA-2566's R2): no random source is read and nothing is
+// written, so a failing source refuses nothing. Writing no row for a recorded key is no business
+// of this helper's either: an experiment the key already holds a row for keeps the arm it has
+// been running under (record.Store.PutAssignments).
 func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
 	declared []config.Experiment, unit config.ExperimentUnit, source func(uint64) (uint64, error), at time.Time) error {
+	ofUnit := func(experiment config.Experiment) bool { return experiment.Unit == unit }
+	if !slices.ContainsFunc(declared, ofUnit) {
+		return nil
+	}
+	issue, err := records.Issue(ctx, tx, key)
+	if err != nil {
+		return fmt.Errorf("read the record of %s before its draw: %w", key, err)
+	}
+	if issue == nil {
+		return nil
+	}
 	rows := make([]record.Assignment, 0, len(declared))
 	for _, experiment := range declared {
-		if experiment.Unit != unit {
+		if !ofUnit(experiment) {
 			continue
 		}
 		variant, err := Draw(experiment, source)
@@ -101,7 +118,7 @@ func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
 		rows = append(rows, record.Assignment{Experiment: experiment.Name, Unit: string(experiment.Unit),
 			Variant: variant, Mode: string(experiment.Mode), DrawnAt: &at, Plan: string(plan)})
 	}
-	_, err := records.PutAssignments(ctx, tx, key, rows)
+	_, err = records.PutAssignments(ctx, tx, key, rows)
 	return err
 }
 
