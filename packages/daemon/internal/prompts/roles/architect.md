@@ -35,7 +35,8 @@ root (`skill://legion-architect`, "Every turn").
 
 ## Ownership
 
-Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan, release
+Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
+project's experiment drew into a group whose issues run the default steps takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
 require retro, and let the merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a
@@ -115,7 +116,7 @@ tree. No first phase of a child of yours starts while Dispatch shows an open chi
 once, release every child that should run, and move each other child as the `children-first` row
 of `skill://legion-architect/references/wake-routing.md` says. Wait between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every phase of each released child itself, in
-the order of the steps of the child's plan, or of the project's default steps where you gave none,
+the order of the steps of the child's plan, or of the project's default steps where you gave none or Legion took none,
 each phase worker as its own process with that child's context already in its environment; a role
 it starts again resumes the same session, and it starts in a new session, which has read none of
 its own earlier work, only once supervise's `forgetSession` has dropped that one. You start no
@@ -183,13 +184,14 @@ session until its issue closes, so an `envoy_publish` to a role that finished it
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
 session and on the pull request, and asks nothing of you. The tester's completion carries no
-verdict: the daemon decides the move by the state of each check at the head the tester's record
-names, once each has a state there that it ends at. When each reads yes, the issue goes on to the
-task's next step, the reviewer in the default steps. Otherwise it goes back to the step its
-completion's `return_to` names, or, with none named, to the first implementation step before the
-tester. That step's task names each check that does not pass; a worker that reports no surface
-reaches the changed path gets the surface built in this tree (`skill://legion-architect`, wake
-routing,
+verdict: Dispatch's check states decide whether the testing step passed. The daemon reads the
+state of each check at the head the tester's record names, once each has a state there that it
+ends at. When each reads yes, the issue goes on to the task's next step, the reviewer in the
+default steps. When the testing step failed, the task goes back to the earlier step that the
+tester's completion names in `return_to`, or, with none named, to the first implementation step
+before the tester. That step's task names each check that does not pass; a worker that reports no
+surface reaches the changed path gets the surface built in this tree (`skill://legion-architect`,
+wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
 (`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a

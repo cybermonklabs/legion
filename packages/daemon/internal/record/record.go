@@ -295,7 +295,8 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 }
 
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
-// when it was drawn and the instant, recorded once for that unit and never changed
+// when it was drawn and the instant, and how the issue drawn is done where the arm says so (Plan),
+// recorded once for that unit and never changed
 // (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
 // issues.memory_* columns the single hard-coded experiment was kept in are written by nothing
 // from this release on, are read by nothing this release's daemon runs but the back-fill of
@@ -326,6 +327,13 @@ type Assignment struct {
 	// Carried marks a row a hand-over wrote rather than a draw: the answer this unit took from the
 	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
 	Carried bool
+	// Plan is how the issue drawn is done, a config.PlanGroup word taken as a string for the
+	// reason Unit is: `owner` or `default`, the `plan` of the arm drawn, and "" where the arm
+	// names none, the draw was made under mode off, a hand-over wrote the row, or the row was
+	// drawn before the column existed. The loader refuses `owner-alone`, so no draw writes it. An
+	// issue keeps it for its whole life, whatever the project's file says later
+	// (internal/experiment's GroupOf reads it).
+	Plan string
 }
 
 // DeclaredExperiment is one experiment a hand-over settles a child at: the name the project
@@ -2205,6 +2213,10 @@ type Store interface {
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
+	// PlansOfOwners is the version in force of each generation of issue, generation 0 included,
+	// whose giver is an architect of the issue's tree now (ArchitectOfTree), each carried copy
+	// among them: the plans a first step of an issue whose group takes none passes over.
+	PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
 	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
 	// no plan rows.

@@ -187,10 +187,8 @@ func TestValidate(t *testing.T) {
 // the kind the file wrote and the four kinds there are, so its reader sees what to write.
 func TestValidateTakesTheDPoPKind(t *testing.T) {
 	entry := func(kind string) Rules {
-		return Rules{Secrets: []SecretRule{{
-			Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
-			Allow: []Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: kind,
-		}}}
+		return Rules{Secrets: []SecretRule{{Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
+			Allow: []Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: kind}}}
 	}
 	if err := Validate(entry("dpop")); err != nil {
 		t.Errorf("Validate of an entry of kind dpop: %v", err)

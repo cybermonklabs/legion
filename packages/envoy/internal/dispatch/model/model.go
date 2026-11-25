@@ -3732,7 +3732,8 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
+// its steps in order, each a role or `role:key`.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
@@ -3742,7 +3743,8 @@ type PlanTask struct {
 // run's work started and replaced it at each later version of the owner's plan that Legion took
 // (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
 // and the version of it the plan was read from (both null for the source default, the default
-// steps of an issue whose owner gave none), and its tasks.
+// steps of an issue whose owner gave none, or whose experiment's group takes none from its
+// owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`

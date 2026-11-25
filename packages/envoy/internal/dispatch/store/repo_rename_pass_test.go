@@ -38,14 +38,21 @@ const renamedRepositoriesSeed = `
 			'{"kind":"user","id":"alice"}', 'sjawhar/legion-smoke'),
 		('INFRA-1', 'INFRA-1', '7c1e8a52-3f4b-4d6e-9a0b-1c2d3e4f5a6b', 'c3', 1, 'digest', 'tester', repeat('c', 40), 'pass',
 			'{"kind":"user","id":"alice"}', null);
+	insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, run, commit_sha, branch, verdict, attestation, session, actor, commit_repo) values
+		('INFRA-1', 'INFRA-1', '7c1e8a52-3f4b-4d6e-9a0b-1c2d3e4f5a6b', 'c4', 1, 'digest', 'go-checks', repeat('d', 40),
+			'legion/INFRA-1', 'pass', '{}', 'ci-run', '{"kind":"session","id":"ci-run"}', 'SJawhar/Legion'),
+		('INFRA-1', 'INFRA-1', '7c1e8a52-3f4b-4d6e-9a0b-1c2d3e4f5a6b', 'c5', 1, 'digest', 'go-checks', repeat('e', 40),
+			'legion/INFRA-1', 'pass', '{}', 'ci-run', '{"kind":"session","id":"ci-run"}', null);
 	insert into issue_external_links (issue_key, url, kind) values
 		('INFRA-1', 'https://github.com/SJawhar/Legion/pull/7', 'url'),
 		('INFRA-2', 'https://github.com/sjawhar/legion/issues/1955', 'github_issue'),
 		('INFRA-3', 'https://github.com/sjawhar/legion-smoke/issues/599', 'github_issue'),
 		('INFRA-4', 'https://github.com/sjawhar/dotfiles/pull/3', 'url');
-	insert into pull_request_heads (repo, number, head_sha, state, url) values
-		('sjawhar/legion', 7, 'a7', 'merged', 'https://github.com/sjawhar/legion/pull/7'),
-		('sjawhar/legion-smoke', 8, 'a8', 'merged', 'https://github.com/sjawhar/legion-smoke/pull/8');
+	insert into pull_request_heads (repo, number, head_sha, state, url, attribution_cited_issues) values
+		('sjawhar/legion', 7, 'a7', 'merged', 'https://github.com/sjawhar/legion/pull/7',
+			'{https://github.com/SJawhar/Legion/issues/5,https://github.com/sjawhar/legion-smoke/issues/6,https://github.com/cybermonklabs/legion/issues/5}'),
+		('sjawhar/legion-smoke', 8, 'a8', 'merged', 'https://github.com/sjawhar/legion-smoke/pull/8', null);
 	insert into branch_commits (repo, branch, sha, on_branch) values
 		('SJawhar/Legion', 'main', 'c1', true),
 		('sjawhar/dotfiles', 'main', 'c1', true);
@@ -93,13 +100,15 @@ const renamedRepositoriesSeed = `
 // renamedRepositoriesAfter reads, after a pass over renamedRepositoriesSeed, every value the seed
 // wrote in a field of the pass, each with what it must read.
 var renamedRepositoriesAfter = map[string]string{
-	`select string_agg(key || '=' || coalesce(repo, ''), ' ' order by key) from issues`:                                         "INFRA-1=cybermonklabs/legion INFRA-2=cybermonklabs/legion INFRA-3=sjawhar/legion-smoke INFRA-4=sjawhar/dotfiles",
-	`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                             "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
-	`select string_agg(check_block_id || '=' || coalesce(commit_repo, 'null'), ' ' order by check_block_id) from check_results`: "c1=cybermonklabs/legion c2=sjawhar/legion-smoke c3=null",
+	`select string_agg(key || '=' || coalesce(repo, ''), ' ' order by key) from issues`:                                            "INFRA-1=cybermonklabs/legion INFRA-2=cybermonklabs/legion INFRA-3=sjawhar/legion-smoke INFRA-4=sjawhar/dotfiles",
+	`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                                "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
+	`select string_agg(check_block_id || '=' || coalesce(commit_repo, 'null'), ' ' order by check_block_id) from check_results`:    "c1=cybermonklabs/legion c2=sjawhar/legion-smoke c3=null",
+	`select string_agg(check_block_id || '=' || coalesce(commit_repo, 'null'), ' ' order by check_block_id) from ci_check_results`: "c4=cybermonklabs/legion c5=null",
 	`select string_agg(url, ' ' order by issue_key) from issue_external_links`: "https://github.com/cybermonklabs/legion/pull/7 https://github.com/cybermonklabs/legion/issues/1955 " +
 		"https://github.com/sjawhar/legion-smoke/issues/599 https://github.com/sjawhar/dotfiles/pull/3",
-	`select string_agg(repo || '#' || number || ' ' || url, ' ' order by number) from pull_request_heads`: "cybermonklabs/legion#7 https://github.com/cybermonklabs/legion/pull/7 " +
-		"sjawhar/legion-smoke#8 https://github.com/sjawhar/legion-smoke/pull/8",
+	`select string_agg(repo || '#' || number || ' ' || url || ' ' || coalesce(attribution_cited_issues::text, 'null'), ' ' order by number) from pull_request_heads`: "cybermonklabs/legion#7 https://github.com/cybermonklabs/legion/pull/7 " +
+		"{https://github.com/cybermonklabs/legion/issues/5,https://github.com/sjawhar/legion-smoke/issues/6} " +
+		"sjawhar/legion-smoke#8 https://github.com/sjawhar/legion-smoke/pull/8 null",
 	`select string_agg(repo, ' ' order by repo) from branch_commits`: "cybermonklabs/legion sjawhar/dotfiles",
 	`select string_agg(repo || '#' || number || ' ' || url || ' ' || coalesce(attribution_cited_issues::text, 'null'), ' ' order by number) from delivery_pull_requests`: "cybermonklabs/legion#11 https://github.com/cybermonklabs/legion/pull/11 " +
 		"{https://github.com/cybermonklabs/legion/issues/5,https://github.com/sjawhar/legion-smoke/issues/6} " +
@@ -242,8 +251,9 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 		rows += int64(record["rows"].(float64))
 	}
 	for field, want := range map[string]float64{
-		"issues.repo": 2, "projects.default_repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
-		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1,
+		"issues.repo": 2, "projects.default_repo": 1, "check_results.commit_repo": 1, "ci_check_results.commit_repo": 1,
+		"issue_external_links.url": 2,
+		"pull_request_heads.repo":  1, "pull_request_heads.url": 1, "pull_request_heads.attribution_cited_issues": 1, "branch_commits.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 )
@@ -118,10 +119,12 @@ const maxGuidanceRunes = 2000
 // serve the profile to nobody; a maxGrant of at least a second; a github block of GitHub logins,
 // repositories of those accounts, at most githubname.MaxNarrowedRepositories of them and, where it
 // names any, one of each account at least, and permissions at levels GitHub gives, metadata at read
-// among them; a google block of scope names; never both; and a proxy block whose hosts are in the
+// among them; a google block of scope names; never both; a proxy block whose hosts are in the
 // one grammar a rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean
-// model's answer, accepts, and whose guidance the judge reads whole. Each refusal names the
-// profile by its index and name and the field it refuses.
+// model's answer, accepts, and whose guidance the judge reads whole; and the results capability's
+// shape (checkResultsShape): a proxy block on the profile oauthwire.AirlockResultsName, and no
+// source, tier, requesters, maxGrant, github or google on a profile whose proxy block is of kind
+// dpop. Each refusal names the profile by its index and name and the field it refuses.
 //
 // It reads no secret: whether a profile fits its source, and is no looser than it, is the policy
 // load's question. Nor does it read the deployment's services: CheckRequesters does, at the boot.
@@ -300,7 +303,50 @@ func (e profileEntry) check(i int, seen map[string]int) error {
 	if err := e.Google.check(refuse); err != nil {
 		return err
 	}
-	return e.Proxy.check(e.Name, refuse)
+	if err := e.Proxy.check(e.Name, refuse); err != nil {
+		return err
+	}
+	return e.checkResultsShape(refuse)
+}
+
+// checkResultsShape holds the results capability to its one shape, a name and a proxy block and
+// nothing else: the broker mints its credential for a CI run's result grant (requests'
+// resultValues) from no stored secret. So:
+//
+//   - the profile oauthwire.AirlockResultsName has a proxy block. Without one it has no entry in
+//     the airlock's rules (ProxyRules), so a stored secret of that name could be served by it and
+//     released as its value, where under its entry of kind dpop no release of it is ever made
+//     (requests' ErrAirlockMintedOnly);
+//   - a profile whose proxy block is of kind dpop sets no source, tier, requesters, maxGrant,
+//     github or google block. Each of them names or limits the stored secret a grant releases,
+//     and nothing under a dpop entry is ever released, so each would read as a rule that holds
+//     nothing.
+//
+// Which name may carry kind dpop is the results capability's start check's question
+// (config.AirlockResultRules), which reads every proxy block of the file at once.
+func (e profileEntry) checkResultsShape(refuse func(field, why string) error) error {
+	if e.Name == oauthwire.AirlockResultsName && e.Proxy == nil {
+		return refuse("proxy", "is required: "+e.Name+" is the results capability the broker mints for a CI run's result grant, a name and a proxy block of kind "+proxyrules.KindDPoP)
+	}
+	if e.Proxy == nil || e.Proxy.Kind != proxyrules.KindDPoP {
+		return nil
+	}
+	for _, f := range []struct {
+		field string
+		set   bool
+	}{
+		{"source", e.Source != ""},
+		{"tier", e.Tier != ""},
+		{"requesters", e.Requesters != nil},
+		{"maxGrant", e.MaxGrant != ""},
+		{"github", e.GitHub != nil},
+		{"google", e.Google != nil},
+	} {
+		if f.set {
+			return refuse(f.field, "is set on a profile of kind "+proxyrules.KindDPoP+", which the broker mints for a CI run's result grant from no stored secret: a profile of that kind is a name and a proxy block alone")
+		}
+	}
+	return nil
 }
 
 // checkRequesters holds the requesters list to a requesters tag's shape (ParseRequesterShapes),
@@ -447,8 +493,8 @@ func (b *GoogleBlock) check(refuse func(field, why string) error) error {
 // each host in the one grammar a rules host is written in (rulehost.Refusal), whose refusal names
 // the host's reason and repeats no text of it but the form to write; then proxyrules.Validate's
 // answer for the block as the entry ProxyRules makes of it, which is the Lean model's (a judge
-// above 900 seconds, a kind other than "", aws, azure or dpop); and last the guidance's length, this
-// program's own rule and not the model's. The grammar serves a host only where Validate's
+// above 900 seconds, a kind other than "", aws, azure or dpop); and last the guidance's length,
+// this program's own rule and not the model's. The grammar serves a host only where Validate's
 // proxyrules.HostShapeOK accepts it, so Validate refuses no host here.
 func (b *ProxyBlock) check(name string, refuse func(field, why string) error) error {
 	if b == nil {

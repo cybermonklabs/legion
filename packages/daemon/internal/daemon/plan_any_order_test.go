@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -31,11 +32,15 @@ import (
 // A plan in another order than the default steps' runs to done: the issue whose plan is
 // `implementer reviewer tester` launches its implementer, its reviewer and its tester in that order.
 // The tester's step fails on its check's state at the head it tested and its completion through
-// the completion route, and the implementer takes it again in the session it registered, with no
-// launch of its own, told the tester's handoff record, the head it tested and the check that
-// failed. The reviewer and the tester then run again, the retro rates the plan, and the merge ends
-// the walk at done. The control is a second issue given the same steps as `implementer tester
-// reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
+// the completion route, the tester's row keeping the handoff record and that head, the tester's
+// notice of the move back naming that head and the check as fields, and the implementer takes the
+// task again in the session it registered, with no launch of its own, the task carrying the reason
+// that notice gives and the version of the handoff record the tester's row holds. The tester's
+// session writes its report three times before the record its completion names, so that record
+// is version 4, a number the implementer's task carries only where it names the record. The
+// reviewer and the tester then run again, the retro rates the plan, and the merge ends the walk at
+// done. The control is a second issue given the same steps as `implementer tester reviewer`: it
+// launches its tester before its reviewer, and the same check of the order must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
@@ -45,6 +50,10 @@ func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 	r.openGate(phase.Implementing)
 	r.runStep("implementer", answerPass, phase.Reviewing)
 	r.runStep("reviewer", answerPass, phase.Testing)
+	tester := r.worker(claim.RoleTester)
+	for range 3 {
+		r.writeHandoff(tester.session, "test")
+	}
 	r.runStep("tester", answerFail, phase.Implementing)
 	r.implementAfterTheTestersFail()
 	r.runStep("reviewer", answerPass, phase.Testing)
@@ -67,9 +76,16 @@ func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 }
 
 // implementAfterTheTestersFail is the walk's implementer taking the task the tester's failed step
-// returned to it: the claim that implemented the task takes it in the session it registered, with
-// no launch after its first, and its task names the tester's handoff record, the head it tested
-// and the check that failed there. It implements again, and the task moves on to its reviewer.
+// returned to it: the tester's row holds its handoff record and the head it tested, and the
+// tester's one phase-finished notice of the move back, as the architect's topic received it, names
+// as fields that head and k1, the check that does not pass there, with its state and reason. The
+// claim that implemented the task takes the task in the session it registered, with no launch
+// after its first, and the task it takes carries the reason that notice gives and the version of
+// the handoff record the tester's row holds: the reason is read from the notice and the version
+// from the row, each found in the task as a value, and no word of the task is compared with a
+// literal. The implementer's first task, taken before the tester wrote anything, and the reason
+// carry no such version, nor is it the pull request's number, so a task that names no record of
+// the tester's fails here. It implements again, and the task moves on to its reviewer.
 func (r *ownerStepsRig) implementAfterTheTestersFail() {
 	t := r.t
 	t.Helper()
@@ -78,16 +94,32 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 		t.Fatalf("%s's tester row holds the handoff record %q and the head %q after its step failed, want a record and %s: this check proves nothing",
 			r.key, tested.HandoffRecord, tested.HandoffCommit, stepRecordsHead)
 	}
-	implementer := r.worker(claim.RoleImplementer)
-	told := implementer.take().Message
-	for _, want := range []string{
-		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", tested.HandoffVersion, r.key, tested.HandoffVersion),
-		"Handoff commit: " + stepRecordsHead + ".",
-		"k1: no (fail)",
-	} {
-		if !strings.Contains(told, want) {
-			t.Fatalf("%s's implementer was told %q after the tester's step failed, want the tester's report %q", r.key, told, want)
+	var back []record.Notice
+	testwait.Eventually(t, r.key+"'s tester's phase-finished notice of the move back on its architect's topic", func() bool {
+		back = nil
+		for _, notice := range r.testerNotices(r.key) {
+			if notice.WaitsFor == "" {
+				back = append(back, notice)
+			}
 		}
+		return len(back) > 0
+	})
+	if want := []record.FailingCheck{{Check: "k1", State: "no", Reason: "fail"}}; len(back) != 1 || back[0].Phase != phase.Testing ||
+		back[0].Head != stepRecordsHead || !slices.Equal(back[0].Failing, want) || len(back[0].Waiting) != 0 {
+		t.Fatalf("%s's tester's phase-finished notices of the move back = %+v, want one with the head %s and failing %+v", r.key, back, stepRecordsHead, want)
+	}
+	implementer := r.worker(claim.RoleImplementer)
+	task := implementer.take().Message
+	if back[0].Reason == "" || !strings.Contains(task, back[0].Reason) {
+		t.Fatalf("%s's implementer took the task %q, which does not carry the reason %q its tester's notice of the move back gives", r.key, task, back[0].Reason)
+	}
+	taken, version, pr := implementer.tasksTaken(), tested.HandoffVersion, r.pullRequest()
+	if len(taken) < 2 || carriesNumber(taken[0], version) || carriesNumber(back[0].Reason, version) || (pr != nil && pr.Number == version) {
+		t.Fatalf("%s's tester's row holds its record at version %d, which the implementer's first task %q, the reason %q or the pull request %+v carries already: this check proves nothing",
+			r.key, version, taken[0], back[0].Reason, pr)
+	}
+	if !carriesNumber(task, version) {
+		t.Fatalf("%s's implementer took the task %q, which does not carry %d, the version of the handoff record %q its tester's row holds", r.key, task, version, tested.HandoffRecord)
 	}
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 1 {
 		t.Fatalf("%s's implementer was launched %v by the time it took the task again, want its first launch alone: it starts again in its session", r.key, launches)
@@ -96,6 +128,13 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 		t.Fatalf("%s's implementer holds the session %q when it takes the task again, want %q, the one it implemented in", r.key, got, implementer.session)
 	}
 	r.finish(implementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Reviewing)
+}
+
+// carriesNumber says whether s carries n as a number of its own: a run of digits that spells n
+// with no letter or digit beside it, so the 4 of `#42`, of `k4`, of a commit or of an issue key's
+// prefix is not n.
+func carriesNumber(s string, n int) bool {
+	return slices.Contains(strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), strconv.Itoa(n))
 }
 
 // launchedInOrder says whether the daemon first launched the workers of the walk's issue in the

@@ -1230,7 +1230,7 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
+	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, moveWhy{})
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
@@ -1255,9 +1255,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, moveWhy{Reason: row.Decision.Body})
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
+		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, moveWhy{})
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)

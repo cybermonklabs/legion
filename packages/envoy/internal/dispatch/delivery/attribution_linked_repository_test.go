@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The issue of this test, ACME-1, the repository its project maps, and the repository of each
+// The issue of this test, ACME-1, the default repository of its project, and the repository of each
 // pull request of the test, which is another one.
 const (
 	linkedIssue     = "ACME-1"
@@ -221,7 +221,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		// #12 as a rule before R19 left it: merged, with no issue, and read an hour ago.
 		eventAt := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 		read := time.Now().Add(-time.Hour)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: linkedPullRepo, Number: 12, HeadSHA: mergedHead, HeadRef: "work/deploy-job",
 			BaseRef: "main", State: "merged", AttributionSource: string(sourceNone),
 			Title: "Move the deploy job", URL: linkedPullURL(12), EventAt: &eventAt, CheckedAt: &read,

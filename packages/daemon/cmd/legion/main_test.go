@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -33,8 +34,10 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
-// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
-// own reaches no network.
+// the leak guard's curl reads run (leakguardCurl). A run that names none has leakguardtest.NoCurl,
+// a path with no file, and so has every guard of this binary's own process unless its test sets
+// leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
+// tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
 func TestMain(m *testing.M) {
@@ -45,6 +48,9 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
 		os.Unsetenv(name)
 	}
+	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
+	// `legion` whose test names a stand-in takes it below.
+	leakguardCurl = leakguardtest.NoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
@@ -712,7 +718,7 @@ func productionCheckTesterLine(key string) string {
 }
 
 func defaultStepsTodayLine(key string) string {
-	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
 }
 
 func projectLines(key string) string {
@@ -883,7 +889,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +

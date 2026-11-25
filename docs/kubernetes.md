@@ -417,7 +417,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections`, 974, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections`, 982, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -2675,7 +2675,7 @@ The tables hold the plan of each issue that has one: each version of it given at
 The columns hold the step a role's phases row runs for an issue with plan rows.
 An earlier release boots with all five in place: its phases reads and writes name each column they touch, and it names none of the three tables, so it reads none of them, and every row it inserts takes the columns' defaults, which read as no step.
 This release also queues rows an earlier release cannot decode.
-It tells an architect of three new kinds of notice: `task-stopped`, the stop of a task, whose notice of an owner's stop names the architect that made it (`stoppedBy`); `retro-held`, a parent held before its retro for the issues beneath it; and `plan-not-taken`, a plan of an earlier owner that an issue's first step passed over.
+It tells an architect of three new kinds of notice: `task-stopped`, the stop of a task, whose notice of an owner's stop names the architect that made it (`stoppedBy`); `retro-held`, a parent held before its retro for the issues beneath it; and `plan-not-taken`, a plan that an issue's first step passed over, at this release a plan of an earlier owner (from the release whose experiment sets how each issue is done, also a plan of an issue whose experiment's group takes none).
 A `controller_notice` row takes every kind an architect is told, these three among them.
 It writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
 An earlier release decodes a `notice`, a `controller_notice` and a `supervise` row strictly: its decode refuses a notice kind it does not know (`unknown notice kind`, `validNoticeKinds` in `record/outbox.go`), a field it does not hold, such as `stoppedBy`, and an op it does not know (`unknown supervise operation`, `validSuperviseOp`), which is no permanent refusal for those kinds (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll-forward.
@@ -2712,7 +2712,7 @@ The header of `20261117034837_issue_plans.up.sql` carries this same block.
 What the way back costs is every plan given before the rollback, which its owner gives again, and each delivery a deleted row had still to make.
 A deleted `task-stopped` notice is a stop its issue's architect is never told of: which task stopped, and which architect or which failed step stopped it.
 A deleted `retro-held` notice is a hold its parent's architect is never told of, with the issues beneath it that the retro waits for.
-A deleted `plan-not-taken` notice is a plan of an earlier owner that the issue's architect is never told its first step passed over, so it is not asked to give that plan again as its own.
+A deleted `plan-not-taken` notice is a plan an issue's first step passed over that the issue's architect is never told of: a plan of an earlier owner, which it is then not asked to give again as its own, or, once the release whose experiment sets how each issue is done has run, a plan of an issue whose experiment's group takes none.
 A deleted controller notice of one of those kinds is the same telling, lost to the controller.
 A deleted `step_stop` row costs the stop of one step's process: that process runs on until its issue closes, and the way back drops the task's stop with the plan rows.
 An issue whose `task-stopped` reason the way back cleared is a plain hold under the earlier release: its architect's retry, or a person's `todo` on a root, starts the role of the phase it is held from again, the step the stop ended, on today's line.
@@ -2725,6 +2725,21 @@ After a roll-forward, an issue still held for either reason with no plan rows, w
 A run of a step that was open at the rollback stays open in `step_starts`, which the way back keeps, where the earlier release numbers its place another way: every run of an owner's task, since that release ends a run of the task `default` alone (`endStep` and `stepOf` in `workflow/steps.go`), and a run of the task `default` on a project whose `default_steps` leave out a step of today's line before the step that ran, since that release numbers each place by today's line.
 Nothing ends such a run: Dispatch keeps its start with no end, which `dispatch steps --issue <KEY>` lists, so read it as a run the rollback stopped.
 While it stands open, the earlier release reads its agent as the agent of a running step of the issue, so each request of that agent on the issue, and each that names no issue, waits up to 5 seconds for the agent's stream before it applies (`RunsAStepOn` and `RunsAStep` in `api/fact_apply.go`).
+
+#### Rolling back the release whose experiment sets how each issue is done
+
+This release lets a variant of an experiment name `plan` (`projects.<KEY>.experiments.<name>.variants[].plan`), and its migration `20261123165139_experiment_assignment_plan.up.sql` adds the column `experiment_assignments.plan`, where each draw records the word of the arm it drew.
+
+**`plan` must come out of `legion.yaml` before the earlier image is pinned.**
+The loader refuses a key it does not know, naming it (`unknown key projects.<KEY>.experiments.<name>.variants.<arm>.plan`), and the earlier release's loader knows no `plan` of a variant, so that daemon refuses to start while one arm names it.
+Take the key out of every arm that names it, or the experiment out of the file, and `legion config check` on the earlier image reads the file clean.
+
+The column needs no statement.
+An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.
+What the rollback costs: an issue drawn into an arm whose `plan` is `default` before the rollback has its group read by no code while the earlier release runs, so the plan its owner gives is taken and run.
+Rolling forward does not undo that: such an issue's row still reads `default`, so a run that started on its owner's plan while the earlier release ran goes on with that plan, since its first step does not run again, and from then on each later version of the plan and each `stop_task` on the issue is answered `409 PLAN_NOT_TAKEN`, so its owner can neither change nor stop the plan it gave.
+That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
+Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
 #### Rolling back the release that lets the owning architect's status stand
 
@@ -2983,7 +2998,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 #### Rolling back the release whose testing move follows Dispatch's check states
 
-This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 221, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
+This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 225, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
 A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
 At the head that record names, a check with no state, or with no result while its CI run still goes, holds the move whatever the other checks read; then every check passing moves the issue on to the task's next step, `reviewing` in the default steps.
 Otherwise it goes back to the step the tester's completion names in `return_to`, or, with none named, to the first implementation step before the tester.
@@ -3016,20 +3031,24 @@ What the drop costs is the step a tester's completion named while it still waits
 Then run the way back of `20261121074614_phase_verdict_gone`.
 That migration keeps `phases.verdict`, which every earlier release reads and writes by name, and gives it the default `''`.
 This release writes nothing to the column, so a daemon of the earlier release, during the roll or after a rollback, reads each phase row this release wrote as one with no verdict and writes its own; a later release drops the column, once no running build reads it.
-Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial` and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
+Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
+update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
 delete from schema_version where version = 20261121074614;
 commit;
 SQL
 ```
 
 Each tester's row then reads as a completion with no verdict, which moves no issue in the earlier release, and none carries the verdict of an earlier completion that release took: a tester whose issue is still in `testing` completes again under that release.
-The queued notices need nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
+The tester's `phase-finished` notice of the testing move in this release carries what its `reason` names as fields: `head`, the tested head; `waits_for` and `waiting` for a wait; `failing` for a move back.
+The earlier release decodes a notice strictly and has none of these fields, so a queued notice that kept one would retry for ever there; no notice of the earlier release carries any of them, and the notice keeps its `reason`, which names the same head and checks.
+A daemon of the earlier release that runs beside this one during the roll retries such a notice until this release's daemon sends it.
+The `verdict` key needs nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
 Then run the way back in the header of `20261121065041_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
 
 ```sh
@@ -3508,7 +3527,7 @@ it refuses a controller notice of a kind it does not know (`record.DecodeOutboxP
 After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
 a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run that is the daemon's next move for it: none queued in the last ten minutes, or only one that has already run against the claim and left it failed or retired.
 The `drop table` and the last `delete` go together.
-The earlier release reads no such table, and the delete takes that migration's version row, so the store reports the highest row neither block deletes: 20261114031356 on a store #3711's release migrated, 20261116165926 on one that cybermonklabs/legion#4228's release migrated, 20261117200337, dispatch://INFRA-4109's `20261117200337_update_ask_marks_at_delivery`, on one that cybermonklabs/legion#4337's release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4220's among them, 20261119003157 on one that #4464's release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them, and 20261120055717, dispatch://INFRA-4729's `20261120055717_dispatch_issue_value_sequences`, on one that #4598's release or a later one migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose own 20261120042902, 20261120012547 and 20261119203047 stand below it.
+The earlier release reads no such table, and the delete takes that migration's version row, so the store reports the highest row neither block deletes: 20261114031356 on a store #3711's release migrated, 20261116165926 on one that cybermonklabs/legion#4228's release migrated, 20261117200337, dispatch://INFRA-4109's `20261117200337_update_ask_marks_at_delivery`, on one that cybermonklabs/legion#4337's release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4220's among them, 20261119003157 on one that #4464's release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them, 20261120055717, dispatch://INFRA-4729's `20261120055717_dispatch_issue_value_sequences`, on one that #4598's release or a later one before cybermonklabs/legion#4930 migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose own 20261120042902, 20261120012547 and 20261119203047 stand below it, 20261123165139, `20261123165139_experiment_assignment_plan`, on one that #4930's release or a later one before cybermonklabs/legion#5278 migrated, and 20261123212127, dispatch://INFRA-5463's `20261123212127_claim_start_failure_after_ready`, on one that #5278's release or a later one migrated, since neither of those two has a way back that deletes its row.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
 The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
@@ -3522,11 +3541,13 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4940's 20261121065041_check_states and 20261121074614_phase_verdict_gone, cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, and 20261123134347_phase_return_to are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
-That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, and 20261120055717 on one that #4598's release or a later one migrated, #4581's, #4573's and #3995's among them: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
-`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the way back of 20261121074614_phase_verdict_gone, which runs first, and the two blocks, the store records every migration this tree embeds but the six those three delete (`leftStanding`, against the six versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261123134347.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan and cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463) are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, and 20261123212127 on one that #5278's release or a later one migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the way back of 20261121074614_phase_verdict_gone, which runs first, and the two blocks, the store records every migration this tree embeds but the six those three delete (`leftStanding`, against the six versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261123212127.
 The test runs no way back but those three.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
+A store that #5278's release migrated reports 20261123212127 after them: `20261123212127_claim_start_failure_after_ready.up.sql` carries no way back, since an earlier release reads the start failures it emptied as none recorded.
+20261121065041_check_states, 20261121074614_phase_verdict_gone and 20261123134347_phase_return_to, of the release whose testing move follows Dispatch's check states, are such migrations too, and none stands above 20261123212127.
 A rollback of a store that the release with `20261123134347_phase_return_to` migrated runs the way back in that migration's header before that of 20261121074614_phase_verdict_gone, the newest first, as [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states) gives them, which deletes that version's row too.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
@@ -3540,7 +3561,9 @@ The eleven statements, after that block where it runs, leave the store at the ea
 20261116165926, cybermonklabs/legion#4228's role-holders publication, on a store that release migrated;
 20261117200337, dispatch://INFRA-4109's update ask mark (cybermonklabs/legion#4337), on a store that release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4328's, cybermonklabs/legion#4299's, cybermonklabs/legion#4400's, cybermonklabs/legion#4220's and cybermonklabs/legion#4488's among them: no way back deletes its row, the ways back of #4328's 20261116234034, #4299's 20261117112334 and #4400's 20261117064152 each delete only that migration's own, #4220's 20261116144907 has no way back, and #4488's way back deletes outbox rows alone;
 20261119003157, cybermonklabs/legion#4464's conflict reads and merge forward, on a store that release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them: #4464's way back deletes outbox rows and clears two columns and deletes no version row, and #4115's three statements delete and rewrite outbox rows alone;
-and 20261120055717, cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues (dispatch://INFRA-4729), on a store that release or a later one migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose 20261120042902, 20261120012547 and design news, 20261119203047, stand below it: #4598's way back writes `dispatch_issue_refills` alone, #4581's deletes outbox rows, drops one column and deletes no version row but its own, 20261120042902, which stands below this one, #4573's statement rewrites outbox rows alone, and #3995's four statements delete no version row either.
+20261120055717, cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues (dispatch://INFRA-4729), on a store that release or a later one before cybermonklabs/legion#4930 migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose 20261120042902, 20261120012547 and design news, 20261119203047, stand below it: #4598's way back writes `dispatch_issue_refills` alone, #4581's deletes outbox rows, drops one column and deletes no version row but its own, 20261120042902, which stands below this one, #4573's statement rewrites outbox rows alone, and #3995's four statements delete no version row either;
+20261123165139, cybermonklabs/legion#4930's plan of an experiment's draw, on a store that release or a later one before cybermonklabs/legion#5278 migrated: no way back deletes its row;
+and 20261123212127, cybermonklabs/legion#5278's clear of the start failure of a claim whose agent is up (dispatch://INFRA-5463), on a store that release or a later one migrated: no way back deletes its row either.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3614,6 +3637,8 @@ The migrations recorded above this one are these.
 20261121074614_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261123134347_phase_return_to adds `phases.return_to` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which drops the column and deletes its version row for the roll-forward.
+20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
+20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -3624,7 +3649,7 @@ Running `Migrate` again then applied that one migration a second time, reporting
 
 **Each issue's experiment assignments in the state (daemon API contract 141).**
 A release at contract 141 carries, on every issue of `GET /legion/v1/state`, `assignments`:
-one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
+one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue (contract 220 adds `plan`, the group an experiment's arm set at the draw, where the arm names one), in the order the project's file declares the experiments:
 first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
 then the experiments `settings.projects.<KEY>.experiments` names, in its order;
 then any experiment the file no longer names, in the order of their names.
@@ -4874,7 +4899,7 @@ The 3 s are `roleNamespaceDrain` and a second more, which the launcher passes th
 A session process that shows the sign before it leaves, as an agent that the kernel stopped does while it is a zombie its shim has not reaped, is named as any process is.
 Where a session process of its role, that process itself among them, has left by the time the pass that would name it looks for those processes, it is set aside instead, and its kill ends on the `killed unnamed` line, unless a pass names another process in its place within the rule's one limit, as above.
 
-The classifier cannot tell the agent from the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, so it counts them all as session processes.
+The classifier counts every direct child of the shim as a session process, by its place in the tree: the agent, and the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, alike.
 Where one of those ends by itself, the watch names no process of its role for the rest of that wait either.
 That costs kills left unnamed, and a wrong name only within the rule's one limit ("What the sign does not show", below).
 
@@ -7031,7 +7056,7 @@ In each role it protects:
 
 - the role's shim, the oldest direct child of that `role-init` that is the launcher's own executable run as `worker-shim`;
 
-- every direct child of the shim: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer, the jj of the working copy's adoption and the CodeGraph warm-up;
+- every direct child of the shim but the CodeGraph warm-up: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and the jj of the working copy's adoption;
 
 - Oh My Pi's helpers, each reached from the agent through a chain of helpers:
   a process that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes, and whose parent is the agent or another such helper.
@@ -7039,7 +7064,10 @@ In each role it protects:
 
 - for a role that runs Claude Code, `claude`, the child of `legion claude-bridge`, and Claude Code's MCP server, the child of `claude` whose first argument ends with `/claude-envoy/dist/envoy-channel.js`.
 
-Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, a shell that `kubectl exec` started with what it runs, and the CodeGraph warm-up with all it starts.
+The shim starts the warm-up during its agent's session load, and its end ends no session: the next start runs it again or finds the index its last build left.
+The classifier tells it from the agent by its command, the image's `codegraph` script under its shell, or the script's bundled `node` on `codegraph.js` once the script has run `exec` (`codegraphWarmUp`, `packages/daemon/internal/launcher/memoryguard.go`).
+It still counts the warm-up, like every direct child of the shim, as a session process.
 A process is a role's when that role's `role-init` is its ancestor by the parent chain, and otherwise when it shares that `role-init`'s PID namespace; any other process is no role's, `role=none` in a line.
 The ancestor comes first because a process can make a PID namespace of its own inside a role, as a sandboxed Chromium does.
 
@@ -7373,6 +7401,43 @@ A suspend and resume of the controller's claim (`legion claims suspend`, then `l
   Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
   The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
   When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
+
+### One session load at a time in an issue pod
+
+An issue pod's roles share one memory limit, and an Oh My Pi process that resumes a long session peaks at about 3.6 to 4.3 GiB for some tens of seconds while it loads, then falls to about 1.2 to 1.5 GiB.
+Two such loads at once can pass an 8 GiB pod's limit, where the memory guard can stop nothing, since every byte is in agents' own processes ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the kernel stops the whole pod.
+So the daemon starts the roles of one issue pod one at a time (`PodStarts`, `internal/supervise/podstart.go`):
+a role's process starts only when no other role of that pod is loading its session and no role ahead of it waits.
+
+- **Waiting** runs from the moment the daemon asks for a role's start into the pod until its process starts, its launch fails, or its claim is suspended or retired.
+  The wait sits in the daemon's own start path, before the runtime is called, and not in the pod's launch turn, which a suspension and a release take too and which never waits for a load.
+  A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
+  A launch that replaces a running process, as a relaunch after a stall or onto a new plugin does, stops that process before it parks, so the old process neither runs nor holds memory while the other role loads.
+  A suspension, a release, a close or a retirement of a waiting role, or a pause's stop of it, ends its wait at once, and its process is never started.
+  A waiting start that the gate lets through while the project is paused starts no process either: the pause holds its launch and stops the role for the pause, owed a launch at the resume, as it holds every launch asked during a pause, and the next role's start goes on.
+
+- **Loading** runs from the role's process start until 30 seconds after the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
+  The registration alone is too early: the plugin registers inside Oh My Pi's `session_start`, and in two resumes read every half second in an issue pod, of a 4.7 MB and a 75 MB transcript, the process's memory went on rising after it and peaked 6.7 and 16.4 seconds later.
+  The daemon keeps the 30 seconds itself.
+
+- **The bound** is two minutes from the start of the load of the role waited for, and it holds only until that role's agent registers:
+  a load whose agent has not registered by then lets the next role start all the same, and that start's line says so;
+  a load whose agent has registered ends 30 seconds after the registration, however late it came, since a load that registers late is the one whose peak is late.
+
+- **The order:**
+  the first start to reach a pod that holds nothing starts at once, whatever its role and whatever raised it;
+  the starts that wait behind a load go with the earliest whose start a request raised (a task, a message, an operator's start) first, then the others in the order their starts were asked for;
+  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
+
+The rule holds under `runtime: kubernetes` for every role of an issue pod, whatever starts it: a fresh session, a resume, an operator's start, a start the wake pacing exempts, and with or without a wake pace.
+The controller's own pod is not an issue pod and never waits.
+
+Each process start into an issue pod logs `supervise: started a role's process in its issue pod` with its claim, `pod` and `generation`;
+a start that waited also names `waitedFor`, `waited` and `waitEndedBy`
+(`load end`, `failed launch`, `process end`, `suspension`, `retirement` or `bound`).
+Each load's end logs `supervise: a role's session load in its issue pod ended` with its claim, `pod`, `generation`, `loaded` (from the process start) and `endedBy`
+(`registration`, the same end the next start names `load end`, or `process end`, `suspension` or `retirement`);
+a load whose agent registered also carries `registered`, the time from the process start to the registration, and a load the bound released carries `releasedByBound=true`.
 
 ### The disk dies with its pod
 
@@ -8880,6 +8945,7 @@ Four prerequisites and caveats the configuration cannot check for you:
   under Kubernetes a 0600 file of the role's own generation directory, which the launcher writes from the start command ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
   It is in no argv and no pod spec, but every agent of the deployment reads it, and an agent can repeat what it reads.
   Provider keys and tokens belong in the providers Secret only.
+  The daemon reads it at boot and again before every launch, so an edit reaches the next launch with no restart, when the daemon reads the file from a volume its pod mounts whole: the kubelet updates a ConfigMap mounted as a directory in place, and never a file mounted by `subPath`, which the daemon would go on reading as it was at the pod's start.
 
 - **The daemon host still needs the tmux runtime's toolchain.**
   Until the daemon itself runs in the cluster (LEGION-25), `runtime: kubernetes` changes where the *agents* run, not what the daemon boots with:
@@ -9111,7 +9177,7 @@ each issue's pod (every role of it alike) and the image probe's.
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with no `memory` block gets, `on` gives every new tree one, and `random` draws a fair coin (`crypto/rand`) for each new tree.
   `config_files` are the overlays a memory-group tree's roles name, absolute paths in the operator's mounts as `role_config_files`' are, and at least one is required while the mode is not `off`.
   `instructions` is optional, and is one markdown file on the daemon's own disk rather than in a mount:
-  the daemon reads it at boot, refuses a file it cannot read or that holds nothing, and puts its text into each memory-group role's system prompt itself, so no pod reads it.
+  the daemon reads it at boot, refuses a file it cannot read or that holds nothing, reads it again before every launch, so an edit reaches the next launch with no restart where the file is in a directory mount rather than a `subPath` one (the top-level `instructions` above says why), and puts its text into each memory-group role's system prompt itself, so no pod reads it.
 
   ```yaml
   # memory.yml: kubectl -n legion create configmap legion-operator-memory --from-file=memory.yml
@@ -9179,7 +9245,7 @@ each issue's pod (every role of it alike) and the image probe's.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
-  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own disk.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, `instructions`, one markdown file on the daemon's own disk, and `plan`, how the issues drawn into it are done (below).
   Neither file key is required:
   the arm that names no file at all is the control the others are measured against.
 
@@ -9205,6 +9271,13 @@ each issue's pod (every role of it alike) and the image probe's.
 
   (beside the block's other volumes and mounts).
 
+- **An arm's `plan`: how the issues drawn into it are done.**
+  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps` and take no plan from their owner.
+  Once the daemon records an issue drawn into `default`, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at most one experiment of a project sets it;
+  the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, a word other than those two, and `owner-alone`, the owner doing the whole issue itself in one step, which this release does not carry out.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life, whatever the file says later.
+
 - **Which arm each model call ran in.**
   A launch in an arm of a declared experiment carries `legion.arms` in `OTEL_RESOURCE_ATTRIBUTES`, after `legion.issue` and `legion.role`: one `<experiment>:<variant>` for each arm whose every overlay it runs with, comma-joined in the order the project's file declares the experiments (`legion.arms=memory:memory,plan-length:long` once decoded).
   A launch that keeps a pod built before an arm's overlays were mounted names that arm nowhere: it starts with only the overlays that pod holds, some of the arm's or none.
@@ -9216,7 +9289,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **The draw is the unit's, and is made once.**
   A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.
   An issue experiment is drawn when the daemon first records the issue, root or child, and is recorded against that issue's own key.
-  Each answer is one row of `experiment_assignments` carrying the arm, the mode in force at the draw and the instant, written once and never updated.
+  Each answer is one row of `experiment_assignments` carrying the arm, the arm's `plan` where it names one, the mode in force at the draw and the instant, written once and never updated.
   A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its finished root hands over as a tree of its own is settled at the hand-over with the answers of the tree it leaves:
   for each experiment of unit `tree` that tree held a row for, that row's arm, mode and instant verbatim, marked carried, and no arm at all for each experiment that tree held no tree row for and the child holds no row of its own for, which is an answer and is never drawn for later.
   A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
@@ -9228,7 +9301,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **What a role of a drawn unit is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into whose experiment reaches its role (`roles`), in the order the project's file declares the experiments, which outrank both.
   Its system prompt, the file its one `--append-system-prompt` names, ends with each such arm's `instructions`, in that same order, after the deployment's own.
-  The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
+  The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file; it reads each file into that copy again before every launch, so an edit reaches the next launch with no restart and replaces no pod, where the file is in a directory mount rather than a `subPath` one.
   The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
   An arm's overlays take part in everything `role_config_files` takes part in:
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files`), the image probe's per-role value, the pod drift, and what a kept pod's role is told.
@@ -9259,6 +9332,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Where an arm shows.**
   Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 141, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  From daemon API contract 220 an answer of an experiment that sets how its issues are done also carries `plan`, the group its arm set at the draw, which the issue runs on whatever the file says later; a caller below 220 is served the answers without it.
   `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
   `legion config reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
@@ -9600,14 +9674,17 @@ Its run asks for `requested_token_type=urn:envoy:params:oauth:token-type:airlock
 The grant holds the scope `results` and the project scope `results`, names that person and that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as `ci`.
 Each broker pod mints its own results token for a grant when the airlock proxy first carries one of the grant's writes there (`Provider.MintResultToken`, `packages/envoy/internal/cipher/oauth/result_grant.go`): the token carries the grant's claims, ends with the grant, and is bound to a DPoP key that the pod makes at start, holds in memory alone and logs by its thumbprint (`broker: the airlock's DPoP key`).
 Only the airlock proxy holds the token: it puts it into each write to Dispatch's host that carries the grant's placeholder as its one `Authorization` header, signs a proof of the pod's key for Dispatch's public origin, and sends the write without the command's forwarding headers (`resultTransport`, `packages/envoy/internal/cipher/proxy/dpop.go`).
-A stored secret under a `dpop` entry is never released.
-Every broker that reads `BROKER_PROFILES_FILE`, with result entries or not, runs one start check of the entry `DISPATCH_RESULTS_TOKEN`, the proxy block of the profile of that name (`config.AirlockResultRules`), since every broker with an airlock port serves every result grant of its database and mints that grant's token: the entry is of kind `dpop`, has a non-empty allow list, is carried in `Authorization` alone, and binds one exact host and no `*.` name, which is the host `BROKER_AIRLOCK_PRIVATE_UPSTREAM` names (the run's token and a proof of the pod's key go to every host the entry binds, and the private destination is the one setting that names where Dispatch is); no other entry binds that host, and no other entry is of kind `dpop`.
-Result entries need the entry; the broker refuses to start otherwise, naming the setting and the fault.
+A stored secret under a proxy block of kind `dpop` is never released.
+The result grant serves `DISPATCH_RESULTS_TOKEN`, never the policy, so with no stored secret of that name each broker pod logs one ERROR `agent secret policy refused` line for `profile:DISPATCH_RESULTS_TOKEN` (`profile-source-missing`) at its first policy load, counts it as `refused=1` in its `broker: profiles applied` line, and exports one `broker_unservable_secrets` series for it; these are expected.
+Every broker that reads `BROKER_PROFILES_FILE`, with result entries or not, runs one start check of the profile `DISPATCH_RESULTS_TOKEN` (`config.AirlockResultRules`), since every broker with an airlock port serves every result grant of its database and mints that grant's token: the profile's proxy block is of kind `dpop`, has a non-empty allow list, is carried in `Authorization` alone, and binds one exact host and no `*.` name, which is the host `BROKER_AIRLOCK_PRIVATE_UPSTREAM` names (the run's token and a proof of the pod's key go to every host the block binds, and the private destination is the one setting that names where Dispatch is); no other proxy block binds that host, and no other proxy block is of kind `dpop`.
+Result entries need the profile; the broker refuses to start otherwise, naming the setting and the fault.
+`envoy-broker profiles check <file> --private-upstream <host>=<url>` runs the same check on a profiles file, with the value the broker's `BROKER_AIRLOCK_PRIVATE_UPSTREAM` has.
+Each result grant records the results entry it was made under (`result_grants.entry_digest`, the SHA-256 of the profile's fingerprint and of the private destination's scheme and host), and a pod whose entry is another answers the grant's writes `407 GRANT_NOT_LIVE` before it mints a token, so pods of the old entry and of the new refuse each other's grants during a roll that changes either, until those grants end.
 With `BROKER_AIRLOCK_PRIVATE_UPSTREAM` (one `<host>=<url>` entry, such as `dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766`), the proxy sends the allowed writes to that host to the URL's address inside the cluster in place of the host's own address; each write keeps the host as its `Host` header, and its proof still names the host's public origin.
-The proxy dials the URL's host only when every address it resolves to is one the proxy refuses to every other request (private, `100.64.0.0/10` or inside `BROKER_AIRLOCK_CLUSTER_RANGES`) and none is loopback, link-local, unspecified, multicast or a cloud metadata server's IPv6 address (`fd20:ce::254`, `fd00:ec2::254`; `netaddr.DestinationRefusal`); a tunnel or a plain-HTTP request to those addresses stays refused.
+The proxy dials the URL's host only when every address it resolves to is one the proxy refuses to every other request (private, `100.64.0.0/10` or inside `BROKER_AIRLOCK_CLUSTER_RANGES`) and none is loopback, link-local, unspecified, multicast, the IPv4 broadcast address or a cloud metadata server's IPv6 address (`fd20:ce::254`, `fd00:ec2::254`; `netaddr.DestinationRefusal`); a tunnel or a plain-HTTP request to those addresses stays refused.
 When the proxy refuses the destination or the destination does not answer, the command is told the rule that refused (`ADDRESS_REFUSED`, or `UPSTREAM_UNREACHABLE` for a destination that did not answer) and never the destination's in-cluster name or address, since a CI step's log is public; the broker's own log line names both.
 An informational answer (`1xx`) a bound host's service sends, the destination's among them, reaches the command without `Airlock-Forwarded` and `Airlock-Code`, as a final answer reaches it with `Airlock-Forwarded: true` and no `Airlock-Code`.
-The broker refuses to start with the setting unless it is one entry with a lower-case host and an `http` or `https` URL with no user, no query, no fragment, no path but `/` and no port outside 1 to 65535, whose host is no address the dial always refuses (loopback, link-local, unspecified, multicast, a metadata server's) and not `localhost` or a name under `.localhost`, unless `BROKER_AIRLOCK_TEST_DIAL_ALLOW` names that host and port; `BROKER_PROFILES_FILE` is set; and the entry `DISPATCH_RESULTS_TOKEN` binds the host as the check above says.
+The broker refuses to start with the setting unless it is one entry with a lower-case host and an `http` or `https` URL with no user, no query, no fragment, no path but `/` and no port outside 1 to 65535, whose host is no address the dial refuses (one the proxy would tunnel to, such as a public address outside `BROKER_AIRLOCK_CLUSTER_RANGES`, or loopback, link-local, unspecified, multicast, the IPv4 broadcast address or a metadata server's; `proxy.PrivateUpstreamRefusal`) and not `localhost` or a name under `.localhost`, with or without a trailing dot, unless `BROKER_AIRLOCK_TEST_DIAL_ALLOW` names that host and port; `BROKER_PROFILES_FILE` is set; and the proxy block of the profile `DISPATCH_RESULTS_TOKEN` binds the host as the check above says.
 No refusal quotes the URL's user, path, query or fragment.
 The person is the entry's configuration and ran no test, so Dispatch writes that person on no result and in no answer: a result names its run as the recorder.
 The run's token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns match is refused.

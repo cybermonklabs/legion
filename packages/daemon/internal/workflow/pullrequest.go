@@ -506,7 +506,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, moveWhy{})
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

@@ -363,6 +363,9 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  - '.github/scripts/pg-connection-ceiling.sh'
+  - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+  - 'packages/envoy/internal/dispatch/testlimits/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -394,7 +397,6 @@ daemon_go_tests:
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
-  - 'scripts/e2e/tester-ci-words.txt'
   - 'packages/pi-legion/package.json'
   - 'packages/pi-envoy/package.json'
   - 'deploy/kubernetes/daemon/controller.yaml.example'
@@ -439,6 +441,7 @@ daemon_go_tests:
   - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
   - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+  - '!packages/daemon/internal/daemon/plan_experiment_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
   - '!packages/daemon/internal/daemon/review_range_live_test.go'
@@ -542,6 +545,7 @@ plugin_pack:
   - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
   - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+  - '!packages/daemon/internal/daemon/plan_experiment_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
   - '!packages/daemon/internal/daemon/review_range_live_test.go'
@@ -1049,13 +1053,6 @@ priorities_seed_check_test: &priorities_seed_check_test
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/priorities-seed-check.test.sh'
   - 'scripts/priorities-seed-check.sh'
-architecture_check_test: &architecture_check_test
-  - *ci_router
-  - *ci_filters_data
-  - '.github/workflows/ci-job-test.yaml'
-  - '.github/scripts/test-lib.sh'
-  - '.github/actions/architecture-check/check.test.sh'
-  - '.github/actions/architecture-check/check.sh'
 # why: .github/ci-notes/ci.md#red_at_base_test-a-harness-of-the-job-outside-githubscripts
 red_at_base_test: &red_at_base_test
   - *ci_router
@@ -1064,6 +1061,13 @@ red_at_base_test: &red_at_base_test
   - 'scripts/red-at-base.test.sh'
   - 'scripts/red-at-base.sh'
   - 'scripts/red-at-base/**'
+architecture_check_test: &architecture_check_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/actions/architecture-check/check.test.sh'
+  - '.github/actions/architecture-check/check.sh'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1107,16 +1111,14 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - 'packages/envoy/scripts/backend-count.sh'
   - '.github/scripts/ci_job_reads.py'
 
-# why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
+# why: .github/ci-notes/ci.md#test-the-test-job-the-script-harnesses-and-the-bun-suites-of-scripts
 test:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-test.yaml'
   - *bun_install
-  - *biome
   # why: .github/ci-notes/ci.md#test-the-workspace-of-the-one-go-command-left-here---the-listener
   - *go_workspace
-  - *claude_envoy_build
   - *listener_command
   - 'packages/envoy/natsversion/cmd/natsfloor/*'
   # why: .github/ci-notes/ci.md#test-both-keyed-write-harnesses-read-the-route-answers
@@ -1168,13 +1170,11 @@ test:
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
-  - *architecture_check_test
   - *red_at_base_test
+  - *architecture_check_test
   - *check_ci_filters_test
   - *check_ts_filters_test
   - *go_test_step_expansion_test
-  # why: .github/ci-notes/ci.md#test-each-harness-steps-own-gate-named-here-so-the-job-runs
-  - *guide_layout_files
   - 'scripts/third-party-notices.test.ts'
   - 'packages/dispatch/web/src/fonts/inter/**'
   - 'scripts/third-party-notices.ts'
@@ -1183,6 +1183,9 @@ test:
   - 'scripts/priorities-seed.ts'
   - 'scripts/priorities-seed.test.ts'
   - 'scripts/e2e/**'
+  - 'packages/contracts/src/**'
+  - 'packages/envoy-client/src/**'
+  - 'packages/cipher-client/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/daemon/internal/daemon/controller.go'
   - 'packages/daemon/internal/controller/liveness.go'
@@ -1193,16 +1196,11 @@ test:
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
   - 'packages/envoy-client/test/fake-dispatch.ts'
   - 'scripts/dispatch/**'
-  - 'scripts/github-apps/**'
-  - 'scripts/sessions/**'
   - 'scripts/approval-eval/**'
   - 'scripts/search-measure/**'
   - 'packages/envoy/scripts/fixtures/pg-url.json'
   - 'skills/approval-review/references/never-decide.md'
   - '.github/actions/install-changie/**'
-  - '.github/changelog-packages'
-  - 'packages/*/.changie.yaml'
-  - 'packages/*/.changes/unreleased/**'
   - 'packages/test-fixtures/src/**'
   - 'packages/envoy-client/test/route-answers.ts'
   - 'packages/envoy-client/test/keyed-layer.ts'
@@ -1218,7 +1216,32 @@ test:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
-# why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-test-job-ci-job-testyamls
+# why: .github/ci-notes/ci.md#tooling_checks-the-tooling-checks-job-the-claude-code-plugin-build-the-changelog
+tooling_checks:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - *bun_install
+  - *biome
+  - *claude_envoy_build
+  # why: .github/ci-notes/ci.md#tooling_checks-the-guides-layout-steps-own-gate-named-here-so-the-job-runs
+  - *guide_layout_files
+  - 'scripts/dispatch/**'
+  - 'scripts/github-apps/**'
+  - 'scripts/sessions/**'
+  - 'scripts/approval-eval/**'
+  - 'scripts/e2e/lib/**'
+  - 'packages/test-fixtures/src/**'
+  - 'packages/envoy-client/test/fake-dispatch.ts'
+  - 'packages/envoy-client/test/keyed-layer.ts'
+  - 'packages/envoy-client/test/route-answers.ts'
+  - '.github/actions/install-changie/**'
+  - '.github/ci-tools.yaml'
+  - '.github/scripts/ci-tools.sh'
+  - '.github/changelog-packages'
+  - 'packages/*/.changie.yaml'
+  - 'packages/*/.changes/unreleased/**'
+# why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-tooling-checks-job-ci-job-testyamls
 guide_layout:
   - *ci_router
   - *ci_filters_data
@@ -1542,6 +1565,28 @@ pi_legion:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/**/*_test.go'
   # END generated
+pi_legion_build:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-pi-legion.yaml'
+  - *bun_install
+  - 'packages/pi-legion/**'
+  - 'packages/pi-envoy/**'
+  - 'packages/pi-shared/src/**'
+  - 'packages/pi-shared/test/**'
+  - 'packages/envoy-client/src/**'
+  - 'packages/envoy-client/test/subscribe-answer.ts'
+  - 'packages/envoy-client/test/keyed-layer.ts'
+  - 'packages/cipher-client/**'
+  - 'packages/contracts/src/**'
+  - 'packages/test-fixtures/src/**'
+  - 'packages/dispatch/e2e/**'
+  - 'packages/dispatch/web/src/api/types.ts'
+  - 'packages/dispatch/web/src/api/paths.ts'
+  - 'skills/**'
+  - 'scripts/pi-plugin-prepack.sh'
+  - 'scripts/third-party-notices.ts'
+  - 'scripts/e2e/lib/**'
 # why: .github/ci-notes/ci.md#dispatch_ui-the-dashboards-and-the-proof-editors-fast-checks-dispatch-ui
 dispatch_ui:
   - *ci_router
@@ -1609,6 +1654,7 @@ dispatch_ui:
   # why: .github/ci-notes/ci.md#dispatch_ui-the-one-markdown-fixture-table-read-through-websrc__tests__pmdoc-fixturests
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
+  - 'packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/scripts/fixtures/pg-url.json'
@@ -1622,70 +1668,20 @@ dispatch_ui:
   - 'packages/cipher-client/**'
   - 'packages/envoy-client/test/**'
 # why: .github/ci-notes/ci.md#dispatch_browser-the-browser-suite-dispatch-browser-which-githubworkflowsdispatch-browseryaml
-dispatch_browser:
-  - *ci_router
-  - *ci_filters_data
+dispatch_browser_suite: &dispatch_browser_suite
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
-  # why: .github/ci-notes/ci.md#dispatch_browser-dispatch_uis-set-which-the-spa-and-the-e2e-helpers-load
-  # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
-  # tsc programs and filter dispatch_two_builds_go's bundles load. An edit by hand is refused by that check, which writes these.
-  - 'packages/contracts/src/actor-label.ts'
-  - 'packages/contracts/src/agent-stream.ts'
-  - 'packages/contracts/src/block-schema.generated.ts'
-  - 'packages/contracts/src/check-results-fields.ts'
-  - 'packages/contracts/src/check-results-words.ts'
-  - 'packages/contracts/src/claim-holds.ts'
-  - 'packages/contracts/src/dispatch-api-asks.ts'
-  - 'packages/contracts/src/dispatch-api-comments.ts'
-  - 'packages/contracts/src/dispatch-api-core.ts'
-  - 'packages/contracts/src/dispatch-api-delivery.ts'
-  - 'packages/contracts/src/dispatch-api-documents.ts'
-  - 'packages/contracts/src/dispatch-api-events.ts'
-  - 'packages/contracts/src/dispatch-api-graph.ts'
-  - 'packages/contracts/src/dispatch-api-inbox.ts'
-  - 'packages/contracts/src/dispatch-api-issues.ts'
-  - 'packages/contracts/src/dispatch-api-limits.ts'
-  - 'packages/contracts/src/dispatch-api-live.ts'
-  - 'packages/contracts/src/dispatch-api-messages.ts'
-  - 'packages/contracts/src/dispatch-api-refs.ts'
-  - 'packages/contracts/src/dispatch-api-requests.ts'
-  - 'packages/contracts/src/dispatch-api-search.ts'
-  - 'packages/contracts/src/dispatch-api-sessions.ts'
-  - 'packages/contracts/src/dispatch-api-targeted.ts'
-  - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
-  - 'packages/contracts/src/dispatch-api.ts'
-  - 'packages/contracts/src/dispatch-block-ref.ts'
-  - 'packages/contracts/src/dispatch-href.ts'
-  - 'packages/contracts/src/dispatch-snippet.ts'
-  - 'packages/contracts/src/dispatch-text-references.ts'
-  - 'packages/contracts/src/dispatch-text-rules.ts'
-  - 'packages/contracts/src/dispatch-tools.ts'
-  - 'packages/contracts/src/envelope.ts'
-  - 'packages/contracts/src/envoy-session.ts'
-  - 'packages/contracts/src/go-blank.ts'
-  - 'packages/contracts/src/going.ts'
-  - 'packages/contracts/src/held-secrets.ts'
-  - 'packages/contracts/src/index.ts'
-  - 'packages/contracts/src/legion-roles.ts'
-  - 'packages/contracts/src/log-text.ts'
-  - 'packages/contracts/src/related-forms.ts'
-  - 'packages/contracts/src/repo.ts'
-  - 'packages/contracts/src/sha256.ts'
-  - 'packages/contracts/src/slack.ts'
-  - 'packages/contracts/src/subject-project.ts'
-  - 'packages/contracts/src/subject.ts'
-  - 'packages/contracts/src/tool-schema.ts'
-  - 'packages/contracts/src/trailing-slash.ts'
-  # END listed
   - *go_workspace
   - *dispatch_server
   - 'scripts/e2e/lib/held-port.py'
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
+  # The routes a visual row's page may read, and the route table's GET routes it resolves each
+  # read to (e2e/visual-guard.ts reads both at module load).
+  - 'packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json'
+  - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'scripts/third-party-notices.ts'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-workflow-that-holds-every-browser-step-which-this-job
   - '.github/workflows/dispatch-browser.yaml'
@@ -1762,11 +1758,172 @@ dispatch_browser:
   - 'packages/envoy/internal/cipher/logmask/*'
   - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/internal/dispatch/specgraph/*'
+dispatch_browser:
+  - *ci_router
+  - *ci_filters_data
+  - *dispatch_browser_suite
+  # why: .github/ci-notes/ci.md#dispatch_browser-dispatch_uis-set-which-the-spa-and-the-e2e-helpers-load
+  # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
+  # tsc programs and filter dispatch_two_builds_go's bundles load. An edit by hand is refused by that check, which writes these.
+  - 'packages/contracts/src/actor-label.ts'
+  - 'packages/contracts/src/agent-stream.ts'
+  - 'packages/contracts/src/block-schema.generated.ts'
+  - 'packages/contracts/src/check-results-fields.ts'
+  - 'packages/contracts/src/check-results-words.ts'
+  - 'packages/contracts/src/claim-holds.ts'
+  - 'packages/contracts/src/dispatch-api-asks.ts'
+  - 'packages/contracts/src/dispatch-api-comments.ts'
+  - 'packages/contracts/src/dispatch-api-core.ts'
+  - 'packages/contracts/src/dispatch-api-delivery.ts'
+  - 'packages/contracts/src/dispatch-api-documents.ts'
+  - 'packages/contracts/src/dispatch-api-events.ts'
+  - 'packages/contracts/src/dispatch-api-graph.ts'
+  - 'packages/contracts/src/dispatch-api-inbox.ts'
+  - 'packages/contracts/src/dispatch-api-issues.ts'
+  - 'packages/contracts/src/dispatch-api-limits.ts'
+  - 'packages/contracts/src/dispatch-api-live.ts'
+  - 'packages/contracts/src/dispatch-api-messages.ts'
+  - 'packages/contracts/src/dispatch-api-refs.ts'
+  - 'packages/contracts/src/dispatch-api-requests.ts'
+  - 'packages/contracts/src/dispatch-api-search.ts'
+  - 'packages/contracts/src/dispatch-api-sessions.ts'
+  - 'packages/contracts/src/dispatch-api-targeted.ts'
+  - 'packages/contracts/src/dispatch-api-user.ts'
+  - 'packages/contracts/src/dispatch-api.generated.ts'
+  - 'packages/contracts/src/dispatch-api.ts'
+  - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-href.ts'
+  - 'packages/contracts/src/dispatch-snippet.ts'
+  - 'packages/contracts/src/dispatch-text-references.ts'
+  - 'packages/contracts/src/dispatch-text-rules.ts'
+  - 'packages/contracts/src/dispatch-tools.ts'
+  - 'packages/contracts/src/envelope.ts'
+  - 'packages/contracts/src/envoy-session.ts'
+  - 'packages/contracts/src/go-blank.ts'
+  - 'packages/contracts/src/going.ts'
+  - 'packages/contracts/src/held-secrets.ts'
+  - 'packages/contracts/src/index.ts'
+  - 'packages/contracts/src/legion-roles.ts'
+  - 'packages/contracts/src/log-text.ts'
+  - 'packages/contracts/src/related-forms.ts'
+  - 'packages/contracts/src/repo.ts'
+  - 'packages/contracts/src/sha256.ts'
+  - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
+  - 'packages/contracts/src/subject.ts'
+  - 'packages/contracts/src/tool-schema.ts'
+  - 'packages/contracts/src/trailing-slash.ts'
+  # END listed
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!**/*_test.go'
   # END generated
+# why: .github/ci-notes/ci.md#dispatch_browser_pr-the-browser-suites-pull-request-lane-reads-what-its-full-lane-reads
+dispatch_browser_pr:
+  - *ci_router
+  - *ci_filters_data
+  - *dispatch_browser_suite
+  # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+  # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!**/*_test.go'
+  # END generated
+  # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
+  # tsc programs and filter dispatch_two_builds_go's bundles load. An edit by hand is refused by that check, which writes these.
+  - 'packages/contracts/src/actor-label.ts'
+  - 'packages/contracts/src/agent-stream.ts'
+  - 'packages/contracts/src/block-schema.generated.ts'
+  - 'packages/contracts/src/check-results-fields.ts'
+  - 'packages/contracts/src/check-results-words.ts'
+  - 'packages/contracts/src/claim-holds.ts'
+  - 'packages/contracts/src/dispatch-api-asks.ts'
+  - 'packages/contracts/src/dispatch-api-comments.ts'
+  - 'packages/contracts/src/dispatch-api-core.ts'
+  - 'packages/contracts/src/dispatch-api-delivery.ts'
+  - 'packages/contracts/src/dispatch-api-documents.ts'
+  - 'packages/contracts/src/dispatch-api-events.ts'
+  - 'packages/contracts/src/dispatch-api-graph.ts'
+  - 'packages/contracts/src/dispatch-api-inbox.ts'
+  - 'packages/contracts/src/dispatch-api-issues.ts'
+  - 'packages/contracts/src/dispatch-api-limits.ts'
+  - 'packages/contracts/src/dispatch-api-live.ts'
+  - 'packages/contracts/src/dispatch-api-messages.ts'
+  - 'packages/contracts/src/dispatch-api-refs.ts'
+  - 'packages/contracts/src/dispatch-api-requests.ts'
+  - 'packages/contracts/src/dispatch-api-search.ts'
+  - 'packages/contracts/src/dispatch-api-sessions.ts'
+  - 'packages/contracts/src/dispatch-api-targeted.ts'
+  - 'packages/contracts/src/dispatch-api-user.ts'
+  - 'packages/contracts/src/dispatch-api.generated.ts'
+  - 'packages/contracts/src/dispatch-api.ts'
+  - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-href.ts'
+  - 'packages/contracts/src/dispatch-snippet.ts'
+  - 'packages/contracts/src/dispatch-text-references.ts'
+  - 'packages/contracts/src/dispatch-text-rules.ts'
+  - 'packages/contracts/src/dispatch-tools.ts'
+  - 'packages/contracts/src/envelope.ts'
+  - 'packages/contracts/src/envoy-session.ts'
+  - 'packages/contracts/src/go-blank.ts'
+  - 'packages/contracts/src/going.ts'
+  - 'packages/contracts/src/held-secrets.ts'
+  - 'packages/contracts/src/index.ts'
+  - 'packages/contracts/src/legion-roles.ts'
+  - 'packages/contracts/src/log-text.ts'
+  - 'packages/contracts/src/related-forms.ts'
+  - 'packages/contracts/src/repo.ts'
+  - 'packages/contracts/src/sha256.ts'
+  - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
+  - 'packages/contracts/src/subject.ts'
+  - 'packages/contracts/src/tool-schema.ts'
+  - 'packages/contracts/src/trailing-slash.ts'
+  # END listed
 envoy_infra_go:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-envoy-infra-go.yaml'
+  - *go_workspace
+  - 'packages/envoy/infra/**'
+  - *dispatch_server
+  - 'packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json'
+  - *listener_command
+  - 'packages/envoy/internal/cmdtest/*'
+  - 'packages/envoy/internal/contracts/**'
+  - 'packages/envoy/internal/dispatch/githubapp/**'
+  - 'packages/envoy/internal/fixtureenv/*'
+  - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/logtest/*'
+  - 'packages/envoy/internal/oidc/oidctest/*'
+  - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testpg/*'
+  - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/internal/weborigin/*'
+  - '.github/actions/pull-test-images/**'
+  - '.github/scripts/go-tagged-tests.sh'
+  # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+  # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/**/*_test.go'
+  - '!packages/envoy/going/**/*_test.go'
+  - '!packages/envoy/infra/aws/**/*_test.go'
+  - '!packages/envoy/infra/cmd/**/*_test.go'
+  - '!packages/envoy/infra/host/**/*_test.go'
+  - '!packages/envoy/infra/internal/**/*_test.go'
+  - '!packages/envoy/infra/provider/**/*_test.go'
+  - '!packages/envoy/infra/render/**/*_test.go'
+  - '!packages/envoy/infra/routes/**/*_test.go'
+  - '!packages/envoy/internal/**/*_test.go'
+  - '!packages/envoy/listenerwire/**/*_test.go'
+  - '!packages/envoy/listenfd/**/*_test.go'
+  - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/roleholder/**/*_test.go'
+  # END generated
+envoy_infra_build:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-infra-go.yaml'
@@ -1854,11 +2011,11 @@ envoy_go:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/infra/**/*_test.go'
   # END generated
-# why: .github/ci-notes/ci.md#envoy_go_checks-envoy-gos-fast-half-envoy-go-checks-the-format-generated-contract-and-pmdoc
-envoy_go_checks:
+# why: .github/ci-notes/ci.md#envoy_go_build-envoys-go-build-vet-format-generated-code-and-migration-checks-envoy-go-build
+envoy_go_build:
   - *ci_router
   - *ci_filters_data
-  - '.github/workflows/ci-job-envoy-go-checks.yaml'
+  - '.github/workflows/ci-job-envoy-go-build.yaml'
   - *bun_install
   - *go_workspace
   - 'packages/envoy/**'
@@ -1879,13 +2036,21 @@ envoy_go_checks:
   - '.github/actions/spec-check/action.yml'
   - '.github/actions/spec-check/check.sh'
   - '.github/scripts/build-envoy-command.sh'
-  # why: .github/ci-notes/ci.md#envoy_go_checks-those-two-steps-judge-the-files-at-the-actions-default-paths
+  # why: .github/ci-notes/ci.md#envoy_go_build-those-two-steps-judge-the-files-at-the-actions-default-paths
   - '.dispatch/**'
   - '.github/scripts/edited-migrations-base.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/daemon/**/*_test.go'
   # END generated
+# why: .github/ci-notes/ci.md#envoy_go_checks-envoys-script-tests-envoy-go-checks-and-the-scripts-they-drive
+envoy_go_checks:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-envoy-go-checks.yaml'
+  - '.github/actions/install-helm/**'
+  - *bun_install
+  - 'packages/envoy/**'
 # why: .github/ci-notes/ci.md#text_checks-the-text-checks-of-the-three-go-modules-the-dispatch
 text_checks:
   - *ci_router
@@ -2721,6 +2886,7 @@ tool_fallback:
   - '.github/actions/install-uv/**'
   - '.github/actions/install-pulumi/**'
   - '.github/actions/install-docker-plugin/**'
+  - '.github/actions/install-helm/**'
   - '.bun-version'
   - 'packages/daemon/docker/worker.Dockerfile'
   - *ci_router

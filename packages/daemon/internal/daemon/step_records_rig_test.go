@@ -758,6 +758,9 @@ type stepClaimant struct {
 	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
 	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
 	inTurn bool
+	// taken is the message of each prompt take returned, oldest first: every task the walk took for
+	// this claim (tasksTaken).
+	taken []string
 }
 
 // worker is role's claimant on the walk's issue (workerOf).
@@ -921,14 +924,25 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
 // model answering first: the claim's machine reads a connection's frames in order, so once the
 // turn's start shows the claim working, the answer before it has been read too. It answers the
-// prompt that carried the task, which a walk reads where it holds what the claim was told.
+// prompt that carried the task, which a walk reads where it holds what the claim was told, and
+// keeps its message among the tasks taken (tasksTaken).
 func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
+	c.mu.Lock()
+	c.taken = append(c.taken, prompt.Message)
+	c.mu.Unlock()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
 	return prompt
+}
+
+// tasksTaken is the message of every task take returned for this claim, oldest first.
+func (c *stepClaimant) tasksTaken() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.taken)
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged

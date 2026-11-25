@@ -812,6 +812,58 @@ func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
 	}
 }
 
+// The shim starts the CodeGraph warm-up during its agent's session load, beside the agent, and its
+// end ends no session, so the guard may end it and all it starts. In INFRA-2709's pod after its
+// relaunch at 23:42Z on 2026-11-22 one Oh My Pi held 1.34 GB and the warm-up 523 MB, and the pod
+// was killed twice with the guard able to end nothing: the classifier then spared every direct
+// child of the shim. The warm-up is told by its command, the image's `codegraph` script under its
+// shell before the script's exec and its bundled node on codegraph.js after it, never by an
+// agent's argument that only names the CodeGraph plugin. It stays the role's, and a session
+// process like every direct child of the shim, for the naming of a kill.
+func TestMemoryGuardMayEndTheCodeGraphWarmUp(t *testing.T) {
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	const omp = "/opt/omp/bin/omp"
+	const node = "/opt/codegraph/node"
+	const script = "/opt/codegraph/bin/codegraph"
+	const (
+		testerInit, testerShim, testerAgent, testerHelper, warmUp, warmUpGit = 730, 731, 732, 733, 734, 735
+		reviewerInit, reviewerShim, reviewerAgent, warmUpShell               = 740, 741, 742, 743
+	)
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: testerInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "tester"}, ns: testerNamespace},
+		guardProcess{pid: testerShim, ppid: testerInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: testerNamespace},
+		guardProcess{pid: testerAgent, ppid: testerShim, exe: omp, args: []string{omp, "--extension", "/opt/omp-plugins/node_modules/@bopstack/pi-codegraph"}, ns: testerNamespace, anon: 3 * guardGiB},
+		guardProcess{pid: testerHelper, ppid: testerAgent, exe: omp, args: []string{omp, "__omp_worker_daemon_broker"}, ns: testerNamespace},
+		guardProcess{pid: warmUp, ppid: testerShim, exe: node, args: []string{node, "--liftoff-only", "--disable-warning=ExperimentalWarning", "/opt/codegraph/lib/dist/bin/codegraph.js", "index"}, ns: testerNamespace, anon: 523 * guardMiB},
+		guardProcess{pid: warmUpGit, ppid: warmUp, exe: "/usr/bin/git", args: []string{"git", "ls-files"}, ns: testerNamespace},
+		guardProcess{pid: reviewerInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "reviewer"}, ns: reviewerNamespace},
+		guardProcess{pid: reviewerShim, ppid: reviewerInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: reviewerNamespace},
+		guardProcess{pid: reviewerAgent, ppid: reviewerShim, exe: omp, args: []string{omp, "--mode", "rpc"}, ns: reviewerNamespace, anon: guardGiB},
+		guardProcess{pid: warmUpShell, ppid: reviewerShim, exe: "/usr/bin/dash", args: []string{"/bin/sh", script, "init", "-i"}, ns: reviewerNamespace},
+	)
+	managers := []*manager{{role: "tester", child: &child{pid: testerInit}}, {role: "reviewer", child: &child{pid: reviewerInit}}}
+	classes := newPodClassifier(t.TempDir(), managers, &pidGuard{}).classify(scanTable(t, pod))
+	for _, tc := range []struct {
+		pid  int
+		want memoryguard.Class
+		what string
+	}{
+		{testerAgent, memoryguard.Class{Role: "tester", Protected: true, Session: true}, "Oh My Pi, whose arguments name the CodeGraph plugin"},
+		{testerHelper, memoryguard.Class{Role: "tester", Protected: true}, "an Oh My Pi helper"},
+		{warmUp, memoryguard.Class{Role: "tester", Session: true}, "the warm-up, node on codegraph.js"},
+		{warmUpGit, memoryguard.Class{Role: "tester"}, "a process the warm-up started"},
+		{reviewerAgent, memoryguard.Class{Role: "reviewer", Protected: true, Session: true}, "the reviewer's Oh My Pi"},
+		{warmUpShell, memoryguard.Class{Role: "reviewer", Session: true}, "the warm-up, the codegraph script under its shell"},
+	} {
+		if got := classes[tc.pid]; got != tc.want {
+			t.Errorf("%s (pid %d): %+v, want %+v", tc.what, tc.pid, got, tc.want)
+		}
+	}
+}
+
 // Each process is the role's whose role-init is its ancestor, then the role's whose role-init
 // shares its PID namespace, and no role's otherwise: a process in a PID namespace of its own under
 // a role-init is that role's by its ancestor, and one reparented out of the role-init's subtree is

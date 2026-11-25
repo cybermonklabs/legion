@@ -182,9 +182,17 @@ function withoutOverlays(chain: string): string {
     .join(":");
 }
 
+/**
+ * The user config chain `jj config path --user` prints, joined with `:`, or undefined when jj
+ * gives no answer within `timeoutMs`, fails or prints nothing. jj runs in a group of its own,
+ * which is killed once its leader exits or the wait ends, so no helper it forked outlives the
+ * call. `giveUp` ends the wait at once, as `timeoutMs` passing does: a test drives it once the
+ * fact it waits for holds, where a bound of its own would race the wrapper it runs.
+ */
 export async function userConfigChain(
   timeoutMs = JJ_CONFIG_PATH_TIMEOUT_MS,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  giveUp?: AbortSignal
 ): Promise<string | undefined> {
   try {
     const child = Bun.spawn(["jj", "config", "path", "--user"], {
@@ -212,17 +220,23 @@ export async function userConfigChain(
       new Response(child.stderr).text(),
     ]);
     const stdout = await new Promise<string | undefined>((resolve) => {
-      const timer = setTimeout(() => {
+      const stop = () => {
+        clearTimeout(timer);
         killGroup();
         resolve(undefined);
-      }, timeoutMs);
+      };
+      const timer = setTimeout(stop, timeoutMs);
+      if (giveUp?.aborted) stop();
+      giveUp?.addEventListener("abort", stop, { once: true });
       void completed.then(
         ([code, output]) => {
           clearTimeout(timer);
+          giveUp?.removeEventListener("abort", stop);
           resolve(code === 0 ? output : undefined);
         },
         () => {
           clearTimeout(timer);
+          giveUp?.removeEventListener("abort", stop);
           resolve(undefined);
         }
       );

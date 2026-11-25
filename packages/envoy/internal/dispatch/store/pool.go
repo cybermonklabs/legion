@@ -451,9 +451,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // it opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
 // slots still admit four app pods holding connections at once (460 of 497) and still refuse five
 // (575), exactly as they did at 112 (448 and 560), so neither moves a replica boundary. The CI
-// verify loop and the check states settler are one more each: 117, four pods 468 of 497 and five
-// refused at 585, so they move none either. A deployment on another tier reads SHOW
-// max_connections against its own roll, as sharedPoolSize's note says.
+// verify loop is one more: 116, four pods 464 of 497 and five refused at 580, so it moves none
+// either. The check states settler is one more again: 117, four pods 468 of 497 and five refused
+// at 585, so it moves none either. A deployment on another tier reads SHOW max_connections
+// against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop

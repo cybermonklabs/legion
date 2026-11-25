@@ -321,8 +321,10 @@ const legionClaimView = z.object({
    * running agent — a launcher that refused the start, a failed init container, a pod that never
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
-   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates
-   * both: a cause older than it is one the agent running now has already survived. */
+   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates the
+   * death: a death older than it is one the agent running now has already survived. The daemon
+   * drops the start failure when the agent says it is ready, so one it records is from after
+   * `lastReady`; a claim an older daemon left waiting can still carry one from before. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),
@@ -720,12 +722,16 @@ const legionWakeWaiting = z.object({
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
  * daemon adds must be read rather than refuse the whole state. The daemon always writes
  * `experiment`, `variant` and `mode`; the reader takes them as optional, since no plugin code reads
- * them (LEGION_ANSWER_READS). */
+ * them (LEGION_ANSWER_READS). `plan` (contract 220) is the group the arm set at the draw, `owner`
+ * or `default`, which the issue runs on for its whole life whatever the settings say later; it is
+ * absent where the arm named none, and a string rather than an enum, so a group a later daemon
+ * carries out is read rather than refuse the state. */
 const legionAssignment = z.object({
   experiment: nonEmptyString.optional(),
   variant: z.string().optional(),
   mode: z.string().optional(),
   drawnAt: timestamp.optional(),
+  plan: nonEmptyString.optional(),
 });
 
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
@@ -1770,8 +1776,9 @@ export const LegionOperatorClaimResponse = z.object({
   lastTurnEnd: timestamp.optional(),
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
-   * two causes answer separate questions and never overwrite each other, and `lastReady` dates
-   * them. `legion claims list --json` serves them. */
+   * two causes answer separate questions and never overwrite each other. `lastReady` dates the
+   * death; the daemon drops the start failure when the agent says it is ready.
+   * `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),
@@ -1868,8 +1875,10 @@ const legionAnsweredPause = z.object({
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
- * plan the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason
- * in order; the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The
+ * plan whose content the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds
+ * every reason in order; the body's `reasons` lists them by task, which `LegionErrorResponse`
+ * strips. A plan of an issue whose experiment's group takes no plan from its owner is answered
+ * `409 PLAN_NOT_TAKEN` (contract 220), a sentence naming the group and no reasons. The
  * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
  * the answer to its agent whole. */
 export const LegionPlanRegisterResponse = z.object({
@@ -2005,7 +2014,7 @@ export function legionPlanRatingLoneField(
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
  * `verdict` is `pass`, `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`) and the
- * empty string for every phase completion: from contract 221 a phase completion that names one is
+ * empty string for every phase completion: from contract 225 a phase completion that names one is
  * refused (`VERDICT_NOT_TAKEN`), since Dispatch's check states at the tested head decide the
  * testing phase. It stays a string on the wire, as the Go field is. `wakeAt` is the check report's
  * alone (contract 54): when the checking agent asks to be woken for its next look, which a pending
@@ -2180,9 +2189,11 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * one that is done (`TASK_DONE`), a stop in a tree that lingers after it left the workflow
  * (`TREE_LINGERING`), a stop of an issue outside the architect's tree or one that left it
  * (`ISSUE_OUTSIDE_TREE`), a stop of a run of the issue that ended before the daemon applied it
- * (`TASK_STALE_GENERATION`), and a stop of a root that waits on a person before its first step
+ * (`TASK_STALE_GENERATION`), a stop of a root that waits on a person before its first step
  * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
- * person has answered. Each refusal writes nothing. */
+ * person has answered, and every task of an issue whose experiment's group runs the project's
+ * default steps, since Legion takes no plan from its owner (`PLAN_NOT_TAKEN`). Each refusal
+ * writes nothing. */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

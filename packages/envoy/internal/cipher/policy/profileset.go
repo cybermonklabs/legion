@@ -112,7 +112,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	profile := &p.list[i]
 	source, ok := set.Secrets[profile.Source]
 	if !ok {
-		return Secret{}, p.sourceMissing(profile.Source, set, prefix)
+		return Secret{}, p.sourceMissing(profile, set, prefix)
 	}
 	refuse := func(reason, detail string) (Secret, Refusal) {
 		return Secret{}, Refusal{Reason: reason, Owner: source.Owner, Detail: detail}
@@ -182,11 +182,14 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	return secret, Refusal{}
 }
 
-// sourceMissing is the refusal of a profile whose source set does not serve, with the source's own
+// sourceMissing is the refusal of profile, whose source set does not serve, with the source's own
 // state as its detail: the reason the policy refuses it and that refusal's own detail where it has
 // one (a value refusal's decoder words, such as the shapeVersion it read), its wait for a value,
-// its being a profile, which is never the source of another, or its absence.
-func (p Profiles) sourceMissing(source string, set *Set, prefix string) Refusal {
+// its being another profile's name, since a profile is never the source of another, or its absence
+// from the store. For a profile whose source is its own name, Lookup of that name finds the profile
+// itself, so its source is absent, not another profile.
+func (p Profiles) sourceMissing(profile *Profile, set *Set, prefix string) Refusal {
+	source := profile.Source
 	id := prefix + slugOf(source)
 	missing := func(owner, why string) Refusal {
 		return Refusal{Reason: ReasonProfileSourceMissing, Owner: owner, Detail: "source " + source + ": " + why}
@@ -201,7 +204,7 @@ func (p Profiles) sourceMissing(source string, set *Set, prefix string) Refusal 
 	if pending, waits := set.Pending[id]; waits {
 		return missing(pending.Owner, ReasonPendingValue)
 	}
-	if p.Lookup(source) != nil {
+	if source != profile.Name && p.Lookup(source) != nil {
 		return missing("", "a profile, which is never the source of another")
 	}
 	return missing("", ReasonAbsent)

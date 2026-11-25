@@ -602,6 +602,15 @@ type ciJobRig struct {
 
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
+	return newCIJobRigSettling(t, 0)
+}
+
+// newCIJobRigSettling is newCIJobRig whose document service settles after settle (0 is the test
+// server's default). A test that reads who holds the issue's owner lock passes a delay that cannot
+// fire before it finishes, since the settlement of the uploaded Verification document holds that
+// lock for a moment of its own.
+func newCIJobRigSettling(t *testing.T, settle time.Duration) *ciJobRig {
+	t.Helper()
 	github := &ciJobGitHub{
 		checkRuns:            map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
 		listings:             newCheckRunsFake(),
@@ -624,6 +633,7 @@ func newCIJobRig(t *testing.T) *ciJobRig {
 		brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{
 			app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 			githubAPIBase: github.serve(t),
+			settle:        settle,
 		}),
 		github: github,
 		caller: newBrokerCaller(t),
@@ -632,16 +642,15 @@ func newCIJobRig(t *testing.T) *ciJobRig {
 	return rig
 }
 
-// issueOf creates project, sets repository as its default repository, as PUT
-// /api/v1/projects/{key}/default-repository does, and files one issue of it whose Verification
-// document is ciJobVerification. It answers the issue and that document.
+// issueOf creates project, makes repository its default repository, and files one issue of it
+// whose Verification document is ciJobVerification. It answers the issue and that document.
 func (r *ciJobRig) issueOf(t *testing.T, project, repository string) (string, string) {
 	t.Helper()
 	if created := r.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
 		t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
 	}
-	if set := r.asPerson(t, http.MethodPut, "/api/v1/projects/"+project+"/default-repository", map[string]any{"repo": repository}); set.Code != http.StatusOK {
-		t.Fatalf("set %s's default repository to %s: status=%d body=%s", project, repository, set.Code, set.Body.String())
+	if defaulted := r.asPerson(t, http.MethodPut, "/api/v1/projects/"+project+"/default-repository", map[string]any{"repo": repository}); defaulted.Code != http.StatusOK {
+		t.Fatalf("make %s the default repository of %s: status=%d body=%s", repository, project, defaulted.Code, defaulted.Body.String())
 	}
 	filed := r.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "Proved by a CI job", "spec": "A spec\n"})
 	if filed.Code != http.StatusCreated {

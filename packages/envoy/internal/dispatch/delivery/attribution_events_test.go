@@ -82,7 +82,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	reached := seedHeadIssue(t, ctx, pool, 71)
 	broker := events.NewBroker()
 
-	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, &left, sourceTitleBody)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
 	// Reaching an issue from nobody is a move too: one event, on the issue it reached.
@@ -95,7 +95,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 			first[0].Actor, first[0].Notify, first[0].Seq)
 	}
 
-	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, &reached, sourceBranch)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, &reached, sourceBranch)); err != nil {
 		t.Fatalf("move the head to %s: %v", reached, err)
 	}
 	moved := attributionEvents(t, ctx, pool, left)
@@ -122,7 +122,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	}
 
 	// A pull request that reaches nobody records that too, on the issue it left alone.
-	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, nil, sourceNone)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, nil, sourceNone)); err != nil {
 		t.Fatalf("uncredit the head: %v", err)
 	}
 	uncredited := attributionEvents(t, ctx, pool, reached)
@@ -133,15 +133,16 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 
 // TestAnAttributionThatStaysIsRecordedNowhere: a write that stores the issue the row already
 // holds appends nothing, and neither does a write that carries no issue at all. The reconcile
-// re-reads every open row at every pass of one process, each starting at most five minutes after
-// the one before it ended, and as PullRequestHeadStaleAfter says with several, so an event per
-// write would bury each issue's timeline under the pass's own heartbeat.
+// re-reads every open row at every pass of one process that tries its whole batch while no more
+// than a batch is due, each starting at most five minutes after the one before it ended, and as
+// PullRequestHeadStaleAfter says with several, so an event per write would bury each issue's
+// timeline under the pass's own heartbeat.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 72)
 	broker := events.NewBroker()
 
-	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(172, &issue, sourceBranch)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(172, &issue, sourceBranch)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", issue, err)
 	}
 	for _, again := range []PullRequestHead{
@@ -149,14 +150,14 @@ func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 		// The same issue from another source is no move either: the row credits the same issue.
 		attributedHeadRow(172, &issue, sourceTitleBody),
 	} {
-		if err := UpsertPullRequestHead(ctx, pool, broker, again); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, again); err != nil {
 			t.Fatalf("write the head again: %v", err)
 		}
 	}
 	// An incomplete write cannot replace the row's issue, so it cannot move one either.
 	incomplete := attributedHeadRow(172, nil, sourceNone)
 	incomplete.AttributionComplete = false
-	if err := UpsertPullRequestHead(ctx, pool, broker, incomplete); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, broker, incomplete); err != nil {
 		t.Fatalf("write the head from an incomplete read: %v", err)
 	}
 	if found := attributionEvents(t, ctx, pool, issue); len(found) != 1 {
@@ -183,7 +184,7 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 	}
 	// #173 was judged by the rule before this one, #174 by this one.
 	for _, number := range []int{173, 174} {
-		if err := UpsertPullRequestHead(ctx, pool, nil, merged(number)); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, merged(number)); err != nil {
 			t.Fatalf("store the merged head #%d: %v", number, err)
 		}
 	}
@@ -223,14 +224,14 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 	for number := 300; number < 300+RejudgedHeadsPerPass+10; number++ {
 		head := attributedHeadRow(number, &issue, sourceTitleBody)
 		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
-		if err := UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
 			t.Fatalf("store the merged head #%d: %v", number, err)
 		}
 		stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", number)
 	}
 	open := attributedHeadRow(400, &issue, sourceTitleBody)
 	open.State, open.EventAt, open.CheckedAt = "open", &eventAt, &read
-	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
 		t.Fatalf("store the open head: %v", err)
 	}
 

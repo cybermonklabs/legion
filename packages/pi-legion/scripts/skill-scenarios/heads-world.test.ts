@@ -9,6 +9,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
 
 // Each row runs the two modes against stubs in this process; a loaded machine stretches even that,
@@ -20,7 +21,7 @@ setDefaultTimeout(fileRowLimit());
 restoreEnvironment([
   "DISPATCH_E2E_PORT",
   "FAKE_GITHUB_PORT",
-  "DISPATCH_E2E_NATS_URL",
+  "DISPATCH_E2E_NATS_URLS",
   "PLAYWRIGHT_BASE_URL",
 ]);
 const dirOf = temporaryDirectories("heads-world");
@@ -31,7 +32,7 @@ const published: string[] = [];
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   delete process.env.PLAYWRIGHT_BASE_URL;
   mock.module("nats", () => ({
     connect: async () => ({
@@ -125,6 +126,28 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
     tester: [`implement by ${by("rig-implementer")}`],
     architect: [`test by ${by("rig-tester")}`, `review by ${by("rig-reviewer")}`],
   });
+});
+
+// Catches: a heads world whose seeded `test` record still holds a field the tester's prompt no
+// longer asks for. The reviewer and the architect of these worlds read the record a tester writes,
+// and the scorer's TestHandoff refuses such a body by name.
+test("the test record a heads world seeds holds no implementerProof, failures or failed", async () => {
+  // The hook's ports and NATS, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
+  for (const role of ["reviewer", "architect"]) {
+    const { calls } = await world(role);
+    const bodies = calls
+      .filter((call) => call.path.endsWith("/handoffs/test"))
+      .map((call) => JSON.parse(String(call.body.body)));
+    expect(bodies).toHaveLength(1);
+    for (const body of bodies) {
+      for (const key of ["implementerProof", "failures", "failed"])
+        expect(body).not.toHaveProperty(key);
+      expect(TestHandoff.safeParse(body).success).toBe(true);
+    }
+  }
 });
 
 // Catches: a check k1 that serves no requirement or whose run proves less than R1: the first item 3
@@ -283,7 +306,7 @@ test("heads-events refuses a world it records no results for, and records none",
   // The hook's ports and NATS, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const calls = stubFetch();
   const dir = dirOf("unknown");
   const file = path.join(dir, "fixture.json");
@@ -311,7 +334,7 @@ test("every run and reading of k1 the heads worlds record holds only words the p
   // The ports the hook above sets, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const worlds: [string | undefined, string][] = [
     ...[
       "sibling-fails",

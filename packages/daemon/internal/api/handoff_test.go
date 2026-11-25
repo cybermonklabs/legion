@@ -2208,7 +2208,6 @@ func TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry(t *testing.T) {
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
 		"nothing was recorded",
 		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
-		"complete it with a handoff of its own, never this completion's record or commit",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)

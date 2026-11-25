@@ -66,6 +66,10 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
+	// drainTimer, when set (setDrainTimer), arms the timer that ends a drain in place of
+	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
+	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
+	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -1012,11 +1016,16 @@ func (s *Server) drain() Response {
 	if drain != 0 {
 		bound := s.drainBound()
 		s.Log.Info("draining: refusing new sessions until restart", "bound", bound)
-		time.AfterFunc(bound, func() {
+		end := func() {
 			if s.Registry.EndDrain(drain) {
 				s.Log.Warn(DrainEndedMessage, "bound", bound)
 			}
-		})
+		}
+		if arm := s.drainTimer.Load(); arm != nil {
+			(*arm)(bound, end)
+		} else {
+			time.AfterFunc(bound, end)
+		}
 	}
 	return Response{OK: true, Sessions: infos}
 }
@@ -1785,6 +1794,17 @@ func (s *Server) drainBound() time.Duration {
 		return time.Duration(ns)
 	}
 	return DefaultDrainBound
+}
+
+// setDrainTimer makes arm what starts the timer that ends a drain no restart follows, in place of
+// time.AfterFunc: arm is handed the drain bound and the func that ends the drain, and runs that
+// func when it chooses. Nil puts time.AfterFunc back. Safe to call while the Server runs.
+func (s *Server) setDrainTimer(arm func(bound time.Duration, end func())) {
+	if arm == nil {
+		s.drainTimer.Store(nil)
+		return
+	}
+	s.drainTimer.Store(&arm)
 }
 
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by

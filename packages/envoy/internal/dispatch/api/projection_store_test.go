@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -532,10 +533,12 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
 	// The repository rename pass (store.RewriteRenamedRepositories): it writes a renamed repository's
 	// name or URL into the issues, projects, check, delivery, pull request head, branch commit,
-	// architecture source and CI reconcile tables, and deletes the rows the new name would
-	// collide with in them, none of which is projected.
+	// architecture source and CI reconcile tables, the GitHub issue URLs a pull request row cites
+	// among them, and deletes the rows the new name would collide with in them, none of which is
+	// projected.
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.nameWrite: update table":       {},
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.urlWrite: update table":        {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.citedWrite: update table":      {},
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisions: delete from table": {},
 	// A migration runner's version table, which its caller names: schema_migrations for
 	// Dispatch's store (store.versionTable) and the broker's own for the broker. pgmigrate records
@@ -971,7 +974,7 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 			t.Fatalf("read migration %s: %v", entry.Name(), err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(string(body))) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(string(body))) {
 			if !clause.held {
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
 				continue
@@ -983,18 +986,6 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 		t.Fatal("no migration was read, so nothing was checked")
 	}
 	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
-}
-
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1149,7 +1140,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(body)) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(body)) {
 			if !clause.held {
 				t.Logf("%s: %s: no column it sets is one a tuple projects", name, clause.text)
 				continue

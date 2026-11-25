@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
@@ -75,7 +74,7 @@ func TestTheMoveReadsTheStatesAtTheTestedHead(t *testing.T) {
 			r.complete(tc.tested, 4)
 			assertPhase(t, r.pool, tc.want)
 			if tc.want == phase.Implementing {
-				r.movedBackNaming([]string{"k2: no (fail)", headTwo}, "k1:")
+				r.movedBackFailing(headTwo, failingOf("k2", "no", "fail"))
 			}
 		})
 	}
@@ -123,16 +122,11 @@ func TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove(t *testing.T) {
 			r.complete(tested, events[len(events)-1].Serial)
 			assertPhase(t, r.pool, tc.want)
 			if tc.want == phase.Implementing {
-				r.movedBackNaming([]string{"k2: unknown (pass_and_fail)", tested}, "k1:")
+				r.movedBackFailing(tested, failingOf("k2", "unknown", "pass_and_fail"))
 			}
 		})
 	}
 }
-
-// noHeadReason is what the architect's notice says of a tester's completion whose test record
-// named no head.
-const noHeadReason = "the move waits for a tested head: the tester's test record named none, so no check state can decide it; " +
-	"the tester writes a new test handoff naming under head the commit it tested and completes again"
 
 // A tester's completion whose test record named no head holds the move and reads no state: the
 // head the tester tested is the record's alone, and the pull request's head, where every check
@@ -145,9 +139,9 @@ func TestATestRecordNamingNoHeadHoldsTheMove(t *testing.T) {
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
 	r.complete("", 2)
-	r.waitsSaying(noHeadReason)
+	r.waitsFor("", "tested_head")
 	r.states(headOne, 3, ofSet(passOf("k1", "tester", "implementer"), "k1", "k2"))
-	r.waitsSaying(noHeadReason)
+	r.waitsFor("", "tested_head")
 
 	if result, err := intake.ApplyFact(context.Background(), r.pool, "api", "test-again", intake.HandoffComplete{
 		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "Every check passes.",
@@ -159,23 +153,21 @@ func TestATestRecordNamingNoHeadHoldsTheMove(t *testing.T) {
 }
 
 // Neither the reviewer the pass starts nor the architect told of either move reads a verdict of
-// the tester: the reviewer's task names the tester's record and no verdict, and the architect's
-// phase-finished notice carries the tester's summary and no verdict key. On a fail the notice's
-// reason, and the implementer's task, name the check that does not pass.
+// the tester: the pass starts the reviewer once, its task built from the tester's phase row, which
+// holds none (record.PhaseRow), and the architect's phase-finished notice carries the tester's
+// summary and no verdict key. On a fail the notice carries the check that does not pass.
 func TestTheReviewerAndTheArchitectGetNoTesterVerdict(t *testing.T) {
 	t.Run("a pass", func(t *testing.T) {
 		r := newStatesRig(t, phase.Testing)
 		r.states(headOne, 1, passOf("k1", "tester"))
 		r.complete(headOne, 1)
 		assertPhase(t, r.pool, phase.Reviewing)
-		task := startTask(t, r.pool, claim.RoleReviewer)
-		if want := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + ". Pull request: #42."; !strings.Contains(task, want) ||
-			strings.Contains(strings.ToLower(task), "verdict") {
-			t.Fatalf("the reviewer's task %q, want it to name the tester's record (%q) and no verdict", task, want)
+		if starts := roleStarts(t, r.pool, claim.RoleReviewer); starts != 1 {
+			t.Fatalf("the pass started the reviewer %d times, want once", starts)
 		}
 		notices := r.finished()
-		if len(notices) != 1 || notices[0]["summary"] != "Every check passes." {
-			t.Fatalf("phase-finished notices = %v, want the tester's one with its summary", notices)
+		if len(notices) != 1 || notices[0]["role"] != "tester" || notices[0]["phase"] != "testing" || notices[0]["summary"] != "Every check passes." {
+			t.Fatalf("phase-finished notices = %v, want the tester's one of testing with its summary", notices)
 		}
 		if _, carries := notices[0]["verdict"]; carries {
 			t.Fatalf("the tester's phase-finished notice %v carries a verdict", notices[0])
@@ -185,11 +177,10 @@ func TestTheReviewerAndTheArchitectGetNoTesterVerdict(t *testing.T) {
 		r := newStatesRig(t, phase.Testing)
 		r.states(headOne, 1, passOf("k1", "tester"), stateOf("k2", "no", "fail"))
 		r.complete(headOne, 2)
-		r.movedBackNaming([]string{"k2: no (fail)"}, "k1:", "erdict")
+		r.movedBackFailing(headOne, failingOf("k2", "no", "fail"))
 		notices := r.finished()
-		want := "these checks do not pass at " + headOne + ": k2: no (fail)"
-		if len(notices) != 1 || notices[0]["reason"] != want || notices[0]["summary"] != "Every check passes." {
-			t.Fatalf("phase-finished notices = %v, want the tester's one with its summary and the reason %q", notices, want)
+		if len(notices) != 1 || notices[0]["role"] != "tester" || notices[0]["phase"] != "testing" || notices[0]["summary"] != "Every check passes." {
+			t.Fatalf("phase-finished notices = %v, want the tester's one of testing with its summary", notices)
 		}
 		if _, carries := notices[0]["verdict"]; carries {
 			t.Fatalf("the tester's phase-finished notice %v carries a verdict", notices[0])

@@ -123,12 +123,19 @@ func (p *liveProof) log() *slog.Logger {
 	if path == "" {
 		return quietLogger()
 	}
+	return slog.New(slog.NewTextHandler(evidenceFile(p.t, path), &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// evidenceFile opens path, a file of the run's evidence, to append to, and closes it when the test
+// ends: the daemon's own log, and the log of the Dispatch a driver starts beside it.
+func evidenceFile(t *testing.T, path string) *os.File {
+	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		p.t.Fatalf("open the daemon's log %s: %v", path, err)
+		t.Fatalf("open the evidence file %s: %v", path, err)
 	}
-	p.t.Cleanup(func() { file.Close() })
-	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { file.Close() })
+	return file
 }
 
 // step runs one of the proof's steps between its `== name` and `ok name (<s>s)` lines, as the
@@ -260,6 +267,31 @@ func (p *liveProof) architectNotices(key, kind string) []listenerPublish {
 		}
 	}
 	return got
+}
+
+// testerNotices is every phase-finished notice of the tester that the daemon has published to the
+// role topic of key's architect, each decoded whole as the architect receives it (record.Notice).
+// A payload that is no object, the sentence a CI settlement sends that topic, is passed over.
+func (p *liveProof) testerNotices(key string) []record.Notice {
+	p.t.Helper()
+	architect, err := claim.NewToken(p.project, key, claim.RoleArchitect)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	var notices []record.Notice
+	for _, published := range p.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
+		if !strings.HasPrefix(strings.TrimSpace(published.Payload), "{") {
+			continue
+		}
+		var notice record.Notice
+		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
+			p.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
+		}
+		if notice.Kind == "phase-finished" && notice.Role == claim.RoleTester {
+			notices = append(notices, notice)
+		}
+	}
+	return notices
 }
 
 // waitArchitectNotices polls until the daemon has told key's architect count notices of kind, and

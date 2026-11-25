@@ -408,9 +408,10 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // A later review round is told the commit the review before it read (v-review-range): the
 // reviewer's own deciding review in round 1, which names round 1's entry, recorded the commit it
 // read on the reviewer's row (record.PhaseRow.ReviewedHead), and the start of round 2 names it in
-// its task (namingTheReviewRound), before the sentence of its entry, which ends the task. The
-// first round of a generation has no earlier review, and its task names no commit; nor does a task
-// of any other role.
+// its task (namingTheReviewRound; decidedAtHeadOne and
+// TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview read that it does). The first
+// round of a generation has no earlier review, and its task names no commit; round 2 starts on an
+// entry of its own; and no task of another role names a commit.
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
@@ -425,11 +426,6 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	second := reviewerRow(t, pool)
 	if second.Entry <= first.Entry {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
-	}
-	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Handoff commit: " + headOne + "." + " Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
-	if second.EntryTask != want {
-		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}
 
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
