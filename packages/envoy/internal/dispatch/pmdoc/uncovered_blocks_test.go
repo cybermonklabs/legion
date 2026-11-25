@@ -114,25 +114,18 @@ func TestUncoveredBlocksIsWhatOfARemovalTheGuardDoesNotCover(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var removal Removal
+			var removed []int
 			if test.block != "" {
-				removal, err = valid.BlockRemoval(idOf(test.block), nil)
+				removed, err = valid.BlockRemoval(idOf(test.block), nil)
 			} else {
 				var r Range
 				if r, err = FindQuote(doc, test.find, nil, nil); err != nil {
 					t.Fatal(err)
 				}
-				removal, err = valid.TextblockRemoval(r)
+				removed, err = valid.TextblockRemoval(r)
 			}
 			if err != nil {
 				t.Fatal(err)
-			}
-			if removal.Node == nil {
-				if len(removal.Path) != 0 {
-					t.Fatalf("a removal of nothing has the path %v", removal.Path)
-				}
-			} else if nodeAtPath(doc, removal.Path) != removal.Node {
-				t.Fatalf("the removal's path %v does not lead to its node %#v", removal.Path, removal.Node)
 			}
 			named := make(map[string]struct{}, len(test.named))
 			for _, name := range test.named {
@@ -142,10 +135,19 @@ func TestUncoveredBlocksIsWhatOfARemovalTheGuardDoesNotCover(t *testing.T) {
 			for _, name := range test.uncovered {
 				want = append(want, idOf(name))
 			}
-			got := UncoveredBlocks(doc, removal.Path, named)
+			got := valid.UncoveredBlocks(removed, named)
 			if !slices.Equal(got, want) {
 				t.Fatalf("UncoveredBlocks under %v = %v, want %v (%v)", test.named, got, want, test.uncovered)
 			}
 		})
+	}
+}
+
+// The zero ValidDocument holds no tree, so no path takes anything from it and it leaves nothing
+// uncovered.
+func TestTheZeroValidDocumentLeavesNothingUncovered(t *testing.T) {
+	t.Parallel()
+	if got := (ValidDocument{}).UncoveredBlocks([]int{0}, nil); got != nil {
+		t.Fatalf("the zero ValidDocument's UncoveredBlocks = %v, want nil", got)
 	}
 }
