@@ -452,7 +452,7 @@ beforeEach(() => {
 test("a move sends one PATCH with the node's placement_seq", async () => {
   const patches = answerPatches(moved.indent);
   const { client, writes } = mount();
-  expect(heldNode(client, STATEMENT)?.placement_seq).toBe("<seq:statement-3>");
+  expect<unknown>(heldNode(client, STATEMENT)?.placement_seq).toBe("<seq:statement-3>");
   let outcome: unknown;
   await act(async () => {
     outcome = await writes().move(STATEMENT, "indent");
@@ -496,27 +496,43 @@ test("moves of one node wait for the answer before them and take its placement_s
 test("the next move takes the answer's placement_seq and place", async () => {
   const gate = Promise.withResolvers<void>();
   const patches = answerPatches(moved.indent, { ...moved.outdent, gate: gate.promise });
+  // The re-read once the queue is empty (R7) is held until the case ends, so the fixture's read
+  // from before the moves does not take the place of the answers the case reads.
+  const reread = Promise.withResolvers<void>();
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, async () => {
+      await reread.promise;
+      return Response.json(renamed(fixture.tree.converted.person.body));
+    })
+  );
   const { client, writes } = mount();
-  let both: Promise<unknown[]> | undefined;
-  await act(async () => {
-    both = Promise.all([writes().move(STATEMENT, "indent"), writes().move(STATEMENT, "outdent")]);
-  });
-  await waitFor(() => expect(patches.calls).toHaveLength(2));
-  // The first answer is written into the held read while the second move is out: the node stands
-  // under the second statement, first among its children, with the placement_seq it answered.
-  const standing = heldNode(client, STATEMENT);
-  expect(standing?.parent?.id).toBe(moved.indent.body.parent);
-  expect(standing?.placement_seq).toBe(moved.indent.body.placement_seq);
-  // The second move's body was made from the read with the first applied: it leaves the second
-  // statement, and stands after it (the old parent is a block of the node's own document).
-  expect(patches.calls[1]?.body).toStrictEqual(moved.outdent.request.body);
-  await act(async () => {
-    gate.resolve();
-    await both;
-  });
-  // And the second answer puts the node back where the read had it, with the newest sequence.
-  expect(heldNode(client, STATEMENT)?.parent?.id).toBe("<criterion>");
-  expect(heldNode(client, STATEMENT)?.placement_seq).toBe(moved.outdent.body.placement_seq);
+  try {
+    let both: Promise<unknown[]> | undefined;
+    await act(async () => {
+      both = Promise.all([writes().move(STATEMENT, "indent"), writes().move(STATEMENT, "outdent")]);
+    });
+    await waitFor(() => expect(patches.calls).toHaveLength(2));
+    // The first answer is written into the held read while the second move is out: the node
+    // stands under the second statement, first among its children, with the placement_seq it
+    // answered.
+    const standing = heldNode(client, STATEMENT);
+    expect(standing?.parent?.id).toBe(moved.indent.body.parent);
+    expect<unknown>(standing?.placement_seq).toBe(moved.indent.body.placement_seq);
+    // The second move's body was made from the read with the first applied: it leaves the second
+    // statement, and stands after it (the old parent is a block of the node's own document).
+    expect(patches.calls[1]?.body).toStrictEqual(moved.outdent.request.body);
+    await act(async () => {
+      gate.resolve();
+      await both;
+    });
+    // And the second answer puts the node back where the read had it, with the newest sequence.
+    expect(heldNode(client, STATEMENT)?.parent?.id).toBe("<criterion>");
+    expect<unknown>(heldNode(client, STATEMENT)?.placement_seq).toBe(
+      moved.outdent.body.placement_seq
+    );
+  } finally {
+    reread.resolve();
+  }
 });
 
 test("a refusal empties the node's queue and says how many moves were dropped", async () => {

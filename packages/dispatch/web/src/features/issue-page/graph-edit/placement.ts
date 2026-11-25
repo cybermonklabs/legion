@@ -269,7 +269,7 @@ function rankedChildren(walk: Walk, parent: string): readonly TreeAnswerNode[] {
 }
 
 /** The band of `node` among its parent's children (INFRA-1253 R7). */
-function bandOf(node: TreeAnswerNode): number {
+export function bandOf(node: TreeAnswerNode): number {
   const slug = node.document?.slug;
   if (slug === undefined) return BAND.own;
   if (slug === VERIFICATION_SLUG) return BAND.verification;
