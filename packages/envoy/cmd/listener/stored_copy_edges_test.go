@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // standInReader stands in for the stream's read of a stored message: it answers stored, or, when
@@ -132,11 +133,25 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	if _, err := js.UpdateStream(&config); err != nil {
 		t.Fatalf("cut the stream's duplicate window: %v", err)
 	}
+	// The wait is for a product time, the stream's duplicate window, so its failure says what that
+	// window reads now and how long it has been since the first copy was stored: a repeat still
+	// refused after many times the window is either a window that is not the one this row set, or
+	// a server that has not pruned its duplicate table, and the two read differently here.
 	var fresh heldAnswer
-	waitFor(t, "a repeat to be stored once the stream forgets the id", func() bool {
+	cutAt := time.Now()
+	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
 		fresh = held(t, rig.publishFrom(t, sender, subject, key))
 		return fresh.status == http.StatusOK
-	})
+	}) {
+		window := "unreadable"
+		if latest, infoErr := js.StreamInfo(bus.Stream); infoErr == nil {
+			window = latest.Config.Duplicates.String()
+		} else {
+			window = "unreadable: " + infoErr.Error()
+		}
+		t.Fatalf("a repeat was still refused %s after the duplicate window was cut to %s (the stream now reports %s): the last answer was %d %s, want 200 once the stream forgets the id",
+			time.Since(cutAt).Round(time.Millisecond), config.Duplicates, window, fresh.status, fresh.raw)
+	}
 	if fresh.envelope.EventID == first.envelope.EventID {
 		t.Fatalf("the repeat after the stream forgot the id answered the first copy's event %s, want its own", fresh.envelope.EventID)
 	}
