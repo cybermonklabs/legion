@@ -427,8 +427,8 @@ type fixEndPlan struct {
 	Fixes int    `json:"fixes"`
 }
 
-// recordOf is the record of kind, step and attempt among records, and whether there is one.
-func recordOf(records []fixEndRecord, kind string, step, attempt int) (fixEndRecord, bool) {
+// fixEndRecordOf is the record of kind, step and attempt among records, and whether there is one.
+func fixEndRecordOf(records []fixEndRecord, kind string, step, attempt int) (fixEndRecord, bool) {
 	at := slices.IndexFunc(records, func(r fixEndRecord) bool { return r.Kind == kind && r.Step == step && r.Attempt == attempt })
 	if at < 0 {
 		return fixEndRecord{}, false
@@ -448,7 +448,7 @@ func fixEndCommit(commit *string) string {
 // start and ending at end ("" for not named), and naming check as its fix's check ("" for none).
 func assertRecord(t *testing.T, key string, records []fixEndRecord, step, attempt int, start, end, check string) {
 	t.Helper()
-	got, ok := recordOf(records, "step", step, attempt)
+	got, ok := fixEndRecordOf(records, "step", step, attempt)
 	switch {
 	case !ok:
 		t.Fatalf("%s's steps hold no record of step %d attempt %d: %+v", key, step, attempt, records)

@@ -41,13 +41,13 @@ type fixRigGitHub struct {
 	url string
 
 	mu       sync.Mutex
-	pulls    map[int]*fixRigPull
+	pulls    map[int]*fixRigStandInPull
 	answered []fixRigRequest
 }
 
-// fixRigPull is one pull request of the stand-in: its number, branch and title, whether the rig
+// fixRigStandInPull is one pull request of the stand-in: its number, branch and title, whether the rig
 // has opened it, its head and GitHub's clock of it, and whether and at what commit it merged.
-type fixRigPull struct {
+type fixRigStandInPull struct {
 	number        int
 	branch, title string
 	opened        bool
@@ -78,7 +78,7 @@ func (request fixRigRequest) String() string {
 // newFixRigGitHub starts the stand-in, which holds no pull request until the rig adds one.
 func newFixRigGitHub(t *testing.T) *fixRigGitHub {
 	t.Helper()
-	g := &fixRigGitHub{t: t, pulls: map[int]*fixRigPull{}}
+	g := &fixRigGitHub{t: t, pulls: map[int]*fixRigStandInPull{}}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.serve})
 	return g
 }
@@ -88,7 +88,7 @@ func newFixRigGitHub(t *testing.T) *fixRigGitHub {
 func (g *fixRigGitHub) add(number int, branch, title string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.pulls[number] = &fixRigPull{number: number, branch: branch, title: title}
+	g.pulls[number] = &fixRigStandInPull{number: number, branch: branch, title: title}
 }
 
 // open opens pull request number at head, GitHub's clock of it at updated.
@@ -117,7 +117,7 @@ func (g *fixRigGitHub) merge(number int, mergeSHA string, updated time.Time) {
 }
 
 // pull is pull request number, which the rig must have added. Its caller holds g.mu.
-func (g *fixRigGitHub) pull(number int) *fixRigPull {
+func (g *fixRigGitHub) pull(number int) *fixRigStandInPull {
 	pull, ok := g.pulls[number]
 	if !ok {
 		g.t.Fatalf("the fix rig's GitHub stand-in holds no pull request #%d", number)
@@ -215,7 +215,7 @@ func (g *fixRigGitHub) answer(w http.ResponseWriter, r *http.Request) (int, stri
 
 // answer is the pull request as GitHub's REST API answers it now: open, mergeable and clean at its
 // head, or closed and merged at its merge commit, where GitHub answers `unknown` for good.
-func (p *fixRigPull) answer() map[string]any {
+func (p *fixRigStandInPull) answer() map[string]any {
 	state, mergeState := "open", "clean"
 	if p.merged {
 		state, mergeState = "closed", "unknown"
