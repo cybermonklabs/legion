@@ -2593,7 +2593,7 @@ Roll out the three parts in this order:
    Its intake creates the durable at its first take-over, delivering new messages only, then reads each configured project's daemon whole once, and then applies the events.
    It takes that first read of a project only when no Dispatch process of an earlier release is in the fleet: no `server_processes` row at `legion_state_intake` 0 has a heartbeat in the last 10 minutes.
    An earlier release still reads each daemon once a minute, and a row of that read could land after the first read and after the events applied on it.
-   So while a process of the earlier release runs, and for 10 minutes after its last heartbeat, the intake reads no daemon, and a message of a project with no first read writes nothing and is finished.
+   So while a process of the earlier release runs, and for 10 minutes after its last heartbeat, the intake makes no first read, and applies no message of a project that has none.
    It logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken` at INFO, at most once an hour for each project.
    The first message, write of a Legion setting or take-over after that time makes the first read.
    No timer makes it.
@@ -2608,46 +2608,19 @@ Roll out the three parts in this order:
    On 2026-11-20 the INFRA daemon's whole state was 7,307,929 bytes, and the part of it that the view serves was 665,962 bytes.
    A daemon of an earlier release does not know the `view` parameter, so it answers the whole state.
 
-After the roll, the intake reads a project's daemon whole again in these cases, and logs each read with its reason:
+After the roll, the intake reads a project's daemon whole only where the events cannot carry the state, for the reasons the `ReadReason` constants name (`packages/envoy/internal/dispatch/legion/whole_read.go`), and no recurring timer reads a daemon.
+A project's whole reads start at least a minute apart.
+The Dispatch README holds the whole rule, in [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake): when a read is owed, which message holds it and for how long, how many messages of the durable's window one project can hold meanwhile, and what a `PUT` or a `DELETE` of the project's Legion setting does to the project's cursor.
 
-- **A boot whose schema version moved** (reason `schema`): the boot event's `schemaVersion` is not the `daemon.schemaVersion` the last read found.
-  A migration can change what Dispatch observes and publish no event.
+The intake logs these lines of the rule, each with the `project`:
 
-- **A transaction split over messages that does not arrive whole** (reason `gap`): the intake holds each message with `more: true` in `legion_event_parts` and applies nothing of the transaction until its last message arrives.
-  A gap after the held parts, or a message of another run, makes the read.
-  A good read deletes the parts, since its snapshot holds them, and a read that fails keeps them.
+- `legion intake: whole read`, at INFO, for each whole read the intake records, with the first reason it was owed for as `reason`, every reason it was made for as `reasons` (for example `reasons=gap,boot`), `ok` and, for a failed read, its `error`.
 
-- **A message the database refuses for good** (reason `refused`): a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
-  The intake acknowledges the message unapplied, logs `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN with the project, the sequences and the SQLSTATE, and reads the project whole.
-  Where that read is not due and the message holds it (below), the message goes back to the stream instead, and that delivery logs the hand-back alone; the message's next delivery is refused again.
-  It tries every other database error again in place.
+- `legion intake: a state message goes back to the stream until its project's owed whole read is due`, at INFO, each time the message that holds the owed read goes back to the stream unacknowledged, with the read the message calls for as `reason`, its `delivery` count, its `handBack` count and its `delay`.
 
-- **A message of another store** (reason `store`): the message's `stateId` is not the `daemon.stateId` of the last good read.
-  The intake applies nothing of it, and the read finds again a daemon whose store was replaced.
+- `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed`, at WARN, when a message that went back 10 times is acknowledged with the read still owed.
 
-A project's whole reads start at least a minute apart, whatever their reason, the starting read included, and a good starting read holds back the read after it as every read does.
-A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason.
-The first message that owes the read goes back to the stream unacknowledged until the minute has passed, and its redelivery makes the read.
-For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences, the read the message calls for as `reason`, its `delivery` count and the `delay`, and logs no other line for that delivery.
-The intake acknowledges every later message that joins the owed read.
-A read that fails sends the first message back for another minute, at most 10 times in all.
-Its next delivery is then acknowledged, whatever its read comes to, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
-A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read that no message made is one, and so is a read whose message went back 10 times.
-No recurring timer reads a daemon.
-Where the project's newest whole read began less than a minute before a write of the setting or a take-over, the starting read is not due: where no message holds it, that write or take-over queues the project's starting point once more for the end of the minute, and a message that arrives meanwhile holds the starting read as any owed read.
-A write of the setting or a take-over makes no read of a project whose owed read a message holds, the starting read included, and queues nothing: the holder's redelivery makes the read, and a write of the setting's own URL keeps the count of its hand-backs.
-A `PUT` of the project's Legion setting either leaves the project's cursor as it is or resets it.
-A `PUT` of the URL the setting names already, while a message holds the owed read, leaves the cursor as it is: that message's read is the whole read the `PUT` asks for.
-Every other `PUT` resets the cursor, so the intake reads the setting's daemon whole after the `PUT`, a minute after the project's newest whole read began at the soonest.
-A `PUT` of another URL, and a `DELETE` of the setting, end the hold of a message that holds the owed read: the intake acknowledges that message unapplied at its next delivery.
-A `DELETE` resets the cursor as a `PUT` of another URL does and keeps the start of the project's newest whole read, so a `DELETE` and a `PUT` within a minute make their two whole reads at least a minute apart.
-`resetCursor` and `cursor.reset` in `packages/envoy/internal/dispatch/legion/cursor.go` hold the whole rule, and rows 6.1 to 6.5 of dispatch://INFRA-3931/artifact/read-rule-cases-md give its cases.
-While a message holds the read, the durable's ack floor stays below it, so a take-over of the durable replays every message after it: at most about 11 minutes of messages where the daemon answers each read within seconds.
-The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
-So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, and each project that owes a read holds one message of the durable's window.
-Where a message holds the read, a project that goes quiet is at most a minute behind.
-While a read is owed, the intake applies each message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the read holds their events.
-While no good read has given a project's cursor a store, for example after a write of the setting whose first read failed, the intake applies no message of the project at all, so no message of the daemon the setting named before is applied.
+- `legion intake: the database refuses a state message for good, so it is finished and the project is read whole`, at WARN, with the `sqlstate`, for a message the database refuses for good: a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
 
 The readings of production on 2026-11-18 were these.
 Production Dispatch (commit `4055c4a5`) had no Legion setting, so step 2 covered no project there, and the take-over of step 3 reads no daemon.
@@ -2674,13 +2647,15 @@ The kind check keeps every kind an earlier release writes, `phase_ended`, `confl
 Roll Dispatch back first, and then the daemon.
 A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
 That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`cursor.readFor` in `legion/cursor.go`), and its board shows nothing between those reads.
-A write of that project's own setting reads it at once where the last whole read began a minute or more before, and otherwise at the end of that minute; a take-over or a write of another project's setting reads it only a minute or more after the last read.
+When each of those calls makes its read is the rule of [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake).
 Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
 The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.
 
 **An edit of the daemon's database by SQL publishes no state event.**
 Only the daemon's own writes queue one.
-After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL, and Dispatch reads the daemon's state whole once.
+After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
+A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
+Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as the line's time less its `duration` shows, `PUT` the setting once more.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 

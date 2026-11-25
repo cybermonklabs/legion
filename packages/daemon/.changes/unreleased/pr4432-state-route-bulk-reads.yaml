@@ -1,11 +1,11 @@
 kind: Changed
 body: |-
   The state route reads the phase rows of all the project's issues in one statement
-  (`record.Store.AllPhases`, which reads only the columns the route uses), and the pull requests
-  and the design gates of all issues in one statement each
-  (`PullRequestsOf`, `Gates`). Before, it read these three facts with three statements for each
-  issue, so it no longer makes a statement for each issue. On 2026-11-20 the INFRA daemon held
-  3,273 issues, which was 9,819 statements in one read of the state. The body of the full state
-  does not change.
+  (`record.Store.AllPhases`, which reads only the columns the route uses) and the design gates of
+  all issues in one statement (`Gates`), as it already read their pull requests in one statement
+  (`PullRequestsOf`). Before, it read the phase rows and the design gates with two statements for
+  each issue (`Phases`, `GatesOf`), so it no longer makes a statement for each issue. On 2026-11-20
+  the INFRA daemon held 3,273 issues, which was 6,546 statements in one read of the state. The body
+  of the full state does not change.
 custom:
   Issue: pr4432

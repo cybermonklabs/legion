@@ -1547,8 +1547,10 @@ const legionObservedIssue = z.object({
  * issue the full state lists. The daemon serves the view at the caller's contract with the full
  * state's own rule, so at each contract every member is the member the full state serves there:
  * a caller below the entry's number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
- * A request with any other `view` gets the full state, and the daemon logs a warning for it,
- * because a later version may refuse such a request. */
+ * A request that names no `view` gets the full state, and so does one whose `view` is anything but
+ * one `observed` value, `observed` twice included; the daemon logs a warning for the latter at most
+ * once a minute, whoever asks, because a later version may refuse such a request (`stateViewOf`
+ * and `otherViewWarnings`, `packages/daemon/internal/api/state_route.go`). */
 export const LegionObservedStateResponse = z.object({
   daemon: daemonInfo,
   settings: legionSettings,

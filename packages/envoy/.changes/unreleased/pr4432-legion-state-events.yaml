@@ -3,94 +3,31 @@ body: |-
   Dispatch takes each Legion daemon's state events from the held durable `legion-state-events` on
   `notifications.legion.*.state` and writes its Legion observations from them, so a change is
   recorded when its message is applied, not at the next read. Dispatch no longer reads a daemon's
-  state every minute. It reads a daemon's `GET /legion/v1/state` whole only for a project with no
-  starting point, a boot that does not follow or whose schema version moved, a gap the stream no
-  longer holds, a message of another store than the starting point's, a message the database
-  refuses for good, and a read owed since one failed. The whole reads of one project start at
-  least a minute apart, whatever their reason, the starting read and the read right after a good
-  starting read included, and neither a `PUT` nor a `DELETE` of the setting restarts that minute.
-  A whole read records its start before it calls the daemon, so a read that a stop of the intake
-  cuts short still starts the minute, and the next holder of the durable waits for the rest of it.
-  A message that calls for a read sooner makes none: Dispatch records the read as owed, sends the
-  first such message back to the stream with a delay of the time left in the minute, and makes the
-  read at its redelivery; every later message that calls for the owed read is acknowledged. A read
-  that fails sends that message back until a minute after that read began, at most 10 times in
-  all, and its next delivery is then acknowledged. The project's cursor counts these hand-backs, so
-  a lease take-over does not start the count again, and a take-over or a settings change makes no
-  read of a project whose owed read a message holds, the starting read included: it joins the read
-  that the message's redelivery makes. A read waits 60 s at the
-  most, so one message holds the consumer's ack floor for about 11 minutes at the most, also when
-  the daemon does not answer its reads or a take-over comes meanwhile, and a take-over replays at
-  most that long of messages. A failed read that no message holds, a failed starting read that no
-  message made or one whose message went back 10 times, waits for the project's next message,
-  boot, settings change or take-over. So where a message holds the read, a project that goes quiet
-  is a minute behind at the most; a burst of such messages makes one read a minute and holds one
-  message of the consumer's window, and the messages of other projects are not stopped.
-  A message that goes back to the stream is logged once, as held, and with no other line. A good
-  whole read takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot
-  message of that run that arrives after the read, at or below the read's sequence, makes no second
-  read. It logs each whole read with the daemon run that served it, its first reason as `reason`,
-  and each reason it was owed for as `reasons`. It applies no message of another store, and no message
-  while no good whole read has given the project a store. It does not decode a message whose
-  events do not go from `firstSeq` to `seq` with one event for each sequence. It applies a
-  transaction that the daemon split over several messages only when the last message arrives,
-  and a whole read that fails does not delete the parts that Dispatch holds. It does not apply a
-  message that the database refuses for good (SQLSTATE class 22 or 23), and does not try it again
-  in place. It takes no starting point while a Dispatch process of an earlier build is in the fleet.
-  When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, makes one
-  whole read: at once, or, where the project's last whole read began less than a minute before,
-  when that minute ends, through one deferred call of the `PUT`'s wake. A `PUT` of the same URL
-  while a message holds the project's owed read joins that read, also before the project's
-  starting read was first made, so the count of the message's hand-backs goes on, and its wake
-  defers no call. A `PUT` that names another URL ends that hold instead: Dispatch acknowledges
-  the message at its next delivery and does not apply it. A `DELETE` of the setting resets the
-  project's cursor as such a `PUT` does, so it ends that hold too, and it keeps the start of the
-  project's newest whole read, so a `DELETE` and a `PUT` within a minute make their two whole
-  reads at least a minute apart.
-  After a `PUT` that names another daemon, or a `DELETE`, Dispatch applies no message of the store
-  that the project followed before, until a `PUT` names the URL of that daemon again. Such a
-  message holds a read only as a message past the cap (below), and its redelivery then makes the
-  read. It waits behind a whole read of the project that is in flight, for 60 s at the most, as
-  every message of the project does, and Dispatch judges it against what that read leaves. It asks
-  for the owed read when that read is due and no message holds it, at most once a minute, whatever
-  store the project holds, since the setting's own daemon can be redeployed into that store; it
-  adds no reason, and a read that gives the same store clears the record. Dispatch also marks a
-  store as no daemon of the project when a good read made for a message of that store finds the
-  project's store unchanged, and when a message of that store whose hold a `PUT` or a `DELETE`
-  ended comes back while the project has a setting, unless the store is the project's own or the
-  one the setting named before. It applies no message of a marked store, and such a message asks
-  for no read of its own but the owed read, as above, until a later `PUT` or `DELETE` of the
-  project's setting other than a `PUT` of the same URL while a message holds the owed read, with
-  one exception: a boot of a marked store, or of the store the setting named before, while the
-  project's store is one a read verified, makes a whole read, also where it arrives past the cap
-  of 16 waiting messages below, so a daemon that a redeploy started behind the setting's URL in
-  that store is found again, and a read that finds it takes the mark off. A project keeps at most
-  16 messages waiting for its turn. A message that arrives past that does not wait and makes no
-  read: it owes a read, since its events may be past the snapshot of the read in flight. A message
-  of a marked or old store does too while a whole read of the project is in flight, since that
-  read can find its store behind the setting's URL. The first such message since that read began
-  holds the read after it, and Dispatch acknowledges the others, keeping the highest sequence it
-  so skipped in each store, so a good read that stops short of one still owes a read, and so does
-  a good read that finds another store there that the project does not drop. So a project
-  whose daemon does not answer a read holds 17 messages of the consumer's window of 256.
-  A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
-  Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which
-  Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 32 MiB, and
-  stops one byte past the cap. A larger answer is a failed read whose `legion_reads` row names the
-  cap and the answer's `Content-Length` where it declares one, and otherwise the 64 MiB and one
-  byte where the read stopped; its `bytes` is that size.
+  state every minute, and no recurring timer reads it. It reads a daemon's
+  `GET /legion/v1/state?view=observed` whole only where the events cannot carry the state, for the
+  reasons legion's `ReadReason` constants name, and the whole reads of one project start at least
+  a minute apart. The Dispatch README holds the whole rule (`cmd/dispatch/README.md`, "The Legion
+  state intake"): when a read is owed, which message holds it and for how long, how many messages
+  of the consumer's window one project can hold, what a `PUT` or a `DELETE` of a project's Legion
+  setting does to the project's cursor, and the intake's log lines. A daemon of an earlier build
+  ignores the `view` query and serves its whole state, which Dispatch reads the same way. A whole
+  read reads at most 64 MiB of the answer, not 32 MiB, and an answer over that is a failed read.
+  When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, calls for a
+  whole read of the daemon the setting names; the README says when the `PUT`'s wake makes that read
+  and when a read already owed or in flight stands for it. Dispatch takes no starting point while a
+  Dispatch process of an earlier build is in the fleet.
   `legion_reads` records each transaction the intake applies as a row of kind `events` at the
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
   follow its daemon and the whole read it owes, with the reasons for that read, the stream
   sequence of the message that holds it and how many times that message went back to the stream,
   when the project's newest whole read began (`last_read_started_at`, which each whole read writes
   before it calls the daemon, and which a `PUT` and a `DELETE` keep), the highest sequence of each
-  store that Dispatch acknowledged past the cap of 16, the store and the URL of the daemon that the
-  setting named before, the stores that are no daemon of the project, and each message whose hold
-  a `PUT` or a `DELETE` ended (`released_holders`, kept by the rule of legion's `cursor.reset`).
-  `legion_event_parts` holds the parts of a split transaction, and
-  `server_processes.legion_state_intake` tells a process of this build from one of an earlier
-  build (migration `20261118212431_legion_events`).
+  store that Dispatch acknowledged past the cap of 16 waiting messages, the store and the URL of
+  the daemon that the setting named before, the stores that are no daemon of the project, and
+  each message whose hold a `PUT` or a `DELETE` ended (`released_holders`, kept by the rule of
+  legion's `cursor.reset`). `legion_event_parts` holds the parts of a transaction the daemon split
+  over several messages, and `server_processes.legion_state_intake` tells a process of this build
+  from one of an earlier build (migration `20261118212431_legion_events`).
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the
   hub's instance. The lease pool holds 29 connections, not 27, and a server process opens at most
   120 connections to Postgres, not 118.

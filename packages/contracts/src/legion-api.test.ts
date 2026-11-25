@@ -1088,6 +1088,24 @@ test("every answer-side object strips a key it does not name", () => {
   expect(found.strips.length).toBeGreaterThan(0);
 });
 
+// The census above walks the settings block once, at the observed view's path, so it would still
+// pass were the full state to stop keeping a key its settings do not name. Each answer is held to
+// that here: a legion.yaml key no schema names rides through the full state's parser and through
+// the observed view's alike (contract 35).
+test("the full state and the observed view each keep a settings key no schema names", () => {
+  for (const [name, schema] of [
+    ["state.json", LegionStateResponse],
+    ["observed-state.json", LegionObservedStateResponse],
+  ] as const) {
+    const body = fixture(name) as { settings: Record<string, unknown> };
+    body.settings.a_later_legion_yaml_key = "ridden loosely";
+    const parsed = schema.safeParse(body);
+    expect(parsed.success, `${name} parses`).toBeTrue();
+    expect(parsed.data?.settings?.a_later_legion_yaml_key, name).toBe("ridden loosely");
+    expect<unknown>(parsed.data?.settings, name).toEqual(body.settings);
+  }
+});
+
 test("state accepts optional fields emitted by later workflow slices", () => {
   const current = fixture("state.json");
   expect(LegionStateResponse.safeParse(current).success).toBeTrue();

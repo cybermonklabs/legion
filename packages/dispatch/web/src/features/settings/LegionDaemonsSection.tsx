@@ -234,11 +234,11 @@ export function LegionDaemonsSection(): ReactNode {
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
         Naming a project&apos;s Legion daemon here makes Dispatch record each state change that
-        daemon publishes. Dispatch reads the daemon&apos;s whole state only when it starts recording
-        a project, or after it missed changes. No page shows that record yet. The address is the
-        daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under it.
-        Saving the same address again makes Dispatch read the whole state once more. Removing one
-        stops the recording. What was recorded stays.
+        daemon publishes. Dispatch reads the daemon&apos;s whole state only to start that record or
+        to check what it recorded; it does not poll the daemon on a timer. No page shows that record
+        yet. The address is the daemon&apos;s base URL, with no path: Dispatch reads{" "}
+        <code>/legion/v1/state</code> under it. Removing one stops the recording. What was recorded
+        stays.
         {human ? "" : " Sign in to name one."}
       </p>
 
