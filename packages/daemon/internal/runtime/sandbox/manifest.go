@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -112,12 +116,15 @@ const podUser = 1000
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
 // finishes, and, where the deployment names an exchange audience, the exchange identity's two
-// (exchangeOwned), it is exactly what the container is told by the runtime
-// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). The shared validator refuses a
-// name of any of them in a spec's Env and as a secret's pointer (Runtime.specOwned), and CheckPod
-// refuses a runtime-owned one, or an exchange one where the deployment names the audience, in the
-// operator's pod — a composed one is the operator's to set, since composing is what the runtime
-// does with it. The image probe's
+// (exchangeOwned), it is exactly what the container is told by the runtime under Dispatch's shared
+// bearer (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). Under
+// dispatch_token_broker a launch into a pod that carries an exchange identity is told
+// DISPATCH_TOKEN_BROKER (brokerOwned) in place of DISPATCH_TOKEN_FILE, which stays owned, since a
+// launch into a kept pod without that identity carries the transition token behind it. The shared
+// validator refuses a name of any of them in a spec's Env and as a secret's pointer
+// (Runtime.specOwned), and CheckPod refuses a runtime-owned one, or an exchange or broker one where
+// the deployment names the audience or sets the broker, in the operator's pod — a composed one is
+// the operator's to set, since composing is what the runtime does with it. The image probe's
 // container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
@@ -193,11 +200,34 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 	return names
 }()
 
+// brokerOwned is the one variable the runtime sets itself only where the deployment sets
+// dispatch_token_broker (Options.Dispatch.Broker), as exchangeOwned is only where it names an
+// exchange audience: a deployment without the setting tells no role DISPATCH_TOKEN_BROKER, so the
+// name stays the operator's pod env's and a launch spec's to set, as it was before the setting
+// existed. The runtime tells it, as 1, to every role of a pod that carries an exchange identity
+// under the setting (launch.brokersDispatch), and so never beside DISPATCH_TOKEN_FILE. It is no
+// address: a role started under another word holds its credential for its life and is never
+// relaunched for the word (handedAddresses leaves it out).
+var brokerOwned = map[string]bool{shimwire.DispatchTokenBrokerVariable: true}
+
+// runtimeOwnedComposedExchangeOrBroker is every variable a launch spec may not set under
+// dispatch_token_broker, which configure takes only beside an exchange audience:
+// runtimeOwnedComposedOrExchange and brokerOwned together, built once.
+var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
+	names := maps.Clone(runtimeOwnedComposedOrExchange)
+	maps.Copy(names, brokerOwned)
+	return names
+}()
+
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
-// runtime's own and the composed ones, and the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned).
+// runtime's own and the composed ones, the exchange identity's two where the deployment names
+// an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
+// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two.
 func (r *Runtime) specOwned() map[string]bool {
-	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
+	switch exchangeOf(r.agentSecrets, r.dispatch.Broker) {
+	case ExchangeAndBroker:
+		return runtimeOwnedComposedExchangeOrBroker
+	case ExchangeIdentity:
 		return runtimeOwnedComposedOrExchange
 	}
 	return runtimeOwnedOrComposed
@@ -371,7 +401,10 @@ type launch struct {
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
 	// Secret's own (Options.ProvidersSecrets, which the runtime points at the providers mount
-	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured.
+	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured with one
+	// (DispatchCredential.Bearer) — or, under dispatch_token_broker, the transition token for a
+	// launch that keeps a pod with no exchange identity (relaunch's dispatchCredential), and no
+	// Dispatch token at all for every other launch.
 	secrets map[string]string
 	// prompt is the launch's composed system prompt (runtime.ComposePrompt), which reaches the agent
 	// as a file and never as an argv string: launcherCommand carries it in the start command's Files
@@ -392,6 +425,11 @@ type launch struct {
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
+	// omp is the session an Oh My Pi launch that trades an exchange identity starts its agent
+	// under (ompInputs): prepare fills it where the configuration trades, and relaunch clears it
+	// for a launch that keeps a pod that trades nothing, so it is zero for a Claude Code launch and
+	// for every launch that trades nothing, and its readers ask nothing else.
+	omp ompInputs
 	// kept is what the live pod this launch keeps rather than replaces already carries for its
 	// role, read from that pod's stored template (relaunch's keptBy). Nil is a launch that builds
 	// the pod itself — every replacing launch, and every caller that only builds a manifest — whose
@@ -525,6 +563,16 @@ func (l launch) trades(r *Runtime) bool {
 	return r.tradesIn(nil, l.spec.Role)
 }
 
+// brokersDispatch is whether this launch's role holds no Dispatch token and trades its pod's
+// exchange identity for one of its own: the deployment sets dispatch_token_broker and the pod the
+// role runs in carries that identity (trades). Such a role is told DISPATCH_TOKEN_BROKER=1
+// (mainEnvironment), and its launch carries neither the bearer nor the transition token; under
+// the setting, a launch that is not one keeps a pod built before the identity, and carries the
+// transition token or waits for that pod's round (relaunch's dispatchCredential).
+func (l launch) brokersDispatch(r *Runtime) bool {
+	return r.dispatch.Broker && l.trades(r)
+}
+
 // overlays are this launch's settings overlays, which its generation is told in PI_CONFIG_FILES
 // after the operator's own (roleOperatorEnv): the role's own overlays, then the overlays of each
 // arm this launch's unit was drawn into (runtime.SpawnSpec.Variants), in the order the project's
@@ -634,6 +682,113 @@ type claudeInputs struct {
 	mcp string
 }
 
+// ompInputs is the session an Oh My Pi launch that trades an exchange identity (launch.trades)
+// starts its agent under, decided before the pod is touched as a Claude Code launch's is
+// (claudeInputs): the id its agent command names (agentArgv) is the id the runtime answers for the
+// launch (nameSession, LaunchSession), which the daemon registers for the pod at the shim's hello,
+// before the agent registers (supervise's ensureRegistered). prepare fills it where the
+// configuration trades, and relaunch clears it, once it knows the pod it keeps, for a launch into
+// a kept pod that trades nothing (keptPod.trades). So an Oh My Pi launch's is zero exactly when
+// the launch trades nothing, and each reader decides from it alone (agentArgv, nameSession,
+// ompResumeRefusal), save the lane agentArgv's first case owns: a resume of a session the claim
+// records with no file (spec.ResumeSession), which agentArgv passes as the one word
+// `--resume=<id>` whether the launch trades or not, so that lane needs no resume. A launch that
+// trades nothing names no id the runtime chose and keeps the argv it had before the runtime chose
+// one, since its pod may run the Oh My Pi of an image older than `--session-id`, which refuses a
+// flag it does not know, and a role that trades nothing gains nothing from a chosen id.
+type ompInputs struct {
+	// session is the id the agent command names: the one the claim recorded when the launch
+	// resumes, and a fresh UUIDv7 otherwise (ompSessionOf). It is "" for a resume that has no id
+	// to resume by, which a launch that trades is refused for (ompResumeRefusal).
+	session string
+	// resume is whether agentArgv passes session as `--resume <id>`, a recorded session's id,
+	// rather than as `--session-id <id>`, a fresh one. It is false for a resume by
+	// spec.ResumeSession, which agentArgv's first case passes as `--resume=<id>` before it reads
+	// resume.
+	resume bool
+}
+
+// ompSessionOf is the session an Oh My Pi launch of spec starts its agent under when it trades: a
+// fresh UUIDv7 for a launch that starts a session, and for one that resumes, the session id the
+// resume names with no file (spec.ResumeSession: the claim records the session and no file of
+// it), else the session id the claim recorded beside its file (spec.ResumeSessionID), or, for a
+// claim that recorded none, the id the recorded file's name gives, "" where the name gives none. Oh My Pi names a session file
+// `<timestamp>_<id>.jsonl`, and the id is read by the rule the claim's file-id hold is
+// (supervise.RecordedHolds, HoldFileID), so the launch resumes by a name the supervisor held to the
+// claim before it asked for the resume (holdRecorded). Nothing is refused here: whether the
+// launch trades, and so needs an id at all, is known only once relaunch knows the pod it keeps
+// (ompResumeRefusal).
+func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
+	if spec.ResumeSession != "" {
+		return ompInputs{session: spec.ResumeSession}, nil
+	}
+	if spec.ResumeSessionFile == "" {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return ompInputs{}, fmt.Errorf("choose its Oh My Pi session id: %w", err)
+		}
+		return ompInputs{session: id.String()}, nil
+	}
+	if spec.ResumeSessionID != "" {
+		return ompInputs{session: spec.ResumeSessionID, resume: true}, nil
+	}
+	for _, hold := range supervise.RecordedHolds("", spec.ResumeSessionFile) {
+		if hold.Kind == supervise.HoldFileID {
+			return ompInputs{session: hold.Name, resume: true}, nil
+		}
+	}
+	return ompInputs{resume: true}, nil
+}
+
+// ompResumeRefusal refuses a launch that trades and resumes (l.omp.resume, which relaunch clears
+// for a launch that keeps a pod that trades nothing), when the id it would pass as `--resume <id>`
+// is none Oh My Pi reads as a session id: there is none, because the claim recorded none and its
+// file's name gives none (`--resume <id>` takes no path), or the id has a shape no session id has
+// (sessionIDFault), such as one an argument parser would take for a flag. relaunch asks it once
+// the pod it keeps is known and before anything of the pod is touched, so the refusal reaches the
+// supervisor as the launch's own. A launch that trades nothing resumes by the file as before and
+// is refused nothing, and a resume of a claim's session recorded with no file (spec.ResumeSession)
+// is not l.omp.resume at all (ompSessionOf): agentArgv's first case owns it, passing that id as
+// the one word `--resume=<id>`, which carries any id a two-word `--resume <id>` cannot, one that
+// begins with `-` included.
+func (l launch) ompResumeRefusal() error {
+	if !l.omp.resume {
+		return nil
+	}
+	if l.omp.session == "" {
+		return fmt.Errorf("the recorded session %s gives no session id to resume by: its name is not an Oh My Pi session file's, <timestamp>_<id>.jsonl",
+			l.spec.ResumeSessionFile)
+	}
+	fault := sessionIDFault(l.omp.session)
+	if fault == "" {
+		return nil
+	}
+	source := "the session id its claim recorded"
+	if l.spec.ResumeSessionID == "" {
+		source = "the session id the name of " + l.spec.ResumeSessionFile + " gives"
+	}
+	return fmt.Errorf("%s, %+q, %s: no `--resume <id>` can pass it", source, l.omp.session, fault)
+}
+
+// sessionIDFault is why id, the non-empty id ompResumeRefusal holds, cannot be passed as a word of
+// its own in Oh My Pi's argv and be read as the session id it is, and "" for an id that can: one
+// that begins with `-` (an argument parser reads such a word as a flag), or holds white space or a
+// control character. An empty id is a resume with no id at all, which ompResumeRefusal refuses
+// before it asks. No id the runtime chooses has any of them (ompSessionOf's UUIDv7). The bound on
+// a session name's length is the registration's (claim.MaxSessionNameBytes), and no recorded name
+// past it gets this far (holdRecorded refuses the resume first).
+func sessionIDFault(id string) string {
+	switch {
+	case strings.HasPrefix(id, "-"):
+		return "begins with -, which an argument parser reads as a flag"
+	case strings.ContainsFunc(id, unicode.IsSpace):
+		return "holds white space"
+	case strings.ContainsFunc(id, unicode.IsControl):
+		return "holds a control character"
+	}
+	return ""
+}
+
 // runsClaude is whether the launch's role runs Claude Code rather than the image's Oh My Pi: its
 // agent command, its launcher file and three of its variables are the Claude lane's.
 func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime.BackendClaude }
@@ -702,6 +857,16 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 			l.claude.session, l.claude.resume = session, true
 		}
 	}
+	// An Oh My Pi launch that trades starts its agent under an id the runtime chose (ompInputs).
+	// Here trades is the configuration's answer, for the pod a launch builds; relaunch clears the
+	// choice for a launch that keeps a pod that trades nothing, once it knows that pod (keptBy).
+	if !l.runsClaude() && l.trades(r) {
+		omp, err := ompSessionOf(spec)
+		if err != nil {
+			return launch{}, refuse("%v", err)
+		}
+		l.omp = omp
+	}
 	if err := l.kind.prepare(&l); err != nil {
 		return launch{}, refuse("%v", err)
 	}
@@ -724,8 +889,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	for _, name := range r.providersSecrets {
 		delete(secrets, name)
 	}
-	if r.dispatchToken != "" {
-		secrets[dispatchTokenKey] = r.dispatchToken
+	// The shared bearer, when Dispatch is configured with one. Under dispatch_token_broker no
+	// launch carries it: a launch that keeps a pod with no exchange identity is given the
+	// transition token instead, once relaunch knows it keeps that pod (dispatchCredential).
+	if r.dispatch.Bearer != "" {
+		secrets[dispatchTokenKey] = r.dispatch.Bearer
 	}
 	l.secrets, l.prompt = secrets, prompt
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
@@ -767,17 +935,26 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model` on the model the spec names, `@default` where it names none so
-// the session runs the model the pod's overlay puts on the `default` role, `--resume` on the
-// session being resumed — the recorded file, or for a claim that records no file the session's id
-// (ResumeSession), which the launcher replaces with the file it looks up where it was told the id
-// (launcherCommand) and which Oh My Pi resolves itself where the launch has the agent resolve it
-// (ResumeByAgent) — then RPC mode and
-// `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
-// (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
-// and appends that file's contents, so the prompt meets no argv bound however long the
-// deployment's instructions grow (TestOhMyPiAppendsTheWholePromptFileItIsNamed). Were the file
-// missing, Oh My Pi would silently take the path itself as the prompt's text, which is why the
-// launcher writes every Files entry before it starts the child (launcherCommand). For a plain
+// the session runs the model the pod's overlay puts on the `default` role, the session, then RPC
+// mode and `--append-system-prompt` naming the file the launcher writes the launch's system prompt
+// to (systemPromptPath), never the text.
+//
+// The session: a launch that resumes a claim's session that records no file names the session's
+// id as one `--resume=<id>` (ResumeSession), which the launcher replaces with the file it looks up
+// where it was told the id (launcherCommand) and which Oh My Pi resolves itself where the launch
+// has the agent resolve it (ResumeByAgent); a launch that trades runs under that same id
+// (ompSessionOf). Otherwise the session is the one prepare chose where the launch trades an
+// exchange identity (ompInputs, which is zero for a launch that trades nothing): `--session-id
+// <id>` for a launch that starts a session and `--resume <id>` for one that resumes, and no path,
+// while the start command still names the recorded file (launcherCommand's ResumeFile), by which
+// the launcher looks the session up. A launch that trades nothing names no chosen id:
+// `--resume=<file>` on the recorded session when it resumes, and nothing when it starts one.
+//
+// Oh My Pi 18.16.0 reads an `--append-system-prompt` value with no newline as a path and appends
+// that file's contents, so the prompt meets no argv bound however long the deployment's
+// instructions grow (TestOhMyPiAppendsTheWholePromptFileItIsNamed). Were the file missing, Oh My
+// Pi would silently take the path itself as the prompt's text, which is why the launcher writes
+// every Files entry before it starts the child (launcherCommand). For a plain
 // launch the two roots are the image's own (envoyPlugin, legionPlugin); for an installing launch
 // (l.spec.Plugins set, LEGION-164) they are the pair launcherCommand's install wrapper lands under
 // this generation's own directory (pluginRoots), installed before Oh My Pi starts rather than the
@@ -816,10 +993,14 @@ func (l launch) agentArgv(agent []string) []string {
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", model)
 	switch {
-	case l.spec.ResumeSessionFile != "":
-		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	case l.spec.ResumeSession != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSession)
+	case l.omp.resume:
+		argv = append(argv, "--resume", l.omp.session)
+	case l.omp.session != "":
+		argv = append(argv, "--session-id", l.omp.session)
+	case l.spec.ResumeSessionFile != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -1770,6 +1951,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)
 		add(machineTokenFileVariable, AgentSecretsExchangeDir+"/"+AgentSecretsExchangeFile)
+	}
+	// Under dispatch_token_broker, the word that this role's Dispatch credential is the token that
+	// identity trades for, and nothing else (brokersDispatch): its launch carries no Dispatch
+	// token, so it is told no DISPATCH_TOKEN_FILE either (the pointers below follow l.secrets).
+	if l.brokersDispatch(r) {
+		add(shimwire.DispatchTokenBrokerVariable, "1")
 	}
 	// The pod's own test database, when the deployment serves one (runtime.kubernetes.test_postgres):
 	// an issue pod's roles alone, whose launcher serves it before it accepts a role start

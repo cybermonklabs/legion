@@ -52,6 +52,10 @@ type launchers struct {
 	// and the Start's write, the window in which a launcher that reconnects leaves the start on a
 	// closed session (TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts).
 	beforeStart func(ctx context.Context, token claim.Token)
+	// keptStart is a role's start in a pod of a Sandbox that owns the issue's kept volume, which
+	// records the pod with that volume (Options.KeptPodStart). A launchers built without it records
+	// no pod.
+	keptStart runtime.KeptPodStart
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
@@ -74,9 +78,13 @@ type launcherSession struct {
 	// issue is the exact issue key this launcher's pod is of, as the role Secret's annotation
 	// carried it to the hello's authentication (launcherCredential.issue). "" for a pod of no
 	// issue, the project controller's.
-	issue  string
-	id     string
-	podUID string
+	issue string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. Each role's start in such a pod records it with that volume (recordKeptPod).
+	keptSince time.Time
+	id        string
+	podUID    string
 	// resumesBySession is whether this launcher's hello said it can look a session up by its id
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
@@ -97,17 +105,18 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, guardKilled runtime.MemoryGuardKilled,
+func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStart runtime.KeptPodStart, guardKilled runtime.MemoryGuardKilled,
 	controllerKilled runtime.ControllerMemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
+		keptStart: keptStart, guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue. The newest authenticated connection
-// for a role wins: a half-open predecessor is closed so its pending requests fail instead of
-// waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
+// volume since keptSince (the zero time for a pod on a volume of its own). The newest
+// authenticated connection for a role wins: a half-open predecessor is closed so its pending
+// requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
 	d.mu.Lock()
@@ -373,7 +382,7 @@ func (e startRefusal) Unwrap() error {
 	return nil
 }
 
-func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, session *launcherSession, command shimwire.LauncherStart) error {
+func (d *launchers) start(ctx context.Context, token claim.Token, session *launcherSession, command shimwire.LauncherStart) error {
 	// serveLeakCheck chose this exact session and installed the check before the command was built.
 	// The start stays on it: a replacement session has not received that push, so this launch
 	// refuses and the supervisor retries from the new hello rather than starting a role without
@@ -492,6 +501,39 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		return session, nil
 	}
 	return nil, refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
+}
+
+// keptPodRecordBound is how long the record of one pod of a kept volume may take (recordKeptPod):
+// one row, which the store writes again while it fails for a reason that passes, so this is room
+// for a store slow to answer rather than for the common case.
+const keptPodRecordBound = 2 * time.Minute
+
+// recordKeptPod records the launcher session's pod, whose Sandbox owns the issue's kept volume
+// (launcherSession.keptSince), with that volume at each role's start in it (keptStart,
+// store.StartKeptPod), before the role's start is sent (relaunch, before launchers.start). A kept
+// volume outlives its pod, so what the roles of this pod leave unpushed stays on the volume for
+// the issue's next pod of it, and an end of the update round over that later pod reads the record
+// for whom it names (store.PodHoldsEarlierWork). A pod on a volume of its own, the project
+// controller's pod, and a launchers built without keptStart record nothing.
+//
+// The store runs a write that failed for a reason that passes again, until a run commits or the
+// call's context ends: the record's bound (keptPodRecordBound) or the start's own deadline,
+// whichever comes first. A call that still fails is answered as a refusal of the role's start
+// (runtime.KeptPodUnrecorded), which relaunch returns before the Start frame is sent and the
+// supervisor logs and charges as a launch failure; the next start asks again. A role that ran in
+// a pod the store does not record could leave work on the volume that the round over a later pod
+// of it would name no role for, and the record is in the store so that a daemon restart keeps it
+// too.
+func (d *launchers) recordKeptPod(ctx context.Context, session *launcherSession) error {
+	if d.keptStart == nil || session.issue == "" || session.keptSince.IsZero() {
+		return nil
+	}
+	recording, cancel := context.WithTimeout(ctx, keptPodRecordBound)
+	defer cancel()
+	if err := d.keptStart(recording, session.issue, session.podUID, session.keptSince); err != nil {
+		return runtime.KeptPodUnrecorded{PodUID: session.podUID, KeptSince: session.keptSince, Err: err}
+	}
+	return nil
 }
 
 // earlierRestoreReport reads and drops one launcher_restored frame (shimwire.LauncherRestored).
@@ -760,7 +802,8 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues: its file (ResumeFile), or for a claim that records no file the session's id
+// continues: its file (ResumeFile), which the launcher looks the session up by whether or not the
+// agent's argv resumes it by id (agentArgv), or for a claim that records no file the session's id
 // (ResumeSession), which the launcher looks up in the session table and resumes the file it finds
 // in place of the agent argv's one `--resume=<id>` (agentArgv). A launch that has the agent's own
 // command resolve the id (ResumeByAgent), which supervise makes after relaunch refused to name the
