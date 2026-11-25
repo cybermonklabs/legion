@@ -1209,11 +1209,12 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 
 // btreeGinVersion is one create extension that names no table, so the census admits it at any size
 // of every table: with the limit at one byte, its entry holds no table and no refusal, and its census
-// counts 0. The database is at 20261121060636, so 20261123080000, which writes graph_nodes and
-// graph_tuples, is pending before it. Only this migration's entry is read, never the verdict of the
-// whole set, for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape
-// gives.
+// counts 0. The database is at 20261121060636, so every migration from 20261121130000 to
+// 20261125005337 is pending before it, 20261123080000, which writes graph_nodes and graph_tuples,
+// among them. Only this migration's entry is read, never the verdict of the whole set, for the
+// reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
 func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, 20261121060636)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, btreeGinVersion), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
