@@ -10673,8 +10673,9 @@ test("a double click or two clicks on a marked row's held Start next while Take 
         .replace(/\s+/g, " ")
         .trim()
         .slice(0, 40);
-      const name = `${focused.tagName.toLowerCase()} "${words}"`;
       const row = focused.closest("[data-issue-row]")?.getAttribute("data-issue-row");
+      const control = row == null ? words : words.replace(row, "").trim();
+      const name = `${focused.tagName.toLowerCase()} "${control}"`;
       if (row === undefined || row === null) return `${name} in no row`;
       return `${name} in ${slots[row] ?? `row ${row}`}`;
     }, slots);
