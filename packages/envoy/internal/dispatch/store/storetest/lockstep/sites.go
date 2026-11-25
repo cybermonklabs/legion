@@ -349,6 +349,19 @@ var storeWriteCallSites = map[string]string{
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch": "graphcensus#TestTheAnchorBatchTakesTheStoreLockOrder",
+	// The ask block pointer backfill locks the ask's owner before it reads or writes asked_on.
+	"graphcensus/census_citations_asks.go#writeAskedOnBatch": "graphcensus#TestTheAskedOnBatchTakesTheStoreLockOrder",
+	// The backfill's pass over the approval requests' documents (R14 of this branch's spec): the
+	// owner rows the batch's requests stand under first, then the requests' rows and their nodes'
+	// approves tuples read again under them, then the tuples that level the two through QueueWrite
+	// at the sentinel (graphcensus' TestTheApprovesBatchTakesTheStoreLockOrder).
+	"graphcensus/census_approvals.go#writeApprovesBatch": "graphcensus#TestTheApprovesBatchTakesTheStoreLockOrder",
+	// A move of an approval request's documents (R14): the row's rewrite, its ask.edited and then
+	// the approves tuples that move with the row, one retraction and one assertion for each version
+	// the move changes, appended through QueueCaused under that event. A settlement's version of a
+	// document whose request is open writes it (docs' settledCarry, the first of the steps after
+	// the move's event).
+	"docs/approval_ask.go#rewriteApprovalAsk": "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	// The backfill's Keep pass (R32 of this branch's spec): the owner rows the batch's Keeps stand
 	// under first, then the Keeps and their decisions' words read again under them, then the
 	// decision_keeps rows whose sum is still the one over the words with shaped, the kept_text_sum

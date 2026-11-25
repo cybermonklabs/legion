@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -41,6 +42,64 @@ const ReviewColumns = `id::text, artifact_id::text, version, state, kind, actor,
 // written by a statement of its own (reviewWrite.queueEvent).
 const ReviewReadColumns = ReviewColumns + `, (select carried_from_version from artifact_review_carries where review_id = artifact_reviews.id)`
 
+// ReviewStandJoin joins, to the artifact_reviews row unaliased, stand: what a gate needs of the
+// document the review names (ApprovalStand). stand.query is whether the document is a query node
+// of a converted issue - its issue holds an issue_trees row and its node carries the supertag query
+// - stand.retired whether it is retired, and stand.latest its newest version. A caller joins it
+// after it has picked the review it reads, so it runs once per document and not once per review.
+const ReviewStandJoin = `
+	left join lateral (
+		select t.issue_key is not null and n.id is not null as query,
+		       a.retired_at is not null as retired,
+		       (select max(v.number) from artifact_versions v where v.artifact_id = a.id) as latest
+		from artifacts a
+		left join issue_trees t on t.issue_key = a.issue_key
+		left join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key
+		  and n.supertag = '` + graphstore.SupertagQuery + `'
+		where a.id = artifact_reviews.artifact_id
+	) stand on true`
+
+// ReviewStandColumns selects, after ReviewReadColumns of the artifact_reviews row unaliased joined
+// to stand (ReviewStandJoin), what a gate compares of the review (ScanReviewStand): whether its
+// document is a query node of a converted issue, whether that document is retired, and, for such a
+// document alone, the digest the review stands on and the digest of the current query. The pin is
+// the record's digest on the review's row of artifact_review_carries where that row holds one, and
+// else the review's content_sha256 (R14: "Every read that compares a review with the current
+// query's digest reads that column where it holds a digest, and the review's content_sha256
+// elsewhere"). The current digest is the one artifact_version_text_sha256 answers for the
+// document's newest version: the record's where that version's version_renders row holds one, and
+// else the digest of its stored markdown. Every other document reads neither, so its approval read
+// computes no digest at all.
+const ReviewStandColumns = `coalesce(stand.query, false), coalesce(stand.retired, false),
+	case when stand.query then coalesce(
+		(select c.record_sha256 from artifact_review_carries c where c.review_id = artifact_reviews.id),
+		artifact_reviews.content_sha256) end,
+	case when stand.query and stand.latest is not null then artifact_version_text_sha256(artifact_reviews.artifact_id, stand.latest) end`
+
+// ApprovalStand is what a gate compares of a document's newest review (R14, T14 of the issue-tree
+// plan): Query, whether the document is a query node of a converted issue, Retired, whether it is
+// retired, and for such a query document Pin, the digest the review stands on, and Current, the
+// digest of the current query (ReviewStandColumns).
+type ApprovalStand struct {
+	Query, Retired bool
+	Pin, Current   *string
+}
+
+// Approves reports whether an approval of version, read beside the document's version latest,
+// stands. For a query document of a converted issue the digest decides and no version number does:
+// the approval stands while the document is not retired and the review's pin is the current query's
+// digest, so a version whose record did not move - a paragraph moved before a requirement - leaves
+// it standing, and a historical review authorizes no later version whose digest differs. A review
+// of such a document that holds no digest yet - written before migration 20261105084017 and not
+// filled - stands on its version alone, as every review did before. Every other document keeps the
+// rule it always had: the approval stands at the version it names alone.
+func (stand ApprovalStand) Approves(version, latest int) bool {
+	if !stand.Query || stand.Pin == nil {
+		return version == latest
+	}
+	return !stand.Retired && stand.Current != nil && *stand.Pin == *stand.Current
+}
+
 // ScanReview decodes one ReviewColumns row.
 func ScanReview(row pgx.Row) (model.ArtifactReview, error) {
 	return scanReview(row, false)
@@ -52,7 +111,17 @@ func ScanReviewWithCarry(row pgx.Row) (model.ArtifactReview, error) {
 	return scanReview(row, true)
 }
 
-func scanReview(row pgx.Row, withCarry bool) (model.ArtifactReview, error) {
+// ScanReviewStand reads ReviewReadColumns and then ReviewStandColumns: the review as
+// ScanReviewWithCarry reads it, and what a gate compares of it.
+func ScanReviewStand(row pgx.Row) (model.ArtifactReview, ApprovalStand, error) {
+	var stand ApprovalStand
+	review, err := scanReview(row, true, &stand.Query, &stand.Retired, &stand.Pin, &stand.Current)
+	return review, stand, err
+}
+
+// scanReview reads one row of ReviewColumns, of ReviewReadColumns where withCarry is set, and then
+// into extra the columns its caller selected after them.
+func scanReview(row pgx.Row, withCarry bool, extra ...any) (model.ArtifactReview, error) {
 	var review model.ArtifactReview
 	var actor []byte
 	dest := [...]any{&review.ID, &review.ArtifactID, &review.Version, &review.State, &review.Kind, &actor, &review.Reason, &review.AskID, &review.CreatedAt, &review.EventSeq, &review.ContentSHA256, &review.ContentSHA256Source, &review.CarriedFromVersion}
@@ -60,7 +129,7 @@ func scanReview(row pgx.Row, withCarry bool) (model.ArtifactReview, error) {
 	if withCarry {
 		columns = dest[:]
 	}
-	if err := row.Scan(columns...); err != nil {
+	if err := row.Scan(append(columns, extra...)...); err != nil {
 		return model.ArtifactReview{}, err
 	}
 	if err := json.Unmarshal(actor, &review.Actor); err != nil {
@@ -323,6 +392,17 @@ const newestReviewQuery = `
 	limit 1
 `
 
+// newestReviewStandQuery is newestReviewQuery with what a gate compares of the review
+// (ReviewStandJoin, ReviewStandColumns), read off the same index in the same order: the join runs
+// for the one row the limit keeps.
+const newestReviewStandQuery = `
+	select ` + ReviewReadColumns + `, ` + ReviewStandColumns + `
+	from artifact_reviews` + ReviewStandJoin + `
+	where artifact_reviews.artifact_id = $1
+	order by ` + model.ReviewOrder + `
+	limit 1
+`
+
 // LatestApprovedReview is the newest approval of artifactID, whoever gave it, or nil when nobody
 // has approved the document at any version.
 func LatestApprovedReview(ctx context.Context, q Queryer, artifactID string) (*model.ArtifactReview, error) {
@@ -347,8 +427,11 @@ func NewestReview(ctx context.Context, q Queryer, artifactID string) (*model.Art
 // was made on, or the one whose approval is being carried - and knownApproved its verdict;
 // every other document is read here.
 //
-// A document counts as approved only when its newest review, in any state, is an approval of
-// the version the request names. The newest approval alone cannot see a later request for
+// A document counts as approved only when its newest review, in any state, is an approval that
+// stands (ApprovalStand.Approves): for a query node of a converted issue, one whose pin is the
+// digest of the current query, whatever version it names (R14); for every other document, an
+// approval of the version the request names. A review this transaction queued is read by its
+// version alone, as it always was. The newest approval alone cannot see a later request for
 // changes, so a request a person answered "Request changes" on would otherwise read as settled
 // and the person never be asked again about the document they rejected.
 func NamedDocumentsApproved(ctx context.Context, q Queryer, documents []model.AskApprovalDocument, known string, knownApproved bool) (bool, error) {
@@ -367,16 +450,17 @@ func namedDocumentsApproved(ctx context.Context, q Queryer, documents []model.As
 			continue
 		}
 		var review *model.ArtifactReview
+		var stand ApprovalStand
 		if pending, queued := ledger.PendingReview(document.ArtifactID); queued {
 			review = &pending
 		} else {
-			stored, err := NewestReview(ctx, q, document.ArtifactID)
+			stored, held, err := newestReviewStand(ctx, q, document.ArtifactID)
 			if err != nil {
 				return false, err
 			}
-			review = stored
+			review, stand = stored, held
 		}
-		if review == nil || review.State != "approved" || review.Version != document.Version {
+		if review == nil || review.State != "approved" || !stand.Approves(review.Version, document.Version) {
 			return false, nil
 		}
 	}
@@ -433,4 +517,17 @@ func newestReview(ctx context.Context, q Queryer, what, query string, args ...an
 		return nil, nil
 	}
 	return nil, fmt.Errorf("read %s: %w", what, err)
+}
+
+// newestReviewStand is the newest review of artifactID in any state, as NewestReview reads it, with
+// what a gate compares of it (ApprovalStand), and nil where nobody has reviewed the document.
+func newestReviewStand(ctx context.Context, q Queryer, artifactID string) (*model.ArtifactReview, ApprovalStand, error) {
+	review, stand, err := ScanReviewStand(q.QueryRow(ctx, newestReviewStandQuery, artifactID))
+	if err == nil {
+		return &review, stand, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ApprovalStand{}, nil
+	}
+	return nil, ApprovalStand{}, fmt.Errorf("read the newest review and the digest it stands on: %w", err)
 }

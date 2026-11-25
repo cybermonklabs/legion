@@ -453,7 +453,8 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
-// to version number of artifactID, written as markdown from tree: when every ask block of the
+// to version number of artifactID, written as markdown from tree: when both versions do not hold
+// distinct definition_version values (sameDefinitionVersion, R14), every ask block of the
 // version agrees with its node (asksAgreeWithTheirNodes), and then either the version's text is
 // A's stored text byte for byte (restoresApprovedText), or every difference from it is one of the
 // carry cases (carryVerdict). It appends nothing otherwise, and hands sink what it appends, as
@@ -464,6 +465,18 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // step's phases whose own write the version is, and what that write added, whose cases
 // (restoreCase, conversionCase) it weighs beside the other two; zero for every other write.
 func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, sink func(model.Event)) error {
+	return carryNewestApprovalNaming(ctx, tx, broker, artifactID, number, markdown, tree, newest, serverURL, steps, "", sink)
+}
+
+// carryNewestApprovalNaming is carryNewestApproval whose carried reason names arrived, a change no
+// version's text shows, where it is not "": the results that arrived since the approved version
+// (arrivedResultsChange), which the drain's result carry names (carryAppendedResults). The reason
+// keeps the opening every carried reason has (carriedReasonPrefix), which the daemon matches.
+func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, arrived string, sink func(model.Event)) error {
+	sameDefinition, err := sameDefinitionVersion(ctx, tx, artifactID, newest.Version, number)
+	if err != nil || !sameDefinition {
+		return err
+	}
 	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
 		return err
@@ -477,8 +490,12 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		if err != nil {
 			return err
 		}
+		reason := restoredReason(newest.Version, origin)
+		if arrived != "" {
+			reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + carriedReasonEnd
+		}
 		return carryRestored(ctx, tx, artifactID, number, newest, func() error {
-			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, restoredReason(newest.Version, origin), serverURL, sink)
+			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
 		})
 	}
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
@@ -512,7 +529,62 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if err != nil {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
+	reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
+	if arrived != "" {
+		reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
+	}
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
+}
+
+// arrivedResultsChange is what a carried reason says of results that arrived after the approved
+// version, each named by its check's block id and its verdict, in the record's order:
+// "the results of c1 (pass) and c2 (fail), which arrived after it".
+func arrivedResultsChange(named []string) string {
+	return "the results of " + joinWithAnd(named) + ", which arrived after it"
+}
+
+// sameDefinitionVersion reports whether carrying an approval from version approved to version
+// target of artifactID does not cross a change of the query's definition_version (R14): it returns
+// false where both versions hold a definition_version and the two values differ, and true
+// otherwise (so a version that holds none, written before its document became a query node, leaves
+// the conversion carry untouched, and a carry to the same version compares one version with
+// itself). Target's version node may still be queued in tx's batch when this read phase runs, so
+// where the store holds no node for target yet, and there alone, target's definition_version is
+// read from its document's query node, which is the value VersionFacts will write onto it; a
+// target node that stands and holds none reads none.
+func sameDefinitionVersion(ctx context.Context, tx pgx.Tx, artifactID string, approved, target int) (bool, error) {
+	if approved == target {
+		return true, nil
+	}
+	var approvedDef, targetDef *string
+	err := tx.QueryRow(ctx, `
+		select
+			(select v.attributes->>'`+graphstore.AttributeDefinitionVersion+`'
+			 from graph_nodes v
+			 where v.kind = '`+graphstore.KindVersion+`' and v.id = a.ref_key || '@v' || $2::int::text),
+			case when exists (
+				select 1 from graph_nodes v
+				where v.kind = '`+graphstore.KindVersion+`' and v.id = a.ref_key || '@v' || $3::int::text)
+			then (select v.attributes->>'`+graphstore.AttributeDefinitionVersion+`'
+				from graph_nodes v
+				where v.kind = '`+graphstore.KindVersion+`' and v.id = a.ref_key || '@v' || $3::int::text)
+			else (select q.attributes->>'`+graphstore.AttributeDefinitionVersion+`'
+				from graph_nodes q
+				where q.kind = '`+graphstore.KindArtifact+`' and q.id = a.ref_key and q.supertag = '`+graphstore.SupertagQuery+`')
+			end
+		from artifacts a
+		where a.id = $1
+	`, artifactID, approved, target).Scan(&approvedDef, &targetDef)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read definition_version of versions %d and %d of %s: %w", approved, target, artifactID, err)
+	}
+	if approvedDef == nil || targetDef == nil {
+		return true, nil
+	}
+	return *approvedDef == *targetDef, nil
 }
 
 // restoredReason describes a carry to a version that restores the text of version restored.

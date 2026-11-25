@@ -368,6 +368,9 @@ func (r *docsWriterRig) settledCarry() docsWriter {
 				hold: holdDocsTableWrites("events"), at: docsEventStatement,
 				takes: []docsTableLock{{"events", docsRowExclusiveMode}},
 			},
+			// The move's approves tuples, one retraction and one assertion, appended under the move's
+			// event through QueueCaused (rewriteApprovalAsk) before the carry's own writes.
+			docsCausedPlainTuplesStep("the move's approves", "the move's event", holdDocsTableWrites("graph_tuples")),
 			{
 				name: "the approver's node", order: docsNodeStep, fenced: true,
 				hold: holdDocsNewNode, at: docsNodeStatement,
