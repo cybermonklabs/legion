@@ -1,6 +1,12 @@
 import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
-import { PANEL_ATTRIBUTE, takesText, typedOnMenuTrigger } from "../../components/key-targets";
+import {
+  MOVING_KEYS,
+  PANEL_ATTRIBUTE,
+  takesText,
+  typedOnMenuTrigger,
+  writesText,
+} from "../../components/key-targets";
 import { inputMethodKey } from "../../lib/input-method";
 
 import { IS_MAC, stepsOf } from "./key-text";
@@ -60,7 +66,7 @@ export interface KeyBinding {
   inEditable?: boolean;
   /** Whether a held key's repeats run it too: an action that steps (`CatalogueEntry.repeats`),
    *  as a held `j` walks a list. Every other binding runs once per press, and the registry keeps
-   *  its key's repeats from the page (`Keymap.handleKeyDown`). */
+   *  its key's repeats from the page (`Keymap.captureKeyDown`). */
   repeats?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
@@ -396,6 +402,36 @@ function isEditableTarget(event: KeyboardEvent): boolean {
   );
 }
 
+/** The press of a key still held down (`Keymap.captureKeyDown`): the element it was pressed on,
+ *  and the press itself, whose `defaultPrevented`, once the press has reached every listener,
+ *  says whether a control or a binding took it. */
+interface HeldPress {
+  readonly event: KeyboardEvent;
+  readonly target: EventTarget | null;
+  movement?: string;
+}
+
+/** The physical key a keydown or a keyup is of, which its press, its repeats and its release
+ *  share whatever Shift makes it type: `KeyR` for `r` and `R`. An event that names no physical
+ *  key, as a script's may not, is read by its character. */
+function physicalKey(event: KeyboardEvent): string {
+  return event.code === "" ? event.key : event.code;
+}
+
+/** `event` as the registry matches it. The space bar types `" "`, which no key text can hold (a
+ *  chord splits on whitespace) and which would read as a key that holds its Shift already, as
+ *  `?` does: as `Space` it has a name of its own, and Space and Shift+Space are two keys. */
+function pressOf(event: KeyboardEvent): KeyPress {
+  return {
+    altKey: event.altKey,
+    code: event.code,
+    ctrlKey: event.ctrlKey,
+    key: event.key === " " ? "Space" : event.key,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+  };
+}
+
 export interface KeymapOptions {
   /** Whether the browser runs on a Mac, where `$mod` is Cmd and an Alt combo may match a physical
    *  key; production follows the browser's Mac identity. */
@@ -418,6 +454,18 @@ export interface Keymap {
    * `/priorities`) is one row, which runs the registration that applies when it is chosen.
    */
   actions(): KeymapAction[];
+  /**
+   * Reads a keydown in the window's capture phase, before every control and every other listener
+   * of the page hears it (`KeymapProvider`): notes each press of a key until the key is let go
+   * (`handleKeyUp`, `releaseKeys`), and keeps from the whole page each repeat of a held key that
+   * would act. A held key repeats only to move, or to type in the field that had the focus
+   * before its press; every other key acts once for each press - opens a field, opens or closes
+   * a layer, presses a button, sends, picks, ticks - however long it is held, and its repeats
+   * type nothing in a field its press moved the focus to, and press nothing on a control there.
+   * A press itself goes on untouched, so a control still takes its own keys before the registry
+   * reads them (`handleKeyDown`), and so does an input method's key.
+   */
+  captureKeyDown(event: KeyboardEvent): void;
   /** The unfinished chord, or one with no keys; the same object until the chord changes. */
   chord(): PendingChord;
   /**
@@ -437,8 +485,13 @@ export interface Keymap {
    */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
+  /** Forgets the press of the key `event` lets go of (`captureKeyDown`). */
+  handleKeyUp(event: KeyboardEvent): void;
   pushScope(scope: KeymapScope): () => void;
   register(scope: KeymapScope, bindings: readonly KeyBinding[]): () => void;
+  /** Forgets every press of a key held down, as the window loses the focus and its keys' releases
+   *  go elsewhere (`captureKeyDown`). */
+  releaseKeys(): void;
   subscribe(listener: () => void): () => void;
 }
 
@@ -462,6 +515,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   let pendingEditable = false;
   let pendingTimer: number | undefined;
   let chord: PendingChord = NO_CHORD;
+  /** The press of each key held down now, by its physical key (`physicalKey`), from the press to
+   *  the key's release or the window's loss of the focus (`captureKeyDown`). */
+  const held = new Map<string, HeldPress>();
 
   const matches = (combos: readonly KeyCombo[], presses: readonly KeyPress[]) =>
     presses.every((press, index) => matchesCombo(combos[index] as KeyCombo, press, isMac));
@@ -609,6 +665,38 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     return { exact: undefined, partial: false };
   };
 
+  /** Repeats may continue a movement, or edit the same field. They must not start a new
+   *  action just because the press moved focus or changed which binding is enabled. */
+  const repeatGoesOn = (event: KeyboardEvent, press: HeldPress | undefined): boolean => {
+    // Tab can dismiss a layer. A fresh press is required to leave the next one.
+    if (event.key === "Tab") return false;
+    if (MOVING_KEYS[event.key] === true) return true;
+    const { exact, partial } = resolve([pressOf(event)], isEditableTarget(event));
+    if (exact !== undefined || partial) {
+      return (
+        press?.movement !== undefined &&
+        exact?.binding.repeats === true &&
+        exact.binding.id === press.movement
+      );
+    }
+    const { target } = event;
+    if (press === undefined || press.target !== target || !(target instanceof Element)) {
+      return false;
+    }
+    if (event.key === " ") return !press.event.defaultPrevented;
+    if (!takesText(target) || !writesText(event)) return false;
+    if (event.key === "Enter") {
+      if (event.altKey) return false;
+      // The editor handles its own paragraph breaks. An ordinary textarea only inserts
+      // a newline if its handler did not take the press.
+      return (
+        (target instanceof HTMLTextAreaElement && !press.event.defaultPrevented) ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      );
+    }
+    return event.key.length !== 1 || !press.event.defaultPrevented;
+  };
+
   return {
     actions() {
       // Everything beneath the innermost dialog: the palette is itself a dialog, so this is the
@@ -676,6 +764,21 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       }
       return offered;
     },
+    captureKeyDown(event) {
+      // An input method's key is the input method's, a repeat or not, and a modifier alone acts
+      // on nothing: Shift held for Shift+R repeats as long as R does.
+      if (inputMethodKey(event) || MODIFIER_KEYS[event.key] === true) return;
+      if (!event.repeat) {
+        held.set(physicalKey(event), { event, target: event.target });
+        return;
+      }
+      if (repeatGoesOn(event, held.get(physicalKey(event)))) return;
+      // Kept from the browser's own action - a character typed, a button pressed, a form sent -
+      // and from every listener after this one: the window's own, a panel's Escape at the
+      // document's capture phase (`AnchoredPanel`), React's handlers and this registry's.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    },
     chord() {
       return chord;
     },
@@ -714,22 +817,14 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         return;
       }
       const editable = isEditableTarget(event);
-      const press: KeyPress = {
-        altKey: event.altKey,
-        code: event.code,
-        ctrlKey: event.ctrlKey,
-        // The space bar types `" "`, which no key text can hold (a chord splits on whitespace)
-        // and which would read as a key that holds its Shift already, as `?` does: as `Space` it
-        // has a name of its own, and Space and Shift+Space are two keys.
-        key: event.key === " " ? "Space" : event.key,
-        metaKey: event.metaKey,
-        shiftKey: event.shiftKey,
-      };
+      const press = pressOf(event);
       // A held key's repeats are no presses (R5, R8): each is read alone, outside any chord, and
       // runs only a binding that steps (`KeyBinding.repeats`), as a held `j` walks a list. Any
       // other binding its key names ran on the press and runs on no repeat - a held `1` that
       // snoozed an ask ticks no option of the question handed on to, a held `b` opens its menu
-      // once - and the repeats of its key are kept from the page all the same.
+      // once - and the repeats of its key are kept from the page all the same: most never reach
+      // this listener (`captureKeyDown`), and those of a key that moves, which go on to the
+      // control the focus is on, reach no binding but one that steps (Home on the outline's rows).
       if (event.repeat) {
         const { exact, partial } = resolve([press], editable);
         if (exact === undefined && !partial) return;
@@ -745,6 +840,14 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         resolution = resolve(presses, editable);
       }
       if (resolution.exact !== undefined) {
+        const heldPress = held.get(physicalKey(event));
+        if (
+          heldPress?.event === event &&
+          presses.length === 1 &&
+          resolution.exact.binding.repeats === true
+        ) {
+          heldPress.movement = resolution.exact.binding.id;
+        }
         event.preventDefault();
         clearPending();
         resolution.exact.binding.run(event);
@@ -767,6 +870,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         return;
       }
       clearPending();
+    },
+    handleKeyUp(event) {
+      held.delete(physicalKey(event));
     },
     pushScope(scope) {
       scopes.push(scope);
@@ -792,6 +898,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
           }
         }
       };
+    },
+    releaseKeys() {
+      held.clear();
     },
     subscribe(listener) {
       listeners.add(listener);

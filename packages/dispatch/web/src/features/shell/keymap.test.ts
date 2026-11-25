@@ -881,6 +881,223 @@ test("a held key's repeats run only a binding that steps, never a write, a digit
   expect([ran.get("inbox.dismiss"), ran.get("inbox.snooze")]).toEqual([2, 2]);
 });
 
+/**
+ * A hold of `key` as an engine sends one, on the page `KeymapProvider` binds: its press on the
+ * element that has the focus, `repeats` repeats, each on the element that has the focus as it is
+ * sent, and its release. Answers how many of the repeats reached the document's capture-phase
+ * listeners, where a panel's Escape listens (`AnchoredPanel`), and how many were left to the
+ * browser to act on: a character typed, a button pressed, a page scrolled.
+ */
+function hold(
+  key: string,
+  repeats: number,
+  init: KeyboardEventInit = {}
+): { acted: number; reached: number } {
+  const send = (type: "keydown" | "keyup", repeat: boolean) => {
+    const event = new KeyboardEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      key,
+      repeat,
+      ...init,
+    });
+    act(() => {
+      (document.activeElement ?? document.body).dispatchEvent(event);
+    });
+    return event;
+  };
+  send("keydown", false);
+  let reached = 0;
+  const hear = () => {
+    reached += 1;
+  };
+  document.addEventListener("keydown", hear, true);
+  let acted = 0;
+  try {
+    for (let count = 0; count < repeats; count += 1) {
+      if (!send("keydown", true).defaultPrevented) acted += 1;
+    }
+  } finally {
+    document.removeEventListener("keydown", hear, true);
+    send("keyup", false);
+  }
+  return { acted, reached };
+}
+
+/** Draws `KeymapProvider`, registers `bindings` under `inbox` and puts `elements` on the page;
+ *  answers what takes each of them away again. */
+function heldPage(bindings: readonly KeyBinding[], elements: readonly Element[]): () => void {
+  const view = render(createElement(KeymapProvider, {}));
+  const unregister = appKeymap.register("inbox", bindings);
+  const pop = appKeymap.pushScope("inbox");
+  document.body.append(...elements);
+  return () => {
+    for (const element of elements) element.remove();
+    pop();
+    unregister();
+    view.unmount();
+  };
+}
+
+// The held-key rule the architect ruled on 2026-11-25T04:12Z (62b47002's "a held key acts once but
+// for the steps and scrolls that repeat"), which the window's capture phase applies before any
+// control hears a key (`Keymap.captureKeyDown`): a repeat of a key that acts - one whose press put
+// the caret in a field, an Enter on a button, an Escape on a panel's field - reaches nothing of the
+// page and is left to no action of the browser's. It types nothing in the field the press focused,
+// presses the button no second time, and closes no panel around a list an Escape closed.
+test("a held key that acts reaches nothing with its repeats: none types in the field its press focused, presses the focused button again, or closes the panel around it", () => {
+  const row = document.createElement("button");
+  const field = document.createElement("input");
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  const trigger = document.createElement("button");
+  panel.append(trigger);
+  let searched = 0;
+  const search: KeyBinding = {
+    id: "search",
+    keys: "f",
+    label: "Search",
+    run: () => {
+      searched += 1;
+      field.focus();
+    },
+  };
+  const release = heldPage([search], [row, field, panel]);
+  try {
+    act(() => row.focus());
+    expect(hold("f", 3), "f, whose press puts the caret in a field").toEqual({
+      acted: 0,
+      reached: 0,
+    });
+    expect(document.activeElement, "the press put the caret in the field").toBe(field);
+    expect(searched, "the press ran its binding once").toBe(1);
+    act(() => row.focus());
+    expect(hold("Enter", 3), "Enter on a focused button").toEqual({ acted: 0, reached: 0 });
+    act(() => trigger.focus());
+    expect(hold("Escape", 3), "Escape on a panel's field").toEqual({ acted: 0, reached: 0 });
+  } finally {
+    release();
+  }
+});
+
+// The same rule's steps and scrolls: a binding that steps (`KeyBinding.repeats`) runs on each
+// repeat wherever its press moved the focus, an arrow goes on to whatever has the focus, and Space
+// goes on where its press was left to the browser, which scrolls the page by it, but not where a
+// control took the press to act, as a card that Space presses does.
+test("a held key that moves repeats wherever the focus has gone: a binding that steps runs on each repeat, and an arrow or Space the browser scrolls by goes on", () => {
+  const rows = Array.from({ length: 5 }, () => document.createElement("button"));
+  const card = document.createElement("div");
+  card.tabIndex = 0;
+  let pressed = 0;
+  card.addEventListener("keydown", (event) => {
+    if (event.key !== " ") return;
+    event.preventDefault();
+    pressed += 1;
+  });
+  let steps = 0;
+  const next: KeyBinding = {
+    id: "next",
+    keys: "j",
+    label: "Next",
+    repeats: true,
+    run: () => {
+      steps += 1;
+      rows[steps]?.focus();
+    },
+  };
+  const release = heldPage([next], [...rows, card]);
+  try {
+    act(() => rows[0]?.focus());
+    expect(hold("j", 3), "j, which the binding takes on each repeat").toEqual({
+      acted: 0,
+      reached: 3,
+    });
+    expect(steps, "a held j steps once for its press and once for each repeat").toBe(4);
+    expect(document.activeElement, "the held j walked to the fifth row").toBe(rows[4]);
+    expect(hold("ArrowDown", 3), "ArrowDown").toEqual({ acted: 3, reached: 3 });
+    expect(hold(" ", 3), "Space, which the browser scrolls by").toEqual({ acted: 3, reached: 3 });
+    act(() => card.focus());
+    expect(hold(" ", 3), "Space, which presses the card").toEqual({ acted: 0, reached: 0 });
+    expect(pressed, "the held Space pressed the card once").toBe(1);
+  } finally {
+    release();
+  }
+});
+
+// The same rule's typing: in the field that had the focus before the press, a held key that
+// writes (`writesText`) repeats - a character, Space, Backspace and Delete, and Enter in a field of
+// lines - but Escape, Enter in a field of one line, which sends its form, a key held with Ctrl and
+// a character a control took (a menu's digit, which writes its choice) act once.
+test("in a field that had the focus before the press, a held key that writes repeats, and Escape, an Enter that sends, a Ctrl key and a character a control took act once", () => {
+  const input = document.createElement("input");
+  const lines = document.createElement("textarea");
+  const menuBox = document.createElement("input");
+  menuBox.addEventListener("keydown", (event) => {
+    if (event.key === "2") event.preventDefault();
+  });
+  const release = heldPage([], [input, lines, menuBox]);
+  try {
+    act(() => input.focus());
+    for (const key of ["w", " ", "Backspace", "Delete"]) {
+      expect(hold(key, 3), key).toEqual({ acted: 3, reached: 3 });
+    }
+    for (const [key, init] of [
+      ["Escape", {}],
+      ["Tab", {}],
+      ["Enter", {}],
+      ["z", { ctrlKey: true }],
+    ] as const) {
+      expect(hold(key, 3, init), key).toEqual({ acted: 0, reached: 0 });
+    }
+    act(() => lines.focus());
+    expect(hold("Enter", 3), "Enter in a field of lines").toEqual({ acted: 3, reached: 3 });
+    const submit = (event: KeyboardEvent) => event.preventDefault();
+    lines.addEventListener("keydown", submit, { once: true });
+    expect(hold("Enter", 3), "Enter taken by a form").toEqual({ acted: 0, reached: 0 });
+    act(() => menuBox.focus());
+    expect(hold("2", 3), "a digit the menu's box took").toEqual({ acted: 0, reached: 0 });
+    expect(hold("w", 3), "a letter the menu's box typed").toEqual({ acted: 3, reached: 3 });
+  } finally {
+    release();
+  }
+});
+
+// A hold ends as its key is let go, and as the window loses the focus, which takes the release
+// elsewhere: a repeat whose press the page no longer holds is read as one whose press was on
+// another element, and types nothing. An input method's key goes on untouched, a repeat or not,
+// and a fresh press of the key is a hold again.
+test("a repeat after its key's release or the window's loss of the focus types nothing, while an input method's key and a fresh press go on", () => {
+  const input = document.createElement("input");
+  const release = heldPage([], [input]);
+  /** Sends a keydown or a keyup of `w` to the field; answers whether the page kept it from the
+   *  browser. */
+  const send = (type: "keydown" | "keyup", init: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent(type, { bubbles: true, cancelable: true, key: "w", ...init });
+    act(() => {
+      input.dispatchEvent(event);
+    });
+    return event.defaultPrevented;
+  };
+  try {
+    act(() => input.focus());
+    expect(send("keydown"), "the press").toBe(false);
+    expect(send("keydown", { repeat: true }), "a repeat of the press").toBe(false);
+    send("keyup");
+    expect(send("keydown", { repeat: true }), "a repeat after the release").toBe(true);
+    expect(send("keydown"), "a fresh press").toBe(false);
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+    });
+    expect(send("keydown", { repeat: true }), "a repeat after the window's blur").toBe(true);
+    expect(send("keydown", { isComposing: true, repeat: true }), "an IME's key").toBe(false);
+    expect(send("keydown"), "a fresh press after the window came back").toBe(false);
+    expect(send("keydown", { repeat: true }), "a repeat of the fresh press").toBe(false);
+  } finally {
+    send("keyup");
+    release();
+  }
+});
+
 test("rows within a scope read alphabetically, a lowercase word among capitalised ones included", () => {
   const { keymap } = harness();
   keymap.register("global", [

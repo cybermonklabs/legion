@@ -16,6 +16,7 @@ import {
 } from "../__tests__/list-picks";
 import { installResizeObserver } from "../__tests__/scroll-box";
 import { NoTooltips } from "../features/issue-page/NoTooltips";
+import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { MENU_TRIGGER_SELECTOR } from "./key-targets";
 import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
@@ -197,12 +198,17 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
   }
 });
 
-// A key held down acts once (R8, the class of the tester's defect 3): a held Enter in a
-// multi-select toggles its option once, where each repeat would toggle it again, and the list ends
-// with the option picked or not by the press alone.
+// A key held down acts once (R8, the class of the tester's defect 3), by the page's rule, which
+// `KeymapProvider` binds (`Keymap.captureKeyDown`): a held Enter in a multi-select toggles its
+// option once, where each repeat would toggle it again, and the list ends with the option picked or
+// not by the press alone.
 test("a held Enter toggles the active option once", async () => {
   const user = userEvent.setup();
-  const view = render(<Host options={["api", "docs", "frontend"]} />);
+  const view = render(
+    <KeymapProvider>
+      <Host options={["api", "docs", "frontend"]} />
+    </KeymapProvider>
+  );
   try {
     await user.click(screen.getByRole("button", { name: "Labels" }));
     await user.keyboard("{Enter>4}");
@@ -2698,14 +2704,20 @@ test("a letter narrows the list", async () => {
   }
 });
 
-// R5, R8 (the tester's round 16, the class of T15): a key held down acts once. The page's binding
-// opens the menu on the key's press, and the key's repeats then reach the menu's box, which types
-// none of them: a held `b` opens the Snooze menu with nothing typed and every choice shown. A
-// held letter in the box types it once, and a held arrow still walks the highlight, as a move
-// that writes nothing.
-test("a held key acts once in the list: the opener's repeats type nothing, a held letter types once, and a held arrow walks the highlight", async () => {
+// R5, R8 (the tester's round 16, the class of T15), and the held-key rule the architect ruled on
+// 2026-11-25T04:12Z, which `KeymapProvider` binds (`Keymap.captureKeyDown`): a held key acts once
+// but for the steps that repeat and the typing in a field that had the focus before its press. The
+// page's binding opens the menu on the key's press, and the key's repeats, which then reach the
+// menu's box, type none of themselves there: a held `b` opens the Snooze menu with nothing typed
+// and every choice shown. A held arrow walks the highlight, as a move that writes nothing, and a
+// held letter typed in the box, which had the focus before its press, types on each repeat.
+test("a held key in the list: the opener's repeats type nothing, a held arrow walks the highlight, and a held letter types on each repeat", async () => {
   const user = userEvent.setup();
-  const view = render(<MenuHost />);
+  const view = render(
+    <KeymapProvider>
+      <MenuHost />
+    </KeymapProvider>
+  );
   try {
     const row = screen.getByRole("button", { name: "Row" });
     act(() => row.focus());
@@ -2717,7 +2729,7 @@ test("a held key acts once in the list: the opener's repeats type nothing, a hel
     await user.keyboard("{ArrowDown>3}");
     expect(highlightedRow(menuBox()), "a held arrow walks the highlight").toBe("Until I clear it");
     await user.keyboard("{w>4}");
-    expect(menuBox(), "a held letter types it once").toHaveValue("w");
+    expect(menuBox(), "a held letter types on each repeat").toHaveValue("wwww");
     expect(handed()).toBe("");
   } finally {
     view.unmount();

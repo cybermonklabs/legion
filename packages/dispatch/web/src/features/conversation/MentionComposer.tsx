@@ -31,6 +31,7 @@ import type {
 import { Chip } from "../../components/Chip";
 import { focusIntoView } from "../../components/focus-place";
 import { heldField } from "../../components/held-press";
+import { MOVING_KEYS, writesText } from "../../components/key-targets";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -479,29 +480,6 @@ interface MentionComposerProps {
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
    *  why it refused, which the composer shows under the switch. */
   readonly onKindChange?: (kind: ComposerKind) => string | undefined;
-}
-
-/** The keys that only move the focus or the caret, which a send's hold on the composer lets
- *  through: the reader can still move about the draft, and leave the composer by keyboard. */
-const MOVING_KEYS: Readonly<Record<string, true>> = {
-  ArrowDown: true,
-  ArrowLeft: true,
-  ArrowRight: true,
-  ArrowUp: true,
-  End: true,
-  Home: true,
-  PageDown: true,
-  PageUp: true,
-  Tab: true,
-};
-
-/** Whether a key would write into a text field: held with no Ctrl or Cmd, a character, Enter,
- *  Backspace or Delete. A field an offer holds read only takes none of them, and says why
- *  (`KeptDraftOffers`' `typedOver`). */
-function writesText(event: KeyboardEvent): boolean {
-  const { key } = event;
-  if (event.ctrlKey || event.metaKey) return false;
-  return key.length === 1 || key === "Enter" || key === "Backspace" || key === "Delete";
 }
 
 /** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the

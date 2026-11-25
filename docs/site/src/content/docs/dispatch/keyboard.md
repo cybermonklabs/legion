@@ -22,12 +22,19 @@ it works as it does on the row or the page (see [Menus and lists](#menus-and-lis
 
 Only the keys that move or scroll repeat while you hold them down: `j`, `k` and the arrow keys
 that go to the next or previous row, card, column, turn, agent, component or pull request, the
-Board's `h` and `l`, `Space` and `Shift+Space` in the Inbox, and the Board's move keys, `Shift+J`,
-`Shift+K`, `Shift+L` and `Shift+H`, where each repeat moves the card one more time. Every other key
-acts once for each press, the digits included. If you hold it down, it does nothing more: a held
-`1` that snoozes an ask picks no option of the ask after it, and a held `b` or `p` opens its menu
-once, with nothing typed in the menu's search box. In a menu's search box, a held letter is typed
-once. This is also true of the palette's actions when you give them a key.
+Board's `h` and `l`, `Space` and `Shift+Space` in the Inbox, the Board's move keys, `Shift+J`,
+`Shift+K`, `Shift+L` and `Shift+H`, where each repeat moves the card one more time, and `Home`,
+`End`, `Page Up` and `Page Down`. Every other key acts once for each press, the digits,
+`Enter` and `Escape` included. This is also true of the palette's actions when you give them a
+key. If you hold such a key down, it does nothing more: a held `1` that snoozes an ask picks no
+option of the ask after it, a held `Enter` presses a button once, and a held `Escape` closes one
+list or panel. A held key that puts the cursor in a text field types nothing there: a held `f`
+puts it in the Inbox's search box, and a held `b` or `p` opens its menu, each with nothing typed.
+
+In a text field that had the focus before you pressed the key, typing repeats as usual: a held
+character, `Backspace` or `Delete`, and `Enter` in a box of several lines. This is also true in a
+menu's search box, where a held letter is typed again on each repeat. A held digit in a menu still
+picks its choice once, and a key you hold with `Ctrl` acts once in a text field too.
 
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).

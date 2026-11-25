@@ -189,8 +189,10 @@ export interface ListMarks {
  * - A digit writes its own choice at once, whatever the text box has narrowed (`keys`); a digit no
  *   choice has writes nothing, and no digit is typed into the box. A letter narrows the list,
  *   Enter writes the highlighted choice, and a click or a tap writes the choice it hits.
- * - A held key acts once: its repeats type nothing in the box and write nothing - the repeats of
- *   the key whose press opened the list among them - while a held arrow walks the highlight.
+ * - A held key follows the page's rule (`Keymap.captureKeyDown`, which `KeymapProvider` binds):
+ *   the repeats of the key whose press opened the list type nothing in the box, a held digit or
+ *   Enter writes once, a held letter types on each repeat in the box that had the focus before
+ *   its press, and a held arrow walks the highlight.
  * - Escape, Tab, Shift+Tab and a press outside close the list and write nothing, and every close,
  *   a pick's among them, gives the focus back to the element that had it as the list opened: a
  *   key's press of the trigger (a click with no pointer, `detail` 0: the page's binding pressing it
@@ -424,8 +426,9 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * A single pick that stands in a menu's place - the Inbox's Snooze, the priority, the status -
  * passes `menu`, which carries each rule of dispatch://INFRA-2160's D5 at once (`ListMenu`): it
  * opens on its first choice or on its value, its digits write their choices, a character typed on
- * its closed trigger is the page's key and no text, a held key acts once, every close gives the
- * focus back where it was as the list opened, and on a phone no text box takes the focus.
+ * its closed trigger is the page's key and no text, a held key acts once but for the arrows and the
+ * letters typed in its box, every close gives the focus back where it was as the list opened, and
+ * on a phone no text box takes the focus.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -881,20 +884,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     // composed text into the box and picks nothing, and Tab leaves the list open.
     if (inputMethodKey(event.nativeEvent)) return;
     const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
-    // A menu takes a held key once (R5, R8): the repeats of a key that types a character type
-    // nothing in its box and write nothing. The page's binding opened the list on the press of
-    // its key, `b` or `p`, and that key's repeats reach the box the focus moved to; a digit's
-    // repeats would write again. The arrows' repeats still walk the highlight.
-    if (
-      menu !== undefined &&
-      event.repeat &&
-      event.key.length === 1 &&
-      !event.ctrlKey &&
-      !event.metaKey
-    ) {
-      event.preventDefault();
-      return;
-    }
     // A menu's digit is the list's before the text box takes it: it writes its own choice at
     // once, whatever the box has narrowed, and a digit no choice has writes nothing. Either way
     // the reader has moved on from the row the list opened on, which is no longer kept shown
@@ -924,12 +913,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         letGo(opening);
         setActiveValue(next);
       }
-      return;
-    }
-    // A held Enter acts once (R8): its repeats would toggle a multi-select's option again, once
-    // for each repeat, or create a second time.
-    if (event.key === "Enter" && event.repeat) {
-      event.preventDefault();
       return;
     }
     if (event.key === "Enter" && activeRow !== undefined) {
