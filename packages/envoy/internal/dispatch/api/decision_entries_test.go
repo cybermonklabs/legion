@@ -229,6 +229,7 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 // choices.md holds the decision that shaped three requirements (d1). A second issue's spec of
 // 2,001 blocks, above docs.deferBlockIndexBlocks, holds one decision whose block index never runs.
 func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -561,6 +562,7 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 // writes stamped none, and a person, carry no title at all. The decided_by members are read as
 // the response holds them, so an empty title the answer spelled would fail as a title it held.
 func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
+	t.Parallel()
 	const (
 		titledSession = "session-titled-0123456789"
 		title         = "Legion planner · CORE-1"
@@ -682,6 +684,7 @@ const (
 // (a2); the agent's choices.md holds its decision d1 and a replaced decision d2. Every write
 // below is the agent's unless it names a person.
 func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -743,8 +746,11 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read what the reading states: %v", err)
 	}
+	// The reading's text_parent (refs.TupleTextParent) names the decision too, since its text sits
+	// in the decision's: that tuple is its place in the text, which no walk of the tree reads, and
+	// the part_of alone carries the tie.
 	for _, tuple := range out {
-		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf {
+		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf && tuple.Kind != refs.TupleTextParent {
 			t.Errorf("the reading points at the decision through %s as well as its part_of: the part_of carries the tie", tuple.Kind)
 		}
 		if tuple.Kind == graphstore.TupleDecidedBy {
@@ -1024,6 +1030,7 @@ func versionMarkdownAt(t *testing.T, database *store.Store, artifactID string, n
 // keptAskState), and a write that gives its block a `shaped` pointer, as the conversion does, each
 // move the block's row and leave the ask at the version that wrote it.
 func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1078,6 +1085,7 @@ func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttri
 // A document no pass ever indexed reads its newest version's words too, not those of the version
 // that first wrote its node.
 func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1141,6 +1149,7 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 // document is edited in (the document itself, or its issue's room for a converted one), and its
 // entry names no document: no block of it holds the ask.
 func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1174,6 +1183,7 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 // that deleted the answered ask q-kept and put a callout with the id q-kept in its place left the
 // entry naming SEED-1/spec#q-kept, the callout, until the next tick restored the ask.
 func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1205,6 +1215,7 @@ func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *test
 // `:::ask{#q-drive urgency="med" multiple="false"}`, and `dispatch artifact --force` refused that
 // text naming the ask's line.
 func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1250,6 +1261,7 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 // empty slice changes the shape of every such read, which the basebuild store census reads as the
 // two builds answering differently. A document with an ask block still answers its asks member.
 func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1285,10 +1297,11 @@ func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
 
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
-// transaction: a version that removes a decision and the reading under another leaves both out
-// of the Decisions read, and one that holds no typed block at all leaves the last decision out,
-// before any block-index reconciliation.
+// transaction, deleting their document_blocks and block_refs rows in it: a version that removes a
+// decision and the reading under another leaves both out of the Decisions read, and one that holds
+// no typed block at all leaves the last decision out, before any block-index reconciliation.
 func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1333,6 +1346,15 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	notListed("the version that removed d2", d2)
 	if kept := requireEntry(t, readEntries(t, handler, issue.Key), "the kept decision", d1); len(kept.Readings) != 0 {
 		t.Errorf("the kept decision answers the readings %v after the version that removed g1, want none", readingsOf(kept))
+	}
+	var rows, links int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and block_id in ('d2', 'g1')),
+		       (select count(*) from block_refs where artifact_id = $1 and block_id in ('d2', 'g1'))`, doc.id).Scan(&rows, &links); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || links != 0 {
+		t.Errorf("the version that removed d2 and g1 left %d document_blocks rows and %d block_refs rows of them, want none: the write that states them gone deletes them", rows, links)
 	}
 
 	agentUploadAs(t, handler, issue.Key, "big.md", big("A paragraph and no decision.\n"), nil)

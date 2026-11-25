@@ -749,6 +749,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			}
 			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
+				graphstore.QueueHeads(b, graphstore.HeldHeads(*stated))
 			}
 		}
 		return nil
@@ -871,19 +872,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
 	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
-	// looks for text in it. Typing a room took before the retirement closed it is still stored -
-	// this settlement commits the updates it read, as every settlement does - and logged, so it is
-	// kept rather than dropped, but no version of the retired document holds it.
-	if versioning {
-		retired, err := documentRetired(ctx, tx, room)
-		if err != nil {
-			return settleDone, st.abandon(err)
-		}
-		if retired {
-			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
-				"room", room, "latest_version", st.latest.Number)
-			versioning = false
-		}
+	// looks for text in it. Whether it is retired is the read beside the owner's lock this
+	// settlement took (lockArtifactOwner, artifactOwner.Retired), the lock the retirement takes
+	// too, so a retirement either committed before that read or commits after this settlement.
+	// Typing a room took before the retirement closed it, or took in a room the retirement's close
+	// missed (ServeHTTP), is still stored - this settlement commits the updates it read, as every
+	// settlement does - and logged, so it is kept rather than dropped, but no version of the
+	// retired document holds it.
+	if versioning && st.owner.Retired {
+		slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+			"room", room, "latest_version", st.latest.Number)
+		versioning = false
 	}
 	settledVersion := st.latest.Number
 	// An issue room versions each of its documents on its own (roomFragments): a version of each
@@ -983,13 +982,18 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		}
 		// A person's edit in the room that took an answered ask's block out of the document is
 		// that person's removal, which the version's index pass states on the ask's node, as the
-		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// same edit over HTTP records it (holdRoomRemovals). Only an answered ask the
 		// reconciled tree held no block of can be one, or any where the version is a later read.
 		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
-			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+			if err := holdRoomRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
 				return settleDone, st.abandon(err)
 			}
 		}
+		// The version is written with no deferral mark (versionWrite.deferLarge unset), so its
+		// blocks are indexed in this transaction whatever its size: this index pass is one of the
+		// passes that close a document left owed its block index, and claimCopies
+		// (stateCopiesAndReadability, below) then reads the nodes of this version's ask blocks
+		// from the block index as the pass leaves it, passing over a block with no node.
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
@@ -1016,18 +1020,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
-		// A person's version opens or moves on the document's edit notice, under the owner lock
-		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
-		// same order the notice a person's version opened before the close, due or held
-		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
-		// reopen, which would start from that row's from_version (openEditNotice), carries the
-		// edits this version saves.
-		if st.issueClosed {
-			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
-				return settleDone, st.abandon(err)
-			}
-		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// A person's version opens or moves on the document's edit notice, and a closed issue's
+		// deletes it (settledEditNotice).
+		if err := s.settledEditNotice(ctx, tx, room, st.issueClosed, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// A document body cites nodes whose rows carry a backlink count, so the version event
@@ -1093,6 +1088,14 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	st.published = ledger.events
+	// An issue room's versions stand in this transaction now, each with the digest of its query's
+	// record its room pass recorded (runQueue); a query whose record the write moved and whose
+	// document it wrote no version of takes one now (reviseQueries).
+	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
+		if err := st.reviseQueries(ctx, *st.owner.IssueKey); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
 	// settlement that writes no version takes out none. The room forgets the author of each ask
@@ -1140,6 +1143,35 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.layout, st.versioned, st.versionedCounts)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// reviseQueries appends, in the settlement's transaction once its write phase has run, a version of
+// each query document of the issue issueKey whose query's record or rendering this settlement's
+// room write moved without writing that document a version: a requirement written into the
+// Verification document's fragment moves the spec's record and no byte of the spec
+// (Service.ReviseQueries). What those versions state is caused by the last artifact.version the
+// settlement appended.
+func (st *settlement) reviseQueries(ctx context.Context, issueKey string) error {
+	revised, err := st.service.ReviseQueries(ctx, st.tx, issueKey, st.credit.versionActor())
+	if err != nil {
+		return err
+	}
+	return store.RunWrite(ctx, st.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, revised, lastVersionEvent(st.published))
+		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
+		return nil
+	})
+}
+
+// lastVersionEvent is the id of the last artifact.version of events, the events a settlement's
+// write phase appended, and graphstore.NoEvent where it appended none.
+func lastVersionEvent(events []model.Event) int64 {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Type == "artifact.version" {
+			return events[index].ID
+		}
+	}
+	return graphstore.NoEvent
 }
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
@@ -1322,12 +1354,14 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 
 // commitRoomVersions writes, in the settlement's transaction, one version of each document of the
 // issue room whose fragment changed (fragments), each through writeVersionTx with the version's
-// own approval move and carry, anchors and edit notice, then indexes the room once under its tree
-// artifact (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end
-// in the room's order with its blocks' ranges (fragmentsText), at the version of each fragment's
-// document - the one just written, or its latest - so each block records its own document's
-// version and the pass clears the mark the version trigger set on each version it writes
-// (refs.IndexBlocks' fence). Each version's node follows the pass's block nodes, and each
+// own approval move, anchors and edit notice, then indexes the room once under its tree artifact
+// (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end in the
+// room's order with its blocks' ranges (fragmentsText), at the version of each fragment's document
+// - the one just written, or its latest - so each block records its own document's version and the
+// pass clears the mark the version trigger set on each version it writes (refs.IndexBlocks'
+// fence); then carries each version's approval, once that pass has stated it (carryAfterRender),
+// a restore's carry before the versions' artifact.version events (carryRestored).
+// Each version's node follows the pass's block nodes, and each
 // version's artifact.version event names its own document and causes what the pass stated of
 // that document's blocks, with the version's node, stamping the links its blocks inserted at that
 // version (stampVersionEvent), each queued right after that event's append (graphstore.LatestEvent,
@@ -1364,6 +1398,11 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			continue
 		}
 		actor := st.credit.documentActor(fragment.document)
+		// Written with no deferral mark (versionWrite.deferLarge unset), and indexed by the room's
+		// one pass below (indexRoom), whatever the room's size: that pass is one of the passes that
+		// close a room left owed its block index (indexOwedRoom's case), and claimCopies
+		// (stateCopiesAndReadability) then reads the nodes of the room's ask blocks from the block
+		// index as the pass leaves it, passing over a block with no node.
 		result, err := s.writeVersionTx(ctx, tx, fragment.document,
 			renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, actor, &versionWrite{
 				authors:          st.credit.documents[fragment.document],
@@ -1391,6 +1430,24 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return err
+	}
+	// Each version's approval carry runs once the room's pass has stated it, so its writes run
+	// after the version_renders row that pass gives it (carryAfterRender), and the review it
+	// inserts pins that row's digest; a carry to a version that restores the approved text keeps
+	// its writes here, before the artifact.version events below, behind a row of the approval's
+	// digest the write phase holds to the version's record (carryRestored). Each version's move ran
+	// in its write, before the pass, so an open request names the version by now. A closed issue's
+	// version carries nothing.
+	if !st.issueClosed {
+		for _, write := range writes {
+			document, version, fragment := write.fragment.document, write.result.version, write.fragment
+			if err := carryAfterRender(ctx, tx, document, version.Number, func() error {
+				return s.carryApproval(ctx, tx, document, version,
+					renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx))
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	for _, write := range writes {
 		node, err := WriteVersionNode(ctx, tx, write.result.owner, write.result.version.Number, write.actor, write.result.version.CreatedAt)
@@ -1497,4 +1554,20 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		}
 	}
 	return causeRoomFacts(ctx, tx, room, facts, events, rest)
+}
+
+// settledEditNotice is what a settlement's version does to the document's edit notice, under the
+// owner lock the settlement took first: the sweep takes the two in that order too
+// (sendEditNotice). A person's version on an open issue opens or moves on the notice
+// (recordEditNotice). A closed issue's version opens none, and deletes in that same order the
+// notice a person's version opened before the close, due or held (holdEditNotice): neither a
+// reopen inside its quiet time nor the first notice after the reopen, which would start from that
+// row's from_version (openEditNotice), carries the edits this version saves. The version a joined
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
+func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
+	if closedIssue {
+		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
+	}
+	return s.recordEditNotice(ctx, tx, room, version, authors, latest)
 }

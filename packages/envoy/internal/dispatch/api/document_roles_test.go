@@ -38,6 +38,7 @@ func readIssueRoleDocuments(t *testing.T, handler http.Handler, key string) issu
 // role. The role is the document's for life: a second upload of the same name is its next
 // version, under the row that already holds the role.
 func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "ROLE", "Roles", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
@@ -107,6 +108,7 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 // write gives a roleless one no role. Once that document is retired, its name is refused as a
 // new one is, rather than as a retired document, and so is an edit of it by its id or its slug.
 func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "DEC", "Decisions", "A spec\n")

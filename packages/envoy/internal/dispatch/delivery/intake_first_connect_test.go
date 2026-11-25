@@ -68,7 +68,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
-	intake := newIntake(client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(tuningFor(t), client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	type firstBind struct {
 		subject string
 		landed  bool

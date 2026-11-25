@@ -22,7 +22,7 @@ func TestASessionRequestSignedForTheEdgeIsAnotherBrokers(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.Audience = edgeAddress
-	stale, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of the edge", "DEEL_API_KEY"), "", nil)
+	stale, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of the edge", "DEEL_API_KEY"), "")
 	m.Audience = testAudience
 	if err != nil || stale.State != "pending" || stale.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) signed for %s = %+v, %v; want a pending request with a record", edgeAddress, stale, err)
@@ -32,7 +32,7 @@ func TestASessionRequestSignedForTheEdgeIsAnotherBrokers(t *testing.T) {
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want nothing: a session's request signed for the edge is no request of this broker", approver, listed, err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || again.ID == stale.ID || again.Coalesced || again.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want a new pending request, not coalesced onto %s", again, err, stale.ID)
 	}
@@ -50,7 +50,7 @@ func TestARecordSignedForAnySpellingOfTheBrokersOriginIsListed(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.Audience = "https://secrets.internal.example:443"
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "asked with the default port", "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "asked with the default port", "DEEL_API_KEY"), "")
 	m.Audience = "https://secrets.internal.example"
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", req, err)

@@ -2,10 +2,11 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import { issueTreeKey } from "../../api/queries";
+import { conversationTreeKey } from "../../api/queries";
 import type { Artifact, DecisionKeep } from "../../api/types";
 import {
   borderDefault,
@@ -20,13 +21,9 @@ import {
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
-import {
-  issueTreeQuery,
-  type TreeAnswer,
-  type TreeAnswerNode,
-  viewKey,
-} from "./tree-read/tree-read";
+import { outlineQuery, type TreeAnswer, type TreeAnswerNode, viewKey } from "./tree-read/tree-read";
 
 /**
  * The two controls a decision's node draws (R7). The tree is one tab stop,
@@ -81,11 +78,12 @@ const ONE = decisionNode(
   "One tree, five presets\n\nThe presets are queries over the one tree."
 );
 
-/** A client that holds what the page holds: the tree read's answer of `nodes`, on one page. It
- *  is not fresh, so an enabled observer would read it again as it mounts. */
+/** A client that holds what the page holds: the outline read's answer of `nodes`, on one page,
+ *  Conversation's, the read the page holds at the address each case draws (`MemoryRouter`'s
+ *  `/`). It is not fresh, so an enabled observer would read it again as it mounts. */
 function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(issueTreeKey(KEY), treeAnswer(nodes));
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(nodes));
   return client;
 }
 
@@ -99,7 +97,7 @@ function renderActions(
   const client = heldReads(nodes);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
-      {page ? <NoTooltips>{children}</NoTooltips> : children}
+      <MemoryRouter>{page ? <NoTooltips>{children}</NoTooltips> : children}</MemoryRouter>
     </QueryClientProvider>
   );
   const view = render(
@@ -135,11 +133,13 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
   const client = heldReads([ONE]);
   const body = (drawn: boolean) => (
     <QueryClientProvider client={client}>
-      <ChangeDraftsProvider>
-        {drawn ? (
-          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-        ) : null}
-      </ChangeDraftsProvider>
+      <MemoryRouter>
+        <ChangeDraftsProvider>
+          {drawn ? (
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          ) : null}
+        </ChangeDraftsProvider>
+      </MemoryRouter>
     </QueryClientProvider>
   );
   const view = render(body(true));
@@ -372,6 +372,7 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
         anchor: {
           artifact: document_.id,
           block_id: ONE.block_id ?? ONE.id,
+          occurrence: 0,
           quote: "One tree, five presets",
         },
         body: "Say where.",
@@ -417,6 +418,46 @@ test("Change anchors to the node's document and block", async () => {
   }
 });
 
+// R3 and root R42: the Change's anchor carries its `occurrence`, 0, beside the block and the
+// quote, so the server takes the first match of the quote inside the decision's own block, which
+// is its first paragraph itself, though those words come again further down the block: with no
+// occurrence it refuses such a Change (`409 TARGET_AMBIGUOUS`). No client counts the occurrence
+// over a document, so the send reads no document's text.
+test("a Change's anchor carries occurrence 0 inside its block", async () => {
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const text = spyOn(api, "getArtifactText");
+  const repeated = decisionNode(
+    "d1",
+    "One tree, five presets\n\nThe presets are queries over the one tree.\n\nOne tree, five presets"
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions([repeated]);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor,
+      "the Change's anchor names its block, its quote and the quote's first match there"
+    ).toEqual({
+      artifact: document_.id,
+      block_id: repeated.block_id ?? repeated.id,
+      occurrence: 0,
+      quote: "One tree, five presets",
+    });
+    expect(text, "the send read the document's text").not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    createComment.mockRestore();
+    text.mockRestore();
+  }
+});
+
 // A Change quotes the decision's heading, the words of its first paragraph, and Dispatch refuses
 // an anchor whose quote is empty (`api/anchors.go`: "anchor quote must not be empty"). A decision
 // whose first paragraph holds no words - here an image alone - still waits for review, so it
@@ -444,6 +485,73 @@ test("a decision whose first paragraph holds no words draws Keep but no Change",
   }
 });
 
+/** The statement the decision below cites in its first paragraph, and the name the page's one
+ *  batched read brought for it. */
+const STATEMENT = `dispatch://${KEY}/spec#b-r1`;
+const STATEMENT_NAME = "Every property of the issue";
+
+/** The name of `STATEMENT`, published as the page publishes the names of its batched read. */
+function NamedStatement({ children }: { children: ReactNode }): ReactNode {
+  const names = useMemo(() => new Map([[STATEMENT, STATEMENT_NAME]]), []);
+  usePublishReferenceNames(names);
+  return children;
+}
+
+// Decision 448, root R22: the Change form draws its quote as the rows draw their words
+// (`RowText`), so the statement its first paragraph cites reads by the name the page has for it,
+// and so does the form's accessible name, never as a raw `dispatch://` address. The anchor still
+// quotes the words as the server's text holds them, address and all, which is what
+// `pmdoc.FindQuote` matches.
+test("the Change form draws its quote with each reference by its name", async () => {
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const citing = decisionNode("d1", `Shapes ${STATEMENT}.\n\nWhy it holds.`);
+  const client = heldReads([citing]);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <NamedStatement>
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          </NamedStatement>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    const quote = screen.getByTestId("decision-quote");
+    const form = quote.closest("form");
+    const name = form?.getAttribute("aria-label");
+    expect(
+      {
+        name,
+        quote: quote.textContent,
+        raw: `${name} ${form?.textContent}`.includes("dispatch://"),
+      },
+      "the Change form draws its quote and its name with the statement by its name, no raw address"
+    ).toEqual({
+      name: `${CONTROL_LABELS.change_decision} Shapes ${STATEMENT_NAME}.`,
+      quote: `Shapes ${STATEMENT_NAME}.`,
+      raw: false,
+    });
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor?.quote,
+      "the Change quotes the words as the server's text holds them, the address kept"
+    ).toBe(`Shapes ${STATEMENT}.`);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
 // Keep is written against the decision node's own
 // document, block and sum, as the tree read answers them on the node, whatever document the row
 // that draws it stands in. Kept, the tree is read again.
@@ -466,7 +574,7 @@ test("Keep posts the node's document, block id and sum", async () => {
     ).toEqual([document_.id, "d1", "sum-d1"]);
     await waitFor(() =>
       expect(
-        client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+        client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
         "the kept decision's tree was not read again"
       ).toBe(true)
     );
@@ -488,7 +596,7 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
   // The Decisions view, held as the page holds it once that view has been open.
-  client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(issueTreeKey(KEY)));
+  client.setQueryData(viewKey(KEY, "decisions"), client.getQueryData(conversationTreeKey(KEY)));
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
     const alert = await screen.findByRole("alert");
@@ -501,7 +609,7 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
     ).toBe(true);
     await waitFor(() =>
       expect(
-        client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+        client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
         "the refused decision's tree was not read again"
       ).toBe(true)
     );
@@ -515,10 +623,10 @@ test("a refused Keep keeps the decision waiting and reads the tree again", async
   }
 });
 
-/** The tree read as the page holds it, by an observer that is enabled (`useIssueTree.ts`'s
- *  `useTreeRead`), which is what a refresh of the tree reads again. */
+/** The outline read as the page holds it, Conversation's, by an observer that is enabled
+ *  (`useIssueTree.ts`'s `useTreeRead`), which is what a refresh of the outline reads again. */
 function PageTreeRead(): null {
-  useQuery(issueTreeQuery(KEY));
+  useQuery(outlineQuery(KEY, "conversation"));
   return null;
 }
 
@@ -535,7 +643,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
     kept_by: "alice",
   } satisfies DecisionKeep);
   const client = heldReads([ONE]);
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   if (held === undefined) throw new Error("the client holds no tree read");
   const inFlight = Promise.withResolvers<TreeAnswer>();
   const signals: (AbortSignal | undefined)[] = [];
@@ -546,14 +654,16 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
-      <PageTreeRead />
-      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      <MemoryRouter>
+        <PageTreeRead />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </MemoryRouter>
     </QueryClientProvider>
   );
   try {
     // The read in flight starts inside `act`, since it moves the tree read the page draws from.
     await act(async () => {
-      void client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      void client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
     });
     await waitFor(() =>
       expect(tree, "no tree read was in flight before the Keep").toHaveBeenCalledTimes(1)
@@ -572,7 +682,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
     );
     expect(signals[0]?.aborted, "the Keep cut off the tree read in flight").toBe(false);
     expect(
-      client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+      client.getQueryState(conversationTreeKey(KEY))?.isInvalidated,
       "the Keep did not mark the tree to be read again"
     ).toBe(true);
     expect(tree, "the Keep started a tree read beside the one in flight").toHaveBeenCalledTimes(1);
@@ -602,7 +712,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
 // the decision as it stood.
 test("a Change sent while the comments read is already invalidated reads the tree again and drops the held views", async () => {
   const client = heldReads([ONE]);
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   if (held === undefined) throw new Error("the client holds no tree read");
   // The Decisions and Spec views, held as the page holds them once each has been open.
   client.setQueryData(viewKey(KEY, "decisions"), held);
@@ -615,8 +725,10 @@ test("a Change sent while the comments read is already invalidated reads the tre
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
-      <PageTreeRead />
-      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      <MemoryRouter>
+        <PageTreeRead />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </MemoryRouter>
     </QueryClientProvider>
   );
   try {
@@ -662,7 +774,7 @@ test("Keep drops every held view, the Spec view's among them", async () => {
   } satisfies DecisionKeep);
   const user = userEvent.setup();
   const { client, unmount } = renderActions();
-  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  const held = client.getQueryData<TreeAnswer>(conversationTreeKey(KEY));
   client.setQueryData(viewKey(KEY, "decisions"), held);
   client.setQueryData(viewKey(KEY, "spec"), held);
   try {
@@ -689,7 +801,9 @@ test("Keep drops every held view, the Spec view's among them", async () => {
 // fresh and an enabled observer would read it again as it mounts.
 test("the node sends no request of its own to draw Keep and Change", async () => {
   const tree = spyOn(api, "getIssueTree").mockImplementation(() => new Promise<never>(() => {}));
-  const asks = spyOn(api, "listIssueAsks").mockImplementation(() => new Promise<never>(() => {}));
+  const asks = spyOn(api, "listIssueAskThreads").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
   const { unmount } = renderActions();
   try {
     await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });

@@ -300,8 +300,8 @@ type Answer struct {
 	// Visible is whether the person may see the project, or, for a question naming no person,
 	// whether it is public.
 	Visible bool `json:"visible"`
-	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
-	// included, nil when the answer carries none.
+	// Repositories is every "owner/name" repository Dispatch's answer names for the project,
+	// renames included, nil when the answer carries none.
 	Repositories []string `json:"repositories"`
 	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
 	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says

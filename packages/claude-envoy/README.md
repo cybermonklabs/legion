@@ -203,9 +203,12 @@ message from Dispatch's Agents page as that person's own turn.
   different message under the same key, and where its `ENVOY_URL` is not a plain http(s) URL (one
   with user info of any length, say) the URL is never printed; either way only the key is printed,
   with how to resend the original. A resend under a key exits 75 on any failure, since the send
-  before it may have arrived. Any other refusal, one for the sender's rate among them, prints the
-  listener's own sentence after `Claude Envoy send failed: `, exits 1 and is not sent again; so
-  does a listener that refused the connection or whose name did not resolve.
+  before it may have arrived. A send whose idempotency key another sender's message already holds
+  stored nothing: it prints `Claude Envoy send not delivered: …`, naming that message's event id,
+  and exits 1; run again without the key, it goes under a new one. Any other refusal, one for the
+  sender's rate among them, prints the listener's own sentence after `Claude Envoy send failed: `,
+  exits 1 and is not sent again; so does a listener that refused the connection or whose name did
+  not resolve.
 
 ## What a delivered line carries
 
@@ -264,8 +267,23 @@ codex plugin marketplace add cybermonklabs/legion
 codex plugin add codex-envoy@legion-plugins
 ```
 
+The package's `bin/dispatch` is the `dispatch` command for a terminal of your own, and its npm
+`bin`. Run there what the plugin's `dispatch` tool cannot hold: the tool ends a command after
+120 s, and the device login of a machine with no identity of its own,
+`dispatch login --device --person <address>`, waits until that person approves its code. Run it
+from the installed plugin, or from npm:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}"/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch login --device --person <address>
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address>
+```
+
+It runs `dist/dispatch.js` with `bun`, as the plugin's server does, and follows the link npm
+makes for a package `bin` to find it.
+
 `bun scripts/build.ts --codex-out <dir>` builds it from this tree into a directory outside the
-repository: `codex/`'s manifests, hooks and README, this package's skills and a fresh `dist/`.
+repository: `codex/`'s manifests, hooks, README and `bin/dispatch`, this package's skills and a
+fresh `dist/`.
 A skill that sets `disable-model-invocation: true`, which Codex's validator refuses, is shipped
 with Codex's own form of it, an `agents/openai.yaml` whose `policy.allow_implicit_invocation`
 is `false`: the skill stays out of the model's context until a person names it as `$<skill>`.

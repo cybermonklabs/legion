@@ -415,6 +415,7 @@ func requireSupersededByTheWrite(t *testing.T, handler http.Handler, fixture rea
 // words, prose outside any reading, both at once beside a reading, and a reading retyped into a
 // decision (requireSupersededByTheWrite).
 func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "TEST project",

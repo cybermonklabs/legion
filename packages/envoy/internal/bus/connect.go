@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -255,6 +256,15 @@ func handshaking(nc *nats.Conn) bool {
 	return status == nats.CONNECTING || status == nats.RECONNECTING
 }
 
+// handshakeReadFailed says whether err is how a read of a connection fails: the peer closed it
+// (io.EOF, io.ErrUnexpectedEOF), or the read itself failed (a *net.OpError, which nats.go's read
+// returns for a reset connection and for one that passed its deadline). An error the handshake
+// builds itself, such as a credentials callback's (nats.go's connectProto), is neither.
+func handshakeReadFailed(err error) bool {
+	var readErr *net.OpError
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &readErr)
+}
+
 // serverList is urls as a log line names them: comma-separated, each without its userinfo
 // (natsURLWithoutUserinfo).
 func serverList(urls []string) string {
@@ -353,16 +363,17 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
-		if sub == nil && errors.Is(err, io.EOF) && handshaking(nc) {
-			// A server that closes the connection during a reconnect's CONNECT and PING handshake
-			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
-			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
-			// It is a failed reconnect attempt, so it is logged as one, on the same
-			// throttle. Only that report is: the connection is still in that handshake
-			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
-			// and every other async error, an EOF on a connected connection included, stays an
-			// ERROR.
+		if sub == nil && handshakeReadFailed(err) && handshaking(nc) {
+			// A reconnect's CONNECT and PING handshake whose reply the client cannot read - a
+			// server that closes the connection (a server restarting, or one that accepted the dial
+			// as it shut down), resets it, or does not answer within the handshake's deadline -
+			// makes nats.go's sendConnect report the read's error here, and nowhere else: the
+			// reconnect loop then tries again without calling ReconnectErrCB (nats.go v1.55.0
+			// sendConnect, processConnectInit and doReconnect). It is a failed reconnect attempt,
+			// so it is logged as one, on the same throttle. Only that report is: the connection is
+			// still in that handshake (CONNECTING) or waiting for the next attempt (RECONNECTING)
+			// when the callback runs, and every other async error, the same read error on a
+			// connected connection included, stays an ERROR.
 			reconnectAttemptFailed(err)
 			if asyncErrCB != nil {
 				asyncErrCB(nc, err)
@@ -391,9 +402,9 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	return opts
 }
 
-// connectTimeout bounds each dial of a NATS server and its handshake: nats.go's own for a direct
-// dial (options), the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy). A connect with a
-// deadline cuts either to what remains of it.
+// connectTimeout bounds each dial of a NATS server and its handshake: the bus's direct dialer's for
+// a direct dial, the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy), and nats.go's own
+// for the handshake (options). A connect with a deadline cuts each to what remains of it.
 const connectTimeout = 5 * time.Second
 
 func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
@@ -402,9 +413,10 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 
 // connectWithContext dials urls with envoy's options, then settings when it is not nil: the NATS
 // credential the environment names (credential), and what the client's options add (connectOpts.connectionSettings,
-// connectInBackground). When dialer is not nil it dials through the SOCKS5 proxy it names
-// (socks5Proxy): every connection then, the first and each one nats.go dials to reconnect, goes
-// through the proxy, handed the server's host name as the URL spells it.
+// connectInBackground). Every connection dials through a severableDialer of its own, so Sever can
+// end it. When dialer is not nil it dials through the SOCKS5 proxy it names (socks5Proxy): every
+// connection then, the first and each one nats.go dials to reconnect, goes through the proxy,
+// handed the server's host name as the URL spells it.
 //
 // A connect through a proxy that fails names the setting and the proxy, whatever failed: its ten
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
@@ -446,12 +458,18 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 				attemptDialer = dialer.bounded(remaining)
 			}
 		}
+		// Every connection dials through a severable dialer, so Client.Sever can end it without
+		// nats.go's lock: through the SOCKS5 proxy when one is set, else directly, bounded by the
+		// attempt's timeout as nats.go's own dialer is. nats.go otherwise resolves the host itself
+		// and hands the dialer an address, which the proxy cannot reach when only its resolver knows
+		// the name; a direct dial resolves it in Go's dialer, which spreads the timeout over the
+		// addresses as nats.go spreads it over the hosts it resolved.
+		dial := (&net.Dialer{Timeout: next.Timeout}).DialContext
 		if attemptDialer != nil {
-			next.CustomDialer = attemptDialer
-			// nats.go otherwise resolves the host itself and hands the dialer an address, which the
-			// proxy cannot reach when only its resolver knows the name.
-			next.SkipHostLookup = true
+			dial = attemptDialer.DialContext
 		}
+		next.CustomDialer = newSeverableDialer(dial)
+		next.SkipHostLookup = true
 		type connectionResult struct {
 			conn *nats.Conn
 			err  error

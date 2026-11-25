@@ -150,8 +150,8 @@ func requireFileVersion(t *testing.T, handler http.Handler, read fileVersionRead
 }
 
 // documentVersionKeys are the members of a document version's JSON answer, which every read
-// without download=true keeps.
-var documentVersionKeys = []string{"authors", "created_at", "markdown", "named", "number", "sha256", "size", "summary"}
+// without download=true keeps: digest among them, which a document's version always answers.
+var documentVersionKeys = []string{"authors", "created_at", "digest", "markdown", "named", "number", "sha256", "size", "summary"}
 
 // documentVersionJSON reads a document's version at address, holds the answer to the JSON a read
 // without download=true answers, with exactly documentVersionKeys and none of a download's
@@ -242,6 +242,7 @@ func documentAtTwoVersions(t *testing.T, handler http.Handler, route downloadRou
 // with each character outside printable ASCII, each `"` and each `\` written as `_`. A path
 // separator is `_` in both. Every other header of the version address stays as it was.
 func TestAVersionDownloadIsNamedAfterItsArtifactOnEveryRoute(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	// %PDF- opens what http.DetectContentType reads as a PDF, which is no picture, so each upload
 	// is a file; a PNG's signature makes the one image.
@@ -276,6 +277,7 @@ func TestAVersionDownloadIsNamedAfterItsArtifactOnEveryRoute(t *testing.T) {
 // name's first character: a name with no `.`, or whose only `.` opens it, takes the number at its
 // end, and of two extensions only the last follows the number.
 func TestAnOlderVersionDownloadTakesItsNumberBeforeTheExtension(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	byID := routes[0]
 	makefiles := [][]byte{[]byte("all:\n\tgo build\n"), []byte("all:\n\tgo build ./...\n")}
@@ -300,6 +302,7 @@ func TestAnOlderVersionDownloadTakesItsNumberBeforeTheExtension(t *testing.T) {
 // included, and is one `_` per character in the ASCII filename. The upload trims space at the two
 // ends of a name, so each control character here sits inside it.
 func TestAVersionDownloadNameWritesEveryUnsafeCharacterAsAnUnderscore(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	byID := routes[0]
 	content := []byte("a name to make safe")
@@ -323,6 +326,7 @@ func TestAVersionDownloadNameWritesEveryUnsafeCharacterAsAnUnderscore(t *testing
 // address does, on each of the four routes, and has a browser ask again before it uses a copy it
 // holds: the name an older version saves under changes when a newer version arrives.
 func TestTheDownloadAddressNamesAFileAndAsksAgainOnEveryRoute(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	reports := [][]byte{[]byte("%PDF-1.7\nreport, version 1"), []byte("%PDF-1.7\nreport, version 2")}
 	images := [][]byte{pngBytes("first pixels"), pngBytes("second pixels")}
@@ -350,6 +354,7 @@ func TestTheDownloadAddressNamesAFileAndAsksAgainOnEveryRoute(t *testing.T) {
 // markdown member holds, an older version's own, saved under the name the document holds at the
 // moment of the read, with .md added where that name ends in no Markdown extension.
 func TestTheDownloadAddressAnswersADocumentAsItsMarkdownFile(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	for _, route := range routes[:3] {
 		t.Run(route.name, func(t *testing.T) {
@@ -387,6 +392,7 @@ func TestTheDownloadAddressAnswersADocumentAsItsMarkdownFile(t *testing.T) {
 // download address existed, whatever else the parameter says: only the exact value true asks for
 // the file, so download=false, download=1 and an empty download= each read as no parameter.
 func TestADocumentVersionAnswersItsJSONUnlessDownloadIsExactlyTrue(t *testing.T) {
+	t.Parallel()
 	handler, routes := downloadRoutes(t)
 	for _, route := range routes[:3] {
 		t.Run(route.name, func(t *testing.T) {
@@ -408,6 +414,7 @@ func TestADocumentVersionAnswersItsJSONUnlessDownloadIsExactlyTrue(t *testing.T)
 // client is written from, declares the download query parameter. The query-key guard holds only
 // that some route of artifacts.go names the key, which one operation would satisfy.
 func TestEveryVersionOperationDeclaresTheDownloadParameterInTheOpenAPIDocument(t *testing.T) {
+	t.Parallel()
 	type parameter struct {
 		Name string `json:"name"`
 		In   string `json:"in"`

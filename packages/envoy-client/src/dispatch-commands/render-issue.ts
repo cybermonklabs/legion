@@ -1,6 +1,7 @@
 import type {
   Agent,
   ClaimHolderLiveness,
+  CommentEventPayload,
   DispatchEvent,
   GraphEdgeKind,
   GraphReferences,
@@ -13,6 +14,7 @@ import type {
   IssueProgress,
   IssueReferencesAnswer,
   IssueRouteStatus,
+  MessageEventPayload,
   ReferenceLink,
 } from "@legion/contracts";
 import {
@@ -23,7 +25,7 @@ import {
   ISSUE_ROUTE_STATUSES,
   issueReferenceSections,
 } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
@@ -263,9 +265,9 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
- *  parent chain and the project's default mapping. A Dispatch server from before the repository
- *  fields sends neither field, and its answer is unknown, never none: none means the server
- *  resolved no repository. */
+ *  parent chain and the project's default repository. A Dispatch server from before the
+ *  repository fields sends neither field, and its answer is unknown, never none: none means the
+ *  server resolved no repository. */
 function repositoryLine(issue: {
   readonly repo?: string | null;
   readonly resolved_repo?: string | null;
@@ -310,9 +312,16 @@ const STRUCTURAL_EDGES_IN: readonly GraphEdgeKind[] = ["child_of", "blocked_by"]
 
 /** One row of the references read: the kinds of its links, the node at the far end, and the
  *  issue's node at the near end, which a row of `links` links from (`via`) and a row of
- *  `linked_from` links to (`to`). */
+ *  `linked_from` links to (`to`). A comment or message, or a block of one, carries its post's
+ *  marks after its address, as a graph row does (`edgeLine`): `deletedMark` for a deleted one, and
+ *  `editedMark` for an edited one. */
 function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "to"): string {
-  return `- ${(kinds ?? []).join(",")} ${node.kind} ${node.ref ?? node.id} · ${near} ${via.kind} ${via.id}`;
+  const address = node.ref ?? node.id;
+  const target =
+    node.deleted_at == null
+      ? withEditedMark(address, node.edited_at)
+      : `${address} · ${deletedMark(node.deleted_at, node.deleted_by)}`;
+  return `- ${(kinds ?? []).join(",")} ${node.kind} ${target} · ${near} ${via.kind} ${via.id}`;
 }
 
 /** The `References:` lines of an answer from a build before the one-hop read, which answers its
@@ -470,6 +479,30 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
   ].join("\n");
 }
 
+/**
+ * The head an event of a comment or an issue message reads with: the head of the body it
+ * carries, or, on a post its author deleted, the mark the read of the event carries in place of
+ * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
+ * every earlier event of a post once it is deleted, which is why the body is read for absence.
+ * An event of a post its author edited carries the words that event carried, which a later edit
+ * may have replaced: the post's own `created` event and every `edited` event but the last one
+ * carry words that are gone, and the newest `edited` event carries the words the post holds now.
+ * The read of the event stamps every event of such a post with the time of its last edit
+ * (`attachPostMarks`, `api/events.go`), so the line names that time and a reader can tell which
+ * it is meeting. A reader given stale words with no mark is the fault dispatch://INFRA-1523
+ * exists for.
+ *
+ * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
+ * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with
+ * `exactOptionalPropertyTypes` takes neither reading for the other
+ * (`dispatch-api-spellings.test.ts`).
+ */
+function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
+  if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
+  if (payload.body === undefined) return undefined;
+  return withEditedMark(textHead(payload.body), payload.edited_at);
+}
+
 /** The head of the text an event carries, so a log reads without opening each item. */
 function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
@@ -493,11 +526,14 @@ function eventHead(event: DispatchEvent): string | undefined {
     case "comment.edited":
     case "comment.resolved":
     case "comment.reopened":
+    case "comment.deleted":
     case "suggestion.accepted":
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
-      return textHead(event.payload.body);
+    case "message.edited":
+    case "message.deleted":
+      return postEventHead(event.payload);
     case "artifact.version":
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`

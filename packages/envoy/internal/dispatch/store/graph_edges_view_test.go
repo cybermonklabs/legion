@@ -19,17 +19,21 @@ var graphEdgesViewMigrations = map[string]GraphEdgesArms{
 	"20261118023219_issue_tree_components.up.sql":                         GraphEdgesComponents,
 	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
 	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
+	"20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
 }
 
 // graphEdgesSiblingRestatements are the migrations of the sibling branch this branch merges that
 // state graph_edges by hand after the first of graphEdgesViewMigrations, each from the arms the
-// sibling's own view has: 20261120122700 filters the tuple arm of 20261109215947's arms, and
-// 20261121034242 restates 20261116094101's arms with that filter. Neither holds this branch's
-// arms, and a database runs each version once, so the newest of graphEdgesViewMigrations, dated
-// after both, states the view again from GraphEdgesView with every arm of both branches.
+// sibling's own view has: 20261120122700 filters the tuple arm of 20261109215947's arms,
+// 20261121034242 restates 20261116094101's arms with that filter, and 20261121104002 restates
+// 20261121034242's arms with 20261117020856's class `store` and `lens_block` arm. None holds this
+// branch's arms, and a database runs each version once, so the newest of
+// graphEdgesViewMigrations, dated after all three, states the view again from GraphEdgesView with
+// every arm of both branches.
 var graphEdgesSiblingRestatements = map[string]bool{
 	"20261120122700_graph_edges_tuple_arm_filter.up.sql":          true,
 	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql": true,
+	"20261121104002_graph_edges_store_class_last.up.sql":          true,
 }
 
 // graphEdgesStatement is the head of the statement that states the view, as GraphEdgesView writes

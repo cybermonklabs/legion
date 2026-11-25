@@ -35,6 +35,8 @@ export type IssueRoute =
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
+  // Graph, the new issue page's view of the whole tree read, and Graph zoomed to one node.
+  | { key: string; kind: "graph"; node?: string }
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
@@ -442,6 +444,13 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "conversation") {
     return { key, kind: "conversation" };
   }
+  // Graph's path, `/graph`, and `/graph/<node id>` with the node's id one encoded segment.
+  const graph = target.match(/^graph(?:\/([^/?#\s]+))?$/);
+  if (graph !== null) {
+    const node = graph[1] === undefined ? undefined : decodedSegment(graph[1]);
+    if (graph[1] !== undefined && node === undefined) return undefined;
+    return node === undefined ? { key, kind: "graph" } : { key, kind: "graph", node };
+  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -707,6 +716,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
       route.version === undefined ? "" : `@v${route.version}`
     }${block}`;
   }
+  // Graph is a view of the issue's page and names nothing of its own: its reference is the issue.
+  if (route.kind === "graph") {
+    return issue;
+  }
   return `${issue}/${route.kind}/${encodeURIComponent(route.id)}${block}`;
 }
 
@@ -883,6 +896,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} comment${block}`;
     case "message":
       return `${route.key} message${block}`;
+    case "graph":
+      return route.key;
   }
 }
 
@@ -941,6 +956,10 @@ export function buildIssuePath(route: IssueRoute): string {
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
     return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
+  }
+  if (route.kind === "graph") {
+    const graph = `${issue}/graph`;
+    return route.node === undefined ? graph : `${graph}/${encodeURIComponent(route.node)}`;
   }
   const segment =
     route.kind === "ask" ? "asks" : route.kind === "comment" ? "comments" : "messages";

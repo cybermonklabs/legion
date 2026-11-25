@@ -736,7 +736,7 @@ func TestTheTreeReadLiftsAVisibleNodeAboveAParentItsReaderMayNotSee(t *testing.T
 		login string
 		sees  []refs.Target
 	}{{"alice", []refs.Target{lensTarget, riskTarget}}, {"bob", []refs.Target{riskTarget}}} {
-		loaded, err := refs.Nodes(ctx, rig.database.Pool, model.Actor{Kind: "user", ID: reader.login}, true, []refs.Target{lensTarget, riskTarget})
+		loaded, err := refs.Nodes(ctx, rig.database.Pool, model.Actor{Kind: "user", ID: reader.login}, []refs.Target{lensTarget, riskTarget})
 		if err != nil {
 			t.Fatalf("load the lens and the risk as %s: %v", reader.login, err)
 		}

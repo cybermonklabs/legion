@@ -21,6 +21,22 @@ func WithBeforeRequestFlush(before func()) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.beforeRequestFlush = before })
 }
 
+// WithBeforeCoreSendFlush runs before on the goroutine of a send of the core subscription
+// (sendCore), after the bind and right before the flush that waits for the server's answer, so a
+// test can replace the connection's session while the send is open. It is compiled into the
+// package's tests only; no production connect can set it.
+func WithBeforeCoreSendFlush(before func()) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.beforeCoreSendFlush = before })
+}
+
+// WithAfterCoreSendFlush runs after on the goroutine of a send of the core subscription
+// (sendCore), right after the flush returns and before the server's answer is read, so a test can
+// drop the connection between the answer's arrival and its read. It is compiled into the package's
+// tests only; no production connect can set it.
+func WithAfterCoreSendFlush(after func()) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.afterCoreSendFlush = after })
+}
+
 // WithRequestExpiry has each Request's timeout fire when the channel expiry returns for it does,
 // in place of a timer at the request's deadline; a nil channel keeps that timer. The func expiry
 // returns beside it, when not nil, runs once the Request has settled a flush that returned before

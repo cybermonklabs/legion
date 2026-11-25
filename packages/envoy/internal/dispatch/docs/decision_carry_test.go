@@ -13,8 +13,10 @@ import (
 // decisions document, under the heading the restore adds, and under a new block id, carry the
 // approval, and so does an open ask block the restore moved there from the decisions document
 // (D1), and such a block the approved version held elsewhere with the same bytes, a link and a
-// code span among them; a restored block whose words moved, or whose words stand in other bytes,
-// does not. The conversion's decisions in that part carry it,
+// code span among them, beside the pointer the restore's write gives it or rewrites where its
+// target moved; a restored block whose words moved, whose words stand in other bytes, or that
+// holds a `shaped` pointer an agent gave it since, does not. The conversion's decisions in that
+// part carry it,
 // and so do the `shaped` pointers it gives an answered ask that stands in the spec already, beside
 // a decision and a reading in one version (spec v42's R9); a decision outside the part does not.
 //
@@ -50,6 +52,9 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 	const linked = "Which region, per [the map](https://example.com/map), goes first in the `rollout`?"
 	const stepPointer = "dispatch://DOC-1/spec#b-r1"
 	const agentPointer = "dispatch://DOC-1/spec#b-r2"
+	// movedPointer is a pointer to a block of the decisions document, which the restore's write
+	// rewrites to where that block moves.
+	const movedPointer = "dispatch://DOC-1/artifact/decisions-md#b-h1"
 	shaped := ` shaped="` + stepPointer + `"`
 	part := "## Decisions\n\n"
 	restored := restoreCase.change + carriedReasonEnd
@@ -110,8 +115,16 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 			ids("q-fresh"), nil, decisionStepCases{restored: ids("q-fresh"), pointerLines: tookPointer}, restored},
 		{"an answered ask returned with its question edited", prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
 			prose + part + ask("q1", "Which region goes last?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
-		{"an answered ask the approved version held with a link and a code span, returned with them", prose + ask("q1", linked, "") + "\n" + part + pointer,
-			prose + part + ask("q1", linked, ` shaped="`+stepPointer+`"`), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
+		{"an answered ask the approved version held with a link and a code span, returned with them and the pointer the restore's write gives it", prose + ask("q1", linked, "") + "\n" + part + pointer,
+			prose + part + ask("q1", linked, ` shaped="`+stepPointer+`"`), ids("q1"), nil,
+			decisionStepCases{restored: ids("q1"), restoredShaped: map[string]restoredShape{"q1": {added: []string{stepPointer}}}, pointerLines: tookPointer}, restored},
+		{"an answered ask returned with a shaped pointer an agent gave it after the approval", prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
+			prose + part + ask("q1", "Which region goes first?", ` shaped="`+agentPointer+`"`), ids("q1"), nil,
+			decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
+		{"an answered ask returned with the pointer the approved version held, which the restore's write rewrote to where its block moved",
+			prose + ask("q1", "Which region goes first?", ` shaped="`+movedPointer+`"`) + "\n" + part + pointer,
+			prose + part + ask("q1", "Which region goes first?", ` shaped="`+stepPointer+`"`), ids("q1"), nil,
+			decisionStepCases{restored: ids("q1"), restoredShaped: map[string]restoredShape{"q1": {moved: map[string]string{movedPointer: stepPointer}}}, pointerLines: tookPointer}, restored},
 		{"an answered ask the approved version held with a link and a code span, returned with its words in plain text", prose + ask("q1", linked, "") + "\n" + part + pointer,
 			prose + part + ask("q1", "Which region, per the map, goes first in the rollout?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
 		{"an open ask the restore moved into the Decisions part", prose + part + pointer, prose + part + ask("q1", "Which region goes first?", ""),
@@ -172,7 +185,7 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 			if step {
 				input.steps = test.mark
 				input.steps.restore, input.steps.conversion = true, true
-				input.restored = restoredAskBlocks(approved, version, input.steps.restored)
+				input.restored = restoredAskBlocks(approved, version, input.steps.restored, input.steps.restoredShaped)
 			} else if want != "" {
 				// Another writer's version making the same change: a route's, an agent's upload.
 				want = ""

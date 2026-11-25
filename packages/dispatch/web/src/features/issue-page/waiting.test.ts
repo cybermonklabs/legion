@@ -197,6 +197,8 @@ const change: Comment = {
   author: { id: "alice", kind: "user" },
   body: "Say which pages this covers.",
   created_at: "2026-11-05T11:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "change-1",
@@ -351,6 +353,34 @@ test("what waits on the reader is their open questions, the review list and thei
   expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
 });
 
+// R7 and R13, and R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any
+// more, so the decision it was asked of is back on the review list and in the header's count,
+// in the tree as in the count. The tree read answers it with no body and no mark of the delete,
+// so the comments read tells it. Anchored on that decision's words, the deleted Change is no row
+// of the outline (R9): the margin beside the decision draws it.
+test("a Change its author deleted leaves its decision on the review list and in the count", () => {
+  const deleted: Comment = {
+    ...change,
+    body: "",
+    deleted_at: "2026-11-05T12:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const tree = answerOf([
+    statement,
+    ...askNodes,
+    decisionNode("listed", ["r1"]),
+    decisionNode("untied", []),
+    decisionNode("changed", ["r1"]),
+    commentNode(deleted, "changed"),
+  ]);
+  const counted = waitingOnReader(issue, "alice", isCoverageStatement, tree, [deleted]);
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+
+  const root = buildIssueTree({ comments: [deleted], coverage, issue, tree, viewer: "alice" });
+  expect(waitingIn(root)).toEqual(["mine", "spec#b-listed", "spec#b-changed"]);
+  expect(parentsOf(root, deleted.id)).toEqual([]);
+});
+
 // A decision the count counts is a decision node of the tree read, by the review
 // state the read answers on it: one that waits for a person's review and that a link ties to a
 // statement. One kept as it reads now, one replaced, and one that waits but is tied to nothing
@@ -392,6 +422,39 @@ test("waitingOnReader counts a waiting decision node", () => {
   expect(waitingOnReader(quiet, "alice", isCoverageStatement, undefined).decisions).toBe(0);
 });
 
+// R2: an overtaken decision stays where its kind puts it and counts in no count of what waits.
+// One the read answers `overtaken`, though it waits for review and a tie names a statement, is
+// not in the header's count, and the tree marks it waiting on nobody, while the decision beside
+// it that is not overtaken still waits, in the count as in the tree.
+test("an overtaken waiting decision tied to a statement is not counted", () => {
+  const tree = answerOf([
+    statement,
+    decisionNode("overtaken", ["r1"], { state: "overtaken" }),
+    decisionNode("waits", ["r1"]),
+  ]);
+
+  expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
+});
+
+// R2: an overtaken question counts in no count of what waits either. An open ask whose turn is
+// the reader's, which the read answers `overtaken`, is not in the header's count, and the tree
+// marks it waiting on nobody, though it is still an open question.
+test("an overtaken open question is not counted", () => {
+  const tree = answerOf(
+    askNodes.map((node) => (node.id === "mine" ? { ...node, state: "overtaken" as const } : node))
+  );
+
+  expect(waitingOnReader(issue, "alice", isCoverageStatement, tree)).toEqual({
+    approvals: [spec.id],
+    asks: 0,
+    decisions: 0,
+    total: 1,
+  });
+  const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
+  expect(waitingIn(root)).toEqual([]);
+  expect(nodeIn(root, "mine")).toMatchObject({ question: true, waiting: false });
+});
+
 // A Change is the comment the tree read hangs under its decision, which is where the
 // read hangs a comment anchored inside the decision's words. A person's comment anchored to the
 // second decision's words that the read hangs elsewhere - under the issue, or under the first
@@ -425,14 +488,49 @@ test("a Change is only the comment under its decision", () => {
 });
 
 // The count and the tree find a decision node's Change in the same place, the comment the tree
-// read hangs under the node, and neither reads the comments read: so they agree while that read
-// has not answered yet, or answered before the Change was written, and the count does not call
-// the decision waiting on the reader while the outline draws it waiting on its agent.
+// read hangs under the node, and neither finds it in the comments read, which says only which
+// Changes their author deleted: so they agree while that read has not answered yet, or answered
+// before the Change was written, and the count does not call the decision waiting on the reader
+// while the outline draws it waiting on its agent.
 test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const tree = answerOf([statement, decisionNode("noded", ["r1"]), commentNode(asked, "noded")]);
 
   expect(waits(tree, coverage)).toEqual([0, []]);
+});
+
+// Decision 337: a Change its author deleted asks nothing any more, and the tree read answers a
+// deleted comment with no mark of the delete, so the comments read tells it. The decision whose
+// node the read hangs that Change under is back on the review list, in the count as in the tree,
+// and the deleted Change keeps its place under the node, drawn as the deleted line.
+test("a deleted Change under its decision node leaves the decision on the review list and in the count", () => {
+  const asked: Comment = { ...change, anchor: null, id: "c-noded" };
+  const deleted: Comment = {
+    ...asked,
+    body: "",
+    deleted_at: "2026-11-05T12:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const tree = answerOf([statement, decisionNode("noded", ["r1"]), commentNode(deleted, "noded")]);
+  const root = buildIssueTree({
+    comments: [deleted],
+    coverage,
+    issue: quiet,
+    tree,
+    viewer: "alice",
+  });
+  expect([
+    waitingOnReader(quiet, "alice", isCoverageStatement, tree, [deleted]).decisions,
+    waitingIn(root),
+  ]).toEqual([1, ["spec#b-noded"]]);
+  expect(parentsOf(root, deleted.id)).toEqual(["spec#b-noded"]);
+  const node = nodesInOrder(root).find((one) => one.id === deleted.id);
+  expect({ deletedAt: node?.deletedAt, text: node?.text }).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    text: "Deleted by alice · 2026-11-05T12:00:00Z",
+  });
+  // The same Change not deleted is counted, as above.
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, tree, [asked]).decisions).toBe(0);
 });
 
 // A person's comment under a decision is a
@@ -470,6 +568,28 @@ test("a Change older than the decision's last change is no Change", () => {
     ["spec#b-d1"],
   ]);
   expect(madeAt("2026-11-05T13:00:00Z", keptAt("2026-11-05T12:00:00Z"))).toEqual([0, []]);
+});
+
+// R3, root R35: a decision with a Change waits on its agent, and once its words change after that
+// Change it waits for the reader's review again, in the count as in the tree. The Change was made
+// at 11:00; the decision's words changed at 10:00, and then again at 12:00, after it.
+test("a decision waits again once its words change after its Change", () => {
+  const asked = commentNode(change, "d1");
+  const before = answerOf([statement, decisionNode("d1", ["r1"]), asked]);
+  const after = answerOf([
+    statement,
+    decisionNode("d1", ["r1"], {
+      decision: { changed_at: "2026-11-05T12:00:00Z", changed_version: 3 },
+      text: "The new words of d1.",
+    }),
+    asked,
+  ]);
+  const stateOf = (tree: TreeAnswer) =>
+    nodeIn(buildIssueTree({ coverage, issue: quiet, tree, viewer: "alice" }), "spec#b-d1")?.state;
+
+  expect(waits(before, coverage)).toEqual([0, []]);
+  expect(waits(after, coverage)).toEqual([1, ["spec#b-d1"]]);
+  expect([stateOf(before), stateOf(after)]).toEqual(["change_requested", "waiting_review"]);
 });
 
 // Two documents of an issue may share a block id. A person's comment on the statement r1 is no

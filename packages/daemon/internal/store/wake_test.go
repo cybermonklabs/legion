@@ -31,7 +31,9 @@ func seedReleasedPod(t *testing.T, store *Store, session string) {
 // inTx runs read in a transaction of the store's pool, as a fact's handler does.
 func inTx(t *testing.T, store *Store, read func(pgx.Tx) error) {
 	t.Helper()
-	if err := store.Tx(context.Background(), read); err != nil {
+	if err := Transact(context.Background(), store.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return read(tx)
+	}); err != nil {
 		t.Fatalf("transaction: %v", err)
 	}
 }
@@ -287,7 +289,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)})
 	if err != nil {
 		t.Fatalf("record the release: %v", err)
@@ -338,7 +340,7 @@ func TestClosingAResumeWritesNoFirstTurnAndFreesTheRole(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	if _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+	if _, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-time.Hour)}); err != nil {
 		t.Fatalf("record the release: %v", err)
 	}

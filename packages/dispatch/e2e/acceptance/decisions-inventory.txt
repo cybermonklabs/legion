@@ -331,6 +331,7 @@ docs/solutions/.index/596.json	no
 docs/solutions/.index/sjawhar-legion-598.json	no
 docs/solutions/architecture-patterns/a-bound-that-guards-a-shared-dependency-is-paid-once-per-dependency-not-once-per-call-pr2699.md	no
 docs/solutions/architecture-patterns/a-bound-that-predicts-a-loop-imports-the-loops-own-steps-from-a-stdlib-only-leaf-pr2705.md	no
+packages/daemon/internal/prompts/owner_plan_test.go	no
 sha256:6ada35a5edd165c52eea425b85177502fcd011143711ce1c460183ed199b4f12	no
 docs/solutions/architecture-patterns/a-due-only-read-puts-its-window-in-the-key-and-pays-separately-for-what-the-scan-also-did-pr2641.md	no
 docs/solutions/architecture-patterns/a-fence-convention-is-replaced-only-when-the-guarded-step-is-the-only-reachable-step-pr2592.md	no
@@ -1352,6 +1353,7 @@ docs/solutions/testing/a-divergence-test-drives-the-source-through-the-path-only
 sha256:0ff3cd755432e6a83afd1f81916c18a00a98251b431b6f2cd900db8407042466	no
 docs/solutions/testing/a-docker-run-line-is-proven-from-a-pod-with-no-container-runtime-as-a-two-container-job-whose-client-ships-in-the-image-pr2498.md	no
 docs/solutions/testing/a-documented-command-is-proven-by-running-it-and-feeding-its-artifact-to-the-real-consumer-pr2545.md	no
+docs/solutions/testing/a-durable-created-where-a-failed-stream-delete-kept-its-directory-restores-the-old-durables-position-pr4895.md	no
 docs/solutions/testing/a-duration-measured-before-the-change-is-a-bound-and-the-term-nobody-re-reads-is-setup-pr2726.md	no
 docs/solutions/testing/a-failed-measurement-read-is-unknown-never-zero-pr2369.md	no
 docs/solutions/testing/a-failing-deep-equality-on-a-fake-that-holds-dom-or-an-editor-can-print-a-diff-that-oom-kills-the-pod-pr2472.md	no
@@ -1637,6 +1639,7 @@ docs/solutions/testing/pin-a-settle-from-state-loop-with-a-scripted-fake-that-co
 docs/solutions/testing/pin-generated-test-data-by-a-digest-of-the-whole-structure-in-the-generators-order-not-by-its-totals-pr2469.md	no
 docs/solutions/testing/pin-the-exact-command-list-never-exclude-a-subcommand.md	no
 docs/solutions/testing/pin-the-zero-of-a-time-since-signal-before-its-event-pr2504.md	no
+docs/solutions/testing/playwright-did-not-exit-after-stop-can-be-the-runner-removing-trace-files-of-a-worker-that-exited.md	no
 sha256:01522a20a6ff8037fe3843324da8b1d277a13cd129cac09026c314b84a79fa8c	no
 sha256:5678867cc0ee0bbe6dffeb76c9e2b0da96ad8ee185d05e003c36d73051af4795	no
 docs/solutions/testing/proof-rig-loads-the-production-plugin-tree.md	no
@@ -1745,6 +1748,7 @@ packages/claude-envoy/codex/README.md	no
 packages/contracts/AGENTS.md	no
 packages/contracts/README.md	no
 packages/contracts/fixtures/classification/README.md	no
+packages/daemon/internal/prompts/code_precedence_test.go	no
 packages/daemon/internal/prompts/controller_test.go	no
 packages/daemon/internal/prompts/go/architect-common.md	no
 packages/daemon/internal/prompts/go/architect-root.md	no
@@ -1758,6 +1762,8 @@ packages/daemon/internal/prompts/go/planner.md	no
 packages/daemon/internal/prompts/go/reviewer.md	no
 packages/daemon/internal/prompts/go/tester.md	no
 packages/daemon/internal/prompts/go/worker-common.md	no
+packages/daemon/internal/prompts/handoff_rules_test.go	no
+packages/daemon/internal/prompts/part_rules_test.go	no
 packages/daemon/internal/prompts/prompts.go	no
 packages/daemon/internal/prompts/prompts_test.go	no
 packages/daemon/internal/prompts/roles/architect-root.md	no
@@ -1782,7 +1788,6 @@ packages/dispatch/README.md	no
 packages/envoy-client/README.md	no
 packages/envoy/AGENTS.md	no
 packages/envoy/README.md	no
-packages/envoy/cmd/agent-secrets/README.md	no
 packages/envoy/cmd/cipher/README.md	no
 packages/envoy/cmd/cipherd/README.md	no
 packages/envoy/cmd/dispatch/AGENTS.md	no
@@ -1824,6 +1829,9 @@ skills/legion-architect/SKILL.md	no
 skills/legion-architect/references/acceptance.md	no
 skills/legion-architect/references/decomposition.md	no
 skills/legion-architect/references/design-gate.md	no
+skills/legion-architect/references/plan-changes.md	no
+skills/legion-architect/references/plan.md	no
+skills/legion-architect/references/surface-round.md	no
 skills/legion-architect/references/wake-routing.md	no
 skills/legion-controller/SKILL.md	no
 skills/legion-controller/references/admission.md	no
@@ -1846,13 +1854,12 @@ skills/legion-retro/references/pr-body-content.md	no
 skills/legion-worker/SKILL.md	no
 skills/legion-worker/references/ci-checks.md	no
 skills/legion-worker/references/conflicts-and-rewrites.md	no
-skills/legion-worker/references/default-branch-check.md	no
 skills/legion-worker/references/findings.md	no
-skills/legion-worker/references/foreign-path.md	no
 skills/legion-worker/references/gvisor.md	no
 skills/legion-worker/references/merge-gate.md	no
 skills/legion-worker/references/plan-tests.md	no
 skills/legion-worker/references/pr-body.md	no
+skills/legion-worker/references/results.md	no
 skills/legion-worker/references/review-threads.md	no
 skills/legion-worker/references/tools.md	no
 skills/legion-worker/references/withheld-capability.md	no

@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr5199
+body: |-
+  A session reads an Envoy message only from what the message itself carries. A key spelled
+  `__proto__` in a message could make the session read a field the message did not carry: the
+  topic it came on, the sender, its body, or which session a Dispatch event names. Such a key is
+  now ignored. A message whose text holds half of a surrogate pair alone is now shown, with U+FFFD
+  where the text could not be read. Before, it came back on every delivery and was never shown.

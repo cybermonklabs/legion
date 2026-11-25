@@ -10,6 +10,7 @@
 package refs
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,33 @@ type Queryer interface {
 type Target struct {
 	Kind string
 	ID   string
+}
+
+// CompareAddresses compares the store addresses of two nodes, `<kind>:<id>`, byte for byte, as
+// strings.Compare compares the two written out, and writes neither: the walk and the tree read
+// order siblings by it thousands of times a read.
+func CompareAddresses(left, right Target) int {
+	if left.Kind == right.Kind {
+		return strings.Compare(left.ID, right.ID)
+	}
+	leftLength, rightLength := len(left.Kind)+1+len(left.ID), len(right.Kind)+1+len(right.ID)
+	for index := range min(leftLength, rightLength) {
+		if l, r := addressByte(left, index), addressByte(right, index); l != r {
+			return cmp.Compare(l, r)
+		}
+	}
+	return cmp.Compare(leftLength, rightLength)
+}
+
+// addressByte is the byte at index of target's address, `<kind>:<id>`.
+func addressByte(target Target, index int) byte {
+	switch {
+	case index < len(target.Kind):
+		return target.Kind[index]
+	case index == len(target.Kind):
+		return ':'
+	}
+	return target.ID[index-len(target.Kind)-1]
 }
 
 // refsSources is every kind of node a refs row's from_kind names: a document, an ask, a comment
@@ -1047,6 +1075,11 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	for _, reference := range outgoing {
+		if reference.Artifact != nil {
+			model.StateFileTokens(reference.Artifact.Kind, reference.Artifact.Versions)
+		}
 	}
 	return outgoing, nil
 }

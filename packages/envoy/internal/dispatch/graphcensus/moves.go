@@ -357,6 +357,9 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 // ask - an answered ask that left it, or an ask block of the decisions document, which moves into
 // it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
 // document's sections; the census command sets it on the report it prints (StoreReport.Decisions).
+// It carries ReadDecisionsCensus's answer alone, and goes with it.
+//
+// kept for one release: decisions-documents-fn
 type DecisionsCensus struct {
 	Documents, UnconvertedSections int64
 	SpecsWithMovedAnswers          []SpecWithMovedAnswers
@@ -364,6 +367,8 @@ type DecisionsCensus struct {
 
 // SpecWithMovedAnswers is one spec the restore owes an ask: its issue, and the id of each ask the
 // restore owes it, in the restore's order (ReadRestoreWork).
+//
+// kept for one release: decisions-documents-fn
 type SpecWithMovedAnswers struct {
 	Issue string
 	Asks  []string
@@ -371,6 +376,8 @@ type SpecWithMovedAnswers struct {
 
 // SpecsWithMovedAnswersOf is each spec the restore owes an ask over work, in work's order, each
 // once: the issue whose spec an ask of either shape returns or moves to, with its asks.
+//
+// kept for one release: decisions-documents-fn
 func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 	var specs []SpecWithMovedAnswers
 	for _, ask := range work {
@@ -384,6 +391,8 @@ func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 
 // writeDecisions prints the decisions line, and one line for each spec whose answered asks left
 // it, naming the asks by id.
+//
+// kept for one release: decisions-documents-fn
 func writeDecisions(w io.Writer, decisions DecisionsCensus) {
 	fmt.Fprintf(w, "census: decisions documents=%s unconverted_sections=%s specs_with_moved_answers=%s\n",
 		pgmigrate.Thousands(decisions.Documents), pgmigrate.Thousands(decisions.UnconvertedSections),

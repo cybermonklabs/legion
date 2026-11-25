@@ -79,6 +79,7 @@ func (kv renewalMarkKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // moves to the registration's moment, and no whole read of the role claims completes in between,
 // since the watcher's scheduled read is held. The test logs the renewal before and after.
 func TestARenewOnSubscribeRenewsAClaimTheCopyLost(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_renew_copy_lost"
 		role   = "renew-copy-lost"
@@ -125,6 +126,7 @@ func TestARenewOnSubscribeRenewsAClaimTheCopyLost(t *testing.T) {
 // RefreshAt (storedTopics), and any the consumer filter fence adds; fewer than the three would say
 // the count is not counting.
 func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_set_read_from_store"
 		role   = "set-read-from-store"
@@ -161,23 +163,37 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 	}
 	claimed := rig.storedClaim(t, role)
 
-	gets, err := rig.client.Conn.SubscribeSync(fmt.Sprintf("$JS.API.DIRECT.GET.KV_%s.>", bus.InterestBucket))
-	if err != nil {
-		t.Fatalf("watch the interest bucket's direct gets: %v", err)
+	// A read of the interest bucket is a direct get, or, for a write's re-read after the bucket
+	// refused it, a stream message get answered by the stream's leader (store's readLeader): both
+	// are watched, so a registration whose conflict path reads the leader is counted whole.
+	var watches []*natsgo.Subscription
+	for _, subject := range []string{
+		fmt.Sprintf("$JS.API.DIRECT.GET.KV_%s.>", bus.InterestBucket),
+		fmt.Sprintf("$JS.API.STREAM.MSG.GET.KV_%s", bus.InterestBucket),
+	} {
+		watch, err := rig.client.Conn.SubscribeSync(subject)
+		if err != nil {
+			t.Fatalf("watch the interest bucket's reads on %s: %v", subject, err)
+		}
+		t.Cleanup(func() { _ = watch.Unsubscribe() })
+		watches = append(watches, watch)
 	}
-	t.Cleanup(func() { _ = gets.Unsubscribe() })
-	// count is how many direct gets of the interest bucket the server has handed the watch: each
-	// get the registry made was answered, so the server had already copied it to the watch, and
-	// the flush has the connection read that copy before it reads the flush's answer.
+	// count is how many reads of the interest bucket the server has handed the watches: each read
+	// the registry made was answered, so the server had already copied it to a watch, and the
+	// flush has the connection read those copies before it reads the flush's answer.
 	count := func() int {
 		if err := rig.client.Conn.Flush(); err != nil {
-			t.Errorf("flush the watch of direct gets: %v", err)
+			t.Errorf("flush the watches of the interest bucket's reads: %v", err)
 		}
-		n, _, err := gets.Pending()
-		if err != nil {
-			t.Errorf("read the watch of direct gets: %v", err)
+		total := 0
+		for _, watch := range watches {
+			n, _, err := watch.Pending()
+			if err != nil {
+				t.Errorf("read the watch of the interest bucket's reads: %v", err)
+			}
+			total += n
 		}
-		return n
+		return total
 	}
 	start := count()
 	// The mark runs on the goroutine the renewal's bounded read runs on (bus.Bounded).
@@ -200,7 +216,7 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 		t.Fatalf("the registration never read %s's claim: no renewal of it ran", role)
 	}
 	registrationReads, renewalReads := marked-start, end-marked
-	t.Logf("interest bucket direct gets: the registration's %d, the renewal's %d", registrationReads, renewalReads)
+	t.Logf("interest bucket reads (direct gets and leader reads): the registration's %d, the renewal's %d", registrationReads, renewalReads)
 	if renewalReads != 0 {
 		t.Fatalf("the renewal read the interest bucket %d times, want none: its set is the row the registration's write returned", renewalReads)
 	}

@@ -79,11 +79,12 @@ func wantHTTP2(t *testing.T, proto <-chan string) {
 // clause: the stand-in reads the body and never answers, so when the op's bound ends the request,
 // WroteRequest has not fired and the broker has not answered — `sent` is false, only GotConn
 // fired, and the context ended. Nothing but that clause makes the outcome unknown, so
-// enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN with settle's cause, before the bound plus
-// 1 s, where brokerCall's timer would answer. With the clause removed (mutation C,
-// `false && ended`), the row answers ENROLL_FAILED; with the op's context left running past the
-// bound, the timer answers instead, at the bound plus 1 s and with its own cause.
+// enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN with settle's cause, before brokerCall's
+// timer would answer (slowTimer). With the clause removed (mutation C, `false && ended`), the row
+// answers ENROLL_FAILED; with the op's context left running past the bound, the timer answers
+// instead, with its own cause.
 func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, "")
 	r.login(t) // log in against the ordinary fake first, then point the Broker at the stand-in
 
@@ -93,7 +94,7 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 		_, _ = io.Copy(io.Discard, req.Body)
 	})
 	const bound = time.Second
-	r.srv.BrokerCallBound = bound
+	slowTimer(r.srv, bound)
 
 	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}, BrokerCallWait)
@@ -102,7 +103,7 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 		t.Fatalf("enroll-session-key: %v", err)
 	}
 	wantHTTP2(t, proto)
-	wantSettled(t, "enroll whose body is still being written at the bound", resp, CodeEnrollUnknown, elapsed, bound+time.Second)
+	wantSettled(t, "enroll whose body is still being written at the bound", resp, CodeEnrollUnknown, elapsed, bound+answerMargin)
 }
 
 // TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown holds settle through
@@ -112,8 +113,10 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 // failure is a decode error. enroll-session-key must answer ENROLL_OUTCOME_UNKNOWN with settle's
 // cause, before the bound: an answer at the bound or later could be the `connected && ended`
 // clause's or brokerCall's timer's, not GotFirstResponseByte's. With traceReach's
-// GotFirstResponseByte line removed, the row answers ENROLL_FAILED.
+// GotFirstResponseByte line removed, the row answers ENROLL_FAILED. The answer comes at once and
+// the row fails it only at the 5 s bound, so it runs beside the package's other tests.
 func TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, "")
 	r.login(t)
 

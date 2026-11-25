@@ -91,6 +91,18 @@ func collectViewChain(rows pgx.Rows, key string) ([]chainIssue, error) {
 	return chain, nil
 }
 
+// chainAncestors is the keys of the issues above the issue a chain read from it up (readViewChain)
+// holds, parent first: refs.IssueAncestors' answer, which climbs the same parent_key links to the
+// same depth (refs.IssueDepthCap) in the same order, and [] where the store holds no row of the
+// issue.
+func chainAncestors(chain []chainIssue) []string {
+	ancestors := make([]string, 0, max(len(chain)-1, 0))
+	for index := 1; index < len(chain); index++ {
+		ancestors = append(ancestors, chain[index].key)
+	}
+	return ancestors
+}
+
 // ViewOf is the issue whose requirements the issue issueKey is a view of, read through q, and ""
 // where it is no view. An issue is a view where all three hold: its row of issue_views says it was
 // born converted, or converted by the conversion with the conversion's view mark; its row holds no
@@ -338,10 +350,12 @@ func queueOwnSpecIn(ctx context.Context, issueKey string) error {
 // block index over its documents states a requirement node (blocks, the blocks the pass indexes,
 // hold a block of type requirement) and ViewOf answers in tx that the issue is no view, whatever
 // wrote the requirement: a write through the API, a settlement of the issue's room, or the
-// block-index reconciliation. It reads the issue's row of issue_views first, and a pass whose issue
-// holds the mark already reads nothing more. A requirement the pass indexes on a view marks
-// nothing, so the view stands and the requirement reads as its gap. A document no issue holds
-// marks nothing.
+// block-index reconciliation. The passes are the writer's (indexRenderedVersion), a settlement's
+// room pass, the reconciliation's, and the typed passes of a write that leaves its other blocks to
+// the reconciliation, which write its requirement nodes in its own transaction (planTypedPasses).
+// It reads the issue's row of issue_views first, and a pass whose issue holds the mark already
+// reads nothing more. A requirement the pass indexes on a view marks nothing, so the view stands
+// and the requirement reads as its gap. A document no issue holds marks nothing.
 func markOwnSpecIndexed(ctx context.Context, tx pgx.Tx, issueKey string, blocks []model.ArtifactBlock) error {
 	if issueKey == "" || !slices.ContainsFunc(blocks, func(block model.ArtifactBlock) bool { return block.Type == requirementType }) {
 		return nil

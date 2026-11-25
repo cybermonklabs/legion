@@ -26,7 +26,6 @@ import {
   nodeRow,
   PHONE,
   parentOfRow,
-  type RowLayout,
   rowBody,
   rowGroups,
   rowLayouts,
@@ -63,13 +62,13 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 /**
  * The browser rows of the new issue page that read one of its views:
  * the Decisions view - the open questions, the decisions that wait for the reader's review with
- * Keep and Change, the reader's own decisions, and the agents' other decisions folded at the
- * foot - read on the real stack. Each row turns the new page on for its reader through D's
- * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or the Decisions
- * view's own `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`. The
- * row of the address a view draws no row for reads the Verification and Plan views too, through
- * V's `e2e/issue-page-v.ts` and K's `e2e/issue-page-k.ts`.
+ * Keep and Change, the reader's own decisions, and the agents' other decisions at the foot,
+ * unfolded as the view opens - read on the real stack. Each row turns the new page on for its
+ * reader through D's `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or
+ * the Decisions view's own `e2e/issue-page-q.ts`, and reads the page through D's
+ * `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own
+ * `e2e/issue-page-q.ts`. The row of the address a view draws no row for reads the Verification
+ * and Plan views too, through V's `e2e/issue-page-v.ts` and K's `e2e/issue-page-k.ts`.
  *
  * Seven rows, each under the title of the check it answers:
  *
@@ -83,9 +82,9 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  *   `Shift+C`, `Shift+K`, where a load and, at 1440 px, `t d` leave the focus (the tester's
  *   F23), and a press on the link of a row that has no focus; and its 390 px `t d` reading, a
  *   row of its own that reads part P's header band first (decisions 80, 127, 135 and 141).
- * - **c-layout**, "under Decisions a row draws the outline's layout, short names and the
- *   six-line cut": G's layout and group readings on every row of the view, each statement named
- *   within 32 characters, the cut of a long answered question, and the view's width.
+ * - **c-layout**, "under Decisions a row draws the outline's layout and short names": G's layout
+ *   and group readings on every row of the view, each statement named within 32 characters, the
+ *   long answered question drawn whole, and the view's width.
  * - **the address the view draws no row for**, one row: "an address the view draws no row for
  *   draws the outline's line for it in the view's place, with the focus on that line": under
  *   Verification a comment of the issue, which the view draws as a row of its own, a comment
@@ -108,13 +107,14 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 const VIOLET = "rgb(124, 58, 237)";
 const PAPER = "rgb(255, 255, 255)";
 
-// c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on the decisions model
-// and is not read here: an agent decision's author (`decided_by`), its level of uncertainty and
-// its reason, the reading under an agent's decision, and the `shaped` tuple itself (today's tie
-// is a decision block's link to a spec block). What waits on the conversion of issues: the
-// unconverted issue, `?view=decisions`, and "the page makes no request to /decisions".
+// c-decisions. Clause by clause, at 1440 px and at 390 px. Each decision is a `decision` block of
+// the spec, whose `shaped` attribute is its tie and whose `from_ask` names the question it
+// settles (`issue-layout-seed-text.ts`'s `decisionsPart`). What is not read here: an agent
+// decision's author (`decided_by`), its level of uncertainty and its reason, and the reading
+// under an agent's decision. What waits on the conversion of issues: the unconverted issue,
+// `?view=decisions`, and "the page makes no request to /decisions".
 // SLOW(>=2s): the whole issue seeded with three more writes, the view loaded and read at two
-// widths with a focus and the foot's unfolding waited on each time, then the outline loaded.
+// widths with a focus each time, then the outline loaded.
 test("the Decisions filter draws its four parts and quotes the person's answer", async ({
   browser,
 }) => {
@@ -127,36 +127,45 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     expect(stored?.text ?? "", "the seed's answered ask holds no answer").not.toBe("");
     // A heading is its words and its count; the foot's is its control's, which says whether the
     // rows under it are drawn. White space between the parts of one is the browser's to lay out.
+    // The foot's order is no rule of the view's, so its rows are read as a set.
     const squeezed = (text: string) => text.replace(/\s+/gu, "");
     const headings = {
       agents: squeezed(`3 ${DECISIONS_WORDS.agents_many}`),
       open_questions: squeezed(`${DECISIONS_WORDS.parts.open_questions} 1`),
-      review: squeezed(`${DECISIONS_WORDS.parts.review} 2`),
+      review: squeezed(`${DECISIONS_WORDS.parts.review} 3`),
       yours: squeezed(`${DECISIONS_WORDS.parts.yours} 4`),
     };
     const parts = async () =>
       (await decisionsPartsDrawn(page)).map((part) => ({
         ...part,
         heading: squeezed(part.heading),
+        rows: part.part === "agents" ? [...part.rows].sort() : part.rows,
       }));
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width} px`;
       await page.setViewportSize(size);
       await openPreset(page, seeded.key, "decisions");
-      // Four parts under their own headings, in this order: the open question first, the two
-      // decisions waiting for review newest first, the reader's own decisions newest first -
-      // the one kept, the question declined, the two answered - and the foot, folded. This is
-      // the row's first reading, so a page whose view draws nothing fails here.
+      // Four parts under their own headings, in this order: the open question first, the three
+      // decisions waiting for review newest first - the two the seed wrote in one edit in the
+      // order the outline draws them, the one under no question before the one that settles the
+      // answered question - the reader's own decisions newest first - the one kept, the question
+      // declined, the two answered - and the foot, unfolded as the view opens with nothing
+      // pressed. This is the row's first reading, so a page whose view draws nothing fails here.
       await expect.poll(parts, { message: `the four parts ${at}` }).toEqual([
         { count: "1", heading: headings.open_questions, part: "open_questions", rows: [open] },
-        { count: "2", heading: headings.review, part: "review", rows: [D(5), D(0)] },
+        { count: "3", heading: headings.review, part: "review", rows: [D(5), D(0), D(1)] },
         {
           count: "4",
           heading: headings.yours,
           part: "yours",
           rows: [D(4), seeded.declinedAskId, seeded.optionedAskId, seeded.answeredAskId],
         },
-        { count: "3", heading: headings.agents, part: "agents", rows: [] },
+        {
+          count: "3",
+          heading: headings.agents,
+          part: "agents",
+          rows: [D(2), D(3), D(6)].sort(),
+        },
       ]);
       await expectIssuePageDrawn(page);
       // No other sentence stands over them or between them.
@@ -192,9 +201,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       });
 
       // The answered ask draws its question and options; with the focus on it, the person's
-      // answer character for character as the store holds it, by who answered, with no reading
-      // under it: the person's answer is the answered ask itself, and no other node that restates
-      // it is a row of the filter.
+      // answer character for character as the store holds it, by who answered.
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect
@@ -209,15 +216,12 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
         rowOf(await drawnRows(page), seeded.optionedAskId)?.answerAuthor,
         `the answered ask does not name who answered ${at}`
       ).toBe(stored?.user);
-      expect(await nodeRow(page, D(1)).count(), `the reading is a row of the filter ${at}`).toBe(0);
+      // The decision that settles the seed's answered question (`from_ask`) is an agent's own:
+      // one row, of the review list as read above, and drawn nowhere in the answer's place.
+      expect(await nodeRow(page, D(1)).count(), `the settling decision's rows ${at}`).toBe(1);
 
       // The three states, as words: waiting for review, kept with the keeper's name, replaced.
-      await decisionsFoot(page).click();
-      await expect
-        .poll(async () => (await decisionsPartRows(page, "agents")).length, {
-          message: `the foot did not unfold ${at}`,
-        })
-        .toBe(3);
+      // The foot's rows are drawn already (above).
       const rows = await drawnRows(page);
       expect(rowOf(rows, D(5))).toMatchObject({
         state: "waiting_review",
@@ -235,12 +239,13 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
         CONTROL_LABELS.unsure
       );
 
-      // The person's decision that shaped three statements is one entry with one node id - the
-      // answer itself - and it reaches each of the three; the agent's reaches its two.
+      // The person's decision is one entry with one node id - the answered ask itself - and the
+      // agent's decision that settles it reaches each of the three statements it shaped; the
+      // first decision reaches its two.
       expect(await nodeRow(page, seeded.answeredAskId).count()).toBe(1);
       await expect(
-        nodeRow(page, seeded.answeredAskId).locator("[data-decision-statement] a"),
-        `the person's decision does not reach the three statements it shaped ${at}`
+        nodeRow(page, D(1)).locator("[data-decision-statement] a"),
+        `the decision that settles the answered question does not reach the three statements it shaped ${at}`
       ).toHaveCount(3);
       await expect(nodeRow(page, D(0)).locator("[data-decision-statement] a")).toHaveCount(2);
 
@@ -259,7 +264,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     }
 
     // The same three words wherever a decision is drawn: with no filter on too, where the
-    // section that restates the person's answer hangs under the ask it answers. The tree is
+    // decision that settles the person's answer hangs under the ask it settles. The tree is
     // drawn with the issue alone and the decisions and the asks arrive after it, each maybe
     // folded where it lands, so the facts are read again, every branch unfolded first, until
     // the reads are in.
@@ -293,10 +298,10 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
   });
 });
 
-// c-review-list, the rule for what waits on the reader's review. What waits on the decisions
-// model: the `shaped` tuple itself; today's tie is a decision block's link to a block of the spec.
-// SLOW(>=2s): a seeded issue whose view is loaded and read at two widths with the foot's
-// unfolding waited on each time, then the outline loaded with two rows focused.
+// c-review-list, the rule for what waits on the reader's review. A tie is a decision block's
+// `shaped` attribute naming a block of the spec, which the seed writes in its words as well.
+// SLOW(>=2s): a seeded issue whose view is loaded and read at two widths with the foot's rows
+// waited on each time, then the outline loaded with two rows focused.
 test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   // The `iphone` project is the phone half of the pair, so it reads 390 px alone and leaves the
@@ -326,12 +331,8 @@ test("only a decision that changed a statement waits for review @phone", async (
       // The Decisions control's flag holds those two and neither other decision, where the
       // controls stand apart (part D's view row, from 1280 px up).
       if (size === DESKTOP) await expect(reviewFlag(page), `the flag ${at}`).toHaveText("2");
-      // The other two are in the filter's foot, with no Keep and no Change.
-      expect(
-        await decisionsPartRows(page, "agents"),
-        `the foot draws its rows unasked ${at}`
-      ).toEqual([]);
-      await decisionsFoot(page).click();
+      // The other two are in the filter's foot, drawn as the view opens with nothing pressed,
+      // with no Keep and no Change.
       await expect
         .poll(async () => [...(await decisionsPartRows(page, "agents"))].sort(), {
           message: `the foot's rows ${at}`,
@@ -374,12 +375,12 @@ test("only a decision that changed a statement waits for review @phone", async (
 });
 
 // The tester's F6, under R7 and R35: a Change sent on a decision is a comment anchored to the
-// decision's words. Once it is sent the decision says a change was asked for, leaves the review
-// list for the reader's own decisions, takes no Keep and no Change, and draws the change under
-// its words with a link to it; the Decisions control's flag drops by one. At 390 px a new load
-// draws the decision the same way. An address that names the change opens the view on the
-// change's own row, first and in no part, with the focus on it. With no filter on the decision
-// says the same and the change hangs under it.
+// decision's words. Once it is sent the decision reads "Changed by" and the name of who asked,
+// leaves the review list for the reader's own decisions, takes no Keep and no Change, and draws
+// the change under its words with a link to it; the Decisions control's flag drops by one. At
+// 390 px a new load draws the decision the same way. An address that names the change opens the
+// view on the change's own row, first and in no part, with the focus on it. With no filter on
+// the decision reads the same and the change hangs under it.
 // SLOW(>=2s): a seeded issue whose view is loaded and a Change sent and waited on until the
 // server's reads redraw the list, then three more loads: at 390 px, at the change's address,
 // and the outline.
@@ -391,6 +392,9 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     const id = (block: string) => blockNodeId(seeded.specSlug, block);
     const changed = id(seeded.tiedNewer);
     const words = "Tie it to the first statement instead.";
+    // The state the changed decision reads: "Changed by" and the name of the reader who asked,
+    // its token still `change_requested` (R2, R3).
+    const changedBy = `${DECISIONS_WORDS.changed_by} alice`;
 
     await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "decisions");
@@ -418,10 +422,10 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
       await decisionsPartRows(page, "yours"),
       "the changed decision is not among the reader's own"
     ).toEqual([changed]);
-    // It says a change was asked for, by a word and a shape, and takes no Keep and no Change.
+    // It reads "Changed by" alice, by a word and a shape, and takes no Keep and no Change.
     expect(rowOf(await drawnRows(page), changed)).toMatchObject({
       state: "change_requested",
-      stateWord: NODE_STATE_WORDS.decision.change_requested,
+      stateWord: changedBy,
     });
     await expect(row.locator("button[data-row-action]")).toHaveCount(0);
     // The change is drawn under the decision's words, word for word, by who asked, with a link
@@ -439,8 +443,8 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     const commentId = comment?.id ?? "";
 
     // At 390 px, from a new load and with no second Change, the decision stands with the
-    // reader's own, says so, takes no Keep and no Change, and draws the change under its words.
-    // The flag is not read here: the view row draws it from 1280 px up alone.
+    // reader's own, reads "Changed by" alice, takes no Keep and no Change, and draws the change
+    // under its words. The flag is not read here: the view row draws it from 1280 px up alone.
     await page.setViewportSize(PHONE);
     await openPreset(page, seeded.key, "decisions");
     await expect
@@ -450,7 +454,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
       .toEqual([changed]);
     expect(rowOf(await drawnRows(page), changed), "the changed decision at 390 px").toMatchObject({
       state: "change_requested",
-      stateWord: NODE_STATE_WORDS.decision.change_requested,
+      stateWord: changedBy,
     });
     await expect(row.locator("button[data-row-action]")).toHaveCount(0);
     await expect(row.locator("[data-decision-change] [data-change-words]")).toHaveText(words);
@@ -476,7 +480,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
       })
       .toBe(commentId);
 
-    // With no filter on, the decision says the same and the change hangs under it. The
+    // With no filter on, the decision reads the same and the change hangs under it. The
     // decisions and the comments arrive after the tree is drawn, each maybe folded where it
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -495,13 +499,13 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
         },
         {
           message:
-            "with no filter on, the changed decision does not say a change was asked for, or the change is not drawn under it",
+            "with no filter on, the changed decision does not read Changed by alice, or the change is not drawn under it",
         }
       )
       .toEqual({
         parent: changed,
         state: "change_requested",
-        stateWord: NODE_STATE_WORDS.decision.change_requested,
+        stateWord: changedBy,
       });
     const outlined = await focusRow(page, changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
@@ -724,18 +728,18 @@ async function expectTdReachesTheList(page: Page, key: string, at: string): Prom
     .toEqual({ inList: true, onScreen: true });
 }
 
-// c-layout (the outline's layout and its six-line cut, kept under this view): the
-// checkpoint's c-row walk of the Decisions view. Every row the view draws, the foot's included,
-// reads G's layout and groups: one left edge, the kind's tag after the first line, the group's
-// place, no "Author unknown" in a group, the colours of a link in a node's words, which the
-// seed writes into one question. A statement on an "informs" line is named within 32 characters
-// and by no address, which G's group reading, of chips alone, does not see. At 1440 px a long
-// question a person answered is cut at six lines and a long one that waits on the reader is
-// drawn whole, in a list 960 px wide; at 390 px nothing is wider than the screen.
+// c-layout (the outline's layout, kept under this view): the checkpoint's c-row walk of the
+// Decisions view. Every row the view draws, the foot's included, reads G's layout and groups:
+// one left edge, the kind's tag after the first line, the group's place, no "Author unknown" in
+// a group, the colours of a link in a node's words, which the seed writes into one question. A
+// statement on an "informs" line is named within 32 characters and by no address, which G's
+// group reading, of chips alone, does not see. At 1440 px no entry's words are cut (R2, decision
+// 424): a long question a person answered is drawn whole, as a long one that waits on the reader
+// is, in a list 960 px wide; at 390 px nothing is wider than the screen.
 // SLOW(>=2s): the whole issue seeded with three questions, two of them long, then the view
-// loaded and every row read off the page's layout at two widths, with the foot's unfolding and
-// the cut waited on.
-test("under Decisions a row draws the outline's layout, short names and the six-line cut @phone", async ({
+// loaded and every row read off the page's layout at two widths, with each long question brought
+// into view and read two frames later.
+test("under Decisions a row draws the outline's layout and short names @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -756,16 +760,17 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         .toBeGreaterThan(0);
       await expectIssuePageDrawn(page);
       // The seed's agents wrote two decisions that shape no statement and one that was
-      // replaced, so the view draws its foot; its rows are rows of the view and read with the
-      // rest. The press takes the focus off every row, so no row's body is open below.
-      await decisionsFoot(page).click();
-      await expect(decisionsFoot(page), `${where} does not unfold its foot`).toHaveAttribute(
-        "aria-expanded",
-        "true"
-      );
+      // replaced, so the view draws its foot, unfolded as the view opens with nothing pressed;
+      // its rows are rows of the view and read with the rest. The focus goes to the foot's
+      // control, which is off every row, so no row's body is open below.
+      await expect(
+        decisionsFoot(page),
+        `${where} does not draw its foot unfolded as the view opens`
+      ).toHaveAttribute("aria-expanded", "true");
+      await decisionsFoot(page).focus();
       await expect(
         decisionsBody(page).locator("[data-node-body]"),
-        `${where} keeps a row's body open after the foot's press`
+        `${where} keeps a row's body open with the focus on the foot's control`
       ).toHaveCount(0);
       // The two long questions are drawn, and the statements the decisions shaped are named by
       // their own words, which come with the coverage read.
@@ -798,44 +803,22 @@ test("under Decisions a row draws the outline's layout, short names and the six-
       ).toEqual([]);
 
       if (size.width === DESKTOP.width) {
-        // Ruling 1 on a question: the long one a person answered is cut, with more than 20
-        // words held back, and the long one that waits on the reader is drawn whole.
-        // The page measures a row's cut once the row stands within a screen of the viewport, in
-        // the frames after it comes there, and draws a far row whole until then, so each cut
-        // read here is of a row brought into view and read two frames later.
-        const cutOf = async (question: string) => {
+        // No entry's words are cut (R2, decision 424): the long question a person answered is
+        // drawn whole, with no control that opens the rest, as the long one that waits on the
+        // reader is. The cut was measured once a row stood within a screen of the viewport, in
+        // the frames after it came there, so each is read brought into view and two frames
+        // later, where a cut would have been drawn.
+        const layoutOf = async (question: string) => {
           await nodeRow(page, question).first().scrollIntoViewIfNeeded();
           await nextFrames(page);
           return (await rowLayouts(page, seeded.spec)).find((row) => row.id === question);
         };
-        // The control that opens a cut text, in the page's own words: "more · N words".
-        const more = new RegExp(
-          `^${CONTROL_LABELS.read_more} · ([\\d,]+) ${CONTROL_LABELS.read_more_words}$`,
-          "u"
-        );
-        // The cut is waited for, and the words it holds back are read off the very layout the
-        // wait matched, so no later reading of the row stands in for it.
-        const answered: { layout?: RowLayout } = {};
-        await expect
-          .poll(
-            async () => {
-              answered.layout = await cutOf(seeded.answered);
-              return answered.layout;
-            },
-            { message: `${where} does not cut the long answered question` }
-          )
-          .toMatchObject({ more: expect.stringMatching(more) });
-        const hidden = Number(more.exec(answered.layout?.more ?? "")?.[1]?.replace(/,/gu, ""));
         expect(
-          hidden,
-          `${where} holds back 20 words or fewer of the answered question`
-        ).toBeGreaterThan(20);
-        // A row drawn whole is read once, two frames after it came into view. Two frames are an
-        // assumed bound, not one the page promises: its measurer reads at most one slice of a
-        // batch a frame and carries the rest into later frames (`clamp-measurer.ts`), so a row
-        // it has not reached yet would read as whole here too.
+          await layoutOf(seeded.answered),
+          `${where} cuts the long answered question`
+        ).toMatchObject({ more: null, wordsHidden: 0 });
         expect(
-          await cutOf(seeded.waiting),
+          await layoutOf(seeded.waiting),
           `${where} cuts the long question that waits on the reader`
         ).toMatchObject({ more: null, wordsHidden: 0 });
         const width = (await decisionsBody(page).boundingBox())?.width ?? 0;

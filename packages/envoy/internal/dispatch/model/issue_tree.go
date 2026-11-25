@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // IssueTreeRead is GET /api/v1/issues/{key}/tree: the nodes of one issue's tree as one reader may
 // see them, in the tree's own order, and every tuple whose two ends the answer holds.
@@ -10,24 +13,54 @@ import "time"
 // Converted, Tree, ViewOf and Documents are the issue's own (IssueTreeIssue), at the top level so a
 // page reads them without finding the issue's node first.
 //
-// Nodes is the answer's nodes: in the read with no view, the issue's tree walked from its own node
-// (each before its children, ranked siblings by rank and then the rest by when each was made),
-// then its second part, then the context nodes; in a view, the nodes of its query and its fixed
-// context. Tuples is every relation the store holds now between two nodes of the answer, of every
-// kind, each end named by the node's store kind and id. Cursor is where the next page starts, the
-// next node of the walk, and null on the last page; a page past the first carries the tuples whose
-// near end is one of its own nodes.
+// Nodes is the answer's nodes: in the read with no view, the skeleton of the issue's tree walked
+// from its own node (each before its children, ranked siblings by rank and then the rest by when
+// each was made), then its second part, then the context nodes; in a view, the nodes of its query
+// and its fixed context. The skeleton is every node of the tree but the blocks of the issue's
+// documents other than its spec, its Verification document, its plan and its tree's own fragment,
+// and but the comments off its comment page. DocumentNodes, in the read with no view alone, is each
+// document of kind doc that GET /api/v1/issues/{key} lists, in that read's order
+// (IssueTreeDocumentNode): a page reads its blocks through GET /api/v1/artifacts/{id}/blocks when
+// its reader opens it. Tuples is every relation the store holds now between two nodes of the
+// answer, of every kind, each end named by the node's store kind and id. Cursor is where the next
+// page starts, the next node of the walk, and null on the last page; a page past the first carries
+// the tuples whose near end is one of its own nodes.
+//
+// The comment page is the 200 newest of the issue's conversation comments, by made_at and then by
+// id, each with the nodes under it. CommentsBefore, in the read with no view alone, is the
+// position of the oldest comment of the page where older ones remain, written `<made_at>,<id>`
+// (made_at in RFC 3339, UTC, with microseconds), and null where none does: the read with
+// `comments_before=<made_at>,<id>` answers the next 200 older comments, with the nodes under them
+// and their tuples, and no other node. A comment whose parent the answer does not hold names that
+// parent as its parent and stands under the issue, by made_at and then by id.
+//
+// OwedDocuments names each document of the issue that owes its block index (OwedDocument), absent
+// where none does: a node of such a document the block index has not reached is not in the answer
+// yet, so the read names its document in its place.
 type IssueTreeRead struct {
-	Issue     string              `json:"issue"`
-	View      string              `json:"view"`
-	Version   *int                `json:"version"`
-	Converted bool                `json:"converted"`
-	Tree      *string             `json:"tree"`
-	ViewOf    *string             `json:"view_of"`
-	Documents *IssueTreeDocuments `json:"documents"`
-	Nodes     []IssueTreeNode     `json:"nodes"`
-	Tuples    []IssueTreeTuple    `json:"tuples"`
-	Cursor    *string             `json:"cursor"`
+	Issue          string                  `json:"issue"`
+	View           string                  `json:"view"`
+	Version        *int                    `json:"version"`
+	Converted      bool                    `json:"converted"`
+	Tree           *string                 `json:"tree"`
+	ViewOf         *string                 `json:"view_of"`
+	Documents      *IssueTreeDocuments     `json:"documents"`
+	Nodes          []IssueTreeNode         `json:"nodes"`
+	DocumentNodes  []IssueTreeDocumentNode `json:"document_nodes,omitzero"`
+	Tuples         []IssueTreeTuple        `json:"tuples"`
+	Cursor         *string                 `json:"cursor"`
+	CommentsBefore json.RawMessage         `json:"comments_before,omitempty"`
+	OwedDocuments  []OwedDocument          `json:"owed_documents,omitempty"`
+}
+
+// IssueTreeDocumentNode is a document of kind doc of an issue as the read with no view lists it:
+// its artifact id, its slug, and BlockCount, the number of blocks GET
+// /api/v1/artifacts/{id}/blocks lists for it, whose blocks a page reads there when its reader
+// opens it.
+type IssueTreeDocumentNode struct {
+	ArtifactID string `json:"artifact_id"`
+	Slug       string `json:"slug"`
+	BlockCount int    `json:"block_count"`
 }
 
 // IssueTreeIssue is what each issue of a tree read answers of itself: Converted, whether its

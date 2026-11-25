@@ -51,8 +51,11 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 		node, tuples := CommentFacts(nil, id, author, at, NoEvent, "", "", "", nil)
 		node.Changed = true
 		authors, authored, _ := AuthorFacts(KindComment, id, author, at, NoEvent)
-		written, err := writeHeldNodes(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
-		if err != nil {
+		written := PlanUncaused(append([]Node{node}, authors...), append(tuples, authored...))
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			QueueNodes(b, written)
+			return nil
+		}); err != nil {
 			return err
 		}
 		return Caused(ctx, tx, written, event)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
@@ -23,10 +24,12 @@ import (
 const orphanIssue = "ORPH-1"
 
 // seedOrphan writes project ORPH, issue ORPH-1 with its node, and a document of the issue at
-// ORPH-1/<slug> with its node, as this build's create writes them, and then removes the document's
-// row as the release before this one does: the row goes, a removal event is appended, and nothing
-// states the node gone. It answers the document's address and the removal event.
-func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64) {
+// ORPH-1/<slug> with its node, as this build's create writes them, and each of lenses, a lens of
+// alice's on the document, whose write records the document's row (graphstore.AttributeArtifactID).
+// It then removes the document's row as the release before this one does: the row goes, a removal
+// event is appended, and nothing states the node or a lens gone, so each lens is stale. It answers
+// the document's address and the removal event.
+func seedOrphan(t *testing.T, database *store.Store, slug string, lenses ...string) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -45,11 +48,27 @@ func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64
 		}, nil); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
 			values ('ORPH-1', 'ORPH', $1, $1, 'doc', '{"kind":"user","id":"alice"}')
-		`, slug)
-		return err
+		`, slug); err != nil {
+			return err
+		}
+		at := time.Now().UTC()
+		var placed []graphstore.Node
+		var placements []graphstore.Tuple
+		for _, lens := range lenses {
+			placed = append(placed, graphstore.Node{Kind: graphstore.KindLens, ID: lens, Supertag: graphstore.KindLens,
+				Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "ORPH",
+				MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent})
+			placements = append(placements, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: lens,
+				Kind: graphstore.TuplePartOf, ToKind: graphstore.KindArtifact, ToID: ref,
+				At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true})
+		}
+		if len(placed) == 0 {
+			return nil
+		}
+		return graphstore.Write(ctx, tx, placed, placements)
 	}); err != nil {
 		t.Fatalf("seed the document %s: %v", ref, err)
 	}
@@ -73,6 +92,37 @@ func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64
 		t.Fatalf("remove the document %s as the release before does: %v", ref, err)
 	}
 	return ref, removal
+}
+
+// seedBeneath writes what stands under the lens lens of seedOrphan's document as the reasoning
+// write stores it: a finding of the lens, a block node whose id names the lens
+// (graphstore.FindingID), and the risk risk, each live in project ORPH at the sentinel with its
+// part_of the lens. A risk stands only under a pre-mortem, so it gives the lens that kind first
+// (its has_kind tuple). It answers the finding's id.
+func seedBeneath(t *testing.T, database *store.Store, lens, risk string) string {
+	t.Helper()
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	at := time.Now().UTC()
+	finding := graphstore.FindingID(lens, "first")
+	var nodes []graphstore.Node
+	tuples := []graphstore.Tuple{{FromKind: graphstore.KindLens, FromID: lens,
+		Kind: graphstore.TupleHasKind, ToKind: graphstore.KindLensKind, ToID: graphstore.LensKindPreMortem,
+		At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true}}
+	for _, beneath := range []struct{ kind, id string }{{refs.BlockNodeKind, finding}, {graphstore.KindRisk, risk}} {
+		nodes = append(nodes, graphstore.Node{Kind: beneath.kind, ID: beneath.id, Supertag: beneath.kind,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "ORPH",
+			MadeAt: at, MadeBy: alice, SourceEvent: graphstore.NoEvent})
+		tuples = append(tuples, graphstore.Tuple{FromKind: beneath.kind, FromID: beneath.id,
+			Kind: graphstore.TuplePartOf, ToKind: graphstore.KindLens, ToID: lens,
+			At: at, Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true})
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, nodes, tuples)
+	}); err != nil {
+		t.Fatalf("seed a finding and a risk under lens %s: %v", lens, err)
+	}
+	return finding
 }
 
 // A document the release before this one removed, after this build wrote its node, leaves the node
@@ -145,7 +195,7 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 	}
 	swept := make(chan error, 1)
 	go func() { swept <- StateOrphanedGone(ctx, sweeper, ref) }()
-	if early, done := storetest.WaitForQueuedBehind(t, create.Tx, pid, swept, lockstep.Wait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, create.Tx, pid, swept); done {
 		t.Fatalf("the sweep answered %v without waiting on the node the create holds, so this test proves nothing", early)
 	}
 	t.Logf("the sweep waits behind %s at %q", create.Name, lockstep.WaitingStatement(t, database, pid))
@@ -208,6 +258,89 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	held, _, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, ref)
 	if err != nil || held.State != graphstore.StateGone {
 		t.Errorf("after the sweep the node of %s is %+v (%v), want it gone: the run the test followed is not one that committed", ref, held, err)
+	}
+}
+
+// The sweep of every stale lens (StateStaleLensesGone) takes the store's lock order: a read of the
+// stale lenses with no lock, then the owner lock of the issue their document names, then the node
+// rows of each lens and of all that stands under it in ascending (kind, id) - here a finding of the
+// lens, a block node, which sorts below it, the lens, then a risk under it, which sorts above it -
+// then their state tuples, in one write; it appends no event, and never takes the project's row.
+// Each step is held in turn while the sweep's own backend is read at the statement it waits at and
+// the locks it holds; the sweep queues behind them in that order, and the lens, its finding and its
+// risk then read gone.
+//
+// The state tuples are appended at the sentinel, which no repeat key covers, so no row of them can
+// be held: they are held as the writes of graph_tuples, in share mode, which the sweep's node move
+// waits on as it appends them (graphstore's keptCauseNodeMove). Postgres takes a statement's table
+// locks when it parses it, and pgx prepares every statement of a batch its connection has not
+// cached before the first of them runs, so a sweep whose write's statements are new would queue
+// behind that hold ahead of the node rows. A sweep of another stale lens, with a finding and a risk
+// under it, therefore runs first on the sweep's one connection: each statement of the write is then
+// cached, and takes its table locks when it runs.
+//
+// Its control is the owner lock taken out of the sweep: it then never queues behind the owner
+// lock, and takes the three node rows and the state tuples without it.
+func TestTheStaleLensSweepTakesTheStoreLockOrder(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	const (
+		cachingLens = "00000000-0000-4000-8000-0000000005b1"
+		cachingRisk = "00000000-0000-4000-8000-0000000005b2"
+		lens        = "00000000-0000-4000-8000-0000000005b3"
+		risk        = "00000000-0000-4000-8000-0000000005b4"
+	)
+	sweeper := storetest.SingleConnection(t, database)
+	var pid uint32
+	if err := sweeper.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the sweep's backend: %v", err)
+	}
+	seedOrphan(t, database, "cached-md", cachingLens)
+	seedBeneath(t, database, cachingLens, cachingRisk)
+	if stated, err := StateStaleLensesGone(ctx, sweeper); err != nil || stated != 3 {
+		t.Fatalf("the sweep that caches the write's statements stated %d nodes gone (%v), want the lens, its finding and its risk", stated, err)
+	}
+	seedOrphan(t, database, "notes-md", lens)
+	finding := seedBeneath(t, database, lens, risk)
+
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue ORPH-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
+	}, store.IssueOwner(orphanIssue))
+	nodeRow := func(name, kind, id string) *lockstep.Hold {
+		return lockstep.HoldRow(t, database, &lockstep.Hold{
+			Name: name, Step: lockstep.StepNode, Taken: true, Kind: kind, ID: id,
+			Statement: "insert into graph_nodes (",
+		}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, kind, id)
+	}
+	findingRow := nodeRow("the finding's node row", refs.BlockNodeKind, finding)
+	lensRow := nodeRow("the lens's node row", graphstore.KindLens, lens)
+	riskRow := nodeRow("the risk's node row", graphstore.KindRisk, risk)
+	states := lockstep.Hold{
+		Name: "the writes of graph_tuples, which the state tuples take", Step: lockstep.StepTuple, Taken: true,
+		Statement: "with incoming as (",
+	}
+	lockstep.Begin(t, database, &states)
+	if _, err := states.Tx.Exec(ctx, `lock table graph_tuples in share mode`); err != nil {
+		t.Fatalf("hold %s: %v", states.Name, err)
+	}
+	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project ORPH's row", Step: lockstep.StepEvent},
+		`select 1 from projects where key = $1 for update`, "ORPH")
+	swept := make(chan error, 1)
+	go func() {
+		_, err := StateStaleLensesGone(ctx, sweeper)
+		swept <- err
+	}()
+	queued := lockstep.Follow(t, database, "the stale lens sweep", pid, swept,
+		[]*lockstep.Hold{owner, findingRow, lensRow, riskRow, &states, project})
+	if got, want := lockstep.HoldNames(queued), lockstep.HoldNames([]*lockstep.Hold{owner, findingRow, lensRow, riskRow, &states}); got != want {
+		t.Errorf("the stale lens sweep queued behind %s, want %s: the owner lock, the node rows in ascending (kind, id), then the state tuples", got, want)
+	}
+	for _, node := range []struct{ kind, id string }{{refs.BlockNodeKind, finding}, {graphstore.KindLens, lens}, {graphstore.KindRisk, risk}} {
+		held, _, err := graphstore.ReadNode(ctx, database.Pool, node.kind, node.id)
+		if err != nil || held.State != graphstore.StateGone {
+			t.Errorf("after the sweep the node %s/%s is %+v (%v), want it gone: the run the test followed is not one that committed", node.kind, node.id, held, err)
+		}
 	}
 }
 

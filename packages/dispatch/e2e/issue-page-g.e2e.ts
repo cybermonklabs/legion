@@ -4,9 +4,9 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
+  DECISIONS_WORDS,
   GLYPH_TOKENS,
   issueStatusWord,
-  NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { getAsk, getIssue, listComments } from "./api";
@@ -996,12 +996,12 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     const shaping = await focusRow(page, seeded.shaping);
     await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
 
-    // The decision a person asked to change says so, holds the change under it, and draws no
-    // Keep and no Change (R10, F6).
+    // The decision a person asked to change reads "Changed by" and the name of the person who
+    // asked, holds the change under it, and draws no Keep and no Change (R10, F6).
     const changed = rowOf(await drawnRows(page), seeded.changed);
     expect(changed).toMatchObject({
       state: "change_requested",
-      stateWord: NODE_STATE_WORDS.decision.change_requested,
+      stateWord: `${DECISIONS_WORDS.changed_by} alice`,
     });
     expect(
       (await listComments(seeded.key)).some((one) => one.id === seeded.change),

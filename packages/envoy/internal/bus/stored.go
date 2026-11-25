@@ -315,10 +315,10 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // connection probe makes (cmd/listener): one on a session's relay subject (DeliverSubject)
 // carrying the Envoy-Probe header, on a reply subject that names that session
 // (SessionReplySubject), whose answer says whether a plugin of that session still subscribes the
-// subject. Once natsgrant.Session publishes SessionReplies in place of every _INBOX. subject,
-// only that session among the sessions on that grant may answer it; a holder of the shared
-// session user or of a host user reads every relay subject and may publish to every _INBOX.
-// subject, so it still can. Its publish is confirmed as
+// subject. A session's own grant (natsgrant.Session) publishes SessionReplies in place of every
+// _INBOX. subject, so among the sessions on such grants only that session may answer it; a
+// holder of the shared session user or of a host user reads every relay subject and may publish
+// to every _INBOX. subject, so it still can. Its publish is confirmed as
 // requestConfirmed's is (publishConfirmed), so a request the server refuses under the
 // connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
 // confirm for another reason still waits for its reply, and returns that reason if ctx ends

@@ -630,7 +630,8 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // fetching again.
     "/api/v1/inbox",
     // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
-    // there is no drawer-closed phone case to leave them out for.
+    // there is no drawer-closed phone case to leave them out for. The header's repository control
+    // shares the Projects query for the project's default repository rather than fetching again.
     "/api/v1/issues?pinned=true",
     "/api/v1/projects",
     "/api/v1/me/state",
@@ -659,9 +660,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
     // load, which is why it is absent from this set.
     "/api/v1/projects/CORE/architecture-sources",
-    // The header's read of the repository mappings: an issue that resolves to no repository,
-    // as this one does, shows the `Repository:` item only when its project maps one.
-    "/api/v1/settings/repo-projects",
     // me/agents/state, whose unread replies the Agents badge counts on every page (the
     // sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/agents/state",

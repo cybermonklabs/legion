@@ -58,7 +58,7 @@ func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, p
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- post() }()
 	var answer *httptest.ResponseRecorder
-	waitUntil(t, 30*time.Second, name+" waiting on the gone of "+target.address+", or answering", func() bool {
+	waitUntil(t, name+" waiting on the gone of "+target.address+", or answering", func() bool {
 		select {
 		case answer = <-answered:
 			return true
@@ -102,6 +102,7 @@ func lensTarget(lens lensInvoked) stateTarget {
 // under the gone lens, and its finding or its risk would stand live under it, since the gone read
 // what stood under the lens before the post wrote anything.
 func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	// requireNothingUnder holds the lens to gone, with no node standing under it by a part_of tuple.
@@ -120,7 +121,7 @@ func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
 	finding := holdGone(t, rig, "the finding added to "+lens.Address, lensTarget(lens), func() *httptest.ResponseRecorder {
 		return rig.post(nodePath(lens.Address, "findings"), map[string]any{"text": "A finding written as its lens is taken out."}, "alice")
 	})
-	requireGoneRefused(t, "the finding added to "+lens.Address+" as it is taken gone", finding, lens.ID)
+	requireGoneRefused(t, "the finding added to "+lens.Address+" as it is taken gone", finding, lens.Address)
 	requireNothingUnder(lens)
 
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
@@ -130,6 +131,6 @@ func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
 			"early_warning": "The lens reads gone", "prevention": "The write reads its lens again",
 		}, "alice")
 	})
-	requireGoneRefused(t, "the risk written under "+premortem.Address+" as it is taken gone", risk, premortem.ID)
+	requireGoneRefused(t, "the risk written under "+premortem.Address+" as it is taken gone", risk, premortem.Address)
 	requireNothingUnder(premortem)
 }

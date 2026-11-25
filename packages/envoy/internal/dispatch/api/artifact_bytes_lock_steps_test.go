@@ -100,7 +100,7 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				_, err := graphcensus.Backfill(context.Background(), backfiller, io.Discard)
 				backfilled <- err
 			}()
-			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled, storeStepWait); done {
+			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled); done {
 				t.Fatalf("the backfill answered (%v) without reaching its commit over %s", early, refKey)
 			}
 

@@ -203,7 +203,8 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
 		{phase.Accepting, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Retro, "retro", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
-		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger, claim.RoleImplementer}},
+		// In merging the implementer is not told (cybermonklabs/legion#4979).
+		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
 	} {
 		t.Run(string(tc.from), func(t *testing.T) {
 			settle := func(runs []record.AttemptRun) (*pgxpool.Pool, settledOutcome) {
@@ -309,8 +310,8 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 // GitHub gave each run; one with no word either wakes the worker with the task it gave before,
 // word for word.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
-	const woken = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. " +
+	woken := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+		WorkspaceAfterRelease + " Your session is as you left it. " +
 		"The wake is a CI settlement on your pull request's head: "
 	checks := func(runs []record.AttemptRun, failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)

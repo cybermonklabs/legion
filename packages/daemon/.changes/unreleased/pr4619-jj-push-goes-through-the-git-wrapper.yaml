@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  In a pod, every `jj` push now reaches the remote through Legion's git wrapper, and so through the
+  leak check, however the command names its repository or its git. Before, each of these pushed
+  through another git with no leak check: a `-R` or `--repository` after `git push`, or `-R=<path>`;
+  a `git.executable-path` scoped to the `git` command (`[[--scope]]` with `--when.commands`), in a
+  file or in a `--config` on the push line, which sent the worker prompt's own push through
+  `/usr/bin/git`; an alias, an alias of an alias, or `ui.default-command` that expands to a push;
+  `jj gerrit upload`; and an option jj does not know in front of a command word, where jj then runs
+  the default command. The jj wrapper (`/opt/legion/bin/jj`) gives jj the git wrapper as
+  `git.executable-path` on every command line, and once more as the last layer of a push.
+
+  What changes for a user in a pod: `jj config get git.executable-path` prints
+  `/opt/legion/bin/git`; a command typed through an alias runs as its expansion, so jj prints none
+  of its own warnings about that alias; and the wrapper refuses, with `LEAK CHECK SETUP ERROR`, a
+  push whose configuration names another git (as before), a command word that is no built-in
+  command and holds a character outside `[A-Za-z0-9_-]` or is empty, an alias that jj would expand
+  a second time on the line or more than 32 deep, and an alias that is no list of strings or holds
+  a line break in a word.
+time: 2026-11-21T19:26:43Z
+custom:
+    Issue: pr4619

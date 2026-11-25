@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The daemon's NATS connection names its build after its name, `legion-daemon <project>
+  legion@<commit>`, the commit `legion version` prints, so the hub's census of connections shows
+  which build each daemon runs. A build nothing stamped names none. The worker image writes the
+  same commit as `dist/build-commit` beside the bundles of pi-envoy and claude-envoy, whose
+  connections name it too.
+time: 2026-11-22T02:59:25Z
+custom:
+    Issue: legacy-subjects-gate

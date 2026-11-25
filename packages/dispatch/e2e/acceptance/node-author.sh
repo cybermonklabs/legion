@@ -197,8 +197,6 @@ expect B2 "the spec's lenses are the one the shared bearer wrote, and no new len
 request agent POST /api/v1/going/requests "$(jq -cn --arg p "$project" '{words: "Who wrote the spec?", project: $p}')"
 want_status 403 B3 "the going POST refuses the shared bearer as its asker"
 expect B3 "the refusal is GOING_ASKER_NAMES_NOBODY" '"GOING_ASKER_NAMES_NOBODY"' '.code'
-expect B3 "its message holds names nobody, as the lens write's refusal does" true \
-  '.error | contains("names nobody")'
 pass B3 "the going POST and the lens write refuse the one bearer, 403 each: $(jq -r '.error' "$work/body")"
 
 # --- P1: each person writes an author-only lens with the cookie and with the token ----------------

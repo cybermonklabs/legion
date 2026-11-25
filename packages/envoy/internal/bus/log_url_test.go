@@ -14,6 +14,7 @@ import (
 // user:password as a password, so neither part may reach a log line or a logged error.
 // url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
 func TestNATSURLWithoutUserinfo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw, want string
 	}{

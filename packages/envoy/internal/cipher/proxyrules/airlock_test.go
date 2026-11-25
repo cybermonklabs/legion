@@ -2,127 +2,32 @@ package proxyrules
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 )
 
-// validFile sets every field of an entry, so a parse that drops one is seen, and leaves
-// every optional field out of the second entry, so the nil defaults are seen beside the
-// empty lists of the third.
-const validFile = `{
-  "secrets": [
-    {
-      "name": "github",
-      "hosts": ["api.github.com", "*.githubusercontent.com"],
-      "headers": ["authorization", "x-github-token"],
-      "allow": [{"method": "GET", "pathPrefix": "/repos/"}],
-      "kind": "azure",
-      "judge": 900
-    },
-    {"name": "plain", "hosts": ["example.com"]},
-    {"name": "sealed", "hosts": ["sealed.example.com"], "headers": [], "allow": []}
-  ]
-}`
-
-// TestParseValidFile reads every field of an entry, and keeps apart the two meanings the
-// format gives an absent list and an empty one.
-func TestParseValidFile(t *testing.T) {
-	rules, err := Parse([]byte(validFile))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if len(rules.Secrets) != 3 {
-		t.Fatalf("parsed %d entries, want 3: %+v", len(rules.Secrets), rules.Secrets)
-	}
-	github := rules.Secrets[0]
-	if github.Name != "github" || github.Kind != "azure" {
-		t.Errorf("entry 0 name=%q kind=%q, want github/azure", github.Name, github.Kind)
-	}
-	if got, want := strings.Join(github.Hosts, ","), "api.github.com,*.githubusercontent.com"; got != want {
-		t.Errorf("entry 0 hosts = %q, want %q", got, want)
-	}
-	if got, want := strings.Join(github.Headers, ","), "authorization,x-github-token"; got != want {
-		t.Errorf("entry 0 headers = %q, want %q", got, want)
-	}
-	if len(github.Allow) != 1 || github.Allow[0] != (Allow{Method: "GET", PathPrefix: "/repos/"}) {
-		t.Errorf("entry 0 allow = %+v, want one GET /repos/", github.Allow)
-	}
-	if github.Judge == nil || *github.Judge != 900 {
-		t.Errorf("entry 0 judge = %v, want 900", github.Judge)
-	}
-	if plain := rules.Secrets[1]; plain.Headers != nil || plain.Allow != nil || plain.Judge != nil || plain.Kind != "" {
-		t.Errorf("entry 1 = %+v, want every optional field unset", plain)
-	}
-	if sealed := rules.Secrets[2]; sealed.Headers == nil || len(sealed.Headers) != 0 || sealed.Allow == nil || len(sealed.Allow) != 0 {
-		t.Errorf("entry 2 headers = %v allow = %v, want both empty and not nil", sealed.Headers, sealed.Allow)
-	}
-}
-
-// TestParseNotJSON: the error names the byte offset the decoder stopped at and the line and
-// column that offset falls on, because a person reads the file by line and column.
-func TestParseNotJSON(t *testing.T) {
-	// Byte 16 is the "x": one for "{", one for the newline, then 13 bytes of line 2.
-	data := []byte("{\n  \"secrets\": x\n}")
-	_, err := Parse(data)
-	if err == nil {
-		t.Fatal("Parse of a file that is not JSON: no error")
-	}
-	for _, want := range []string{"byte offset 16", "line 2", "column 14"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestParseWrongType: a field of the wrong type names its position too.
-func TestParseWrongType(t *testing.T) {
-	_, err := Parse([]byte("{\n  \"secrets\": {\"name\": \"a\"}\n}"))
-	if err == nil {
-		t.Fatal("Parse of secrets as an object: no error")
-	}
-	for _, want := range []string{"secrets", "byte offset", "line 2", "column 14"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestParseUnknownField: a field this broker does not know is refused, so a file written
-// for a later broker is not served with that field's rule missing.
-func TestParseUnknownField(t *testing.T) {
-	_, err := Parse([]byte(`{"secrets": [{"name": "a", "hosts": ["h"], "lifetime": 5}]}`))
-	if err == nil {
-		t.Fatal("Parse of a file with an unknown field: no error")
-	}
-	if !strings.Contains(err.Error(), `unknown field "lifetime"`) {
-		t.Errorf("error %q does not name the unknown field", err)
-	}
-}
-
-// TestParseSecondValue: a file whose one object is followed by another value is refused,
-// because json.Decoder would read the first and drop the second, and an author who wrote
-// two would believe both were in force.
-func TestParseSecondValue(t *testing.T) {
-	_, err := Parse([]byte("{\"secrets\": []}\n{\"secrets\": [{\"name\": \"a\", \"hosts\": [\"h\"]}]}\n"))
-	if err == nil {
-		t.Fatal("Parse of a file with two JSON values: no error")
-	}
-	if !strings.Contains(err.Error(), "a second JSON value follows the rules") {
-		t.Errorf("error %q does not name the second value", err)
-	}
-	if !strings.Contains(err.Error(), "line 2") {
-		t.Errorf("error %q does not name the line the second value starts on", err)
-	}
-}
+// validRules sets every field of an entry, leaves every optional field out of the second entry,
+// and gives the third empty lists where the second has none, so the nil defaults are checked
+// beside the empty lists. The profiles file is what the broker reads rules from, and its tests
+// (policy's) hold how a file is read into these entries.
+var validRules = Rules{Secrets: []SecretRule{
+	{
+		Name:    "github",
+		Hosts:   []string{"api.github.com", "*.githubusercontent.com"},
+		Headers: []string{"authorization", "x-github-token"},
+		Allow:   []Allow{{Method: "GET", PathPrefix: "/repos/"}},
+		Kind:    "azure",
+		Judge:   new(uint32(900)),
+	},
+	{Name: "plain", Hosts: []string{"example.com"}},
+	{Name: "sealed", Hosts: []string{"sealed.example.com"}, Headers: []string{}, Allow: []Allow{}},
+}}
 
 func TestValidate(t *testing.T) {
-	valid, err := Parse([]byte(validFile))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if err := Validate(valid); err != nil {
-		t.Fatalf("Validate of a valid file: %v", err)
+	if err := Validate(validRules); err != nil {
+		t.Fatalf("Validate of valid rules: %v", err)
 	}
 
 	cases := []struct {
@@ -223,6 +128,23 @@ func TestValidate(t *testing.T) {
 			}},
 			want: []string{`secrets[1]`, "repeated"},
 		},
+		{
+			// An entry is a proxy block, which binds its value to the hosts it names: one that
+			// names none would hold a value back and carry it nowhere.
+			name: "an entry with no host",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com"}},
+				{Name: "release", Judge: new(uint32(600)), Guidance: "grant for releases"},
+			}},
+			want: []string{`secrets[1]`, `"release"`, "the entry names no host"},
+		},
+		{
+			name: "an entry with an empty host list",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "a", Hosts: []string{}},
+			}},
+			want: []string{`secrets[0]`, `"a"`, "the entry names no host"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -246,10 +168,6 @@ func TestValidate(t *testing.T) {
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
-		// An entry with no host says who decides a key the airlock binds nowhere: its judge
-		// and the judge's guidance, for a key whose value is released to the command.
-		{"an entry with no host", Rules{Secrets: []SecretRule{{Name: "a", Judge: new(uint32(600)), Guidance: "grant for releases"}}}},
-		{"an entry with an empty host list", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{}}}}},
 		{"a name", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"slack.com"}}}}},
 		{"a suffix", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"*.googleapis.com"}}}}},
 		{"a name with digits in all but its last label", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"1e100.net", "*.0.example.com"}}}}},
@@ -258,6 +176,33 @@ func TestValidate(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if err := Validate(c.rules); err != nil {
 				t.Errorf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateTakesTheDPoPKind: an entry of kind dpop, a capability the broker mints for a grant
+// of its own and holds, is a valid file, and a kind that is only near it is refused. The kind is
+// compared as it is written, as the other three are, so "DPoP" is no kind; each refusal names
+// the kind the file wrote and the four kinds there are, so its reader sees what to write.
+func TestValidateTakesTheDPoPKind(t *testing.T) {
+	entry := func(kind string) Rules {
+		return Rules{Secrets: []SecretRule{{Name: "TEST_MINTED_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
+			Allow: []Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: kind}}}
+	}
+	if err := Validate(entry("dpop")); err != nil {
+		t.Errorf("Validate of an entry of kind dpop: %v", err)
+	}
+	for _, kind := range []string{"DPoP", "dpo"} {
+		t.Run(kind, func(t *testing.T) {
+			err := Validate(entry(kind))
+			if err == nil {
+				t.Fatalf("Validate of an entry of kind %q: no error", kind)
+			}
+			for _, want := range []string{`secrets[0]`, `"TEST_MINTED_TOKEN"`, fmt.Sprintf("kind %q", kind), `"", "aws", "azure" or "dpop"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %s", err, want)
+				}
 			}
 		})
 	}
@@ -862,73 +807,17 @@ func TestRewrite(t *testing.T) {
 	})
 }
 
-// TestDigest pins what one entry's fingerprint covers: every field of it, so a change to any one
-// of them moves the digest and ends the grants that entry affects, and nothing else, so two reads
-// of an unchanged file answer the same thing.
-func TestDigest(t *testing.T) {
-	judge := uint32(60)
-	base := SecretRule{
-		Name:    "github",
-		Hosts:   []string{"api.github.com"},
-		Headers: []string{"authorization"},
-		Allow:   []Allow{{Method: "GET", PathPrefix: "/repos/"}},
-		Kind:    "aws",
-		Judge:   &judge,
-	}
-	rules := Rules{Secrets: []SecretRule{base}}
-	want := rules.Digest("github")
-	if want == "" {
-		t.Fatal(`Digest("github") = "", want the entry's fingerprint`)
-	}
-	if again := rules.Digest("github"); again != want {
-		t.Errorf("Digest twice = %s then %s, want one answer", want, again)
-	}
-	if absent := rules.Digest("absent"); absent != "" {
-		t.Errorf("Digest of a name the file does not name = %q, want the empty string", absent)
-	}
-	later := uint32(61)
-	for field, change := range map[string]func(*SecretRule){
-		"name":    func(s *SecretRule) { s.Name = "github-two" },
-		"hosts":   func(s *SecretRule) { s.Hosts = []string{"api.github.com", "codeload.github.com"} },
-		"headers": func(s *SecretRule) { s.Headers = nil },
-		"allow":   func(s *SecretRule) { s.Allow = []Allow{{Method: "POST", PathPrefix: "/repos/"}} },
-		"kind":    func(s *SecretRule) { s.Kind = "" },
-		"judge":   func(s *SecretRule) { s.Judge = &later },
-	} {
-		entry := base
-		change(&entry)
-		if got := (Rules{Secrets: []SecretRule{entry}}).Digest(entry.Name); got == want {
-			t.Errorf("a changed %s left the digest at %s", field, got)
-		}
-	}
-	// Guidance is the one field outside the fingerprint: it tells the judge how to decide a
-	// request to come, and changes nothing a live grant may do, so writing it ends no grant.
-	guided := base
-	guided.Guidance = "grant only for the release job"
-	if got := (Rules{Secrets: []SecretRule{guided}}).Digest(guided.Name); got != want {
-		t.Errorf("guidance moved the digest from %s to %s; want it left out of the fingerprint", want, got)
-	}
-}
-
-// TestBound: the one reader of "does the airlock hold this value back". An entry that binds a
-// host does; an entry with no host carries who decides and nothing more, so its value is released
-// to the command as a name with no entry is; and a name the file does not hold is not bound.
-func TestBound(t *testing.T) {
-	judge := uint32(300)
+// TestGuidance: the judge's guidance is the entry's own text, "" for an entry that gives none and
+// for a name the file does not hold.
+func TestGuidance(t *testing.T) {
 	rules := Rules{Secrets: []SecretRule{
-		{Name: "bound", Hosts: []string{"api.example.com"}},
-		{Name: "hostless", Judge: &judge, Guidance: "grant for releases"},
+		{Name: "guided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300)), Guidance: "grant for releases"},
+		{Name: "unguided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300))},
 	}}
-	for name, want := range map[string]bool{"bound": true, "hostless": false, "absent": false} {
-		if got := rules.Bound(name) != nil; got != want {
-			t.Errorf("Bound(%q) found an entry: %v; want %v", name, got, want)
+	for name, want := range map[string]string{"guided": "grant for releases", "unguided": "", "absent": ""} {
+		if got := rules.Guidance(name); got != want {
+			t.Errorf("Guidance(%q) = %q; want %q", name, got, want)
 		}
-	}
-	if seconds, ok := rules.JudgeSeconds("hostless"); !ok || seconds != 300 {
-		t.Errorf("JudgeSeconds(hostless) = %d, %v; want 300, true: a host-less entry still carries its judge", seconds, ok)
-	}
-	if got := rules.Guidance("hostless"); got != "grant for releases" {
-		t.Errorf("Guidance(hostless) = %q; want the entry's own text", got)
 	}
 }
 

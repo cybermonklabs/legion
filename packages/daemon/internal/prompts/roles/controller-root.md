@@ -39,4 +39,4 @@ any `owner/name`. `legion state` names each repository the daemon refused and wh
 
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 
-Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.
+Give a person no estimated date or duration: say what work is left and what decides when it ends.

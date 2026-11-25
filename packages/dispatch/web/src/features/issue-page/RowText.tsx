@@ -1,4 +1,6 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
+  type FocusEvent,
   Fragment,
   type MouseEvent,
   type ReactNode,
@@ -7,19 +9,28 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { type AgentText, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
+import { deletedLineText, type PostDeletion } from "../refs/post-marks";
 import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
+import { storeLinkPath } from "./lenses/store-link";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
-import { useKnownAmbiguousReferences, useKnownReferenceNames } from "./reference-names";
+import {
+  useKnownAmbiguousReferences,
+  useKnownDeletedReferences,
+  useKnownEditedReferences,
+  useKnownReferenceNames,
+} from "./reference-names";
 import {
   knownIssueKeys,
   linkRowReferences,
@@ -51,6 +62,13 @@ import {
  * a gone one, or one the read has not answered yet - keeps its link, by its short form. The row
  * asks the server nothing for it (R21), so the body's own link pass, which reads one target for
  * each reference, is given nothing to link.
+ *
+ * A reference to a post its author corrected reads as the page published it (INFRA-1523, R2 and
+ * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
+ * `useKnownEditedReferences`); one its author deleted by the deleted line without its time, in
+ * the deleted line's italic as a link to it is (`RefLink`), its actor named as the page names an
+ * author (`AgentText.author`), as the row's own deleted line names it (`NodeRow.tsx`), by
+ * INFRA-1196's decision 342, and not as the published name holds it (`useKnownDeletedReferences`).
  *
  * The words are a reading of the text, as it was when it was drawn as stored: an `ask` block in a
  * document is a node of the tree of its own, where a reader answers it, so the text draws its
@@ -125,17 +143,27 @@ export function chipName(route: DispatchReferenceRoute | undefined, name: string
  *  is (`chipName`). A document `markdown` cites is named by the page's word for it whether or not
  *  the read has answered yet, so its file name and its slug are never drawn while it is in
  *  flight. The read's own names are named once for each answer of the read (`namedOnce`), never
- *  once for each row: a block's name is its whole reading, and every row draws from the one map. */
+ *  once for each row: a block's name is its whole reading, and every row draws from the one map.
+ *  A post `markdown` cites that its author deleted (`deleted`) is named by its deleted line with
+ *  the actor named by `author`, the page's rule for an author, in place of the published line,
+ *  which names the actor as no registry knows it. */
 function chipNames(
   names: ReadonlyMap<string, string>,
-  markdown: string
+  markdown: string,
+  deleted: ReadonlyMap<string, PostDeletion>,
+  author: AgentText["author"]
 ): ReadonlyMap<string, string> {
   const shared = namedOnce(names);
   let named: Map<string, string> | undefined;
   for (const one of rowReferences(markdown, [])) {
-    if (one.route.kind === "issue" || shared.has(one.reference) || named?.has(one.reference)) {
+    if (one.route.kind === "issue" || named?.has(one.reference)) continue;
+    const deletion = shared.has(one.reference) ? deleted.get(one.reference) : undefined;
+    if (deletion !== undefined) {
+      named ??= new Map(shared);
+      named.set(one.reference, chipName(one.route, deletedLineText(deletion, { label: author })));
       continue;
     }
+    if (shared.has(one.reference)) continue;
     const words = chipName(one.route, "");
     if (words === "") continue;
     named ??= new Map(shared);
@@ -163,6 +191,9 @@ function namedOnce(names: ReadonlyMap<string, string>): ReadonlyMap<string, stri
 
 /** The mark a reference in a node's words carries where it is drawn as a chip (`styles.css`). */
 const ROW_CHIP = "data-row-chip";
+
+/** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
+const POST_DELETED = "data-post-deleted";
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
@@ -206,7 +237,7 @@ function dropDirectiveLines(root: HTMLElement): void {
 
 /** A text drawn as stored, each reference in it the link the batched read names, but for one
  *  the read answered as ambiguous, which stays as written, and no typed block's source line in
- *  it. */
+ *  it. A reference to a corrected post carries its mark (`RowText`). */
 function StoredText({
   markdown: stored,
   tabStops,
@@ -217,7 +248,13 @@ function StoredText({
   const markdown = useMemo(() => withoutDirectiveLines(stored), [stored]);
   const read = useKnownReferenceNames();
   const ambiguous = useKnownAmbiguousReferences();
-  const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
+  const edited = useKnownEditedReferences();
+  const deleted = useKnownDeletedReferences();
+  const { author } = useAgentText();
+  const names = useMemo(
+    () => chipNames(read, markdown, deleted, author),
+    [author, deleted, markdown, read]
+  );
   const found = useMemo(
     () => rowReferences(markdown, knownIssueKeys(names), ambiguous),
     [ambiguous, markdown, names]
@@ -226,11 +263,11 @@ function StoredText({
   let at = 0;
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <p className="whitespace-pre-wrap break-words" onClick={follow} {...authorText}>
+    <p className="whitespace-pre-wrap [overflow-wrap:anywhere]" onClick={follow} {...authorText}>
       {found.map((one) => {
         const before = markdown.slice(at, one.start);
         at = one.end;
-        const { key, words } = rowReferenceWords(one, names);
+        const { key, words } = rowReferenceWords(one, names, edited);
         return (
           <Fragment key={`${one.start}:${one.reference}`}>
             {before}
@@ -242,7 +279,13 @@ function StoredText({
               tabIndex={tabStops ? undefined : -1}
             >
               {key === undefined ? (
-                words
+                deleted.has(one.reference) ? (
+                  <span className="italic" data-post-deleted="">
+                    {words}
+                  </span>
+                ) : (
+                  words
+                )
               ) : (
                 <>
                   <span className="font-semibold whitespace-nowrap">{key}</span>
@@ -445,9 +488,41 @@ export function useOutOfTabOrder(
   }, [box, keepScrollers, out]);
 }
 
+/** `value`, or the one this hook last answered while `value` holds the same values, as TanStack
+ *  Query's `replaceEqualDeep` compares two answers of a read (`api/queries.ts`). A later read of
+ *  the tree hands a row the same reading and record in objects of its own (`tree-nodes.ts`'s
+ *  `readingOf`, `text-references.ts`'s `textSourceOf`), and the body paints again for every new
+ *  reading it is handed (`useRenderedMarkdown`), which replaces the link the reader is on. */
+function useSameValue<T>(value: T): T {
+  const [held, hold] = useState(value);
+  // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+  if (replaceEqualDeep(held, value) === held) return held;
+  // React draws the component again at once with the state its render set, before it commits
+  // anything, and that render finds the value held.
+  hold(value);
+  return value;
+}
+
+/** The link in `root` of the address `link` has: the reference a row's own link names, else its
+ *  `href`. Undefined where `link` has no address, or `root` holds no link of it. */
+function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorElement | undefined {
+  const mark = link.hasAttribute("data-row-reference") ? "data-row-reference" : "href";
+  const address = link.getAttribute(mark);
+  if (address === null) return undefined;
+  return [...root.querySelectorAll("a")].find((anchor) => anchor.getAttribute(mark) === address);
+}
+
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
- *  reference's link once its target answers, a picture once it loads - as they arrive. */
+ *  reference's link once its target answers, a picture once it loads - as they arrive. A
+ *  reference to a corrected post carries its mark (`RowText`). A reading that holds the same
+ *  words as the one painted paints nothing again (`useSameValue`), and a paint of other words
+ *  keeps the focus on the link the reader was on: the new link of its address takes it, where the
+ *  new words hold one. A store address the words name by its node is a link to that node's row
+ *  (`lenses/store-link.ts`' `storeLinkPath`), followed in place as every other link of the row
+ *  is. The words break a word or a link that would end past their column
+ *  (`overflow-wrap: anywhere`), which `break-word` does not do inside a flex or grid row: there it
+ *  leaves the box as wide as its longest word, and a long address widens the page. */
 function DrawnText({
   focused,
   markdown,
@@ -462,9 +537,26 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
+  // The reading and the record the body was last handed, while the new ones hold the same values.
+  const reading = useSameValue(tree);
+  const record = useSameValue(source);
+  /** The link inside the words that took the focus last, until the focus moves to another
+   *  element. */
+  const focusedLink = useRef<HTMLAnchorElement | null>(null);
+  // The page's address, which the link pass reads at each paint: a store link opens a row of the
+  // issue it names (`storeLinkPath`).
+  const location = useLocation();
+  const page = useRef(location);
+  page.current = location;
   const read = useKnownReferenceNames();
   const ambiguous = useKnownAmbiguousReferences();
-  const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
+  const edited = useKnownEditedReferences();
+  const deleted = useKnownDeletedReferences();
+  const { author } = useAgentText();
+  const names = useMemo(
+    () => chipNames(read, markdown, deleted, author),
+    [author, deleted, markdown, read]
+  );
   // After every paint of the reading, and again when the batched read brings the names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
   // puts them back.
@@ -472,7 +564,7 @@ function DrawnText({
     const element = drawn.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names, ambiguous);
+    linkRowReferences(element, names, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);
@@ -483,16 +575,71 @@ function DrawnText({
         const word = documentWord(route);
         if (word !== undefined && anchor.textContent !== word) anchor.textContent = word;
       }
+      // A deleted post's line is in the deleted line's italic, as `StoredText` draws it.
+      if (deleted.has(reference)) {
+        anchor.classList.add("italic");
+        anchor.setAttribute(POST_DELETED, "");
+      } else if (anchor.hasAttribute(POST_DELETED)) {
+        anchor.classList.remove("italic");
+        anchor.removeAttribute(POST_DELETED);
+      }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
-  }, [ambiguous, names, tabStops]);
+    // A store address named in the words links to its node's row. The body's reference pass
+    // would read a link to the row's path as one to its issue, so the path waits in the title,
+    // and only the path the link names is taken.
+    for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-dispatch-href]")) {
+      const href = anchor.getAttribute("data-dispatch-href") ?? "";
+      const path = storeLinkPath(href, anchor.getAttribute("title") ?? "", page.current);
+      if (path === undefined) continue;
+      anchor.setAttribute("href", path);
+      anchor.removeAttribute("title");
+    }
+    // A paint of other words replaces every node of them, the link the reader was on with it,
+    // and the focus falls to nothing. The new link of the same address takes it back; a reader
+    // who has put the focus elsewhere since keeps it there, and a link the words no longer hold
+    // takes nothing.
+    const last = focusedLink.current;
+    if (last !== null && !last.isConnected) {
+      const active = document.activeElement;
+      const again =
+        active === null || active === document.body ? linkOfAddress(element, last) : undefined;
+      again?.focus({ preventScroll: true });
+      focusedLink.current = again ?? null;
+    }
+  }, [ambiguous, deleted, edited, names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
+  const enter = (event: FocusEvent<HTMLDivElement>): void => {
+    if (event.target instanceof HTMLAnchorElement) focusedLink.current = event.target;
+  };
+  // A focus that goes to another element forgets the link. One that goes to nothing keeps it
+  // only where the link itself is gone, as a paint removes it: a reader who puts the focus on
+  // nothing - a press on the page's blank space, a move to another window - leaves the link
+  // drawn, and the next paint gives them no focus they did not ask for.
+  const leave = (event: FocusEvent<HTMLDivElement>): void => {
+    const left: EventTarget = event.target;
+    if (event.relatedTarget !== null) {
+      focusedLink.current = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const held = focusedLink.current;
+      if (held !== null && held === left && held.isConnected) focusedLink.current = null;
+    });
+  };
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <div className="min-w-0 break-words" onClick={follow} ref={drawn} {...authorText}>
+    <div
+      className="min-w-0 [overflow-wrap:anywhere]"
+      onBlur={leave}
+      onClick={follow}
+      onFocus={enter}
+      ref={drawn}
+      {...authorText}
+    >
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
@@ -500,8 +647,8 @@ function DrawnText({
           markdown={markdown}
           onRendered={link}
           referenceText=""
-          source={source}
-          tree={tree}
+          source={record}
+          tree={reading}
         />
       </TextAskCard.Provider>
     </div>

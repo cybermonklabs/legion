@@ -776,6 +776,209 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   }
 });
 
+// The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
+// `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The tab draws
+// the doubt where the paragraph drew, with the paragraph's words, and once.
+test("a converted decision draws the doubt its node holds as its Unsure: paragraph drew", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ':::decision{#only uncertainty="high" uncertainty_reason="the index may be slow."}\nKeep a log\n\nA log is enough.\n:::\n',
+      uncertainty: "high",
+      uncertainty_reason: "the index may be slow.",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    await waitFor(() =>
+      expect(
+        within(waiting)
+          .queryAllByTestId("decision-unsure")
+          .map((block) => block.textContent)
+      ).toEqual(["Unsure: the index may be slow."])
+    );
+    // Drawn as a body draws a paragraph, not as the literal text a body falls back to.
+    expect(within(waiting).getByTestId("decision-unsure").querySelector("p")?.textContent).toBe(
+      "Unsure: the index may be slow."
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// The conversion of a decisions document writes a section's heading as the first paragraph of the
+// decision it becomes, and the server names a decision by that paragraph. The tab names the
+// decision by it, as it named the section by its heading, and draws it once: the body below the
+// name starts with the section's own words. A Change still quotes the decision's first block that
+// is no heading, as the issue page's Change does (`anchorQuote`).
+test("a converted decision is named by its first paragraph, which its body does not repeat", async () => {
+  const user = userEvent.setup();
+  const reason = "a reader who wants a file export would change this.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: `:::decision{#only uncertainty="high" uncertainty_reason="${reason}"}\nFiles stay out of the corpus\n\nWe write no file beside the database.\n:::\n`,
+      uncertainty: "high",
+      uncertainty_reason: reason,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Files stay out of the corpus"
+    );
+    await waitFor(() =>
+      expect(within(waiting).getByText("We write no file beside the database.")).toBeDefined()
+    );
+    expect(within(waiting).getAllByText("Files stay out of the corpus")).toHaveLength(1);
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", {
+      name: "Change Files stay out of the corpus",
+    });
+    expect(within(composer).getByTestId("decision-quote").textContent).toBe(
+      "Files stay out of the corpus"
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// A card's title is plain text linked to the decision. A first paragraph that holds a link stays
+// in the body so the reader can see and open that link.
+test("a decision whose first paragraph holds a link keeps that paragraph, its link with it, in its body", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ":::decision{#only}\nSee [the runbook](https://example.com/r) for the window.\n\nWe rotate weekly.\n:::\n",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "See the runbook for the window."
+    );
+    await waitFor(() => expect(within(waiting).getByText("We rotate weekly.")).toBeDefined());
+    const link = within(waiting).getByRole("link", { name: "the runbook" });
+    expect(link).toHaveAttribute("href", "https://example.com/r");
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// A first block that holds inline code, emphasis, a reference, an image, or list structure carries
+// content the plain title cannot show, so the card keeps that block in its body.
+test("a decision whose first block holds inline code, emphasis, a mention, an image, or a list keeps that block in its body", async () => {
+  const ask = spyOn(api, "getAsk").mockRejectedValue(new Error("the ask is not read here"));
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        block: "code",
+        text: ":::decision{#code}\nUse `pg_stat` for timing.\n\nIt needs no restart.\n:::\n",
+        waiting_review: true,
+      }),
+      entry({
+        block: "em",
+        text: ":::decision{#em}\nDo *not* drop the table.\n\nOld rows stay readable.\n:::\n",
+        waiting_review: true,
+      }),
+      entry({
+        block: "mention",
+        text: `:::decision{#mention}\nSee dispatch://CORE-1/ask/${askId} for the window.\n\nWe rotate weekly.\n:::\n`,
+        waiting_review: true,
+      }),
+      entry({
+        block: "img",
+        text: ":::decision{#img}\nLayout ![shot.png](https://example.com/shot.png)\n\nKeep the spacing.\n:::\n",
+        waiting_review: true,
+      }),
+      entry({
+        block: "list",
+        text: ":::decision{#list}\n- Keep logs\n- Rotate weekly\n:::\n",
+        waiting_review: true,
+      }),
+    ],
+    open_questions: [],
+  });
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    const cardOf = (block: string): HTMLElement => {
+      const card = waiting.querySelector<HTMLElement>(`li[data-decision="${block}"]`);
+      if (card === null) throw new Error(`missing card for ${block}`);
+      return card;
+    };
+    await waitFor(() => expect(cardOf("code").querySelector("code")?.textContent).toBe("pg_stat"));
+    expect(within(cardOf("code")).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Use pg_stat for timing."
+    );
+    expect(cardOf("em").querySelector("em")?.textContent).toBe("not");
+    const mentionLink = await waitFor(() => {
+      const found = cardOf("mention").querySelector<HTMLElement>("a[data-dispatch-ref]");
+      if (found === null) throw new Error("the mention link is missing from the body");
+      return found;
+    });
+    expect(mentionLink.getAttribute("href")).toBe(`/issues/CORE-1/asks/${askId}`);
+    const image = cardOf("img").querySelector<HTMLImageElement>("img");
+    expect(image?.getAttribute("src")).toBe("https://example.com/shot.png");
+    expect(image?.getAttribute("alt")).toBe("shot.png");
+    expect([...cardOf("list").querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+      "Keep logs",
+      "Rotate weekly",
+    ]);
+  } finally {
+    ask.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// An answer with no reading of its text names the decision by the first line of its markdown
+// (`decisionName`). A first paragraph that runs over two lines is more than that name, so the body
+// still draws the whole paragraph: hiding it would lose every line after the first.
+test("a decision with no reading whose first paragraph spans two lines keeps its words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ":::decision{#only}\nKeep a log for each run\nand rotate it weekly.\n\nA log is enough.\n:::\n",
+      text_tree: undefined,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Keep a log for each run"
+    );
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    expect(
+      within(waiting).getByText(/^Keep a log for each run\s+and rotate it weekly\.$/)
+    ).toBeDefined();
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// Without a server reading, a single-line first paragraph that holds a link still stays in the
+// body so the reader can open that link.
+test("a decision with no reading whose first paragraph holds a link keeps that paragraph in its body", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ":::decision{#only}\nSee [the runbook](https://example.com/r) for the window.\n\nWe rotate weekly.\n:::\n",
+      text_tree: undefined,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() => expect(within(waiting).getByText("We rotate weekly.")).toBeDefined());
+    const link = within(waiting).getByRole("link", { name: "the runbook" });
+    expect(link).toHaveAttribute("href", "https://example.com/r");
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the

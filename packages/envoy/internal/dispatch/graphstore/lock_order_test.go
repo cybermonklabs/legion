@@ -256,18 +256,14 @@ func requireNoDeadlockBetweenOppositeOrders(t *testing.T, ctx context.Context, f
 	requireCommitted(t, secondDone, "the write given the upper of "+pair.name+" first")
 }
 
-// writeNodesInOneTransaction is one Write of nodes alone, committed: the bare call the race
-// above puts against itself.
-func writeNodesInOneTransaction(ctx context.Context, pool *store.Pool, nodes []Node) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+// writeNodesInOneTransaction is one Write of nodes alone, in a transaction it begins on db (the
+// pool, or a connection the caller holds) and commits (pgx.BeginFunc): the bare call the race
+// above puts against itself, and each write requireOneChangedByRunBehindTheNodeRow makes for its
+// run.
+func writeNodesInOneTransaction(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, nodes []Node) error {
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return Write(ctx, tx, nodes, nil) })
 }
 
 // requireTheLowestNodeIsTakenFirst holds a write over several nodes to taking them in ascending
@@ -659,7 +655,7 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 		done := make(chan error, 1)
 		go func() {
 			defer conn.Release()
-			done <- writeOnConnection(store.WithRun(ctx, run), conn, []Node{marked})
+			done <- writeNodesInOneTransaction(store.WithRun(ctx, run), conn, []Node{marked})
 		}()
 		requireQueued(t, holder, conn, done, name)
 		writes = append(writes, done)
@@ -680,19 +676,6 @@ func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f
 	}
 }
 
-// writeOnConnection is one Write of nodes on conn, committed, on ctx.
-func writeOnConnection(ctx context.Context, conn *pgxpool.Conn, nodes []Node) error {
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
 // --- the written order -------------------------------------------------------------------
 
 // lockOrderComment is where this repository's lock order is written: the doc comment on
@@ -702,7 +685,7 @@ const lockOrderComment = "../api/inbox_read.go"
 // lockOrderFunction is the declaration the comment sits on.
 const lockOrderFunction = "func (s *server) markInboxReadThreads("
 
-// storeLockOrderClauses are this store's five invariants as that comment has to state them, plus
+// storeLockOrderClauses are this store's six invariants as that comment has to state them, plus
 // the three things it has to say beside them. A phrase missing is the order being written in two
 // places, or in none: a writer that reads the comment would not find this store's steps in it.
 // The revision fence's step is two phrases, the step named and its two locks in their order,
@@ -718,6 +701,7 @@ var storeLockOrderClauses = []string{
 	"a graph_nodes write touching several nodes takes them in ascending (kind, id)",
 	"a writer under the revision fence",
 	"takes the document's owner lock, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
+	"the head rows of the nodes a write names (issue_head_nodes, migration 20261123180100_issue_tree_head) are the last rows it takes",
 	"appending a tuple locks no row of another table",
 	"takes no owner lock at all",
 	"a frame of a run takes the run's interaction graph_nodes row `for no key update` first",
@@ -816,7 +800,7 @@ func startStoreWrite(t *testing.T, ctx context.Context, f *lockOrderFixture, nod
 // claims about it was never put to the test.
 func requireQueued(t *testing.T, holder pgx.Tx, conn *pgxpool.Conn, done chan error, what string) {
 	t.Helper()
-	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done, lockWait)
+	answer, answered := storetest.WaitForQueuedBehind(t, holder, conn.Conn().PgConn().PID(), done)
 	if answered {
 		t.Fatalf("%s finished without waiting for the lock a holder has: %v%s", what, answer, deadlockNote(answer))
 	}

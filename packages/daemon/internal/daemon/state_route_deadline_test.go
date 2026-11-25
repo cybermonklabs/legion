@@ -69,6 +69,22 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 	return count
 }
 
+// awaitOneLockWaiter waits until one backend of pool's own database waits on a lock
+// (backendWaitingOnALock): a statement the test started is blocked on a transaction the test holds.
+// It counts by database rather than by application name, since each test clones a database of its
+// own (isolatedOutboxPool), so the count reads that test's backends alone.
+func awaitOneLockWaiter(t *testing.T, pool *store.Pool, what string) {
+	t.Helper()
+	testwait.Eventually(t, what, func() bool {
+		var waiting int
+		if err := pool.QueryRow(context.Background(),
+			"select count(*) from pg_stat_activity where datname = current_database() and "+backendWaitingOnALock).Scan(&waiting); err != nil {
+			t.Fatalf("count the backends waiting on a lock: %v", err)
+		}
+		return waiting == 1
+	})
+}
+
 // A state read that does not finish is ended by the route's own deadline: the client is answered
 // a failure while it is still connected, the transaction is ended rather than left open, and the
 // connection goes back to the pool for the next caller.
@@ -78,6 +94,7 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 // patience. That is the measured failure — 32 connections of the production pool held by reads
 // nobody ended — in one request.
 func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	// The route's bound as this test sets it (api.Options.StateReadBound), seconds rather than
 	// the daemon's own 60, which is what api's default pins. Nothing in this test is slow but
 	// the hold, so two seconds cuts nothing legitimate here.
@@ -101,7 +118,7 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	state := &heldState{}
 	state.held.Store(true)
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st.Pool(), StateReadBound: bound, Log: quietLogger(),
 	}).Handler
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

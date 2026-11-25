@@ -38,9 +38,13 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    the third part "his own decisions", and Dispatch has several readers: another person's
  *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
  *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
- * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
- *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
- *    stands on any longer (R5: "A replaced decision draws no line").
+ * 5. **The agents' decisions that no statement rests on**, at the foot and unfolded, which the
+ *    page folds only when the reader folds them: an agent decision no `shaped` tie names a
+ *    statement for, whether a person kept it, asked to change it or neither, and a replaced one,
+ *    which no statement stands on any longer (R5: "A replaced decision draws no line").
+ *
+ * An overtaken decision or question, a node the read answers `overtaken`, stands in the part its
+ * kind puts it in, and waits on nobody (`waitingOrder`, R2).
  *
  * Before the five parts stands the node the address names where it is neither an ask nor a
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
@@ -112,7 +116,9 @@ interface EntryBase {
   /** The node, as the whole tree holds it at the place it is edited. */
   readonly node: TreeNode;
   /** The node's parent in the conversation as one line on its row (R2), since no row of this
-   *  filter stands under another; absent for a node that hangs under the issue itself. */
+   *  filter stands under another, with its address and a comment's or a message's marks, as a
+   *  filter's parent line holds them (`presets.ts`); absent for a node that hangs under the
+   *  issue itself. */
   readonly parent?: ParentLine;
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
@@ -135,6 +141,10 @@ export interface DecisionChange {
   /** What the person wrote, as stored. */
   readonly body: string;
   readonly by: Actor;
+  /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
+   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
+   *  edited. */
+  readonly editedAt: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
   /** The comment's address in the conversation. */
@@ -148,6 +158,9 @@ export interface DecisionEntry extends EntryBase {
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
+  /** Whether the read answers the decision's node `overtaken` (R2): it stands in its part, and
+   *  is no entry of what waits (`waitingOrder`). */
+  readonly overtaken?: true;
   /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`), by the one
    *  rule the outline reads too (`decision-review.ts`' `reviewState`). */
   readonly standing?: DecisionState;
@@ -197,12 +210,14 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 /**
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
+ * what waits walks: each press goes to the next of them (R13, the tester's F12). An overtaken
+ * one waits on nobody (R2): its question's node does not wait (`tree-read/tree-nodes.ts`'
+ * `draftAsk`), and its decision says it is overtaken.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.map((entry) => entry.node.id),
+    ...parts.review.filter((entry) => entry.overtaken !== true).map((entry) => entry.node.id),
   ];
 }
 
@@ -318,24 +333,27 @@ export function decisionsParts({
               at: asked.created_at,
               body: asked.body,
               by: asked.author,
+              editedAt: asked.edited_at,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
+      ...(row.node.state === "overtaken" ? { overtaken: true as const } : {}),
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),
     };
     if (row.replaced) {
       agents.push(entry);
-    } else if (asked !== undefined) {
-      // The reader asked for a change: the decision waits on its agent, and stands with the
-      // decisions of whoever asked, by the time they did.
+    } else if (asked !== undefined && shapes.length > 0) {
+      // A person asked for a change of a decision a statement rests on: it waits on its agent,
+      // and stands with the decisions of whoever asked, by the time they did.
       decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
-    } else if (inReviewList(row, isStatement)) {
+    } else if (inReviewList(row, isStatement, asked !== undefined)) {
       review.push(entry);
     } else if (shapes.length === 0) {
+      // No statement rests on it, whether a person kept it, asked to change it or neither.
       agents.push(entry);
     } else {
       // An agent's decision a statement rests on that does not wait: a person kept it as it
@@ -368,8 +386,9 @@ interface Placement {
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
- *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
- *  no parent a row names: the page is the issue. */
+ *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
+ *  address and its author's corrections of it, as the outline's filters give a row's parent
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
 export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
@@ -382,6 +401,14 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
               parent: {
                 id: above.id,
                 line: lineOf(above),
+                // The parent's own address, which makes a parent's line with words the link a
+                // reader follows to it (R18); a wordless parent is its kind word, with no link.
+                ...(above.reference === undefined ? {} : { reference: above.reference }),
+                // A comment's or a message's marks, which its child's row draws with the line
+                // (INFRA-1523, R2 and R3).
+                ...(above.deletedAt === undefined ? {} : { deletedAt: above.deletedAt }),
+                ...(above.deletedBy === undefined ? {} : { deletedBy: above.deletedBy }),
+                ...(above.editedAt === undefined ? {} : { editedAt: above.editedAt }),
                 type: above.type,
               },
             }),

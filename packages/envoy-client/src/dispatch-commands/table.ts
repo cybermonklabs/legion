@@ -9,6 +9,10 @@ import {
 import type { CommandContext, DispatchToolResult, SessionContext } from "./context";
 import {
   commentCommand,
+  deleteCommentCommand,
+  deleteMessageCommand,
+  editCommentCommand,
+  editMessageCommand,
   messageCommand,
   resolveCommentCommand,
   sendToAgentCommand,
@@ -34,7 +38,12 @@ import {
 } from "./issues";
 import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
-import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
+import {
+  architectureSyncCommand,
+  projectCommand,
+  projectsCommand,
+  projectUpdateCommand,
+} from "./projects";
 import { readCommand } from "./read";
 import {
   constraintCommand,
@@ -92,6 +101,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_search: acting(searchCommand),
   dispatch_project: acting(projectCommand),
   dispatch_projects: acting(projectsCommand),
+  dispatch_project_update: acting(projectUpdateCommand),
   dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_ask: acting(askCommand),
@@ -102,6 +112,10 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_comment: acting(commentCommand),
   dispatch_suggest: acting(suggestCommand),
   dispatch_resolve_comment: acting(resolveCommentCommand),
+  dispatch_edit_comment: acting(editCommentCommand),
+  dispatch_delete_comment: acting(deleteCommentCommand),
+  dispatch_edit_message: acting(editMessageCommand),
+  dispatch_delete_message: acting(deleteMessageCommand),
   dispatch_message: acting(messageCommand),
   dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),

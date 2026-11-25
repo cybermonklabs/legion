@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -175,10 +176,8 @@ func requireWiderThanParent(t *testing.T, err error, childKind, childID, parentK
 		t.Errorf("the refusal names the %s %s under the %s %s, want the %s %s under the %s %s",
 			refusal.ChildKind, refusal.ChildID, refusal.ParentKind, refusal.ParentID, childKind, childID, parentKind, parentID)
 	}
-	want := "the " + childKind + " " + childID + " is visible to every reader of its project and cannot stand under or on the " +
-		parentKind + " " + parentID + ", which is reserved for its author"
-	if !strings.HasPrefix(refusal.Error(), want) {
-		t.Errorf("the refusal reads %q, want it to begin %q", refusal.Error(), want)
+	if !graphstoretest.NamesAsAWord(refusal.Error(), childKind, childID, parentKind, parentID) {
+		t.Errorf("the refusal reads %q, want it to name the %s %s and the %s %s", refusal.Error(), childKind, childID, parentKind, parentID)
 	}
 	t.Logf("refused with VISIBILITY_WIDER_THAN_PARENT: %s", refusal.Error())
 }

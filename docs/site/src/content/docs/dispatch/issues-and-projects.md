@@ -66,6 +66,26 @@ Board and its components; a linked GitHub issue or pull request can be taken off
 
 Legion, when it works an issue, moves that issue's status itself.
 
+Dispatch keeps a parent's status in line with its children's. A parent is done only when each child
+is done. While a child is in work (Todo, In progress, Testing, Needs review or Retro), its parent is
+in work too. Before the page changes the status of an issue that has a parent or an open child, it
+asks Dispatch what the change would do. When the change needs no question, the page saves it, even
+if you leave the page before Dispatch answers. When the change would break this rule, a dialog
+names the issues that stop it and offers a choice:
+
+- **Move them with it**: each open issue under it whose status is in another group takes the new
+  status too. The groups are not started (Triage, Icebox, Backlog), in work and done. So a child in
+  Icebox stays there when its parent moves to Backlog.
+- **Unlink them**: each open child stops being a child of this issue and keeps its status.
+- **Move the parents into work too**: each parent that is not in work moves to In progress.
+- **Keep as it is** or **Cancel**: nothing changes. Escape does the same, and so does leaving the
+  page while the dialog is open: a question nobody answers changes nothing.
+
+The page offers the first two when a child stops the change, and the third when a parent stops it.
+Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each
+other issue a choice changes. When a choice changed at least one other issue, the issue you moved
+gets one more comment that lists those changes.
+
 ## The List and the Board
 
 The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
@@ -105,6 +125,12 @@ An epic group's **Epic actions** can rename it, merge its open work into another
 Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
 Closed issues keep their original parent and history.
 Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
+Move, New epic and Merge keep a parent's status in line with its children's.
+When an issue you move is in work and the epic is not, the table asks first. **Move into work too** moves the epic, and each parent above it that is not in work, to In progress, and then makes the move.
+When the epic is done, the table asks to reopen it into In progress the same way (**Reopen it too**).
+The question lists each change it makes. **Cancel** changes nothing.
+**Finish** of an interrupted New epic or Merge asks the same question before it moves the epic, and refuses to move issues under an epic that has closed since.
+A new epic is not in work, so New epic asks before it makes the epic.
 Naming and renaming an epic happen in a dialog in the page, like creating an issue.
 If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
 If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
@@ -132,6 +158,12 @@ Dropping a card in Done closes the issue. Moving it out of Done reopens it.
 Icebox and Done start as narrow folded columns. They still take drops. **Show Icebox & Done**
 opens them in full, and Dispatch remembers that choice.
 
+A card with a parent or an open child stays where it is while Dispatch checks the move. When the
+move would break the parent-status rule, the Board asks the same question as the issue page (see
+[Statuses](#statuses)). The card moves only after you confirm a choice. A card with no parent and
+no open child that you drop while Dispatch checks another move, before that move's question opens,
+moves at once, but Dispatch saves its move only after the other move ends.
+
 If someone else moved cards while you were dragging, the move fails with "The board changed while
 you were moving this card - refreshed, try again." The Board shows the fresh order.
 
@@ -158,10 +190,11 @@ another person, and whose Inbox lists those asks. An issue nobody holds leaves i
 project's default assignee, so every ask reaches somebody.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
-parent's assignee, else the project's default assignee: the person you name in the projects table
-in **Settings → Projects**, who takes every issue the chain leaves without an owner. Every project
-names one, so every new issue has an assignee. A person moves a project's default on that page,
-and an agent names the first one in the call that creates the project.
+parent's assignee when the parent is in the same project, else the project's default assignee: the
+person you name in the projects table in **Settings → Projects**, who takes every issue the chain
+leaves without an owner. Every project names one, so every new issue has an assignee. A person
+moves a project's default on that page, and an agent names the first one in the call that creates
+the project.
 
 ### Labels
 
@@ -299,6 +332,8 @@ agents using it stop working at once.
   the document the spec's requirements are listed, each flagged with what it lacks: a requirement
   no check serves reads `has no check`, and one no plan task serves reads `has no plan task` once
   the issue has a plan document.
+  While a document of the issue is still being indexed, no requirement is flagged, and the list
+  says instead which document and which version Dispatch is still indexing.
 - **Verification** is the issue's Verification document and, under it, each check the document
   marks, with every result recorded against that check, newest first. Each check says whether a
   pass stands and from which roles, and names what Dispatch compared the results with: each head

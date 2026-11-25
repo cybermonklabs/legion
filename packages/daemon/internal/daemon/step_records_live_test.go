@@ -65,7 +65,7 @@ type stepRecordsLive struct {
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
-	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
+	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
 	l.step("a-phase-moves-while-dispatch-is-down", l.outage)

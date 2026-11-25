@@ -61,6 +61,7 @@ type identityRow struct {
 //   - a delivery to the person's proved session reaches that person's page and count, and
 //     neither the page nor the count of the person one character away.
 func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	table := []identityRow{
 		{"a login in mixed case", "AlIcE", brokerTestPerson},

@@ -185,6 +185,7 @@ func runLossCut(t *testing.T, cut lossCut) {
 // consumer the term is for does, and fails only AckFloor.Consumer == 0. That condition pins it: a
 // term without it reads the floor as N and restarts the consumer past the N messages from 1 to N.
 func TestRestartAtFloorAfterEveryMessageWasLostRedeliversPastTheStartWhenTheConsumerHadDelivered(t *testing.T) {
+	t.Parallel()
 	runLossCut(t, lossCut{
 		session: "ses_cut_whole_delivered",
 		acked:   4,
@@ -202,6 +203,7 @@ func TestRestartAtFloorAfterEveryMessageWasLostRedeliversPastTheStartWhenTheCons
 // a term without it reads the floor as N and restarts the consumer past the messages from L + 1 to
 // N.
 func TestRestartAtFloorAfterTheEndWasLostRedeliversPastTheStartWhenTheConsumerHadDeliveredNothing(t *testing.T) {
+	t.Parallel()
 	runLossCut(t, lossCut{
 		session: "ses_cut_end_nothing",
 		pending: func(lost uint64) int { return lossCutBefore - int(lost) + 5 },

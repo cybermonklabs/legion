@@ -46,6 +46,7 @@ func (row keptRow) same(other keptRow) bool {
 }
 
 func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.T) {
+	t.Parallel()
 	handler, database, _, s := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -276,6 +277,7 @@ const holdAgentVersionEvents = `
 // decision read before the write, queues behind the write, and the test's transaction then lets
 // the write go on and commit.
 func TestAKeepThatWaitsBehindAWriteOfItsDecisionReadsItAgain(t *testing.T) {
+	t.Parallel()
 	handler, database, _, s := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")

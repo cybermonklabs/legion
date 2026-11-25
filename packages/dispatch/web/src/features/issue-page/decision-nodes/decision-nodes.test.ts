@@ -192,6 +192,7 @@ test("a decision node answers the shape decisionsParts reads", () => {
       block_id: "d1",
       changed_at: "2026-11-06T00:00:00Z",
       changed_version: 2,
+      decidedBy: { id: "alice", kind: "user" },
       document: SPEC.artifact_id,
       heading: "Keep the model pure.",
       kept: null,
@@ -369,6 +370,7 @@ test("a person's decision is its answered ask", () => {
       ...person,
       asks: ["ask-1"],
       block_id: "q1",
+      decidedBy: { id: "alice", kind: "user" },
       document: SPEC.artifact_id,
       heading: "Which transport do we expose?",
       links: [shapedR1(q1)],
@@ -390,6 +392,56 @@ test("a person's decision is its answered ask", () => {
       text_tree: reading("Words of ask-4."),
     },
   ]);
+});
+
+// R1, root R9: a decision's author is who decided it, the person or the session its `decided_by`
+// tuple names, which the read answers as context: a person by login, a session by its id. A
+// decision whose read holds no `decided_by` tuple names no author, so the view hands the card none
+// and it reads "Author unknown". A person's decision, an answered ask with `shaped` ties, names
+// its person the same way.
+test("a decision's author is its decided_by, and none where the read holds none", () => {
+  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
+  const tree = answer(
+    [
+      block("r1", "requirement", SPEC, 0),
+      decision("d1", { decision: { links: [linkTo(blockRef("spec", "r1"))] } }),
+      decision("d2"),
+      decision("d3"),
+      block("q1", "ask", SPEC, 2),
+      ALICE,
+      planner,
+    ],
+    [
+      tuple("decided_by", "d1", "alice"),
+      tuple("decided_by", "d2", "session-planner"),
+      tuple("shaped", "q1", "r1"),
+      tuple("decided_by", "q1", "alice"),
+    ]
+  );
+  const reads: DecisionReads = {
+    asks: [
+      question("ask-1", {
+        answer: { at: "2026-11-06T12:00:00Z", selected: ["REST"], text: null, user: "alice" },
+        artifact_id: SPEC.artifact_id,
+        block_artifact: { id: SPEC.artifact_id, primary: true, slug: SPEC.slug },
+        block_id: "q1",
+        state: "answered",
+      }),
+    ],
+    issue: { key: KEY },
+  };
+  const decided = new Map(decisionNodes(tree, reads).map((one) => [one.block_id, one]));
+
+  expect([...decided.keys()]).toEqual(["d1", "d2", "d3", "q1"]);
+  expect(decided.get("d1")?.decidedBy).toEqual({ id: "alice", kind: "user" });
+  expect(decided.get("d2")?.decidedBy).toEqual({ id: "session-planner", kind: "session" });
+  expect(decided.get("d3"), "a decision no decided_by names has an author").not.toHaveProperty(
+    "decidedBy"
+  );
+  expect(decided.get("q1")).toMatchObject({
+    decidedBy: { id: "alice", kind: "user" },
+    kind: "person",
+  });
 });
 
 // The read answers a person's decision on the answered ask's own node (`decision`), and where it
@@ -606,4 +658,19 @@ test("a decision read with no reading that holds blocks takes its heading from i
     "Keep the model pure.",
     "Keep the model pure.",
   ]);
+});
+
+// The tree read answers a decision node's text as its whole stored block, the lines that open
+// and close the `decision` directive included, and no reading (`text_tree`): measured on a
+// preview of e55b07e9, where no decision node of INFRA-1196 or LAY-2 carried one. The heading,
+// which a Change quotes (R3: "a quote of the decision's first paragraph") and its form draws, is
+// then still the words of the first paragraph inside the block, a heading passed over: never
+// the words of the whole block run together.
+test("a decision the tree read answers as its whole stored block takes its heading from the block's first paragraph", () => {
+  const text =
+    ':::decision{#d-stored shaped="dispatch://LAY-1/spec#b-r1" replaced="false"}\n' +
+    "### Purity\n\nKeep the model pure.\n\nWhy it holds.\n:::";
+  const tree = answer([decision("d-stored", { text, text_tree: undefined })]);
+
+  expect(decisionNodes(tree, READS).map((one) => one.heading)).toEqual(["Keep the model pure."]);
 });

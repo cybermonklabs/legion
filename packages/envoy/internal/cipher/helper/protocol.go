@@ -33,6 +33,7 @@ type Request struct {
 	Secrets         []string `json:"secrets,omitempty"`          // sign-request: the requested agent_secret names
 	Reason          string   `json:"reason,omitempty"`           // sign-request: why they're needed
 	LifetimeSeconds *int     `json:"lifetime_seconds,omitempty"` // sign-request: how many seconds the grant lasts; nil for until the session ends
+	Locations       []string `json:"locations,omitempty"`        // sign-request: the target that narrows its one secret, as the one detail's locations; nil for none
 	WaitSeconds     int      `json:"wait_seconds,omitempty"`     // register: wait up to this long for the enrollment, unless the helper holds no launcher credential
 	RuntimeID       string   `json:"runtime_id,omitempty"`       // enroll-session-key: the session's runtime id on this machine
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
@@ -356,24 +357,29 @@ const BrokerCallWait = 30 * time.Second
 // inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
 // the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
 // for its read and its write: the op's requests end with its context at the bound, and the helper
-// answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
-// A released agent-secrets that asks enroll-session-key and unenroll-session-key (every release
-// from legion-envoy-v10.0.0) also waits 30 s for them (BrokerCallWait), so it gets this helper's
-// answer and not an empty reply. Its machine login waits 10 s, so a broker slower than about 8 s
-// can still outlast it. A healthy broker answers in a fraction of a second
-// (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
+// answers at the bound plus DefaultBrokerCallSlack (1 s) whatever the op is doing. 2 s + 20 s + 5 s
+// is 27 s, under 30 s. A released agent-secrets that asks enroll-session-key and
+// unenroll-session-key (every release from legion-envoy-v10.0.0) also waits 30 s for them
+// (BrokerCallWait), so it gets this helper's answer and not an empty reply. Its machine login
+// waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy broker answers in
+// a fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
+// and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
+// Server names no other (Server.brokerCallSlack, which only tests set).
+const DefaultBrokerCallSlack = time.Second
 
 // InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
 // `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
 // SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
-// DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
-// (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
-// the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
-// a loaded machine. A restart still running at the bound is one install stops waiting for, and
-// systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
-// it drained is still that process and no job for the unit is queued. While one is, the drain
-// ends with that restart or at DefaultDrainBound.
+// DefaultBrokerCallBound plus DefaultBrokerCallSlack, or a connection still being read reaches its
+// 5 s read deadline (Server.Serve): 21 s at the most. The start is done once systemd has forked
+// the helper, since the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to
+// queue and fork on a loaded machine. A restart still running at the bound is one install stops
+// waiting for, and systemd keeps its job: install reads the unit's main process, and sends
+// undrain when the helper it drained is still that process and no job for the unit is queued.
+// While one is, the drain ends with that restart or at DefaultDrainBound.
 const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
 
 // DefaultDrainBound is how long a drain holds before the helper ends it by itself

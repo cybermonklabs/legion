@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -34,14 +34,14 @@ func TestNoAttributeNodeStoresItsValuesUnderABaseAttribute(t *testing.T) {
 		case stored == "":
 			t.Errorf("attribute node %s carries no store name, want the name its values are stored under (StoreName)", node.ID)
 		case graphstore.IsBaseAttribute(stored):
-			t.Errorf("attribute node %s stores its values under %q, which is a base attribute of every node (graphstorecopy.BaseAttributes %v)",
-				node.ID, stored, graphstorecopy.BaseAttributes())
+			t.Errorf("attribute node %s stores its values under %q, which is a base attribute of every node (graphstoretest.BaseAttributes %v)",
+				node.ID, stored, graphstoretest.BaseAttributes())
 		}
 	}
 	if checked == 0 {
 		t.Fatal("the migrated store holds no live attribute node, so this test would prove nothing")
 	}
-	t.Logf("checked the store names of %d live attribute nodes against the base attributes %v", checked, graphstorecopy.BaseAttributes())
+	t.Logf("checked the store names of %d live attribute nodes against the base attributes %v", checked, graphstoretest.BaseAttributes())
 }
 
 // TestEveryStoreNameStaysOffTheBaseAttributes holds StoreName to its rule in the
@@ -49,7 +49,7 @@ func TestNoAttributeNodeStoresItsValuesUnderABaseAttribute(t *testing.T) {
 // that is no base attribute, ask's `state` is stored as `answer_state`, and every other name is
 // stored as itself.
 func TestEveryStoreNameStaysOffTheBaseAttributes(t *testing.T) {
-	for _, base := range graphstorecopy.BaseAttributes() {
+	for _, base := range graphstoretest.BaseAttributes() {
 		for _, typeName := range []string{"ask", "callout", "claim"} {
 			if stored := StoreName(typeName, base); graphstore.IsBaseAttribute(stored) {
 				t.Errorf("StoreName(%q, %q) = %q, which is a base attribute", typeName, base, stored)

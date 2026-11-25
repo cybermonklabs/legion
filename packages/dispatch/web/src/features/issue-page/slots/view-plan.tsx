@@ -15,6 +15,7 @@ import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-fil
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useTreeReadRunning } from "../tree-read/tree-read";
+import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
@@ -153,7 +154,6 @@ export function ViewPlanSlot({
           artifacts={artifacts}
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
-          filtering={view.filtering}
           focusReveal
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
@@ -167,6 +167,8 @@ export function ViewPlanSlot({
           root={view.root}
           rootRow={view.rootRow}
         />
+        {/* While the view read answers a next page, the control that reads it (R15). */}
+        <NextViewPage filter="plan" issueKey={issue.key} />
       </div>
       {panels}
     </NoTooltips>

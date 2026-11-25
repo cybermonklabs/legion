@@ -6,27 +6,34 @@ import "github.com/sjawhar/envoy/internal/dispatch/graphstore"
 // interaction node, which going_requests projects, and each of its frames a frame value of that
 // node, which a going_events row projects (dispatch://INFRA-1950/spec#b-r-interaction): the
 // interaction kind holds a row to its node and its authored_by, and the frame kind every frame a
-// run's rows hold to every frame value its node holds. A run whose row a process of the release
-// before deleted is a node the backfill states gone (backfillGoneRuns), which no row may project
-// and which presentNodes reads past, so it is no difference either way. A deployment can hold no
-// run, so neither kind refuses on zero rows (projection.mayBeEmpty).
+// run's rows hold to every frame value its node holds. A run is readable for one hour; then the
+// sweep states its node gone and removes its rows (api's sweepGoingRequests), and a run whose rows
+// a process of the release before deleted an hour old is a node the sweep and the backfill state
+// gone (backfillGoneRuns): a gone node no row may project, which presentNodes reads past, so it is
+// no difference either way. The node's source is the table that projects it, going_requests, which
+// no column of the row holds: the row side states it as that constant, beside the columns the
+// node's other attributes are held to. A deployment can hold no run, so neither kind refuses on
+// zero rows (projection.mayBeEmpty).
 var runProjections = []projection{{
 	name:     graphstore.KindInteraction,
 	nodeKind: graphstore.KindInteraction,
 	table:    "going_requests",
-	note: "one node per row; the digest is the row's author, project, words, created_at and ends_at and the author" +
-		" graphstore.AuthorOf reads off it, against the node's made_by, project, words, made_at and ends_at and the" +
-		" authored_by tuple it states now; a run whose row is gone is a gone node, no difference",
+	note: "one node per row; the digest is the row's author, project, words, created_at and ends_at, the source" +
+		" going_requests and the author graphstore.AuthorOf reads off it, against the node's made_by, project, words," +
+		" made_at, ends_at and source and the authored_by tuple it states now; a run whose row is gone is a gone node," +
+		" no difference",
 	rows: `
 		select 'interaction ' || r.id::text, '` + graphstore.KindInteraction + `', r.id::text,
 		       md5(r.author::text || '|' || r.project || '|' || r.words || '|' || r.created_at::text
-		           || '|' || r.ends_at::text || '|' || ` + statedLinks(authoredLink("r.author")) + `)
+		           || '|' || r.ends_at::text || '|' || '` + graphstore.SourceGoingRequests + `'
+		           || '|' || ` + statedLinks(authoredLink("r.author")) + `)
 		from going_requests r`,
 	nodes: `
 		select n.id, md5(n.made_by::text || '|' || coalesce(n.project_key, '')
 		                 || '|' || coalesce(n.attributes->>'` + graphstore.AttributeWords + `', '')
 		                 || '|' || n.made_at::text
 		                 || '|' || coalesce((n.attributes->>'` + graphstore.AttributeEndsAt + `')::timestamptz::text, '')
+		                 || '|' || coalesce(n.attributes->>'` + graphstore.AttributeSource + `', '')
 		                 || '|' || ` + currentLinks(graphstore.KindInteraction, kindIn("t.kind", runLinkKinds)) + `)
 		from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `'`,
 	mayBeEmpty: true,

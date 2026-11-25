@@ -5,13 +5,14 @@ import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import { issueTreeKey } from "../../../api/queries";
+import { conversationTreeKey } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import { issueTreeQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
+import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
+  AGENT,
   answeredAsk,
   changeComment,
   closing,
@@ -20,10 +21,12 @@ import {
   issueDetails,
   issueTree,
   KEY,
+  node,
   openAsk,
   READER,
   READER_ACTOR,
   SPEC_DOCUMENT,
+  SPEC_SLUG,
   shaped,
   specRef,
   statement,
@@ -53,8 +56,8 @@ function heldClient(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(issueTreeKey(KEY), tree);
-  client.setQueryData(["asks", KEY], asks);
+  client.setQueryData(conversationTreeKey(KEY), tree);
+  client.setQueryData(["asks", KEY, "thread"], asks);
   client.setQueryData(["comments", KEY], comments);
   return client;
 }
@@ -217,7 +220,7 @@ async function seamOf(quote: string) {
 test("the seam gives four parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
   const getIssueTree = spyOn(api, "getIssueTree");
-  const listIssueAsks = spyOn(api, "listIssueAsks");
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads");
   const listComments = spyOn(api, "listComments");
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
@@ -247,13 +250,13 @@ test("the seam gives four parts from today's reads and makes no request", async 
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
     expect(getIssueTree).not.toHaveBeenCalled();
-    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueDecisions.mockRestore();
     getIssueTree.mockRestore();
-    listIssueAsks.mockRestore();
+    listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }
@@ -271,25 +274,44 @@ test("a Change stands under the decision it was asked on, where another decision
   expect(parts.review[0]).not.toHaveProperty("change");
 });
 
-// A person's write-up of an answered question is no entry of its own: the question it restates
-// is the person's decision. A person's decision node that settles an answered ask of the issue
-// (its `asks`) is left out of every part, and an agent's decision that names no ask stays.
-test("a person's write-up of an answered question is left out of the parts, and an agent's decision stays", async () => {
-  const made = [
-    decision("writeup", {
-      decision: { asks: ["a-answered"], kind: "person", waiting_review: false },
-    }),
-    decision("minor"),
-  ];
+// R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any more. The tree read
+// still hangs it under its decision, with no body and no mark of the delete, and the comments
+// read says it was deleted: the decision is back on the review list and carries no Change. The
+// same Change not deleted moves the decision to the reader's own.
+test("a Change its author deleted asks nothing, and its decision waits for review again", async () => {
+  const children = [statement("s1"), decisionNode("asked")];
+  const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
+  const at = "2026-11-15T09:00:00Z";
+  const tree = treeAnswer([...made, changeComment("change-asked", "asked", at, "")]);
+  const asked = { deleted_at: null, edited_at: null, id: "change-asked" } as Comment;
+  const deleted = { ...asked, deleted_at: "2026-11-15T10:00:00Z", deleted_by: READER_ACTOR };
+
+  const standing = await entriesOf(children, treeAnswer(made), [], [asked], tree);
+  expect([idsOf(standing).review, idsOf(standing).yours]).toEqual([[], [D("asked")]]);
+  const gone = await entriesOf(children, treeAnswer(made), [], [deleted], tree);
+  expect([idsOf(gone).review, idsOf(gone).yours]).toEqual([[D("asked")], []]);
+  expect(gone.review[0]).not.toHaveProperty("change");
+});
+
+// A reading of an answered question is a person's write-up of that answer, and no entry of its
+// own: the question it restates is the person's decision. The tree places the reading under the
+// answered ask it reads (`tree-read/tree-nodes.ts`'s `draftReading`), so the seam tells it a
+// write-up by where it stands, and which question it restates, and no part draws a row for it.
+// An agent's decision stays.
+test("a reading under an answered question is a write-up, which no part draws and the seam tells, and an agent's decision stays", async () => {
+  const writeUp = node({
+    author: AGENT,
+    id: `${SPEC_SLUG}#b-writeup`,
+    reference: specRef("writeup"),
+    text: "The reader keeps it as it is.",
+    type: "reading",
+  });
+  const at = "2026-11-12T09:00:00Z";
+  const made = [decision("minor")];
   const hook = await mountOver(
-    heldClient(
-      [closing("a-answered", { at: "2026-11-12T09:00:00Z", kind: "answered" })],
-      [],
-      treeAnswer(made)
-    ),
+    heldClient([closing("a-answered", { at, kind: "answered" })], [], treeAnswer(made)),
     [
-      answeredAsk("a-answered", { at: "2026-11-12T09:00:00Z", text: "Mine." }),
-      decisionNode("writeup"),
+      answeredAsk("a-answered", { at, text: "Mine." }, { children: [writeUp], held: 1 }),
       decisionNode("minor"),
     ],
     treeAnswer(made)
@@ -304,7 +326,7 @@ test("a person's write-up of an answered question is left out of the parts, and 
     review: [],
     yours: ["a-answered"],
   });
-  expect(writeUps).toEqual(new Map([[D("writeup"), new Set(["a-answered"])]]));
+  expect(writeUps).toEqual(new Map([[writeUp.id, new Set(["a-answered"])]]));
 });
 
 // R8: each read the seam watches takes the page's freshness: events refresh it, never its age.
@@ -315,7 +337,7 @@ test("a person's write-up of an answered question is left out of the parts, and 
 // blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = ["getIssueTree", "listIssueAsks", "listComments"] as const;
+  const names = ["getIssueTree", "listIssueAskThreads", "listComments"] as const;
   // Each of the three reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
@@ -327,8 +349,8 @@ test("answers older than the app's staleTime are not read again as the seam moun
       defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
     });
     const given = { updatedAt: Date.now() - 31_000 };
-    client.setQueryData(issueTreeKey(KEY), treeAnswer(made), given);
-    client.setQueryData(["asks", KEY], [], given);
+    client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
+    client.setQueryData(["asks", KEY, "thread"], [], given);
     client.setQueryData(["comments", KEY], [], given);
     const hook = await mountOver(
       client,
@@ -341,7 +363,7 @@ test("answers older than the app's staleTime are not read again as the seam moun
     ).toEqual({
       getIssueTree: [],
       listComments: [],
-      listIssueAsks: [],
+      listIssueAskThreads: [],
     });
     expect(request).not.toHaveBeenCalled();
     hook.unmount();
@@ -389,8 +411,18 @@ test("an empty decisions member gives the questions alone and no error", async (
   // sends none of its own, so the fetch is never started.
   const held = { asks: [], comments: [], tree: treeAnswer([]) };
   const cold = [
-    { answer: held.tree, key: issueTreeKey(KEY), knownWhileOut: false, read: "getIssueTree" },
-    { answer: held.asks, key: ["asks", KEY], knownWhileOut: false, read: "listIssueAsks" },
+    {
+      answer: held.tree,
+      key: conversationTreeKey(KEY),
+      knownWhileOut: false,
+      read: "getIssueTree",
+    },
+    {
+      answer: held.asks,
+      key: ["asks", KEY, "thread"],
+      knownWhileOut: false,
+      read: "listIssueAskThreads",
+    },
     {
       answer: held.tree,
       key: viewKey(KEY, "decisions"),
@@ -429,22 +461,22 @@ test("an empty decisions member gives the questions alone and no error", async (
   // entry moves, so the parts are the very object they were before the retry.
   const refused = [
     {
-      key: issueTreeKey(KEY),
-      other: "listIssueAsks",
+      key: conversationTreeKey(KEY),
+      other: "listIssueAskThreads",
       read: "decisions",
-      refuse: (client: QueryClient) => client.prefetchQuery(issueTreeQuery(KEY)),
+      refuse: (client: QueryClient) => client.prefetchQuery(outlineQuery(KEY, "conversation")),
       request: "getIssueTree",
     },
     {
-      key: ["asks", KEY],
+      key: ["asks", KEY, "thread"],
       other: "getIssueTree",
       read: "asks",
       refuse: (client: QueryClient) =>
         client.prefetchQuery({
-          queryFn: () => api.listIssueAsks(KEY, "all"),
-          queryKey: ["asks", KEY],
+          queryFn: () => api.listIssueAskThreads(KEY, "all"),
+          queryKey: ["asks", KEY, "thread"],
         }),
-      request: "listIssueAsks",
+      request: "listIssueAskThreads",
     },
   ] as const;
   for (const { key, other, read, refuse, request } of refused) {
@@ -482,10 +514,10 @@ test("an empty decisions member gives the questions alone and no error", async (
   // failed, the read still holds the answer it gave, which the view draws from, so it is not
   // unreadable, draws no line, and the reads still hold.
   const refetched = [
-    { key: issueTreeKey(KEY), read: "decisions", request: "getIssueTree" },
-    { key: ["asks", KEY], read: "asks", request: "listIssueAsks" },
+    { queryKey: conversationTreeKey(KEY), read: "decisions", request: "getIssueTree" },
+    { queryKey: ["asks", KEY, "thread"], read: "asks", request: "listIssueAskThreads" },
   ] as const;
-  for (const { key, read, request } of refetched) {
+  for (const { queryKey, read, request } of refetched) {
     const answer = Promise.withResolvers<never>();
     const asked = spyOn(api, request).mockReturnValue(answer.promise);
     try {
@@ -508,7 +540,7 @@ test("an empty decisions member gives the questions alone and no error", async (
         await answer.promise.catch(() => undefined);
       });
       await waitFor(() => expect(hook.result.current.retrying).toEqual([]));
-      expect(client.getQueryState(key)?.status).toBe("error");
+      expect(client.getQueryState(queryKey)?.status).toBe("error");
       expect(reading()).toEqual(holds);
       expect(asked).toHaveBeenCalledTimes(1);
       hook.unmount();
@@ -580,12 +612,12 @@ test("the seam mounted over reads older than the app's stale time sends no reque
       },
     }),
   ];
-  client.setQueryData(issueTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
-  client.setQueryData(["asks", KEY], [], { updatedAt: minuteAgo });
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
+  client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
   client.setQueryData(["comments", KEY], [], { updatedAt: minuteAgo });
   const never = () => new Promise<never>(() => {});
   const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(never);
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);
   const listComments = spyOn(api, "listComments").mockImplementation(never);
   const request = spyOn(globalThis, "fetch");
   try {
@@ -596,12 +628,12 @@ test("the seam mounted over reads older than the app's stale time sends no reque
     );
     expect(idsOf(parts).review).toEqual([D("review")]);
     expect(getIssueTree).not.toHaveBeenCalled();
-    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueTree.mockRestore();
-    listIssueAsks.mockRestore();
+    listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }

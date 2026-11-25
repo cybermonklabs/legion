@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // priorityInFlightStatuses are the four statuses work is running in, which is what the first
@@ -42,6 +43,8 @@ import (
 // Both are the lifecycle's own groupings (model.IssueStatusesInFlight, model.IssueStatusesParked)
 // rather than a list of this file's own, because the seeded corpus reports the same two faults
 // over the same two groupings (cmd/dispatch-seed) and the two readings have to ask one thing.
+// A statement writes them as literals (store.QuoteLiterals): both are status constants, never a
+// value a request carried, so nothing those literals hold comes from outside the binary.
 var (
 	priorityInFlightStatuses = model.IssueStatusesInFlight
 	priorityParkedStatuses   = model.IssueStatusesParked
@@ -58,17 +61,6 @@ const priorityClosedWindow = "7 days"
 // priorityNoneWritten is the sentence the answer carries when no priority is live: the route then
 // answers 200 with an empty list rather than an error, and the page draws this.
 const priorityNoneWritten = "No priority is live now, so the list is empty. Write one, then say which work advances it."
-
-// sqlStringList writes values as the literal list an `in` clause takes. Its callers pass this
-// file's own status constants and never a value a request carried, so nothing it writes comes
-// from outside the binary.
-func sqlStringList(values []string) string {
-	quoted := make([]string, len(values))
-	for index, value := range values {
-		quoted[index] = "'" + value + "'"
-	}
-	return strings.Join(quoted, ", ")
-}
 
 // priorityRelationsQuery reads the `advances` relation of every live priority as it stands now,
 // one row per (issue, priority): the newest tuple of each pair, kept when it asserts the
@@ -97,8 +89,20 @@ var priorityRelationsQuery = `select newest.from_id, newest.to_id
 // descendant the cap cuts off is one no chain could have reached anyway, and a raced reparent
 // that ever committed a cycle still terminates. `members` is distinct because an issue inherits
 // the same priority from every issue above it that states it.
+//
+// The seed reads the two arrays by their subscripts (generate_subscripts) rather than through
+// unnest, so the rows Postgres plans for are the same whatever the arrays hold. pgx prepares
+// every statement, and from a connection's sixth run of one Postgres may run the generic plan it
+// makes once, with no argument known. unnest sizes its rows from its array, which such a plan
+// cannot see, so it planned 10 seed rows for the corpus's 400: the walk then hashed each step's
+// few rows and scanned all of issues for every step, and the four statements over the seed
+// touched 6.7 to 45.8 times the shared buffers of the plans made for their arguments
+// (TestPrioritiesReadKeepsItsPlans, PostgreSQL 18.6, 2026-11-22). generate_subscripts has no
+// such estimate: every plan, made for the arguments or not, plans its 1,000 rows, so the generic
+// plan walks as the others do, by hashing issues once.
 var priorityMemberTerms = `members_seed as (
-		select key, priority from unnest($1::text[], $2::text[]) as seed(key, priority)
+		select ($1::text[])[i] as key, ($2::text[])[i] as priority
+		from generate_subscripts($1::text[], 1) as seed(i)
 	), members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -123,7 +127,11 @@ const priorityProjectFilter = `(cardinality($3::text[]) = 0 or i.project_key = a
 //
 // The open-ask read keeps its state filter in its own where clause, so it matches the partial
 // asks_open(issue_key) where state = 'open' index rather than scanning asks, as the listing's own
-// open-ask read does (issueSummaryJoins).
+// open-ask read does (issueSummaryJoins). It reads the ask's row's state, not its node's: the one
+// writer of an answer state writes the two in one transaction (asks.Settle), so they differ only
+// inside a roll's window, between a process of the release before writing an answer state to the
+// row alone and the decisions step's catch-up tick that states it on the node; R3 holds the reads
+// that show an answer to the node, and a count shows none.
 var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 	select m.priority, i.status,
 	       count(*) filter (where i.closed_at is null) as open,
@@ -169,7 +177,7 @@ func priorityUnplacedQuery(summary bool) string {
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from issues i
 		where i.closed_at is null
-			and i.status in (` + sqlStringList(priorityInFlightStatuses) + `)
+			and i.status in (` + store.QuoteLiterals(priorityInFlightStatuses) + `)
 			and ` + priorityProjectFilter + `
 			and not exists (select 1 from members m where m.key = i.key)
 	)`
@@ -209,7 +217,7 @@ func priorityParkedQuery(summary bool) string {
 		from members m
 		join issues i on i.key = m.key
 		where i.closed_at is null
-			and i.status in (` + sqlStringList(priorityParkedStatuses) + `)
+			and i.status in (` + store.QuoteLiterals(priorityParkedStatuses) + `)
 			and ` + priorityProjectFilter + `
 		group by i.key
 	)`
@@ -263,7 +271,7 @@ func parkedMoveLateral(issue, gate string) string {
 			from events e
 			where ` + gate + `e.issue_key = ` + issue + `.key and e.type = 'issue.updated'
 				and e.payload->'changed' @> '"status"'::jsonb
-				and e.payload->>'status' in (` + sqlStringList(priorityParkedStatuses) + `)
+				and e.payload->>'status' in (` + store.QuoteLiterals(priorityParkedStatuses) + `)
 			order by e.seq desc
 			limit 1
 		) moved on true`
@@ -356,7 +364,7 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 
 // readPriorityRelations reads the `advances` relations of every live priority as two lists in one
 // order, the issue key and the priority id of each: the pair of arrays the statements below take
-// as their seed, which `unnest` reads back as rows.
+// as their seed, which priorityMemberTerms reads back as rows by their subscripts.
 func (s *server) readPriorityRelations(ctx context.Context, ids []string) ([]string, []string, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, priorityRelationsQuery, ids)
 	if err != nil {

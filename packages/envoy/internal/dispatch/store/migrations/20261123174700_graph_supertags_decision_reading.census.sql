@@ -1,0 +1,19 @@
+-- This migration writes the type nodes of the store alone: it moves the `supertag` nodes
+-- `decision` and `reading` to block types, writes nine `attribute` nodes, sets `markdown` on the
+-- attribute node ask/invalid, sets the attributes of the five other block type supertag nodes
+-- (callout, ask, requirement, plan_task and check) to what 20261109051232_graph_supertags,
+-- 20261113230000_graph_supertags_check_ci_check, 20261115130000_graph_supertags_element_versions
+-- and 20261123080000_graph_supertags_plan_task_steps left on them, the version moved from 5 to 6,
+-- and appends the tuples that state each value. Its ground is the node store's rule: "A supertag
+-- write ships as a migration, in the same release as the binary that handles it. It passes the
+-- pre-apply census." No route or command writes a node of either kind
+-- (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), and no migration
+-- between 20261123080000 and this one writes one, so every row it rewrites is a type node an
+-- earlier migration wrote, the five supertag nodes hold what those four left and the update
+-- rewrites only their version, and it states every new value it gives one. It refuses no row and
+-- rewrites no row a person or an agent wrote, and it reads no existing row of another table. Each
+-- of its statements is an `insert … values` of literal rows or an `update` that sets literals on
+-- the rows its `where` names by their primary key in literal values, so it reads no row of its
+-- own tables beyond the ones it names. The number of existing rows this migration would refuse or
+-- rewrite is therefore 0.
+select 0;

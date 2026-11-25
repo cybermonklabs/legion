@@ -1,3 +1,7 @@
+/** the rows write a status, a reply and a Keep through the server and read each back: the
+ *  status from its issue read, the reply and the Keep as the rows its tree and Decisions view
+ *  reads draw again, with no reload */
+
 import { getIssue } from "./api";
 import { seedReviewList, seedWholeIssue } from "./issue-layout-seed";
 import { phase } from "./issue-page";

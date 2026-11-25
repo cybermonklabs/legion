@@ -34,13 +34,21 @@ body: |-
   its `on` names the block at the last revision of its item that held it,
   `dispatch://KEY/comment/<id>#b-<id>@v<N>` or `dispatch://KEY/ask/<id>#b-<id>@v<N>`, in the same
   three reads. The lens kinds are a catalogue that two migrations seed with 22 kinds, ten and then
-  twelve more, and `envoy-dispatch lens-kind-add` is its one writer.
+  twelve more, and `envoy-dispatch lens-kind-add` is its one writer. A `dispatch://` reference names
+  a node of these kinds by its own id: `dispatch://lens/<uuid>`, `dispatch://lens/<uuid>#b-<id>`
+  for a finding, `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`,
+  `dispatch://interaction/<uuid>` and `dispatch://lens_kind/<slug>`. The reference reads answer such
+  an address where they answered `400 INVALID_REFERENCE`, and the text reader reads one in text as a
+  reference.
 
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
   `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
   node. Any other move of a node into or out of proposed or settled takes the same rule: any other
   caller is refused with `403 STATE_NOT_PERMITTED`, so the shared agent token makes no such move.
+  A state write or settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and
+  writes nothing, naming the ask whose node holds the question's state (the block's own ask or
+  the source ask for a copy) or saying no ask holds it yet.
   Only a person takes a lens, a finding, a risk or a constraint to gone, and the node takes every
   node that stands under it, at every depth, with it, those the person may not see included. Any
   other caller, the node's own author included, is refused with `403 STATE_NOT_PERMITTED`, naming
@@ -61,17 +69,20 @@ body: |-
   `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
   gone, and each entry and each reading carries its node's `state`.
 
-  A run of the command bar is now an interaction node, kept with its frames past its deadline and
-  read only by the credential that asked it, where the release before deleted a run after one hour.
+  A run of the command bar is now an interaction node, read only by the credential that asked it,
+  and readable for one hour, as in the release before. Then the sweep states its node gone and
+  removes its rows, and the node, its words and its frames stay in the store.
   A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
   that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
-  follow or an unfollow of an ask, and an edit of an ask's or a comment's words included. A write
+  follow or an unfollow of an ask, an edit of an ask's, a comment's or an issue message's words, and
+  the delete of a comment or an issue message included. A write
   sent again under the `Idempotency-Key` of a write already committed is answered that answer even
   after its run has ended, and the key's comparison includes the run header. A removed document's
   node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same
-  title is not listed under the old run. The sweep ends the overdue runs whose
-  deadline passed in the last day, and one pass at each boot ends every older overdue run.
-  `envoy-dispatch erase` removes a run with its frames.
+  title is not listed under the old run.
+  A gone run reads as one nobody asked at its address and through its stream, and no edge names
+  it. The node of a run holds its `source`, `going_requests`. After the rollout, run
+  `envoy-dispatch backfill-graph-store`, which gives each run recorded before this release its node.
 
   `envoy-dispatch premortem-convert` and
   `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a

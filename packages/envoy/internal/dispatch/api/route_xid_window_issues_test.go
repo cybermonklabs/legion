@@ -62,6 +62,18 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyProjectGatedSteps, window: storetest.XidWindowOf(3,
 			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
 	},
+	// The read of the project the two proven-sessions routes answer with runs after their
+	// transaction has ended, so it is outside the window.
+	{
+		name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOn, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
+	{
+		name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOff, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
 	{
 		name: "the handoff route", route: "POST /api/v1/issues/{key}/handoffs/{phase} (recordHandoff)",
 		ready: readyHandoff, window: storetest.XidWindowOf(3,
@@ -72,26 +84,28 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyClaimRelease, window: storetest.XidBatchedWindow,
 	},
 	// A patch naming a repository writes it in the issue row's own update and reads or locks no
-	// repo_projects row: an issue's own repository needs no mapping (INFRA-2543 R3,
-	// parseIssueRepo), so this one names a repository no project maps. It closes the issue
-	// too, so its read phase holds the close's document work - the block ask withdrawn and its
-	// block written resolved into the spec (prepareWithdrawal) - and a session's write advice,
-	// none of it inside the window.
+	// other row for it: an issue's own repository is any owner/name GitHub could hold
+	// (parseIssueRepo), so this one names a repository no project names as its default. It
+	// closes the issue too, so its read phase holds the close's document work - the block ask
+	// withdrawn and its block written resolved into the spec (prepareWithdrawal) - and a session's
+	// write advice, none of it inside the window.
 	{
 		name: "the issue patch setting its repository while closing it", route: "PATCH /api/v1/issues/{key} naming a repository (patchIssue, prepareWithdrawal)",
 		ready: readyIssuePatchNamingRepository, window: storetest.XidWindowOf(5,
 			"the issue row's own update, the two reads that load the issue it answers with, "+
 				"the batch withdrawing its asks and its COMMIT"),
 	},
-	// A create naming a repository writes it in the issue row's insert and reads or locks no
-	// repo_projects row (INFRA-2543 R3). Its read phase, under the project's owner lock, holds its
-	// spec's seed, task count and reference index, all of the harness's size, and its write
-	// advice.
+	// A create naming a repository writes it in the issue row's insert and reads or locks no other
+	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
+	// and reference index, all of the harness's size, and its write advice. Its spec is a document
+	// the spec query's record covers, so once the batch has run the fill reads that record by the
+	// walk of the store as the batch left it and writes the spec's version_renders row (R14, R15;
+	// createFill).
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
-		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(11,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
-				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
+		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(16,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row and its artifact row - "+
+				"the two reads that load the issue it answers with, the queued batch, "+createFill+" and its COMMIT"),
 	},
 	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
 	// (nearCopyOutcome.unrecorded) and writes its own row in its transaction (recordInTx,
@@ -99,12 +113,13 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// lock it takes in its read phase, where its spec's seed, task count and reference index, all
 	// of the harness's size, and its write advice run. The refusal's own write, which errs, is a
 	// statement of its own before the transaction opens (recordNearCopyRefusal), and holds no
-	// transaction id of the create's.
+	// transaction id of the create's. Its spec's version_renders row is filled as every create's is
+	// (createFill).
 	{
 		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
-		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(12,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
-				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
+		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(17,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row and its artifact row - "+
+				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch, "+createFill+" and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
 	// under its owner lock (refuseAdvancesRevision) and writes the relation after the row's own
@@ -122,14 +137,15 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// reference index and the write advice - still holds no transaction id; writeBlockedBy reads
 	// the target's project and walks the wait graph inside the write phase, under those locks,
 	// and the event it appends names the blocker among its changed references, which one more read
-	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep.
+	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep,
+	// and the fill of its spec's version_renders row (createFill).
 	{
 		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
-		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(15,
+		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(21,
 			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
-				"the queued batch and its COMMIT"),
+				"the queued batch, "+createFill+" and its COMMIT"),
 	},
 	// A patch naming a blocker in another project takes the same locks before the issue's owner
 	// lock, and its write phase is the row's update and writeBlockedBy's reads and writes.
@@ -141,6 +157,18 @@ var issueRouteXidWindows = []routeXidWindowCase{
 				"the batch appending issue.updated and its COMMIT"),
 	},
 }
+
+// createFill names what a create runs once its batch has run to fill its spec's version_renders
+// row (docs' writeStatedRenders): it reads the record of the spec's query at one cut, by the walk
+// of the issue's tree as the batch left the store (R14, R15) - the cut, the read of the issue's
+// conversation, which holds no item yet, the one read of the tree, every level of it
+// (refs.TreeSubtrees), the read of the issues above the issue and that of the issue a view shows -
+// and writes the row, with the record's digest (R15). The spec is the create's own, so which query
+// covers it is read off the address the create registered (docs' readStatedDocuments), by no
+// statement.
+const createFill = "the fill, which reads the spec query's record of the issue at one cut once the batch has run (R14, R15) - " +
+	"the cut, the read of the issue's conversation, the one read of the tree, every level of it, the read of the issues above the issue and that of the issue a view shows - " +
+	"the version_renders row it writes with the record's digest (R15)"
 
 // readyIssueReopen drives PATCH /api/v1/issues/{key} reopening a closed issue whose close
 // withdrew an anchored ask and the ask settlement opened from the spec's `:::ask` block, so the
@@ -178,10 +206,10 @@ func readyIssueReopen(t *testing.T, base routeFixture) lockedItemWrite {
 }
 
 // readyIssuePatchNamingRepository drives PATCH /api/v1/issues/{key} by a session that sets the
-// issue's repository to one no project maps and closes it in the same request: the close
-// withdraws the ask settlement opened from the spec's `:::ask` block and writes the block resolved
-// into the spec (prepareWithdrawal), and the session's write advice is read, all before the
-// patch's first write.
+// issue's repository to one no project names as its default and closes it in the same request:
+// the close withdraws the ask settlement opened from the spec's `:::ask` block and writes the
+// block resolved into the spec (prepareWithdrawal), and the session's write advice is read, all
+// before the patch's first write.
 func readyIssuePatchNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	base.spec += "\n" + transportAsk
@@ -207,9 +235,9 @@ func readyIssuePatchNamingRepository(t *testing.T, base routeFixture) lockedItem
 }
 
 // readyIssueCreateNamingRepository drives POST /api/v1/issues by a session naming a repository no
-// project maps as the new issue's repository, with a spec of the harness's size, whose seed,
-// task count and reference index are the create's document work, read before its first write
-// with the session's write advice.
+// project names as its default as the new issue's repository, with a spec of the harness's size,
+// whose seed, task count and reference index are the create's document work, read before its
+// first write with the session's write advice.
 func readyIssueCreateNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Create naming a repository")

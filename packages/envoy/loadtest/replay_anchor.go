@@ -466,26 +466,47 @@ func planHistory(text string, sizes []int, final int, steps []askStep, versions 
 
 var (
 	askDirective = regexp.MustCompile(`^:::ask\{#([^ }]+)([^}]*)\}`)
-	answerAttr   = regexp.MustCompile(` (answered_by|answered_at|selected|answer)="[^"]*"`)
-	stateAttr    = regexp.MustCompile(` state="[^"]*"`)
+	answerAttr   = regexp.MustCompile(` (state|answered_by|answered_at|selected|answer)="[^"]*"`)
+	// servedAttr is a server-owned attribute of an ask block's directive: the eight the text route
+	// takes off every ask block it serves. A version this build writes keeps only some of them,
+	// and the ask's state and answer are served from its node (servedAnswersQuery).
+	servedAttr = regexp.MustCompile(` (state|answered_by|answered_at|selected|answer|invalid|copied_from|copied_from_document)="[^"]*"`)
 )
 
-// stripAnswers is text with the typed ask blocks named in ids written as Dispatch stores an open
-// block: no answered_by, answered_at, selected or answer, and state "open" (an answered or a
-// resolved block alike).
+// stripAnswers is text with the typed ask blocks named in ids written as this build stores an
+// open block: no state, answered_by, answered_at, selected or answer (an answered or a resolved
+// block alike).
 func stripAnswers(text string, ids map[string]bool) string {
 	if len(ids) == 0 {
 		return text
 	}
+	return rewriteAskDirectives(text, func(id, attrs string) (string, bool) {
+		return answerAttr.ReplaceAllString(attrs, ""), ids[id]
+	})
+}
+
+// servedText is markdown as the text route serves it: every ask block's directive without a
+// server-owned attribute (servedAttr). Two texts that agree so are the same document whatever
+// state each wrote into its ask blocks; the answers are compared apart, as the asks' nodes hold
+// them (servedAnswers).
+func servedText(markdown string) string {
+	return rewriteAskDirectives(markdown, func(_, attrs string) (string, bool) {
+		return servedAttr.ReplaceAllString(attrs, ""), true
+	})
+}
+
+// rewriteAskDirectives is text with each typed ask block's directive given the attributes rewrite
+// answers for its id and its attributes, where rewrite says to rewrite that block.
+func rewriteAskDirectives(text string, rewrite func(id, attrs string) (string, bool)) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		m := askDirective.FindStringSubmatch(line)
-		if m == nil || !ids[m[1]] {
+		if m == nil {
 			continue
 		}
-		attrs := answerAttr.ReplaceAllString(m[2], "")
-		attrs = stateAttr.ReplaceAllString(attrs, ` state="open"`)
-		lines[i] = ":::ask{#" + m[1] + attrs + "}" + line[len(m[0]):]
+		if attrs, changed := rewrite(m[1], m[2]); changed {
+			lines[i] = ":::ask{#" + m[1] + attrs + "}" + line[len(m[0]):]
+		}
 	}
 	return strings.Join(lines, "\n")
 }

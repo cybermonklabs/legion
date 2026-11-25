@@ -101,12 +101,7 @@ func backfillAnchoredIn(ctx context.Context, database *store.Store) (KindBackfil
 	done := KindBackfill{Kind: anchorProjectionKind}
 	after := zeroUUID
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select c.id::text, coalesce(c.issue_key, ''), coalesce(c.artifact_id::text, '') `+owedAnchoredIn+`
-			  and c.id > $1::uuid
-			order by c.id
-			limit $2
-		`, after, backfillBatch)
+		rows, err := database.Pool.Query(ctx, owedAnchorRowsStatement, after, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the comments whose anchor block their node does not state: %w", err)
 		}
@@ -139,10 +134,21 @@ func backfillAnchoredIn(ctx context.Context, database *store.Store) (KindBackfil
 	return done, nil
 }
 
+// owedAnchorRowsStatement is backfillAnchoredIn's selection: at most $2 of the comments whose node
+// does not state the anchored_in their row states (owedAnchoredIn), past the comment $1, in id
+// order, each with its issue or its project document. Each batch reads comments_pkey from the id
+// on, so a run reads each comment once however many batches it takes
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+var owedAnchorRowsStatement = `
+	select c.id::text, coalesce(c.issue_key, ''), coalesce(c.artifact_id::text, '') ` + owedAnchoredIn + `
+	  and c.id > $1::uuid
+	order by c.id
+	limit $2`
+
 // writeAnchorBatch levels one batch's anchored_in in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's comments stand under
 // first, each once, in ascending key (events.LockOwnerRows), then the batch's moves read again under
-// them, then the tuples (graphstore.Write, which writes no node: each comment's node is the comment
+// them, then the tuples (graphstore.QueueWrite, which writes no node: each comment's node is the comment
 // pass's). Every writer that moves an anchor's block or its orphan flag on this build holds the
 // comment's owner row (the refresh, an accept or a reject) or writes its tuple in the transaction
 // that pins the block (docs' BackfillAnchorBlocks), so the moves read under the owner rows are the
@@ -153,7 +159,7 @@ func writeAnchorBatch(ctx context.Context, database *store.Store, batch []anchor
 		owners := events.OwnerRows{}
 		ids := make([]string, len(batch))
 		for index, comment := range batch {
-			owners.Add(comment.issue, comment.artifact, "comment "+comment.id)
+			owners.Add(comment.issue, comment.artifact)
 			ids[index] = comment.id
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
@@ -194,7 +200,11 @@ func writeAnchorBatch(ctx context.Context, database *store.Store, batch []anchor
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		levelled, stated = int64(len(comments)), int64(len(tuples))
