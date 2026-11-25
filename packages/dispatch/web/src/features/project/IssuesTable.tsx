@@ -62,6 +62,7 @@ import {
   isEpic,
   matchesFilters,
   matchesSearch,
+  NOBODY_FACET,
   narrowsNothing,
   PAGE_SIZES,
   tableStorageKey,
@@ -488,14 +489,23 @@ export function IssuesTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
-  // The header filters count what the table shows once the rows it waits on are in, as the
-  // chip does (`counted`): never the open issues alone while the closed ones it asked for are
-  // out. While the Claimed by filter reads the registry, they also wait until the registry's
-  // latest read has succeeded (`known`), so they stay hidden before its first answer and after a
-  // read that failed: until then no session's claim reads lapsed (`claimIsTakeable`), so Nobody
-  // or lapsed would leave out each claim whose session has gone, in its own count and, picked, in
-  // every other filter's.
-  const filterCounted = counted && (!readsRegistry || registry.known);
+  // A header filter's count is drawn once every read it counts has answered, and a read it does
+  // not count never hides it (the architect, 2026-11-25 13:01Z). Every count counts the rows the
+  // table waits on (`counted`), as the chip does: never the open issues alone while the closed
+  // ones it asked for are out. Which claims have lapsed is the agent registry's answer, so every
+  // Claimed by value but Nobody - Nobody or lapsed, and each holder - also waits until the
+  // registry's latest read has succeeded (`known`): before its first answer and after a read
+  // that failed, no session's claim reads lapsed (`claimIsTakeable`), and those values draw no
+  // count rather than one the registry has not decided. Nobody counts the issues no one claims,
+  // and every other filter counts the rows the table lists, which count every claim as held
+  // until the registry is known; neither waits for the registry, so each draws its count once
+  // the issues answer, whether the registry answered, is still out or failed.
+  const registryKnown = registry.known;
+  const filterCounted = useCallback(
+    (column: string, value: string) =>
+      counted && (column !== "claim" || value === NOBODY_FACET || registryKnown),
+    [counted, registryKnown]
+  );
 
   const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as

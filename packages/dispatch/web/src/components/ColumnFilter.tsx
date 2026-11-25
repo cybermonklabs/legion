@@ -37,11 +37,13 @@ const filterTrigger = (active: boolean, size: ControlSize) =>
 export interface ColumnFilterProps<TData> {
   readonly column: Column<TData, unknown>;
   readonly counts: ReadonlyMap<string, number>;
-  /** Whether `counts` counts the rows the reader's narrowing lists: false while they are the
-   *  previous answer's, kept on screen while the read for a new narrowing is out, and then no
-   *  value draws a count beside it, since nothing has counted it yet; never a 0 that would say no
-   *  row holds it. A filter given none counts. */
-  readonly counted?: boolean;
+  /** Which values `counts` has counted for the rows the reader's narrowing lists: every value
+   *  (`true`, and a filter given none), no value (`false`), or each value the function answers
+   *  true for. A value is not counted while `counts` is the previous answer's, kept on screen
+   *  while the read for a new narrowing is out, or while a read that the value's count counts
+   *  has not answered. A value that is not counted draws no count beside it, never a 0 that
+   *  would say no row holds it; every other value draws its count. */
+  readonly counted?: boolean | ((value: string) => boolean);
   /** What one row of the table is, which a count of rows is read in: `3 issues` on the project
    *  List, `3 priorities` on the priorities table. */
   readonly noun: RowNoun;
@@ -121,18 +123,19 @@ export function ColumnFilter<TData>({
       onOpenChange={onOpenChange}
       open={open}
       // An option whose rows are not read yet says so rather than claim a count of zero, and one
-      // that nothing has counted yet draws no count at all.
-      optionDetail={
-        counted
-          ? (value) => (unloaded.includes(value) ? "load" : String(countOf(value)))
+      // that is not counted yet draws no count at all.
+      optionDetail={(value) =>
+        (typeof counted === "function" ? counted(value) : counted)
+          ? unloaded.includes(value)
+            ? "load"
+            : String(countOf(value))
           : undefined
       }
-      optionDetailLabel={
-        counted
-          ? (value) =>
-              unloaded.includes(value)
-                ? "not loaded"
-                : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`
+      optionDetailLabel={(value) =>
+        (typeof counted === "function" ? counted(value) : counted)
+          ? unloaded.includes(value)
+            ? "not loaded"
+            : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`
           : undefined
       }
       optionLabel={show}
