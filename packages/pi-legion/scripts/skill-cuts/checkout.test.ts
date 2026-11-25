@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
@@ -13,7 +13,9 @@ import {
   READ_ONLY_TOOLS,
   readOnlyCall,
   removeOutsideLinks,
+  resetSandboxSpawnForTests,
   sandboxedBash,
+  setSandboxSpawnForTests,
 } from "./checkout";
 import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
@@ -1895,3 +1897,220 @@ test("where the shell may be in a directory reached through a symbolic link, no 
     expect({ command, answer: await bashText(real, command) }).toEqual({ command, answer: text });
   }
 }, 60_000);
+
+/** One macrotask turn, on a `setImmediate` that Bun's fake clock leaves real: it comes only once
+ *  every promise and stream read the row set going has run as far as it goes. */
+function nextTurn(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
+}
+
+/** A stream of bytes the row writes to: `write` adds text, `close` ends it, once, and not after the
+ *  runner cancelled it. */
+function textStream() {
+  const encoder = new TextEncoder();
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let open = true;
+  const readable = new ReadableStream<Uint8Array>({
+    start(started) {
+      controller = started;
+    },
+    cancel() {
+      open = false;
+    },
+  });
+  return {
+    readable,
+    write(text: string) {
+      if (open) controller?.enqueue(encoder.encode(text));
+    },
+    close() {
+      if (!open) return;
+      open = false;
+      controller?.close();
+    },
+  };
+}
+
+/** What a row does to a stand-in for the child `unshare` starts for a sandbox. */
+interface FakeSandbox {
+  /** Says on standard error what the sandbox's setup says once the sandbox is made. */
+  ready(): void;
+  /** Prints `text` as the command's output. */
+  print(text: string): void;
+  /** Ends the child as a command that exits with `code`. */
+  exit(code: number): void;
+  /** The signal the runner killed the child with, once it has. */
+  killedWith(): string | undefined;
+}
+
+/** A stand-in child named `name`, and what it does to it: its output and standard error are
+ *  streams the row writes to, and it ends when the row exits it or the runner kills it, which
+ *  `events` is told of (`exit <name>`, `kill <name>`). */
+function fakeSandbox(name: string, events: string[]) {
+  const output = textStream();
+  const error = textStream();
+  const exited = Promise.withResolvers<number>();
+  let ended = false;
+  let killedWith: string | undefined;
+  const end = (how: string, code: number) => {
+    if (ended) return;
+    ended = true;
+    events.push(`${how} ${name}`);
+    output.close();
+    error.close();
+    exited.resolve(code);
+  };
+  const sandbox: FakeSandbox = {
+    ready: () => error.write("ready\n"),
+    print: (text) => output.write(text),
+    exit: (code) => end("exit", code),
+    killedWith: () => killedWith,
+  };
+  const child = {
+    stdout: output.readable,
+    stderr: error.readable,
+    exited: exited.promise,
+    kill(signal: "SIGKILL") {
+      killedWith = signal;
+      end("kill", 137);
+    },
+  };
+  return { sandbox, child };
+}
+
+/** What a row of `onFakeSandboxes` holds. */
+interface SandboxRig {
+  /** What happened, in order: `spawn <n>`, then `exit <n>` or `kill <n>`, `n` from 1. */
+  readonly events: string[];
+  /** The `n`th stand-in child (from 1), once the runner has started it. */
+  started(n: number): Promise<FakeSandbox>;
+  /** `call`, which the row's end waits for, whatever the row did. */
+  track<T>(call: Promise<T>): Promise<T>;
+}
+
+/** Runs `row` with a stand-in child (`fakeSandbox`) for each of the `count` sandboxes the runner
+ *  starts, on Bun's fake clock, and the real spawn and clock put back after. A row that stops
+ *  early leaves a command waiting for its place, so each call it tracked is let finish first: the
+ *  children end at once and the queue empties, with no real sandbox started. */
+async function onFakeSandboxes(
+  count: number,
+  row: (rig: SandboxRig) => Promise<void>
+): Promise<void> {
+  const events: string[] = [];
+  const made = Array.from({ length: count }, () => Promise.withResolvers<FakeSandbox>());
+  const children: FakeSandbox[] = [];
+  const calls: Promise<unknown>[] = [];
+  let over = false;
+  setSandboxSpawnForTests(() => {
+    const slot = made[children.length];
+    if (slot === undefined) {
+      throw new Error(`a sandbox past the ${count} the row expects was started`);
+    }
+    const name = String(children.length + 1);
+    const { sandbox, child } = fakeSandbox(name, events);
+    events.push(`spawn ${name}`);
+    children.push(sandbox);
+    slot.resolve(sandbox);
+    if (over) sandbox.exit(1);
+    return child;
+  });
+  jest.useFakeTimers();
+  try {
+    await row({
+      events,
+      started(n) {
+        const slot = made[n - 1];
+        if (slot === undefined) throw new Error(`the row has no stand-in child ${n}`);
+        return slot.promise;
+      },
+      track(call) {
+        calls.push(call);
+        return call;
+      },
+    });
+  } finally {
+    over = true;
+    for (const sandbox of children) sandbox.exit(1);
+    await Promise.allSettled(calls);
+    jest.useRealTimers();
+    resetSandboxSpawnForTests();
+  }
+}
+
+// Catches: a runner process's sandboxed commands started all at once (eight `git status` calls of
+// one stage on a two-CPU pod each ran to the 30 s limit; two at once took 10.9 s each), not one
+// after another; or a waiting command's 30 s counting from when it asked, or from its sandbox's
+// spawn, so a command that waited, or whose sandbox was slow to make, is ended before it has run
+// its 30 s. The children here are stand-ins and the clock is Bun's fake one: no sandbox is made
+// and no row waits on a real clock.
+test("sandbox queue: a second sandboxed command spawns no child while the first holds the place, and has its own 30 s from its ready marker, after its wait and its setup", async () => {
+  const copy = filesCopy("sandbox-queue", { "docs/guide.md": GUIDE });
+  await onFakeSandboxes(2, async ({ events, started, track }) => {
+    const first = track(sandboxedBash(copy, "git status"));
+    const second = track(sandboxedBash(copy, "git status --short"));
+    const one = await started(1);
+    await nextTurn();
+    expect(events).toEqual(["spawn 1"]);
+
+    // The first's setup takes 20 s and its command 29 s, each inside its 30 s. The second has then
+    // waited 49 s: had its wait counted against its own 30 s, it would be ended before it spawns.
+    jest.advanceTimersByTime(20_000);
+    one.ready();
+    await nextTurn();
+    jest.advanceTimersByTime(29_000);
+    expect(one.killedWith()).toBeUndefined();
+    one.print("first\n");
+    one.exit(0);
+    expect(await first).toMatchObject({ output: "first\n", exitCode: 0 });
+
+    const two = await started(2);
+    expect(events).toEqual(["spawn 1", "exit 1", "spawn 2"]);
+    // Its setup takes 25 s, then its command 1 ms short of 30 s: alive, and it answers.
+    jest.advanceTimersByTime(25_000);
+    two.ready();
+    await nextTurn();
+    jest.advanceTimersByTime(29_999);
+    expect(two.killedWith()).toBeUndefined();
+    two.print("second\n");
+    two.exit(0);
+    expect(await second).toMatchObject({ output: "second\n", exitCode: 0 });
+    expect(events).toEqual(["spawn 1", "exit 1", "spawn 2", "exit 2"]);
+  });
+});
+
+// Catches: a command past its 30 s, or a sandbox never made, left running so the queue never moves
+// on; or the command's 30 s counted from the spawn, or the setup's from the wait, so a command is
+// ended early or a sandbox that is never made is never ended; or such a call given an answer,
+// where replay.ts's checkout round takes `why` as no verdict, `unanswered-read`, and makes the
+// run again.
+test("sandbox queue: a command 30 s past its ready marker, and a sandbox not made 30 s after its spawn, are ended and not answered, and the next command then starts", async () => {
+  const copy = filesCopy("sandbox-queue-limits", { "docs/guide.md": GUIDE });
+  await onFakeSandboxes(2, async ({ events, started, track }) => {
+    const first = track(answerCall(copy, "bash", { command: "cat docs/guide.md" }, "hashline"));
+    const second = track(
+      answerCall(copy, "bash", { command: "head -n 1 docs/guide.md" }, "hashline")
+    );
+    const one = await started(1);
+    // Its setup takes 10 s, so its command has until 30 s after the marker, not after the spawn.
+    jest.advanceTimersByTime(10_000);
+    one.ready();
+    await nextTurn();
+    jest.advanceTimersByTime(29_999);
+    expect(one.killedWith()).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    expect(await first).toEqual({ why: "it ran past the 30 s limit" });
+    expect(one.killedWith()).toBe("SIGKILL");
+
+    // The second waited 40 s; its limit counts from its spawn.
+    const two = await started(2);
+    expect(events).toEqual(["spawn 1", "kill 1", "spawn 2"]);
+    jest.advanceTimersByTime(29_999);
+    expect(two.killedWith()).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    expect(await second).toEqual({ why: "it ran past the 30 s limit" });
+    expect(two.killedWith()).toBe("SIGKILL");
+    expect(events).toEqual(["spawn 1", "kill 1", "spawn 2", "kill 2"]);
+  });
+});

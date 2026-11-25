@@ -520,8 +520,9 @@ glob, a `grep` path (or every path of a list) the checkout lacks, and a `grep` e
 form the runner does not read (a class, an escape, a nested group) are not answered (the pin's
 error is not rebuilt). `bash` runs in the checkout's sandbox (below), its working directory and
 the checkout's root mapped between the session's paths and the sandbox's (`/mnt/checkout`), its
-output as Oh My Pi's bash tool gives it, within 30 s (its wall time counted from when its sandbox is
-made). An output past 50 KB, one with a line past 768 bytes, and one of 1,000 characters or more
+output as Oh My Pi's bash tool gives it, within 30 s of when its sandbox is made (its wall time
+counts from then too; the wait in the queue, below, is no part of either). An output past 50 KB,
+one with a line past 768 bytes, and one of 1,000 characters or more
 that Oh My Pi's minimizer may rewrite (a command whose top level is simple commands joined by
 `&&`, `;` or `||`, one of which, unpiped, runs `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`,
 `stat`, `git` or `jj`; not one in a group or a subshell) are not answered: Oh My Pi shows each
@@ -610,7 +611,8 @@ names no external tool: no pager, its default diff formatter, no signature shown
 no file-system monitor, `signing.backend =
 "none"` and each signing backend's program (`signing.backends.gpg.program`, `.gpgsm.program`,
 `.ssh.program`) a path the sandbox does not hold, so a `-T` template that verifies a signature runs
-no gpg or ssh-keygen); a time limit, past which every process it started is ended, and an output
+no gpg or ssh-keygen); a time limit (30 s from the sandbox's ready marker), past which every
+process it started is ended, and an output
 cap, past which it is ended and its output not read. A command whose sandbox cannot be made is not
 answered, nor one that runs a program (each but bash's builtins) on no directory of the sandbox's
 PATH (a pod with no `rg`): bash's `command not found` is no answer the session saw. The sandbox's
@@ -627,6 +629,17 @@ status` in a tracked directory laid out as a bare repository whose `config` sets
 as though the rule had let each through: the key is in no answer, the home and `/opt` list empty,
 `env` shows no credential, no fsmonitor runs, the copy is read-only and there is no network; and
 `curl` is refused and never run.
+
+A runner process starts one checkout sandbox at a time, in request order.
+The queue limits sandboxes, not gateway calls, `read`, `grep`, or `glob`.
+On a two-CPU pod, eight concurrent `git status` commands all exceeded 30 s.
+Two concurrent commands finished in 10.9 s each.
+
+The runner bounds setup at 30 s from spawn and starts a fresh 30 s command deadline when the sandbox reports ready.
+Queue wait counts against neither deadline.
+The sandbox keeps its place until its process exits.
+An expired call remains unanswered, so the replay receives no verdict and retries within its attempt limit.
+The same queue holds the commands that make a colocated jj checkout, with a 30-minute setup and command deadline.
 
 A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
 path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj

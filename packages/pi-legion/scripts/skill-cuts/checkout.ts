@@ -139,8 +139,9 @@
  * global git configuration, GIT_CONFIG through GIT_CONFIG_COUNT: no fsmonitor, no hooks, a bare
  * repository used only where named, no transport, no pager, the index's stat data trusted though
  * the namespace shows each file's owner as root; GIT_OPTIONAL_LOCKS=0; jj's
- * SANDBOX_JJ_CONFIG, which names no external tool and no signing program); a time limit, past
- * which every process it started is ended, and an output cap. The sandbox's fresh `/proc` still
+ * SANDBOX_JJ_CONFIG, which names no external tool and no signing program); a time limit (the
+ * command's, from when its sandbox is made: the queue, below), past which every process it
+ * started is ended, and an output cap. The sandbox's fresh `/proc` still
  * lists, in `/proc/self/mountinfo`, the mount points of the pod it was made from (the hidden ones
  * among them, each under its empty file system); no answered call reads it, as no answered path
  * is outside the root. An answer whose sandbox cannot be made is not given, nor one of a command
@@ -151,6 +152,23 @@
  * own (the Oh My Pi shell on this pod has `cat`, `head`, `ls`, `wc`, `grep`, `sed` and `find` as
  * shell builtins, uutils-like: `cat 0.8.0`, `grep (pi-uu-grep) 0.2.0`, `sed 0.1.1`), so an answer
  * of `ls` and the like (its layout, an error's wording) may differ from what the session saw.
+ *
+ * **The queue.** A sandbox keeps a CPU busy for as long as its command runs, and one runner
+ * process makes many calls at once (the gateway's `--concurrency` bounds its model calls, not the
+ * sandboxes a reply starts). Started together they slow each other: on a two-CPU pod, eight `git
+ * status` commands run at once all reached the 30 s limit, and two at once took 10.9 s each. So a
+ * runner process runs one sandbox at a time, each in the order it asked (`checkoutQueue`,
+ * common.ts's `Limiter` of 1; the jj commands of a copy's colocation, `colocateJj`, queue too).
+ * The pod runs at most two runner processes together, so at most two sandboxes run at once on its
+ * two CPUs. The invariant: a sandbox has spawned no child and set no timer until it holds the
+ * queue's place, and it keeps the place until its child has exited; so no limit counts its wait.
+ * A command's limit (BASH_TIME_LIMIT_MS) counts from the sandbox's ready marker (SANDBOX_READY),
+ * not from the spawn: the setup has the same limit from the spawn, so a sandbox that is never made
+ * is ended too, but its setup takes none of the command's time. A sandbox past its limit is ended
+ * and not answered, as before (`Unanswered`: the run is made again). The queue holds sandboxes
+ * only: a `grep` or `glob` worker (`answerInWorker`) and a `read` are not queued. The measured
+ * fault is `git status` commands under load; a `grep` or `glob` that runs past 30 s alone is a
+ * separate timeout, which the queue does not change.
  *
  * - `read` (keys `path`, `i`): a whole read by path that resolves (cases.ts's `resolvedReadPath`,
  *   against the session's working directory) to a file under the checkout's root, in the form
@@ -263,7 +281,8 @@
  *   (above; its working directory the session's mapped into the copy; the checkout's root in the
  *   command mapped to CHECKOUT_MOUNT, and that path and the copy's own, as given and as its real
  *   path, back to the root in the output), by `bash -c` with its standard error joined to its
- *   output, within BASH_TIME_LIMIT_MS; its text as Oh My Pi's bash tool gives it (bash.ts lines
+ *   output, within BASH_TIME_LIMIT_MS of when its sandbox is made (the queue, above); its text
+ *   as Oh My Pi's bash tool gives it (bash.ts lines
  *   765-922): the output as printed, `(no output, exit code 0)` or `(no output)` for none, `Wall
  *   time: <s> seconds` after it when the command (from when its sandbox was made) took a second
  *   or more, and `Command exited with code <n>` after it, an error, when it failed. Oh My Pi's
@@ -320,7 +339,7 @@ import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { fileTag, type PathRows, pathAnswer, pathRangeAnswer, readRange, shownPath } from "./arms";
 import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
-import { bytesAt, eachChunk, firstLine, timeLimit } from "./common";
+import { bytesAt, eachChunk, firstLine, Limiter, timeLimit } from "./common";
 
 /** The tools whose every call is read-only. */
 export const READ_ONLY_TOOLS = ["read", "grep", "glob", "find", "ls"] as const;
@@ -1931,6 +1950,41 @@ interface SandboxRun {
   readonly wallTimeMs: number;
 }
 
+/** The child a sandbox runs as, as `runSandboxed` reads it: `Bun.spawn`'s, or a stand-in's
+ *  (`setSandboxSpawnForTests`). */
+interface SandboxChild {
+  readonly stdout: ReadableStream<Uint8Array>;
+  readonly stderr: ReadableStream<Uint8Array>;
+  readonly exited: Promise<number>;
+  kill(signal: "SIGKILL"): void;
+}
+
+/** Starts the sandbox's child from `argv`, in SANDBOX_ENV, with no input and its output and error
+ *  piped. */
+type SandboxSpawn = (argv: string[]) => SandboxChild;
+
+const spawnWithBun: SandboxSpawn = (argv) =>
+  Bun.spawn(argv, { env: SANDBOX_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+let spawnSandbox: SandboxSpawn = spawnWithBun;
+
+/** Starts each sandbox's child with `spawn` in place of `Bun.spawn`, so a row of checkout.test.ts
+ *  drives the queue and the limits with a child whose output and end it controls. Production
+ *  callers never call this. */
+export function setSandboxSpawnForTests(spawn: SandboxSpawn): void {
+  spawnSandbox = spawn;
+}
+
+/** Puts `Bun.spawn` back, as the file that set a stand-in must when it ends. */
+export function resetSandboxSpawnForTests(): void {
+  spawnSandbox = spawnWithBun;
+}
+
+/** The one queue of a runner process's sandboxes (`runSandboxed`): each runs alone, in the order it
+ *  asked (common.ts's `Limiter`; see the file's header, "The queue"). A sandbox spawns no child and
+ *  sets no timer until it holds the place, and keeps it until its child has exited, so no limit
+ *  counts the wait and the process's own sandboxes never compete with each other for CPU. */
+const checkoutQueue = new Limiter(1);
+
 /**
  * Runs `command` (bash's text, the copy at CHECKOUT_MOUNT in it) in a sandbox of the copy `dir`, as
  * each command that answers a call, and each jj command of the copy's colocation, runs: `unshare`'s
@@ -1941,11 +1995,14 @@ interface SandboxRun {
  * "" for its root), in SANDBOX_ENV, its jj the runner's (found on its PATH) through a wrapper that
  * gives it SANDBOX_JJ_CONFIG and, unless `writable`, `--ignore-working-copy` (so no jj answer takes
  * the working copy's lock or snapshots it: each answers from the snapshot the colocation took).
- * Not run where one of `programs` is on no directory of the sandbox's PATH. Ended, with every
- * process it started, once `limitMs` pass (SIGKILL; `--kill-child` ends the namespace's first
- * process, and the kernel the rest), and once its output passes OUTPUT_BYTES. Its output (standard
- * error joined to it), exit code and wall time (from when the sandbox is made); else why none: no
- * `unshare`, a sandbox not made, a program it lacks, the time limit or the output cap.
+ * Not run where one of `programs` is on no directory of the sandbox's PATH. It waits first for its
+ * place in the queue (`checkoutQueue`): until it has one, no child is spawned and no timer set.
+ * Ended, with every process it started (SIGKILL; `--kill-child` ends the namespace's first
+ * process, and the kernel the rest), once `limitMs` pass from the spawn without the sandbox's
+ * ready marker (SANDBOX_READY), once `limitMs` pass from that marker, and once its output passes
+ * OUTPUT_BYTES. Its output (standard error joined to it), exit code and wall time (from when the
+ * sandbox is made); else why none: no `unshare`, a sandbox not made, a program it lacks, the time
+ * limit or the output cap.
  */
 async function runSandboxed(
   dir: string,
@@ -1972,39 +2029,43 @@ async function runSandboxed(
       ? ""
       : `#!/bin/sh\nexec /mnt/jj/${path.basename(jj)}${writable ? "" : " --ignore-working-copy"} --config-file ${SANDBOX_JJ_CONFIG} "$@"\n`;
   const hidden = hiddenPaths(process.env);
-  const child = Bun.spawn(
-    [
-      unshare,
-      "--user",
-      "--map-root-user",
-      "--mount",
-      "--net",
-      "--pid",
-      "--fork",
-      "--uts",
-      "--mount-proc",
-      "--kill-child",
-      "--",
-      "bash",
-      "--noprofile",
-      "--norc",
-      "-c",
-      SANDBOX_SETUP,
-      "sandbox",
-      mountName(realpathSync(dir)),
-      writable ? "rw" : "ro",
-      cwd,
-      jj === undefined ? "" : mountName(path.dirname(jj)),
-      wrapper,
-      JJ_CONFIG_TEXT,
-      hidden.home,
-      hidden.homeTree,
-      command,
-      programs.join(" "),
-      ...hidden.paths.flatMap((each) => [each, mountName(each)]),
-    ],
-    { env: SANDBOX_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" }
-  );
+  const argv = [
+    unshare,
+    "--user",
+    "--map-root-user",
+    "--mount",
+    "--net",
+    "--pid",
+    "--fork",
+    "--uts",
+    "--mount-proc",
+    "--kill-child",
+    "--",
+    "bash",
+    "--noprofile",
+    "--norc",
+    "-c",
+    SANDBOX_SETUP,
+    "sandbox",
+    mountName(realpathSync(dir)),
+    writable ? "rw" : "ro",
+    cwd,
+    jj === undefined ? "" : mountName(path.dirname(jj)),
+    wrapper,
+    JJ_CONFIG_TEXT,
+    hidden.home,
+    hidden.homeTree,
+    command,
+    programs.join(" "),
+    ...hidden.paths.flatMap((each) => [each, mountName(each)]),
+  ];
+  return checkoutQueue.run(() => runChild(argv, limitMs));
+}
+
+/** The sandbox `runSandboxed` made `argv` for, spawned and bounded once it holds its place in the
+ *  queue: the limit of its setup starts at the spawn, and the command's at SANDBOX_READY. */
+async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | Unanswered> {
+  const child = spawnSandbox(argv);
   const limit = timeLimit({ kill: () => child.kill("SIGKILL") }, limitMs);
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -2015,7 +2076,11 @@ async function runSandboxed(
   await Promise.all([
     eachChunk(child.stderr, limit, (chunk) => {
       said += decoder.decode(chunk, { stream: true });
-      if (ready === undefined && said.endsWith(SANDBOX_READY)) ready = performance.now();
+      if (ready === undefined && said.endsWith(SANDBOX_READY)) {
+        ready = performance.now();
+        // The command's limit starts here: the setup had the same limit from the spawn.
+        if (!limit.timedOut()) limit.touch();
+      }
     }),
     eachChunk(child.stdout, limit, (chunk) => {
       if (over) return;
@@ -2174,7 +2239,9 @@ export async function colocateJj(dir: string): Promise<true | Unanswered> {
   return true;
 }
 
-/** The longest a `bash` call's command may run in the copy before it is ended, unanswered. */
+/** The longest a `bash` call's command may run in the copy before it is ended, unanswered, from
+ *  when its sandbox is made (and the longest its sandbox's setup may take, from its spawn): the
+ *  wait for its place in the queue counts in neither. */
 const BASH_TIME_LIMIT_MS = 30_000;
 /** The bytes of an output and of a line a bash or grep output may hold to be answered whole: Oh My
  *  Pi elides an output past its spill threshold (`tools.artifactSpillThreshold`, 50 KB; grep's
