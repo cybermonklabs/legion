@@ -54,19 +54,25 @@ block's hosts, headers, `allow` and `kind`. Who decides a request is no field of
 the source key's `judge` and `guidance` tags.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right.
-A profile's `allow` narrows its kind and never widens it: the check refuses each row whose host its
-kind does not bind and each row its kind's `allow` does not cover, as the policy load does. A
-profile's kind is its own `proxy` string, or else its source's `proxy` tag, which is in the secret
-store, not the file: `--secrets-json` reads the tags from the output of
-`gcloud secrets list --filter='name~agent-secrets-' --format='json(name,annotations)'`, and without it
-each profile whose kind is a tag gets one line saying its rows were not held to a kind. With the
-tags, the check also refuses a profile with an `allow` whose source lacks `proxy-narrowed=true`, and
-a `proxy` string that names another kind than its source's tag.
+It also refuses each fault for which the policy load would refuse a name behind the proxy, with
+the load's own rules and in its words, one line each, `profile "<name>": <reason>: <detail>` or
+`secret "<name>": <reason>: <detail>`: a `proxy` string that names another kind than its source's
+`proxy` tag, a source only the proxy scopes or an `allow` behind no kind, a way or a `max-grant`
+the kind does not take, an `allow` whose source lacks `proxy-narrowed=true`, a row on a host the
+kind does not bind, rows outside the kind's `allow`, a tag naming no kind, and SC17's rule for a
+narrowed secret. A profile's kind is its own `proxy` string, or else its source's `proxy` tag,
+which is in the secret store, not the file: `--secrets-json` reads the tags from the output of
+`gcloud secrets list --filter='name~agent-secrets-' --format='json(name,annotations)'`. Without it,
+a profile with a `proxy` string is held to all the file decides of it, and each profile with none,
+in a file that declares a kind, gets an `UNKNOWN` line naming it; a run that refuses nothing then
+exits 3 after the whole report, so a caller that cannot read the store can accept 3 and still fail
+on 1.
 With `--against`, it lists under `widens` each row of a name's `allow` under the file that its
 `allow` under the old file does not cover, for each name behind the proxy under both files (its
 profile's own `allow`, else its kind's, else its proxy block's; a missing `allow` allows every
 method and path), and each host the change adds to a name. A widening exits 0: the reviewer reads
-it, and a gate that must see none reads the list.
+it, and a gate that must see none reads the list. A name whose `allow` or hosts only the tags give
+is listed as not compared, and without `--secrets-json` that too makes the run exit 3.
 With `--secrets-json`, it lists each secret's `proxy` and `proxy-narrowed` tags, then each name
 behind the proxy under the old file and how the file serves it, and exits 1 when a name leaves the
 proxy. The old file may be in either form, kinds or the proxy blocks they replaced.
@@ -174,11 +180,13 @@ for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names it
 registered services), may carry `admin: true`, and carries no `scopes`.
 
 Behind the airlock, such a secret is served by the `anthropic` kind: its `proxy` tag names the
-kind, which binds `api.anthropic.com`, the header `Authorization`, the way `mint`, the variable
-`ANTHROPIC_ADMIN_TOKEN`, a `max_grant` of `1h` and an `allow` of `GET`, `POST` and `DELETE` under
-`/v1/organizations/`, so its token reaches Anthropic's Admin API alone and never the token exchange
-or the Messages API on the same host. A secret narrowed further carries `proxy-narrowed=true` and
-one profile with an `allow` of its own inside the kind's. The local stack mints at stand-ins:
+kind, which binds `api.anthropic.com`, the header `Authorization`, the way `mint`, a `max_grant`
+of `1h` and an `allow` of `GET`, `POST` and `DELETE` under `/v1/organizations/`, so its token
+reaches Anthropic's Admin API alone and never the token exchange or the Messages API on the same
+host. The kind also declares the variable `ANTHROPIC_ADMIN_TOKEN`, which no release applies yet: a
+command reads the placeholder in the variable named as its secret. A secret narrowed further
+carries `proxy-narrowed=true` and one profile with an `allow` of its own inside the kind's. The
+local stack mints at stand-ins:
 `BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL` names the origin of the `generateIdToken` it reads the
 identity token at, and `BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL` the token exchange; a production
 start (one with `BROKER_FAKE_SECRETS_FILE` unset) refuses either, naming it, as it refuses every

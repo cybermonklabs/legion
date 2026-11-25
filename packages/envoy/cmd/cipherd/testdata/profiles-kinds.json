@@ -5,7 +5,7 @@
       "hosts": ["api.github.com", "github.com", "uploads.github.com"],
       "headers": ["Authorization"],
       "variables": ["GH_TOKEN", "GITHUB_TOKEN"],
-      "ways": ["swap", "mint", "app-token"],
+      "ways": ["swap", "mint"],
       "max_grant": "12h"
     },
     {

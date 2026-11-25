@@ -14,8 +14,9 @@
 //     its one row on iamcredentials.googleapis.com; the four profiles made from a source the broker
 //     also serves by its own name take SC13's proxy string, "github".
 //   - secrets-tagged.json is the store after the move's tags, as `gcloud secrets list
-//     --format='json(name,annotations)'` prints it: each own-name source tagged with its kind, and
-//     the five narrowed ones tagged proxy-narrowed=true.
+//     --format='json(name,annotations)'` prints it: each own-name source tagged with its kind, the
+//     five narrowed ones tagged proxy-narrowed=true, and each source of a name behind a kind given
+//     a max-grant within that kind's max_grant, which the policy load requires.
 //
 // The helpers are this file's, and runCheck and profilesFile, which a build of the subcommand from
 // before kinds also has, so this file runs against that build and shows what it cannot do.
@@ -225,34 +226,89 @@ func entryOfFixture(t *testing.T, name string) jsonObject {
 	return entryOf(t, file, "profiles", name)
 }
 
+// TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives: with no --secrets-json, the moved file
+// exits 3: it writes its whole report, one UNKNOWN line for each of its 19 profiles with no proxy
+// string, whose kind only its source's tag gives, and none for the four behind SC13's proxy
+// string, which it holds to everything the file decides of them; stderr says what was not read.
+// Controls: a file whose profiles each name their kind as a string exits 0 with no UNKNOWN line,
+// and one of them with a grant cap above its kind's, which the file decides, is refused; and a
+// file that declares no kind writes none, since no tag can name a kind of it.
+func TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives(t *testing.T) {
+	code, stdout, stderr := runCheck(t, kindsFixture)
+	var file jsonObject
+	decodeFixture(t, kindsFixture, &file)
+	var want []string
+	for _, p := range file["profiles"].([]any) {
+		profile := p.(jsonObject)
+		if profile["proxy"] != nil {
+			continue
+		}
+		name := profile["name"].(string)
+		source, _ := profile["source"].(string)
+		if source == "" {
+			source = name
+		}
+		want = append(want, `profiles check: UNKNOWN: profile "`+name+`": its kind is its source `+source+`'s proxy tag, which was not read (no --secrets-json), so it was held to no kind`)
+	}
+	if len(want) != 19 {
+		t.Fatalf("the fixture has %d profiles with no proxy string, and this test reads 19", len(want))
+	}
+	if got := linesWith(stdout, "profiles check: UNKNOWN: "); !slices.Equal(got, want) {
+		t.Errorf("the run with no --secrets-json names UNKNOWN %q, want %q", got, want)
+	}
+	wantErr := "profiles check: " + kindsFixture + ": UNKNOWN: not read (no --secrets-json): the kind of each of 19 profiles, its source's proxy tag; nothing it read is refused\n"
+	if code != exitUnknown || stderr != wantErr || !strings.Contains(stdout, `kind "anthropic": added`) {
+		t.Fatalf("the moved file with no --secrets-json = exit %d with stderr %q; want exit %d, the whole report and %q", code, stderr, exitUnknown, wantErr)
+	}
+
+	kinds := `[{"name": "github", "hosts": ["api.github.com"], "ways": ["swap", "mint"], "max_grant": "12h"}]`
+	named := `{"kinds": ` + kinds + `, "profiles": [
+  {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"metadata": "read"}}, "proxy": "github"},
+  {"name": "ENTERPRISE_ADMIN", "proxy": "github", "maxGrant": "1h", "allow": [{"method": "GET", "pathPrefix": "/enterprises/", "host": "api.github.com"}]}
+]}`
+	if code, stdout, stderr := runCheck(t, profilesFile(t, named)); code != 0 || stderr != "" || strings.Contains(stdout, "UNKNOWN") {
+		t.Fatalf("a file whose profiles name their kinds = exit %d, stderr %q, stdout %q; want exit 0 and no UNKNOWN line", code, stderr, stdout)
+	}
+	capped := strings.Replace(named, `"maxGrant": "1h"`, `"maxGrant": "24h"`, 1)
+	if code, _, stderr := runCheck(t, profilesFile(t, capped)); code != 1 || !strings.Contains(stderr, `profile "ENTERPRISE_ADMIN": proxy-max-grant-above-kind: its max-grant 24h0m0s is above the kind github's max_grant 12h0m0s`) {
+		t.Fatalf("a profile's maxGrant above its proxy string's kind's = exit %d, stderr %q; want exit 1 naming the load's max-grant refusal", code, stderr)
+	}
+	noKinds := `{"profiles": [{"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"metadata": "read"}}}]}`
+	if code, stdout, stderr := runCheck(t, profilesFile(t, noKinds)); code != 0 || stderr != "" || strings.Contains(stdout, "UNKNOWN") {
+		t.Fatalf("a file that declares no kind = exit %d, stderr %q, stdout %q; want exit 0 and no UNKNOWN line", code, stderr, stdout)
+	}
+}
+
 // TestProfilesCheckListsANameThatLeavesTheProxy: a name behind the proxy under the old file that
 // the new file and the store put behind nothing exits 1, listing that name as leaving with why and
-// naming it on stderr, and lists the others as served. The rows are the two ways a name leaves:
-// the file drops SC13's proxy string of a profile whose source carries no tag, or the store loses
-// the proxy tag of a source served by its own name. The control is the move itself, in the test
-// above, which lists none leaving.
+// naming it on stderr, and lists the others as served. The rows are the two ways a name leaves: the
+// file drops SC13's proxy string of a profile whose source, an App the profile's github block
+// scopes at its mint, carries no tag, or drops a proxied profile whose name no stored secret holds.
+// A stored token's source that loses its proxy tag does not leave: the load refuses its profile, as
+// only the proxy scopes its credential, and so does the check. The control is the move itself, in
+// the test above, which lists none leaving.
 func TestProfilesCheckListsANameThatLeavesTheProxy(t *testing.T) {
 	for _, c := range []struct {
 		name, leaves, why string
-		file, tags        func(t *testing.T) string
+		file              func(t *testing.T) string
 	}{
 		{
 			"one SC13 proxy string removed", "GITHUB_WRITE", "the profile names no kind, and its source LEGION_IMPLEMENT_APP carries no proxy tag",
 			func(t *testing.T) string {
 				return kindsCopy(t, func(file jsonObject) { delete(entryOf(t, file, "profiles", "GITHUB_WRITE"), "proxy") })
 			},
-			func(*testing.T) string { return tagsFixture },
 		},
 		{
-			"one source's proxy tag removed", "LEGION_SLACK_BOT_TOKEN", "the profile names no kind, and its source LEGION_SLACK_BOT_TOKEN carries no proxy tag",
-			func(*testing.T) string { return kindsFixture },
+			"a proxied profile removed", "GITHUB_APP_OWNER_AGENT", "no profile holds the name, and --secrets-json lists no secret of it",
 			func(t *testing.T) string {
-				return tagsCopy(t, func(a map[string]jsonObject) { delete(a["agent-secrets-legion-slack-bot-token"], "proxy") })
+				return kindsCopy(t, func(file jsonObject) {
+					file["profiles"] = slices.DeleteFunc(file["profiles"].([]any), func(p any) bool { return p.(jsonObject)["name"] == "GITHUB_APP_OWNER_AGENT" })
+				})
 			},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			code, stdout, stderr := runCheck(t, c.file(t), "--against", proxyBlocksFixture, "--secrets-json", c.tags(t))
+			code, stdout, stderr := runCheck(t, c.file(t), "--against", proxyBlocksFixture, "--secrets-json", tagsFixture)
 			if code != 1 {
 				t.Fatalf("%s = exit %d, want 1", c.name, code)
 			}
@@ -262,10 +318,15 @@ func TestProfilesCheckListsANameThatLeavesTheProxy(t *testing.T) {
 			if leaving := linesWith(stdout, "served "); len(leaving) != len(proxiedOnMain) || strings.Count(stdout, ": leaves the proxy: ") != 1 {
 				t.Errorf("the report lists %d served names and %d leaving, want %d and 1", len(leaving), strings.Count(stdout, ": leaves the proxy: "), len(proxiedOnMain))
 			}
-			if !strings.Contains(stderr, "1 name leaves the proxy: "+c.leaves) {
+			if !strings.Contains(stderr, "1 name leaving the proxy: "+c.leaves) {
 				t.Errorf("stderr does not name %s as leaving the proxy: %q", c.leaves, stderr)
 			}
 		})
+	}
+	untagged := tagsCopy(t, func(a map[string]jsonObject) { delete(a["agent-secrets-legion-slack-bot-token"], "proxy") })
+	code, stdout, stderr := runCheck(t, kindsFixture, "--against", proxyBlocksFixture, "--secrets-json", untagged)
+	if want := `profile "LEGION_SLACK_BOT_TOKEN": profile-source-not-proxied: `; code != 1 || stdout != "" || !strings.Contains(stderr, want) {
+		t.Fatalf("a stored token's source that loses its proxy tag = exit %d, stdout %q, stderr %q; want exit 1, no report, and %q", code, stdout, stderr, want)
 	}
 }
 
@@ -341,30 +402,28 @@ func TestProfilesCheckListsWhatWidensAgainstTheOldFile(t *testing.T) {
 		})
 	}
 	// Reading what the change does to an allow needs no store: the same widening with no
-	// --secrets-json is listed for a name whose kind is SC13's proxy string under both files.
+	// --secrets-json is listed for a name whose kind is SC13's proxy string under both files. The
+	// runs exit 3 all the same, since the other profiles' kinds are their sources' tags.
 	widened := kindsCopy(t, func(file jsonObject) {
 		read := entryOf(t, file, "profiles", "GITHUB_READ")
 		read["allow"] = rows("", "GET", "/repos/")
 	})
-	if code, stdout, _ := runCheck(t, widened, "--against", kindsFixture); code != 0 || linesWith(stdout, `widens "GITHUB_READ"`) != nil {
-		t.Fatalf("a narrower allow for GITHUB_READ = exit %d, widens %q; want exit 0 and nothing widened", code, linesWith(stdout, `widens "GITHUB_READ"`))
+	if code, stdout, _ := runCheck(t, widened, "--against", kindsFixture); code != exitUnknown || linesWith(stdout, `widens "GITHUB_READ"`) != nil {
+		t.Fatalf("a narrower allow for GITHUB_READ = exit %d, widens %q; want exit %d and nothing widened", code, linesWith(stdout, `widens "GITHUB_READ"`), exitUnknown)
 	}
-	if code, stdout, _ := runCheck(t, kindsFixture, "--against", widened); code != 0 || !slices.Equal(linesWith(stdout, `widens "GITHUB_READ"`), []string{`widens "GITHUB_READ": any method and path`}) {
-		t.Fatalf("GITHUB_READ's allow left out against it = exit %d, widens %q; want exit 0 and GITHUB_READ widened to any method and path", code, linesWith(stdout, `widens "`))
+	if code, stdout, _ := runCheck(t, kindsFixture, "--against", widened); code != exitUnknown || !slices.Equal(linesWith(stdout, `widens "GITHUB_READ"`), []string{`widens "GITHUB_READ": any method and path`}) {
+		t.Fatalf("GITHUB_READ's allow left out against it = exit %d, widens %q; want exit %d and GITHUB_READ widened to any method and path", code, linesWith(stdout, `widens "`), exitUnknown)
 	}
 }
 
 // TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover is the last step of the anthropic kind's
 // check: a copy of the moved file whose anthropic kind allows GET under /v1/organizations/ alone
-// is refused, exit 1 and no report, naming for each of the three Anthropic profiles its rows the
-// kind no longer covers, POST and DELETE under /v1/organizations/, and not its GET, which the kind
-// still covers. A profile's kind is its source's proxy tag, which the store holds: so the refusal
-// needs --secrets-json, and without it the run says, for each profile, that its rows were not held
-// to a kind, rather than reading as a pass. A profile whose kind is its proxy string is held to
-// that kind with no store read. The other refusals of a profile's allow the policy load makes,
-// which the file and the tags decide, are refused here too: a row whose host its kind does not
-// bind, a source without the proxy-narrowed tag, and a proxy string naming another kind than its
-// source's tag.
+// is refused, exit 1 and no report, naming for each of the three Anthropic profiles, in the load's
+// words, its rows the kind no longer covers, POST and DELETE under /v1/organizations/, and not its
+// GET, which the kind still covers. A profile's kind is its source's proxy tag, which the store
+// holds: so the refusal needs --secrets-json, and without it the run names each profile UNKNOWN
+// and exits 3, rather than reading as a pass. A profile whose kind is its proxy string is held to
+// that kind with no store read, and refused.
 func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
 	getOnly := kindsCopy(t, func(file jsonObject) {
 		entryOf(t, file, "kinds", "anthropic")["allow"] = rows("", "GET", "/v1/organizations/")
@@ -375,7 +434,7 @@ func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
 	}
 	for _, name := range anthropicProfiles {
 		line := linesWith(stderr, "profiles check: "+getOnly+`: profile "`+name+`": `)
-		if len(line) != 1 || !strings.Contains(line[0], "allow rows POST /v1/organizations/ and DELETE /v1/organizations/ are outside the kind anthropic's allow") {
+		if want := "profile-allow-outside-kind: allow rows POST /v1/organizations/ and DELETE /v1/organizations/ are outside the kind anthropic's allow"; len(line) != 1 || !strings.Contains(line[0], want) {
 			t.Errorf("the refusal does not name %s's POST and DELETE rows, and them alone, as outside the anthropic kind: %q", name, line)
 		}
 	}
@@ -384,13 +443,13 @@ func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
 	}
 
 	// Without the store's tags the run cannot know the profiles' kind, and says so.
-	code, stdout, _ = runCheck(t, getOnly)
-	if code != 0 {
-		t.Fatalf("the copy with no --secrets-json = exit %d, want 0: it cannot see the kind", code)
+	code, stdout, stderr = runCheck(t, getOnly)
+	if code != exitUnknown || !strings.Contains(stderr, "UNKNOWN: not read (no --secrets-json)") {
+		t.Fatalf("the copy with no --secrets-json = exit %d, stderr %q; want exit %d: it cannot see the kind", code, stderr, exitUnknown)
 	}
 	for _, name := range anthropicProfiles {
-		if want := `profiles check: profile "` + name + `" has an allow, and its kind is its source ` + name + `'s proxy tag, which only --secrets-json reads: its rows were not held to that kind's allow and hosts, nor ` + name + ` to the proxy-narrowed tag`; !strings.Contains(stdout, want+"\n") {
-			t.Errorf("the run with no --secrets-json does not say %s's rows were not held to a kind: no line %q", name, want)
+		if want := `profiles check: UNKNOWN: profile "` + name + `": its kind is its source ` + name + `'s proxy tag, which was not read (no --secrets-json), so it was held to no kind`; !strings.Contains(stdout, want+"\n") {
+			t.Errorf("the run with no --secrets-json does not name %s UNKNOWN: no line %q", name, want)
 		}
 	}
 
@@ -399,49 +458,21 @@ func TestProfilesCheckRefusesAProfileRowItsKindDoesNotCover(t *testing.T) {
 		entryOf(t, file, "kinds", "anthropic")["allow"] = rows("", "GET", "/v1/organizations/")
 		entryOf(t, file, "profiles", "ANTHROPIC_ADMIN_PBC")["proxy"] = "anthropic"
 	})
-	if code, _, stderr := runCheck(t, stringKind); code != 1 || !strings.Contains(stderr, `profile "ANTHROPIC_ADMIN_PBC": allow rows POST /v1/organizations/ and DELETE /v1/organizations/ are outside the kind anthropic's allow`) {
+	if code, _, stderr := runCheck(t, stringKind); code != 1 || !strings.Contains(stderr, `profile "ANTHROPIC_ADMIN_PBC": profile-allow-outside-kind: allow rows POST /v1/organizations/ and DELETE /v1/organizations/ are outside the kind anthropic's allow`) {
 		t.Fatalf("a profile behind its proxy string's kind, with rows outside it = exit %d, stderr %q; want exit 1 naming its POST and DELETE rows", code, stderr)
-	}
-
-	for _, c := range []struct {
-		name string
-		file func(*testing.T) string
-		tags func(*testing.T) string
-		says string
-	}{
-		{"a row on a host its kind does not bind", func(t *testing.T) string {
-			return kindsCopy(t, func(file jsonObject) {
-				entryOf(t, file, "profiles", "AWS_ADMIN")["allow"].([]any)[0].(jsonObject)["host"] = "sts.amazonaws.com"
-			})
-		}, nil, `profile "AWS_ADMIN": allow row POST /v1/projects/-/serviceAccounts/aws-admin@theorem-aws-admin.iam.gserviceaccount.com:generateIdToken on sts.amazonaws.com names the host sts.amazonaws.com, which the kind gcp does not bind (*.googleapis.com, *.pkg.dev)`},
-		{"a narrowing source without the proxy-narrowed tag", func(*testing.T) string { return kindsFixture }, func(t *testing.T) string {
-			return tagsCopy(t, func(a map[string]jsonObject) { delete(a["agent-secrets-github-enterprise-admin"], "proxy-narrowed") })
-		}, `profile "GITHUB_ENTERPRISE_ADMIN": its allow narrows its source GITHUB_ENTERPRISE_ADMIN at the proxy, and GITHUB_ENTERPRISE_ADMIN carries no proxy-narrowed=true tag`},
-		{"a proxy string naming another kind than its source's tag", func(*testing.T) string { return kindsFixture }, func(t *testing.T) string {
-			return tagsCopy(t, func(a map[string]jsonObject) { a["agent-secrets-legion-implement-app"]["proxy"] = "slack" })
-		}, `profile "GITHUB_READ": its proxy string names the kind github, and its source LEGION_IMPLEMENT_APP's proxy tag names slack`},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			tags := tagsFixture
-			if c.tags != nil {
-				tags = c.tags(t)
-			}
-			code, stdout, stderr := runCheck(t, c.file(t), "--secrets-json", tags)
-			if code != 1 || stdout != "" || !strings.Contains(stderr, c.says+"\n") {
-				t.Fatalf("%s = exit %d, stdout %q, stderr %q; want exit 1, no report, and a line %q", c.name, code, stdout, stderr, c.says)
-			}
-		})
 	}
 }
 
 // TestProfilesCheckReadsEachChangedCopyOfTheKindsFile runs the copies of the rules test's check
-// of the kinds file against the moved file: a copy with a kind of no host, and the two that name a
-// secret in the kinds part, a kind named as a secret and a kind holding a field naming one, are
-// refused naming the kind or the field; so are a copy that is not JSON, naming the position, and a
-// copy that writes a proxy block the kinds replaced, naming kinds. The copies that add a host, a
-// header or a variable to a kind, a row to a kind's allow, a row inside its kind to a profile's
-// allow, or that remove a kind, exit 0 and list what they change. The control is the moved file
-// against itself, which changes nothing and widens nothing.
+// of the kinds file against the moved file, with the store's tags: a copy with a kind of no host,
+// and the two that name a secret in the kinds part, a kind named as a secret and a kind holding a
+// field naming one, are refused naming the kind or the field; so are a copy that is not JSON,
+// naming the position, and a copy that writes a proxy block the kinds replaced, naming kinds. The
+// copies that add a host, a header or a variable to a kind, a row to a kind's allow, or a row
+// inside its kind to a profile's allow, exit 0 and list what they change. A copy that removes a
+// kind a secret's proxy tag still names is refused, as the load refuses that secret and its
+// profile; without the tags it lists the kind removed and exits 3, since it cannot see the tag. The
+// control is the moved file against itself, which changes nothing and widens nothing.
 func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
 	appendTo := func(list string, name, field string, values ...any) func(*testing.T) string {
 		return func(t *testing.T) string {
@@ -455,6 +486,9 @@ func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
 	edited := func(edit func(t *testing.T, file jsonObject)) func(*testing.T) string {
 		return func(t *testing.T) string { return kindsCopy(t, func(file jsonObject) { edit(t, file) }) }
 	}
+	removedKind := edited(func(t *testing.T, f jsonObject) {
+		f["kinds"] = slices.DeleteFunc(f["kinds"].([]any), func(k any) bool { return k.(jsonObject)["name"] == "tailscale" })
+	})
 	for _, c := range []struct {
 		name  string
 		file  func(*testing.T) string
@@ -478,14 +512,15 @@ func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
 		{"a row added to a kind's allow", appendTo("kinds", "anthropic", "allow", rows("", "GET", "/v1/models")...), 0, []string{`kind "anthropic": allow GET /v1/models added`}},
 		{"a row inside its kind added to a profile's allow", appendTo("profiles", "ANTHROPIC_ADMIN_HDO", "allow", rows("", "GET", "/v1/organizations/users")...),
 			0, []string{`profile "ANTHROPIC_ADMIN_HDO": allow GET /v1/organizations/users added`}},
-		{"a kind removed", edited(func(t *testing.T, f jsonObject) {
-			f["kinds"] = slices.DeleteFunc(f["kinds"].([]any), func(k any) bool { return k.(jsonObject)["name"] == "tailscale" })
-		}), 0, []string{`kind "tailscale": removed`, `kind "tailscale": hosts api.tailscale.com`}},
-		{"the control: the moved file itself", func(*testing.T) string { return kindsFixture }, 0, []string{"profiles check: nothing changed", "widens: none among the names compared"}},
+		{"a kind removed", removedKind, 1, []string{
+			`secret "TAILSCALE_API_KEY": proxy-kind-unknown: the proxy tag names "tailscale", which is no kind of the profiles file`,
+			`profile "TAILSCALE_API_KEY": profile-source-missing: source TAILSCALE_API_KEY: proxy-kind-unknown (`,
+		}},
+		{"the control: the moved file itself", func(*testing.T) string { return kindsFixture }, 0, []string{"profiles check: nothing changed", "widens: none"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := c.file(t)
-			code, stdout, stderr := runCheck(t, path, "--against", kindsFixture)
+			code, stdout, stderr := runCheck(t, path, "--against", kindsFixture, "--secrets-json", tagsFixture)
 			if code != c.code {
 				t.Fatalf("%s = exit %d with stderr %q, want %d", c.name, code, stderr, c.code)
 			}
@@ -510,6 +545,10 @@ func TestProfilesCheckReadsEachChangedCopyOfTheKindsFile(t *testing.T) {
 				t.Errorf("%s widens %q, want nothing", c.name, widens)
 			}
 		})
+	}
+	code, stdout, stderr := runCheck(t, removedKind(t), "--against", kindsFixture)
+	if code != exitUnknown || !slices.Contains(strings.Split(stdout, "\n"), `kind "tailscale": removed`) || !strings.Contains(stderr, "UNKNOWN") {
+		t.Fatalf("the copy without the tailscale kind and no --secrets-json = exit %d, stderr %q; want exit %d and the kind listed removed", code, stderr, exitUnknown)
 	}
 }
 

@@ -46,69 +46,44 @@ const removedAirlockCheckCommand = "airlock-check"
 const secretIDPrefix = "agent-secrets-"
 
 // runProfilesCheck reads the profiles file args names and says whether the broker would serve it,
-// with the broker's own reader and no second reader of the format: policy.ParseProfiles, which the
-// boot runs too, so that what this agrees to is exactly what the boot agrees to but for the one
-// read it has no setting for, each requester service against the deployment's registered services
-// (readProfiles). A pull request that changes the deployment's profiles.json runs it, so the file
-// a reviewer is asked to read is one the broker has already agreed to serve.
+// with the broker's own code and no second reader or copy of its rules: policy.ParseProfiles, as
+// the boot reads the file, and the policy load's own rules for each name behind Cipher's proxy.
+// A pull request that changes the deployment's profiles.json runs it, so the file a reviewer is
+// asked to read is one the broker has already agreed to serve.
 //
 // On a file it would serve it writes the report on stdout: what the file adds and removes against
-// the file --against names, or against an empty profiles file when that flag is absent, which is
-// how a whole file reads as added. The report is of the file's kinds and then its profiles. A kind
-// or a profile added or removed is written whole, every field of it, the ones the file leaves out
-// among them, and a profile's block it does not have as that block's none. For a kind or a profile
-// both files hold it writes each value of a list added or removed and each other field as old →
-// new. A kind's fields are its hosts, headers, variables, ways, allow rows, placeholder_prefix and
-// max_grant; a profile's are its source, tier, requesters and maxGrant, the kind its proxy key names
-// as a string, its own allow rows, its GitHub accounts, repositories, permissions and value, its
-// Google scopes, and a dpop block's hosts, headers, allow and kind. Every field is in the report
-// because each decides what a credential may reach or who may have it. What is left for the
-// reviewer is whether each is right. Who decides a request for a credential is no field of the
-// file: it is the source key's own judge and guidance tags.
+// the file --against names, or against an empty profiles file, by which a whole file reads as
+// added; first the kinds, then the profiles. A kind or profile added or removed is written whole,
+// every field of it, the ones the file leaves out among them, and a block a profile does not have
+// as that block's none. For one both files hold it writes each value of a list added or removed and
+// each other field as old → new. Every field decides what a credential may reach or who may have
+// it, so what is left for the reviewer is whether each is right.
 //
-// It refuses, exit 1 and one line on stderr per fault, naming the file: a file ParseProfiles
-// refuses (one line, naming the kind or the profile and the field, or the parse position for a
-// file that is not JSON; a proxy block of any kind but dpop is refused naming kinds); a dpop block
-// the boot refuses for its shape (config.MintedEntryRules); and, for each profile with an allow of
-// its own whose kind it knows, each row whose host that kind does not bind and the rows that
-// kind's allow does not cover (proxyrules.Outside), so a profile narrows its kind and never widens
-// it, as the policy load holds it (policy.ReasonProfileAllowHost,
-// policy.ReasonProfileAllowOutsideKind). A profile's kind is its source's proxy tag, or else the
-// kind its proxy string names (policy's proxied). The file alone gives the proxy string; the tag
-// is in the store, which --secrets-json reads. Without that flag a profile with an allow and no
-// proxy string gets one line saying its rows were not held to a kind, so a reader knows what it did
-// not see. With it, a profile with an allow whose source carries no proxy-narrowed=true tag is
-// refused too (policy.ReasonProfileAllowNotNarrowed), and so are a proxy string that names another
-// kind than its source's tag (policy.ReasonProxyKindConflict) and a profile with an allow behind no
-// kind (policy.ReasonProfileSourceNotProxied).
+// It refuses, exit 1 and one line on stderr per fault naming the file: a file ParseProfiles refuses
+// (naming the kind or the profile and the field, or the parse position); a dpop block the boot
+// refuses for its shape (config.MintedEntryRules); and each fault for which the policy load refuses
+// a name behind the proxy, in the load's words (proxyFaults). The file gives a profile's proxy
+// string; a source's tags are in the store, which --secrets-json reads, the output of `gcloud
+// secrets list --format='json(name,annotations)'` for the agent secrets. Without it a profile with
+// a proxy string is held to all the file decides of it, and one with none, in a file that declares
+// a kind, to nothing, since its kind is its source's tag: such a profile gets an UNKNOWN line, and
+// a run that refuses nothing exits 3 (exitUnknown) after the whole report, never 0.
 //
-// With --against it also writes, for each name behind the proxy under both files, each row of its
-// allow under the file that its allow under the old file does not cover (proxyrules.Covers), under
-// the heading widens, and each host the change adds to the hosts the name reaches. A name's allow
-// is its profile's own where it has one, else its kind's, else its proxy block's; a missing allow
-// allows every method and path. A widening and an added host are listed, not refused: the
-// reviewer reads them, and a gate that must see none reads this list.
+// With --against it also writes, under the heading widens, each row of a name's allow under the
+// file that its allow under the old file does not cover (proxyrules.Covers), for each name behind
+// the proxy under both, and each host the change adds to a name (servingOf). A widening and an
+// added host are listed, not refused: the reviewer reads them, and a gate that must see none reads
+// the list. With --secrets-json it writes each secret's proxy and proxy-narrowed tags and each name
+// behind the proxy under the old file, with how the file serves it, and exits 1 when one leaves it.
+// The old file is decoded and held to no rule (policy.DecodeProfiles): it may be one this broker
+// refuses, proxy blocks the kinds replaced among them (policy.Profiles.LegacyProxy), and the report
+// would otherwise refuse the pull request that moves it to kinds.
 //
-// With --secrets-json, the output of `gcloud secrets list --format='json(name,annotations)'` for
-// the agent secrets, it writes each secret's proxy and proxy-narrowed tags, then each name behind
-// the proxy under the old file and how the file serves it, and exits 1 when a name leaves the
-// proxy: a name behind a proxy block, a kind or a dpop block under the old file that the file puts
-// behind none (servingOf).
-//
-// A usage error is exit 2 and the usage line, and so is a --private-upstream value that is not one
-// BROKER_PROXY_PRIVATE_UPSTREAM takes. It reads no configuration, opens no database and binds
-// nothing: the files and the flags are all it reads.
-//
-// The dpop blocks are held to every rule of the boot's that the file alone decides
-// (config.MintedEntryRules). Their tie to the private destinations is the boot's to check with the
-// broker's own BROKER_PROXY_PRIVATE_UPSTREAM: given that value as --private-upstream, this runs
-// the boot's whole check (config.ProxyMintedRules), and without it, it writes, for each dpop
-// block, one line saying that tie was not checked.
-//
-// The --against file is decoded and never held to the file's rules (policy.DecodeProfiles): the
-// profiles in force may be a file this broker would refuse, one in the form of proxy blocks the
-// kinds replaced among them (policy.Profiles.LegacyProxy), and what changed is the point of the
-// report, which would otherwise also refuse the pull request that moves that file to kinds.
+// A dpop block's tie to a private destination is the boot's to check with its own
+// BROKER_PROXY_PRIVATE_UPSTREAM: given that value as --private-upstream, this runs the boot's whole
+// check (config.ProxyMintedRules); without it, it writes one line per dpop block saying the tie was
+// not checked. A usage error, a --private-upstream value that setting does not take among them, is
+// exit 2 and the usage line. It reads no configuration, opens no database and binds nothing.
 func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("broker "+profilesCheckName, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -175,9 +150,10 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	if refusals := allowRefusals(now, tags); len(refusals) > 0 {
-		for _, refusal := range refusals {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", profilesCheckName, path, refusal)
+	refused, unknown := proxyFaults(now, tags)
+	if len(refused) > 0 {
+		for _, fault := range refused {
+			fmt.Fprintf(stderr, "%s: %s: %s\n", profilesCheckName, path, fault)
 		}
 		return 1
 	}
@@ -200,23 +176,49 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	if tags == nil {
-		writeAllowsNotChecked(stdout, now)
+	for _, line := range unknown {
+		fmt.Fprintf(stdout, "%s: UNKNOWN: %s\n", profilesCheckName, line)
 	}
 	fmt.Fprintf(stdout, "%s: compared against %s\n", profilesCheckName, oldName)
 	writeFileChanges(stdout, old, now)
+	uncompared := 0
 	if compared {
-		writeWidens(stdout, old, now, tags, oldName, path)
+		uncompared = writeWidens(stdout, old, now, tags, oldName, path)
 	}
-	if tags == nil {
-		return 0
+	if tags != nil {
+		if leaving := writeServed(stdout, old, now, tags, oldName, path); len(leaving) > 0 {
+			fmt.Fprintf(stderr, "%s: %s: %s leaving the proxy: %s\n", profilesCheckName, path, counted(len(leaving), "name"), strings.Join(leaving, ", "))
+			return 1
+		}
 	}
-	if leaving := writeServed(stdout, old, now, tags, oldName, path); len(leaving) > 0 {
-		fmt.Fprintf(stderr, "%s: %s: %s the proxy: %s\n", profilesCheckName, path, leaveCount(len(leaving)), strings.Join(leaving, ", "))
-		return 1
+	var unread []string
+	if len(unknown) > 0 {
+		unread = append(unread, "the kind of "+eachOf(len(unknown), "profile")+", its source's proxy tag")
+	}
+	if uncompared > 0 {
+		unread = append(unread, "the allow or hosts of "+eachOf(uncompared, "name")+" against "+oldName)
+	}
+	if len(unread) > 0 {
+		fmt.Fprintf(stderr, "%s: %s: UNKNOWN: not read (no --secrets-json): %s; nothing it read is refused\n", profilesCheckName, path, strings.Join(unread, ", and "))
+		return exitUnknown
 	}
 	return 0
 }
+
+// eachOf is n things in words where each is meant: "1 profile", "each of 2 profiles".
+func eachOf(n int, thing string) string {
+	if n == 1 {
+		return counted(n, thing)
+	}
+	return "each of " + counted(n, thing)
+}
+
+// exitUnknown is the exit status of a run that refuses nothing it read but could not read what the
+// store's tags alone give: a profile's kind, or a name's allow and hosts against the old file. It
+// is 3, not 1, which says the broker would refuse the file: a caller that cannot read the store (a
+// pull-request job with no Secret Manager access) can accept 3 by its number and still fail on 1
+// and 2, and a gate that must know fails on it; with 1 for both, only the text tells them apart.
+const exitUnknown = 3
 
 // counted counts n things of a file in words, as the end-sessions subcommand counts the sessions
 // it ended: "1 profile", "2 kinds", "2 entries".
@@ -228,14 +230,6 @@ func counted(n int, thing string) string {
 		return fmt.Sprintf("%d %sies", n, stem)
 	}
 	return fmt.Sprintf("%d %ss", n, thing)
-}
-
-// leaveCount says how many names leave the proxy, in words.
-func leaveCount(n int) string {
-	if n == 1 {
-		return "1 name leaves"
-	}
-	return fmt.Sprintf("%d names leave", n)
 }
 
 // The words the report writes for a field the file leaves out, where a word other than the
@@ -305,9 +299,9 @@ func listOr(name string, items []string, absent string) reportField {
 	return listField(name, items)
 }
 
-// allowField is an allow list as a field: one value per row (rowText), or, for the two lists that
-// mean something other than what they list, absent for a missing list (a kind's allows any method
-// and path; a profile's is no allow of its own) and nothing for an empty one.
+// allowField is an allow list as a field: one value per row (policy.RowWords), or, for the two
+// lists that mean something other than what they list, absent for a missing list (a kind's allows
+// any method and path; a profile's is no allow of its own) and nothing for an empty one.
 func allowField(name string, rows []proxyrules.Allow, absent string) reportField {
 	switch {
 	case rows == nil:
@@ -317,7 +311,7 @@ func allowField(name string, rows []proxyrules.Allow, absent string) reportField
 	}
 	items := make([]string, len(rows))
 	for i, row := range rows {
-		items[i] = rowText(row)
+		items[i] = policy.RowWords(row)
 	}
 	return reportField{name: name, list: true, items: items, joiner: ", "}
 }
@@ -569,19 +563,9 @@ func allowText(allow []proxyrules.Allow) string {
 	}
 	rows := make([]string, len(allow))
 	for i, a := range allow {
-		rows[i] = rowText(a)
+		rows[i] = policy.RowWords(a)
 	}
 	return strings.Join(rows, ", ")
-}
-
-// rowText is one allow row as the report and its refusals write it: its method and path prefix,
-// and " on " and its host where it names one, as the policy load's refusals name a row.
-func rowText(row proxyrules.Allow) string {
-	text := shown(row.Method) + " " + shown(row.PathPrefix)
-	if row.Host != "" {
-		text += " on " + row.Host
-	}
-	return text
 }
 
 // shown writes an empty field as a pair of quotes, so that a line of the report never ends in a
@@ -604,12 +588,14 @@ func sortedUnion(lists ...[]string) []string {
 	return slices.Sorted(maps.Keys(values))
 }
 
-// storeTags is the agent secrets --secrets-json lists, by name, each with its annotations: what
-// the policy load reads of a secret's proxy and proxy-narrowed tags, without its value. skipped
-// counts the entries whose id is no agent secret's, which it does not read.
+// storeTags is the agent secrets --secrets-json lists, by name, each with its annotations and its
+// name in the store (its source, policy.Secret.Source): what the policy load reads of a secret's
+// tags, without its value. skipped counts the entries whose id is no agent secret's, which it does
+// not read.
 type storeTags struct {
 	path    string
 	secrets map[string]map[string]string
+	sources map[string]string
 	skipped int
 }
 
@@ -617,11 +603,6 @@ type storeTags struct {
 // not hold.
 func (s *storeTags) proxy(name string) string {
 	return s.secrets[name][policy.TagProxy]
-}
-
-// narrowed reports whether the secret name carries proxy-narrowed=true.
-func (s *storeTags) narrowed(name string) bool {
-	return s.secrets[name][policy.TagProxyNarrowed] == policy.ProxyNarrowedTrue
 }
 
 // stored reports whether the list holds the secret name.
@@ -655,7 +636,7 @@ func readStoreTags(path string) (*storeTags, error) {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, fmt.Errorf("%s: is not the list of secrets gcloud secrets list prints, each with a name and its annotations: %v", path, err)
 	}
-	tags := &storeTags{path: path, secrets: map[string]map[string]string{}}
+	tags := &storeTags{path: path, secrets: map[string]map[string]string{}, sources: map[string]string{}}
 	for i, entry := range entries {
 		if entry.Name == nil || *entry.Name == "" {
 			return nil, fmt.Errorf("%s: entry %d has no name, so it names no secret", path, i)
@@ -674,7 +655,7 @@ func readStoreTags(path string) (*storeTags, error) {
 		if annotations == nil {
 			annotations = map[string]string{}
 		}
-		tags.secrets[name] = annotations
+		tags.secrets[name], tags.sources[name] = annotations, *entry.Name
 	}
 	if len(tags.secrets) == 0 {
 		return nil, fmt.Errorf("%s: lists no agent secret (no name ending in /secrets/%s<slug>), so it shows nothing of the store's tags", path, secretIDPrefix)
@@ -682,86 +663,83 @@ func readStoreTags(path string) (*storeTags, error) {
 	return tags, nil
 }
 
-// allowRefusals is each fault of the file's profiles that the policy load would refuse a profile
-// for and that the file, with the tags where --secrets-json gave them, decides, one text per fault
-// naming the profile, in the file's order. For a profile whose source's proxy tag names one kind
-// and whose proxy string another: that conflict (policy.ReasonProxyKindConflict). For a profile
-// with an allow of its own, under the kind its source's tag, or else its proxy string, names: each
-// row whose host that kind does not bind (proxyrules.HostBound), and the rows the kind's allow does
-// not cover (proxyrules.Outside, the cover rule the policy load holds a profile to); and, with the
-// tags read, a source that carries no proxy-narrowed=true tag, a tag that names a kind the file does
-// not declare, and a profile with an allow behind no kind at all. A dpop profile has no allow of its
-// own (ParseProfiles refuses one).
-func allowRefusals(now policy.Profiles, tags *storeTags) []string {
-	rules := now.FileRules()
-	var refusals []string
-	for _, name := range now.Names() {
-		p := now.Lookup(name)
-		label := fmt.Sprintf("profile %q", name)
-		var tag string
-		if tags != nil {
-			tag = tags.proxy(p.Source)
+// proxyFaults is every refusal the policy load makes, for a fault of the file's kinds and profiles
+// or of the store's proxy tags, of a name the file and the store put behind Cipher's proxy: one
+// text per fault, `<subject>: <reason>: <detail>` in the load's words, the subject a stored secret
+// (`secret "<name>"`) or a profile (`profile "<name>"`). It holds each listed secret's tags to the
+// file's kinds as the load reads them (Profiles.SecretOfTags), each secret they tag proxy-narrowed
+// to SC17 (Profiles.NarrowedFaults), and then each profile, in the file's order, to the load's
+// rules for it (Profiles.ProxyFaults) under its source as those tags read it, after any SC17 fault
+// of it, which the load refuses it for first. A profile whose source the list does not hold, or
+// holds and the load refuses, is refused as the load refuses it, naming its source's state
+// (policy.ReasonProfileSourceMissing). A dpop profile is the boot's to hold
+// (config.MintedEntryRules): the load serves no secret through it.
+//
+// With no tags read (tags nil), it holds a profile with a proxy string to every fault the file
+// decides of it, and answers, as unknown, one text for each profile with none in a file that
+// declares a kind, whose kind only its source's tag gives, and which it therefore holds to nothing.
+// In a file that declares no kind no tag can name one: a tag naming none refuses its secret, a
+// fault of the store this reads only with the tags.
+func proxyFaults(now policy.Profiles, tags *storeTags) (refused, unknown []string) {
+	fault := func(subject, name string, f policy.ProfileFault) {
+		text := fmt.Sprintf("%s %q: %s", subject, name, f.Reason)
+		if f.Detail != "" {
+			text += ": " + f.Detail
 		}
-		if tag != "" && p.ProxyKind != "" && tag != p.ProxyKind {
-			refusals = append(refusals, fmt.Sprintf("%s: its proxy string names the kind %s, and its source %s's %s tag names %s", label, p.ProxyKind, p.Source, policy.TagProxy, tag))
-			continue
-		}
-		if p.Allow == nil {
-			continue
-		}
-		kindName := cmp.Or(tag, p.ProxyKind)
-		if kindName == "" {
-			if tags != nil {
-				refusals = append(refusals, fmt.Sprintf("%s: its allow narrows its source %s only at Cipher's proxy, and neither %s's %s tag nor the profile's proxy string names a kind", label, p.Source, p.Source, policy.TagProxy))
+		refused = append(refused, text)
+	}
+	// sources is each listed secret as the load reads its tags; refusedSources the state the load
+	// gives a profile of each listed secret it refuses, as its source-missing refusal words it; and
+	// narrowed each profile SC17 refuses.
+	sources, refusedSources, narrowed := map[string]policy.Secret{}, map[string]string{}, map[string]policy.ProfileFault{}
+	if tags != nil {
+		for _, name := range slices.Sorted(maps.Keys(tags.secrets)) {
+			secret, reason, detail := now.SecretOfTags(tags.sources[name], tags.secrets[name])
+			if reason != "" {
+				fault("secret", name, policy.ProfileFault{Reason: reason, Detail: detail})
+				refusedSources[name] = reason
+				if detail != "" {
+					refusedSources[name] += " (" + detail + ")"
+				}
+				continue
 			}
-			continue
-		}
-		kind := rules.Kind(kindName)
-		if kind == nil {
-			// ParseProfiles holds a proxy string to the file's kinds, so this is a tag's kind.
-			refusals = append(refusals, fmt.Sprintf("%s: its source %s's %s tag names the kind %s, which the file does not declare", label, p.Source, policy.TagProxy, kindName))
-			continue
-		}
-		if tags != nil && !tags.narrowed(p.Source) {
-			refusals = append(refusals, fmt.Sprintf("%s: its allow narrows its source %s at the proxy, and %s carries no %s=%s tag", label, p.Source, p.Source, policy.TagProxyNarrowed, policy.ProxyNarrowedTrue))
-		}
-		for _, row := range p.Allow {
-			if row.Host != "" && !proxyrules.HostBound(kind.Hosts, row.Host) {
-				refusals = append(refusals, fmt.Sprintf("%s: allow row %s names the host %s, which the kind %s does not bind (%s)", label, rowText(row), row.Host, kind.Name, strings.Join(kind.Hosts, ", ")))
+			sources[name] = secret
+			if !secret.ProxyNarrowed {
+				continue
 			}
-		}
-		if outside := proxyrules.Outside(kind.Allow, p.Allow); outside != nil {
-			rows := make([]string, len(outside))
-			for i, row := range outside {
-				rows[i] = rowText(row)
+			own, ofProfiles := now.NarrowedFaults(name)
+			if own.Reason != "" {
+				fault("secret", name, own)
 			}
-			verb := "rows %s are"
-			if len(rows) == 1 {
-				verb = "row %s is"
-			}
-			refusals = append(refusals, fmt.Sprintf("%s: allow "+verb+" outside the kind %s's allow (%s), and a profile narrows its kind and never widens it", label, strings.Join(rows, " and "), kind.Name, allowText(kind.Allow)))
+			maps.Copy(narrowed, ofProfiles)
 		}
 	}
-	return refusals
-}
-
-// writeAllowsNotChecked writes, for a run with no --secrets-json, one line for each profile with an
-// allow of its own saying what of it was not checked, since the store's tags decide it: for a
-// profile with no proxy string, its kind (its source's proxy tag), so its rows were held to no
-// kind; and for one with a proxy string, whose rows allowRefusals held to that kind, its source's
-// proxy-narrowed tag.
-func writeAllowsNotChecked(out io.Writer, now policy.Profiles) {
 	for _, name := range now.Names() {
 		p := now.Lookup(name)
+		if p.Proxy != nil {
+			continue
+		}
+		source, read := sources[p.Source]
 		switch {
-		case p.Allow == nil:
-		case p.ProxyKind == "":
-			fmt.Fprintf(out, "%s: profile %q has an allow, and its kind is its source %s's %s tag, which only --secrets-json reads: its rows were not held to that kind's allow and hosts, nor %s to the %s tag\n",
-				profilesCheckName, name, p.Source, policy.TagProxy, p.Source, policy.TagProxyNarrowed)
-		default:
-			fmt.Fprintf(out, "%s: profile %q has an allow, and its source %s's %s tag was not read (no --secrets-json)\n", profilesCheckName, name, p.Source, policy.TagProxyNarrowed)
+		case tags != nil && !read:
+			fault("profile", name, policy.ProfileFault{Reason: policy.ReasonProfileSourceMissing, Detail: "source " + p.Source + ": " + cmp.Or(refusedSources[p.Source], policy.ReasonAbsent)})
+			continue
+		case tags == nil && p.ProxyKind == "" && len(now.Kinds()) > 0:
+			unknown = append(unknown, fmt.Sprintf("profile %q: its kind is its source %s's %s tag, which was not read (no --secrets-json), so it was held to no kind", name, p.Source, policy.TagProxy))
+			continue
+		}
+		if f, held := narrowed[name]; held {
+			fault("profile", name, f)
+		}
+		var held *policy.Secret
+		if read {
+			held = &source
+		}
+		for _, f := range now.ProxyFaults(p, held) {
+			fault("profile", name, f)
 		}
 	}
+	return refused, unknown
 }
 
 // behind says whether a name is behind Cipher's proxy under one file (servingOf).
@@ -798,7 +776,7 @@ type serving struct {
 //   - a profile with a proxy block, which only an old file read by DecodeProfiles holds
 //     (policy.Profiles.LegacyProxy), or with a dpop block, is behind that block;
 //   - another profile is behind the kind its source's proxy tag names, or else the kind its proxy
-//     string names (policy's proxied); behind none when neither names one or the kind is no kind
+//     string names (policy.ProfileKind); behind none when neither names one or the kind is no kind
 //     of the file; and unread when it has no proxy string and the tags were not read, unless the
 //     file declares no kind at all, which no tag can name;
 //   - a name no profile holds is its stored secret's by its own name, behind the kind its own
@@ -835,11 +813,13 @@ func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
 		if tags != nil {
 			tag = tags.proxy(p.Source)
 		}
-		switch {
-		case tag != "":
-			return byKind(s, tag, fmt.Sprintf("its source %s's %s tag", p.Source, policy.TagProxy))
-		case p.ProxyKind != "":
-			return byKind(s, p.ProxyKind, "its proxy string")
+		via := "its proxy string"
+		if tag != "" {
+			via = fmt.Sprintf("its source %s's %s tag", p.Source, policy.TagProxy)
+		}
+		switch kind := policy.ProfileKind(p, tag); {
+		case kind != "":
+			return byKind(s, kind, via)
 		case !declares:
 			return serving{state: notBehind, how: "the profile has no proxy block, and the file declares no kind"}
 		case tags == nil:
@@ -892,14 +872,14 @@ func rowHosts(allow []proxyrules.Allow) ([]string, bool) {
 // <host> added`. It writes "widens: none" when no row widens and nothing went uncompared. A name
 // whose allow or hosts are a kind that a source's proxy tag names on one side, with no tags read,
 // gets a line saying it was not compared and why; where that is so on both sides, the names are
-// counted on one line.
-func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldName, newName string) {
+// counted on one line. It answers how many names it could not compare, each an unknown of the run.
+func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldName, newName string) int {
 	var names []string
 	if tags != nil {
 		names = tags.names()
 	}
 	var widened, hosts []string
-	notCompared, unread := 0, 0
+	notCompared, unread, hostsUnread := 0, 0, 0
 	for _, name := range sortedUnion(old.Names(), now.Names(), names) {
 		was, is := servingOf(old, name, tags), servingOf(now, name, tags)
 		if was.state == notBehind || is.state == notBehind {
@@ -920,7 +900,7 @@ func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldNa
 			rows = []string{anyPath}
 		case is.allow != nil:
 			for _, row := range proxyrules.Outside(was.allow, is.allow) {
-				rows = append(rows, rowText(row))
+				rows = append(rows, policy.RowWords(row))
 			}
 		}
 		for _, row := range rows {
@@ -928,6 +908,7 @@ func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldNa
 		}
 		if !was.hostsKnown || !is.hostsKnown {
 			hosts = append(hosts, fmt.Sprintf("hosts %q: not compared: %s", name, unreadWords(was, is, oldName, newName)))
+			hostsUnread++
 			continue
 		}
 		for _, host := range is.hosts {
@@ -948,6 +929,7 @@ func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldNa
 	if unread > 0 {
 		fmt.Fprintf(out, "%s: %s may be behind a kind by a source's %s tag under both files, which only --secrets-json reads, so their allow and hosts were not compared\n", profilesCheckName, counted(unread, "name"), policy.TagProxy)
 	}
+	return unread + notCompared + hostsUnread
 }
 
 // unreadWords is why a name's allow or hosts were not compared: the file, or the files, under
@@ -1005,7 +987,7 @@ func writeServed(out io.Writer, old, now policy.Profiles, tags *storeTags, oldNa
 	if len(leaving) == 0 {
 		fmt.Fprintf(out, "%s: no name leaves the proxy\n", profilesCheckName)
 	} else {
-		fmt.Fprintf(out, "%s: %s the proxy\n", profilesCheckName, leaveCount(len(leaving)))
+		fmt.Fprintf(out, "%s: %s leaving the proxy\n", profilesCheckName, counted(len(leaving), "name"))
 	}
 	return leaving
 }

@@ -43,14 +43,17 @@ func runCheck(t *testing.T, args ...string) (int, string, string) {
 // an addition and every field of it is written out, the ones the file leaves out among them. The
 // whole of stdout is asserted, because the report's order is its contract with the person reading
 // it in a pull request: two runs on the same files say the same thing, and the lines of one kind
-// or profile are together.
+// or profile are together. With no --secrets-json, GITHUB_ADMIN_PAT's kind is its source's tag,
+// which was not read: the report names it UNKNOWN, and the run exits 3 saying so on stderr.
 func TestProfilesCheckReportsAWholeFileAsAdded(t *testing.T) {
 	path := profilesFile(t, twoProfiles)
 	code, stdout, stderr := runCheck(t, path)
-	if code != 0 || stderr != "" {
-		t.Fatalf("a valid file = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+	wantErr := "profiles check: " + path + ": UNKNOWN: not read (no --secrets-json): the kind of 1 profile, its source's proxy tag; nothing it read is refused\n"
+	if code != exitUnknown || stderr != wantErr {
+		t.Fatalf("a valid file whose one profile's kind is unread = exit %d with stderr %q, want exit %d and %q", code, stderr, exitUnknown, wantErr)
 	}
 	want := fmt.Sprintf(`profiles check: %s is valid: 2 profiles and 2 kinds
+profiles check: UNKNOWN: profile "GITHUB_ADMIN_PAT": its kind is its source GITHUB_ADMIN_PAT's proxy tag, which was not read (no --secrets-json), so it was held to no kind
 profiles check: compared against an empty profiles file, so every kind and profile reads as added
 kind "github": added
 kind "github": hosts api.github.com
@@ -218,8 +221,10 @@ func TestProfilesCheckReportsEveryField(t *testing.T) {
 	}
 	added := profilesFile(t, everyField)
 	code, stdout, stderr := runCheck(t, added)
-	if code != 0 || stderr != "" {
-		t.Fatalf("the every-field file = exit %d with stderr %q, want exit 0", code, stderr)
+	// GOOGLE_READ names no kind as a string, so with no --secrets-json its kind is unread: the
+	// report is whole all the same, and the run says so and exits 3.
+	if code != exitUnknown || !strings.Contains(stdout, `profiles check: UNKNOWN: profile "GOOGLE_READ": its kind is its source GCS_READER's proxy tag`) {
+		t.Fatalf("the every-field file = exit %d with stderr %q, want exit %d and GOOGLE_READ's UNKNOWN line", code, stderr, exitUnknown)
 	}
 	lines := strings.Split(stdout, "\n")
 	for _, set := range []struct {
@@ -328,7 +333,7 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			"a profile's row outside its proxy string's kind",
 			`{"kinds": [{"name": "anthropic", "hosts": ["api.anthropic.com"], "ways": ["mint"], "allow": [{"method": "GET", "pathPrefix": "/v1/organizations/"}]}],
 			  "profiles": [{"name": "ANTHROPIC_ADMIN", "proxy": "anthropic", "allow": [{"method": "POST", "pathPrefix": "/v1/organizations/"}]}]}`,
-			[]string{`profile "ANTHROPIC_ADMIN"`, "allow row POST /v1/organizations/ is outside the kind anthropic's allow (GET /v1/organizations/)"},
+			[]string{`profile "ANTHROPIC_ADMIN": profile-allow-outside-kind: allow rows POST /v1/organizations/ are outside the kind anthropic's allow`},
 		},
 		{
 			"a repeated name",
@@ -507,7 +512,9 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 // removed, with every field it had, its proxy block in an old file's form among them; and, under
 // widens, each row of a name's allow under the new file its old allow does not cover, with the
 // hosts the change adds to it and the names whose kind no tag read gave. The whole of stdout is
-// asserted.
+// asserted. GITHUB_READ is behind its proxy string's kind and is held to everything the file
+// decides of it; LEGACY, under the new file a stored secret behind a kind only by its own tag, is
+// not compared, so the run exits 3.
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 	old := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}]}],
  "profiles": [
@@ -522,11 +529,11 @@ func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
    "proxy": "github", "allow": [{"method": "POST", "pathPrefix": "/v1/repos/", "host": "uploads.github.com"}]}
 ]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
-	if code != 0 || stderr != "" {
-		t.Fatalf("a valid file against an old one = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+	wantErr := "profiles check: " + now + ": UNKNOWN: not read (no --secrets-json): the allow or hosts of 1 name against " + old + "; nothing it read is refused\n"
+	if code != exitUnknown || stderr != wantErr {
+		t.Fatalf("a valid file against an old one = exit %d with stderr %q, want exit %d and %q", code, stderr, exitUnknown, wantErr)
 	}
 	want := fmt.Sprintf(`profiles check: %[1]s is valid: 1 profile and 1 kind
-profiles check: profile "GITHUB_READ" has an allow, and its source LEGION_IMPLEMENT_APP's proxy-narrowed tag was not read (no --secrets-json)
 profiles check: compared against %[2]s
 kind "github": hosts uploads.github.com added
 kind "github": headers x-api-key added
@@ -737,19 +744,21 @@ func TestProfilesCheckRefusesAUsageError(t *testing.T) {
 
 // TestTheBinaryRoutesEachSubcommandWord drives the built binary, the one thing the function tests
 // above cannot see: `profiles check` reaches this command, on a machine with no broker
-// configuration and no database; `profiles` with no second word, or another, is a usage error;
-// the removed `airlock-check` exits 2 naming the command that replaces it, and reads no file; and
-// `end-sessions` still reaches its own rather than being swallowed by the new one.
+// configuration and no database, and its exit status reaches the process, here 3 for a file one of
+// whose profiles' kinds only the store's tags give; `profiles` with no second word, or another, is
+// a usage error; the removed `airlock-check` exits 2 naming the command that replaces it, and reads
+// no file; and `end-sessions` still reaches its own rather than being swallowed by the new one.
 func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
 	binPath := buildBroker(t)
 	path := profilesFile(t, twoProfiles)
 
 	out, err := exec.Command(binPath, profilesCommand, profilesCheckCommand, path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("broker profiles check %s = %v\n%s", path, err, out)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != exitUnknown {
+		t.Fatalf("broker profiles check %s = %v, want exit %d\n%s", path, err, exitUnknown, out)
 	}
 	t.Logf("broker profiles check %s printed:\n%s", path, out)
-	for _, want := range []string{"is valid: 2 profiles and 2 kinds", `kind "openai": hosts api.openai.com`} {
+	for _, want := range []string{"is valid: 2 profiles and 2 kinds", `kind "openai": hosts api.openai.com`, `UNKNOWN: profile "GITHUB_ADMIN_PAT"`} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("the binary's report does not say %q: %s", want, out)
 		}
