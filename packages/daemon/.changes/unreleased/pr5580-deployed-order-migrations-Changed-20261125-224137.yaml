@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  CI tests the order a deployed database applies daemon migrations in. A database the release
+  before migrated has run all of that release's migrations, so the next release's new migrations
+  run after them, also where a new migration's version sorts below theirs. The store test
+  `TestADatabaseMainMigratedTakesThisBranchsMigrationsLast` migrates a database with the base
+  commit's own migration files and then upgrades it. CI gives it the commit the run's tree lands
+  onto as `LEGION_TEST_MIGRATION_BASE`. Under GitHub Actions that test fails when the variable is
+  unset, and every store test fails, and does not skip, when `LEGION_TEST_PG_DSN` is unset.
+time: 2026-11-25T22:41:37Z
+custom:
+    Issue: pr5580
