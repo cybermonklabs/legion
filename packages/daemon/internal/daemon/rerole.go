@@ -56,7 +56,7 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 	step := phaseEntry(payload)
 	rerole := step && held.Role != payload.Role
 	if !rerole && !(step && held.SessionOfAnotherAgent(agent)) {
-		return r.suspendToLeave(ctx, machine, token, row, payload, work)
+		return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
 	}
 	if rerole {
 		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
