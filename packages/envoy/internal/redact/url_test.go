@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -398,6 +399,137 @@ func TestCauseAtPassesTheFailureOfTheClientsOwnURL(t *testing.T) {
 	} {
 		if !ownCall(raw, callURL) {
 			t.Errorf("ownCall(%q, %q) = false, want true", raw, callURL)
+		}
+	}
+}
+
+// hangingServer is a server that answers no request until the request's own end.
+func hangingServer(t *testing.T) string {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(s.Close)
+	return s.URL
+}
+
+// contextEnds are net/http's errors for three calls to a server that never answers, each with a
+// query, as the Envoy listener client's GET /v1/sessions?include=unresponsive has: one its
+// context's cancel ended, one its context's deadline ended, and one the client's Timeout ended
+// before the answer's headers came. Each maps to the exact text its cause prints.
+func contextEnds(t *testing.T) map[string]struct {
+	err  error
+	want string
+	is   error
+} {
+	t.Helper()
+	call := hangingServer(t) + "/v1/sessions?include=unresponsive"
+	get := func(ctx context.Context, client *http.Client) error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, call, nil)
+		if err != nil {
+			t.Fatalf("build the fixture's request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			response.Body.Close()
+			t.Fatal("the server that never answers answered")
+		}
+		return err
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	deadline, stop := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer stop()
+	ends := map[string]struct {
+		err  error
+		want string
+		is   error
+	}{
+		"a canceled context":       {get(canceled, &http.Client{}), "context canceled", context.Canceled},
+		"a context's deadline":     {get(deadline, &http.Client{}), "context deadline exceeded", context.DeadlineExceeded},
+		"the client's own timeout": {get(t.Context(), &http.Client{Timeout: 50 * time.Millisecond}), "context deadline exceeded (Client.Timeout exceeded while awaiting headers)", context.DeadlineExceeded},
+	}
+	for name, end := range ends {
+		var ue *url.Error
+		if !errors.As(end.err, &ue) || ue.Err == nil || ue.Err.Error() != end.want {
+			t.Fatalf("%s: the fixture's error %v is not a *url.Error over %q", name, end.err, end.want)
+		}
+	}
+	return ends
+}
+
+// A call a context's end stopped prints that end's exact text through Cause and CauseAt, beside
+// any URL: a clean base whose call carries a query, a base holding a user name and password, and
+// a call URL that holds a query token. It is fixed text from the context package and net/http,
+// which names no part of a URL, so it prints where the URL may not; the error still unwraps to the
+// failure, and errors.Is still finds the context's end. A caller's words around it drop, and words
+// Error already gave the failure stand.
+func TestCausePrintsAContextsEndAsItsFixedText(t *testing.T) {
+	const dirty = "http://tokuser9f3:hunter2pw@127.0.0.1:1"
+	for name, end := range contextEnds(t) {
+		var ue *url.Error
+		errors.As(end.err, &ue)
+		clean := strings.SplitN(ue.URL, "/v1/", 2)[0]
+		for shape, row := range map[string]struct {
+			err      error
+			raw, own string
+		}{
+			"net/http's own, on a clean base":     {end.err, clean, ""},
+			"beside a base holding a password":    {&url.Error{Op: "Get", URL: dirty + "/v1/sessions?token=qtok77", Err: ue.Err}, dirty, ""},
+			"under a caller's words":              {fmt.Errorf("call tokuser9f3:hunter2pw: %w", end.err), dirty, ""},
+			"a call URL holding a token, CauseAt": {&url.Error{Op: "Get", URL: clean + "/models?token=qtok77", Err: ue.Err}, clean + "/models", clean + "/models?token=qtok77"},
+			"beside a base holding one, CauseAt":  {&url.Error{Op: "Get", URL: dirty + "/models", Err: ue.Err}, dirty, dirty + "/models"},
+		} {
+			got := Cause(row.err, row.raw)
+			if row.own != "" {
+				got = CauseAt(row.err, row.raw, row.own)
+			}
+			if got.Error() != end.want {
+				t.Errorf("%s, %s: %q, want exactly %q", name, shape, got, end.want)
+			}
+			if !errors.Is(got, ue.Err) || !errors.Is(got, end.is) {
+				t.Errorf("%s, %s: %v does not unwrap to the failure and %v", name, shape, got, end.is)
+			}
+		}
+		if got := Cause(Error(end.err, dirty), dirty); got.Error() == end.want {
+			t.Errorf("%s: Cause of Error's words = %q, want Error's class to stand", name, got)
+		}
+	}
+}
+
+// stoppedLike is a timeout whose text a caller wrote, holding net/http's or the context package's
+// words and more.
+type stoppedLike struct{ text string }
+
+func (s stoppedLike) Error() string { return s.text }
+func (stoppedLike) Timeout() bool   { return true }
+
+// Beside a context's end, Cause prints no part of a URL or its user info: an error that only
+// holds a context's words, or net/http's whole line naming the URL, is no context's end and prints
+// its class alone, as does a timeout whose text holds net/http's words and the URL, a resolver
+// failure naming the host, and a join of a context's end with other text.
+func TestCausePrintsNoPartOfAURLBesideAContextsEnd(t *testing.T) {
+	const dirty = "http://tokuser9f3:hunter2pw@127.0.0.1:1"
+	named := dirty + "/v1/sessions?token=qtok77"
+	for _, row := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"a context's words and the URL", errors.New(`context canceled: Get "` + named + `"`), ClassRequestFailed},
+		{"net/http's whole line", &url.Error{Op: "Get", URL: named, Err: errors.New(`Get "` + named + `": context canceled`)}, ClassRequestFailed},
+		{"a timeout's words and the URL", &url.Error{Op: "Get", URL: named, Err: stoppedLike{"context deadline exceeded (Client.Timeout exceeded while awaiting headers) " + named}}, ClassTimedOut},
+		{"a resolver failure naming the host", &url.Error{Op: "Get", URL: named, Err: &net.DNSError{Err: "no such host", Name: "tokuser9f3.example", IsNotFound: true}}, ClassNameResolution},
+		{"a context's end joined to other text", &url.Error{Op: "Get", URL: named, Err: errors.Join(context.Canceled, errors.New("tokuser9f3:hunter2pw"))}, ClassRequestFailed},
+	} {
+		for _, raw := range []string{dirty, "http://127.0.0.1:1"} {
+			got := Cause(row.err, raw).Error()
+			if got != row.want {
+				t.Errorf("%s beside %q: %q, want %q", row.name, raw, got, row.want)
+			}
+			for _, secret := range append(secretsIn, "127.0.0.1", "/v1/sessions") {
+				if strings.Contains(got, secret) {
+					t.Errorf("%s beside %q: %q holds %q", row.name, raw, got, secret)
+				}
+			}
 		}
 	}
 }

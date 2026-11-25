@@ -361,11 +361,13 @@ func New(baseURL string, options ...Option) *Client {
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
 // ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
 // through redact.Cause over the base URL: its text, without net/http's quote of the request URL,
-// when the base is a plain http(s) URL and the route a plain path, and its class otherwise, so a
-// user name or a query in ENVOY_URL, which net/http's quote keeps, never reaches Dispatch's log or
-// the API answers that carry this error (a 503 ENVOY_UNAVAILABLE, a 502 ENVOY_UNSUBSCRIBE_FAILED).
-// Each caller names the route itself. It still unwraps to the failure, so errors.Is and errors.As
-// classify it as before.
+// when the base is a plain http(s) URL and the route a plain path, a context's end's fixed text
+// beside any URL ("context canceled", "context deadline exceeded", net/http's client timeout),
+// and its class otherwise, so a user name or a query in ENVOY_URL, which net/http's quote keeps,
+// never reaches Dispatch's log or the API answers that carry this error (a 503
+// ENVOY_UNAVAILABLE, a 502 ENVOY_UNSUBSCRIBE_FAILED), while a read still says whether a
+// shutdown, its own bound or the client's window ended it. Each caller names the route itself.
+// It still unwraps to the failure, so errors.Is and errors.As classify it as before.
 //
 // A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
 // the call on its identity token. A try whose token could not be presented, or that the listener

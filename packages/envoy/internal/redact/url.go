@@ -10,7 +10,8 @@
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
 // the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
 // failure's class alone, except words an earlier Error, Cause or Named already gave, which print
-// as given (below). The broker's OAuth words are trusted, not checked, so
+// as given (below), and a context's end, which Cause prints as its own fixed text, since that text
+// names no part of a URL. The broker's OAuth words are trusted, not checked, so
 // whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
 // broker's own with a nonempty error code and an empty error_uri prints its error code and
 // error_description whole, as the broker wrote them, since they are the reason for a refusal a
@@ -281,6 +282,9 @@ func (c *called) Unwrap() error { return c.err }
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when that error's text is the text printable checked, and
 // otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
+// A context's end (contextEnd) printable does not pass prints its own fixed text in place of its
+// class, beside any URL, so a call its context's cancel, its context's deadline or its client's
+// Timeout ended says which.
 func Cause(err error, raw string) error {
 	if err == nil {
 		return nil
@@ -288,7 +292,7 @@ func Cause(err error, raw string) error {
 	ue, checked, printable := printable(err, raw)
 	switch {
 	case !printable:
-		return &classified{class(err, "the broker"), err}
+		return withheld(err, "the broker")
 	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
 	case ue == nil && err.Error() == checked:
@@ -314,7 +318,7 @@ func CauseAt(err error, raw, callURL string) error {
 	})
 	switch {
 	case !printable:
-		return &classified{class(err, "the endpoint"), err}
+		return withheld(err, "the endpoint")
 	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
 	case ue == nil && err.Error() == checked:
@@ -322,6 +326,43 @@ func CauseAt(err error, raw, callURL string) error {
 	default:
 		return &classified{checked, err}
 	}
+}
+
+// withheld is what Cause and CauseAt print of err where printable passes none of its text: a
+// context's end's fixed text (contextEnd), and otherwise its class, server being who answered an
+// HTTP status (class). It unwraps to err.
+func withheld(err error, server string) error {
+	if text, ok := contextEnd(err); ok {
+		return &classified{text, err}
+	}
+	return &classified{class(err, server), err}
+}
+
+// clientTimeoutText is net/http's whole text for a call its client's Timeout ended on the
+// deadline it set before the answer's headers came (Client.do, at the Go release go.mod names).
+const clientTimeoutText = "context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+
+// contextEnd is the text of the context's end err is, if it is one: on err or the first error
+// down its chain (errors.Unwrap) that is context.Canceled or context.DeadlineExceeded itself, or a
+// timeout whose whole text is clientTimeoutText, net/http's error that holds no error under it.
+// Each is fixed text from the context package or net/http, which names no part of a URL, so Cause
+// and CauseAt print it beside any URL; words around it, a caller's or net/http's quote of the URL,
+// drop as checked drops them. An error that only holds such words is none, and neither is an error
+// this package already put in words (classified), whose words stand.
+func contextEnd(err error) (string, bool) {
+	var worded *classified
+	if errors.As(err, &worded) {
+		return "", false
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if e == context.Canceled || e == context.DeadlineExceeded {
+			return e.Error(), true
+		}
+		if timeout, ok := e.(interface{ Timeout() bool }); ok && timeout.Timeout() && e.Error() == clientTimeoutText {
+			return clientTimeoutText, true
+		}
+	}
+	return "", false
 }
 
 // ownCall reports whether callURL begins with raw, a clean URL: its scheme in any case, since
@@ -513,10 +554,11 @@ func trustedAnswer(err error) bool {
 }
 
 // classified is an error whose text is its class alone: fixed text naming the kind of failure,
-// which Error, Cause, Class and File make and Masked takes from its caller, or the text printable
-// checked of the failure beneath a caller's wrapper (Error, Cause), and never a URL, a path, an
-// id or other detail of a request. class() reads it as the failure's class, so text that named a
-// call here would print again in every line made from the error; that text is a called.
+// which Error, Cause, Class and File make and Masked takes from its caller, a context's end's own
+// fixed text (Cause, contextEnd), or the text printable checked of the failure beneath a caller's
+// wrapper (Error, Cause), and never a URL, a path, an id or other detail of a request. class()
+// reads it as the failure's class, so text that named a call here would print again in every line
+// made from the error; that text is a called.
 type classified struct {
 	text string
 	err  error
