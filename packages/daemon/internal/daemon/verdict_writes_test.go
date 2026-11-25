@@ -160,13 +160,15 @@ type fakeWrite struct {
 // and `clean` once it has, which is what a ruleset that requires the check answers; pull request
 // 86's commits, one for each head it stood at (history), oldest first, each made by the
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
-// head lists them, and none at all where noCommits is set, as GitHub answers a compare it cannot
-// serve; the branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
+// head lists them, and none at all where compareStatus is set, which GitHub's answer to the compare
+// then is (502 where it fails the request, 404 or 422 where it cannot serve that compare); the
+// branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
 // first parentCommits commits of history, so a compare with that branch lists only the commits after
 // them while a compare with main lists them all; any other pull request named in pulls, whose reads it
 // counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
 // request 86 at its head, and each of opened at its own. Each write and each read of pull request
-// 86 is recorded in order. failCreates is how many of the next creates of a check run GitHub
+// 86 is recorded in order, and requests is every request it served, as its method, its path under
+// the repository and its query. failCreates is how many of the next creates of a check run GitHub
 // answers 502, as it does when it fails a request; staleReads is how many reads of pull request
 // 86, made once its head has a success run, still answer `blocked`, as GitHub does while it has
 // not yet counted a new run.
@@ -178,11 +180,12 @@ type verdictGitHub struct {
 	parentCommits int
 	history       []string
 	messages      map[string]string
-	noCommits     bool
+	compareStatus int
 	runs          []fakeRun
 	statuses      []fakeStatus
 	writes        []fakeWrite
 	events        []string
+	requests      []string
 	pulls         map[int]string
 	pullReads     map[int]int
 	opened        []fakePull
@@ -272,6 +275,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			githubtest.Unexpected(t, w, r)
 			return
 		}
+		g.requests = append(g.requests, r.Method+" "+path+"?"+r.URL.RawQuery)
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		answer := func(v any) {
 			if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -302,8 +306,8 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			commits, reached := g.commitsTo(head)
 			base86 := fakePull{base: g.base86}.baseRef()
 			switch {
-			case g.noCommits:
-				http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+			case g.compareStatus != 0:
+				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus)), g.compareStatus)
 				return
 			case !ranged || base != "main" && base != base86 || !reached:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -366,8 +370,9 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			listed := []map[string]any{}
 			for _, run := range g.runs {
 				if run.Head == parts[1] && run.Name == r.URL.Query().Get("check_name") {
-					listed = append(listed, map[string]any{"id": run.ID, "head_sha": run.Head, "name": run.Name,
-						"status": "completed", "conclusion": run.Conclusion, "app": map[string]any{"id": run.appID(), "slug": run.App}})
+					listed = append(listed, map[string]any{"id": run.ID, "head_sha": run.Head, "name": run.Name, "status": "completed",
+						"conclusion": run.Conclusion, "app": map[string]any{"id": run.appID(), "slug": run.App},
+						"output": map[string]any{"title": run.Title, "summary": run.Summary}})
 				}
 			}
 			answer(map[string]any{"total_count": len(listed), "check_runs": listed})
@@ -415,12 +420,6 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			g.events = append(g.events, fmt.Sprintf("created status %d on %s: %s", status.ID, status.Head, status.State))
 			w.WriteHeader(http.StatusCreated)
 			answer(map[string]any{"id": status.ID, "state": status.State})
-		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "compare":
-			// The writer makes no compare call: the carry of a tester's pass is the reviewer's
-			// tested commit, never a diff (spec R4). The fake answers one as GitHub answers two
-			// identical trees and records it, so a writer that carried a pass on that answer shows.
-			g.events = append(g.events, "compared "+parts[1])
-			answer(map[string]any{"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []any{}})
 		default:
 			githubtest.Unexpected(t, w, r)
 		}
@@ -439,6 +438,20 @@ func (g *verdictGitHub) recorded() ([]fakeWrite, []string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.writes), slices.Clone(g.events)
+}
+
+// requested is every request the fake served whose method and path, as requests logs them, are
+// method and path, each with its query.
+func (g *verdictGitHub) requested(method, path string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var queries []string
+	for _, request := range g.requests {
+		if query, ok := strings.CutPrefix(request, method+" "+path+"?"); ok {
+			queries = append(queries, query)
+		}
+	}
+	return queries
 }
 
 // verdictRig is CAPTURE-1 on acme/widgets' pull request 86 at head code, the workflow runtime
@@ -461,6 +474,14 @@ type verdictRig struct {
 func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
 	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
 	t.Helper()
+	return newVerdictRigOfApp(t, verdictAppID, tokens, entries, seed, wrap...)
+}
+
+// newVerdictRigOfApp is newVerdictRig whose writer's configuration names appID as the one App's id
+// (github_apps.implement.app_id).
+func newVerdictRigOfApp(t *testing.T, appID string, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
+	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
+	t.Helper()
 	rig := &verdictRig{pool: isolatedOutboxPool(t), github: newVerdictGitHub(), logs: &syncBuffer{}}
 	seed(t, rig.pool)
 	handle := rig.github.serve(t)
@@ -473,7 +494,7 @@ func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.Verdict
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),
 		tokens: botLeases{tokens}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, appLogin: verdictAppLogin,
 		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, mergeStateRetry: readRigWait,
-		verdicts: newVerdictWriter(entries, verdictAppID, log),
+		verdicts: newVerdictWriter(entries, appID, log),
 	}
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, AppLogin: verdictAppLogin,
 		ReadMergeState: w.queueMergeState, WriteVerdict: func(issue, repo string, number int, head string) {
@@ -543,6 +564,13 @@ func (rig *verdictRig) review(t *testing.T, fact intake.Fact) {
 func (rig *verdictRig) written(t *testing.T) {
 	t.Helper()
 	testwait.Eventually(t, "the writer of legion-verdict to hold no write", func() bool { return rig.w.verdicts.idle() })
+}
+
+// idle is whether the writer holds no write queued or being made.
+func (v *verdictWriter) idle() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.queue) == 0 && len(v.swept) == 0 && v.running == 0
 }
 
 // writeLines is every legion_verdict_write line the rig logged.
@@ -1040,6 +1068,26 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 	}
 }
 
+// R4 (a check run belongs to a commit, so the one legion-verdict at a head is every open pull
+// request's there): a success the writer wrote stands only while the head's verdict over all of
+// them does, though the pull request's own verdict still stands. Here pull request 91, on another
+// project's issue branch, where no verdict stands, opens at code after the owner's acceptance wrote
+// success there, so the head's verdict is none; the next fact of pull request 86 at code turns the
+// success to failure at once, rather than at the writers' next sweep.
+func TestLegionVerdictASuccessAnotherPullRequestAtTheHeadNoLongerBacksTurnsToFailure(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.opened = append(rig.github.opened, fakePull{number: 91, ref: "legion/OTHER-1", head: "code"})
+	rig.github.pulls[91] = `{"number":91,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/OTHER-1","sha":"code"}}`
+	rig.github.mu.Unlock()
+	rig.checkState(t, "code", "k1", verdict.StateYes)
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure: no verdict stands at code over pull requests 86 and 91", runs, run.ID)
+	}
+}
+
 // C2: a person's request for changes at H refuses a Legion head every step passed at, and a later
 // approval of H by the same person lifts that refusal, so the steps' passes write success again.
 func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
@@ -1433,6 +1481,33 @@ func TestLegionVerdictAnAppIDThatIsNoNumberIsLoggedWhereTheWriterIsBuilt(t *test
 	}
 }
 
+// R19: an App id that is no number tells no run as the App's, the daemon's own among them, so a
+// write would make a new run beside its own at each write. While the writer holds no App id it
+// writes nothing, as in token mode: neither a fact's write nor the writers' sweep's, whose pass reads
+// nothing of GitHub. The one ERROR where the writer is built says why.
+func TestLegionVerdictAnAppIDThatIsNoNumberWritesNothing(t *testing.T) {
+	rig := newSweepRigOfApp(t, "legion-app", roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	rig.checkState(t, "code", "k1", verdict.StateNo)
+	rig.written(t)
+	_, before := rig.sweep.counts()
+	rig.swept(t)
+	rig.swept(t)
+	if writes, _ := rig.github.recorded(); len(writes) != 0 {
+		t.Fatalf("writes = %+v, want none while the App id is no number", writes)
+	}
+	if _, after := rig.sweep.counts(); after != before {
+		t.Fatalf("the two sweeps made %d requests, want none: they could lead to no write", after-before)
+	}
+	named := slices.DeleteFunc(loggedLines(t, rig.logs.String(), "github_apps.implement.app_id"), func(line map[string]any) bool {
+		return line["level"] != "ERROR"
+	})
+	if len(named) != 1 {
+		t.Fatalf("the ERROR lines naming github_apps.implement.app_id are %v, want the one where the writer is built", named)
+	}
+}
+
 // R19, C56: the writer tells the one App's bot's commit statuses by the bot user's id, which C56
 // reads as each status's creator.id and which a rename of the App leaves as it is, while the bot's
 // login changes (R16). Here the newest legion-verdict status is another account's that now holds
@@ -1556,6 +1631,37 @@ func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T
 	}
 	if ended, err := writer.await(canceledContext(), "CAPTURE-1"); err != nil || !ended {
 		t.Fatalf("a read of an issue with no write pending waited: %v, %v", ended, err)
+	}
+}
+
+// Two asks for one write, made before the writer takes it, queue that write once: the one write
+// answers both, so GitHub is read and written once, and the issue's merge-state reads wait on that
+// write alone. The same holds for two of the writers' sweep's asks. Once the writer has taken the
+// write, the same ask queues it again, since the head's verdict may change after the write read it.
+func TestLegionVerdictTwoAsksForOneWriteQueueItOnce(t *testing.T) {
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
+	fact := verdictTarget{issue: "CAPTURE-1", repository: widgets, number: 86, head: "code"}
+	swept := verdictTarget{repository: widgets, number: 90, head: "out-1", overForeign: true}
+	writer.add(fact)
+	writer.add(fact)
+	writer.add(swept)
+	writer.add(swept)
+	target, ok := writer.next()
+	if !ok || target != fact {
+		t.Fatalf("the writer took %+v, %v; want the fact's write of code", target, ok)
+	}
+	writer.done(target)
+	if ended, err := writer.await(canceledContext(), "CAPTURE-1"); err != nil || !ended {
+		t.Fatalf("CAPTURE-1's reads wait (%v, %v) after its one write ended: two asks queued two writes", ended, err)
+	}
+	writer.add(fact)
+	var taken []verdictTarget
+	for target, ok := writer.next(); ok; target, ok = writer.next() {
+		taken = append(taken, target)
+		writer.done(target)
+	}
+	if want := []verdictTarget{fact, swept}; !slices.Equal(taken, want) {
+		t.Fatalf("the writer then took %+v, want %+v: the fact's ask after the writer took its write, and the sweep's two asks as one", taken, want)
 	}
 }
 
@@ -1795,6 +1901,35 @@ func compares(events []string) []string {
 	return compared
 }
 
+// One write reads the open pull requests at its head once (GET /commits/{sha}/pulls): that list
+// gives a Legion head's change the branch it is compared with (compareBase) and the pull requests
+// decided with it (atHead). So does a merge group's write, which decides its pull request at the
+// head it stands at now. Each paged read asks for one page size, a hundred.
+func TestLegionVerdictAWriteReadsThePullRequestsAtItsHeadOnce(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	rig.acceptedAndWritten(t)
+	if reads := rig.github.requested(http.MethodGet, "/commits/code/pulls"); len(reads) != 1 {
+		t.Fatalf("the acceptance's write read the pull requests at code %d times (%q), want once", len(reads), reads)
+	}
+	rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+	rig.written(t)
+	groupConcluded(t, rig.github, rig.pool, "group-86", "success")
+	if reads := rig.github.requested(http.MethodGet, "/commits/code/pulls"); len(reads) != 2 {
+		t.Fatalf("the merge group's write read the pull requests at code %d times, want once", len(reads)-1)
+	}
+	for _, read := range []struct{ path, what string }{{"/commits/code/pulls", "the pull requests at code"}, {"/compare/main...code", "the change"}} {
+		queries := rig.github.requested(http.MethodGet, read.path)
+		if len(queries) == 0 {
+			t.Fatalf("GitHub was never asked for %s, so its page size cannot be read", read.what)
+		}
+		for _, query := range queries {
+			if n := strings.Count(query, "per_page="); n != 1 {
+				t.Fatalf("a read of %s asked for per_page %d times (%q), want once", read.what, n, query)
+			}
+		}
+	}
+}
+
 // R4: the change is GitHub's compare of the head with the branch its pull request merges into, which
 // the writer reads from the open pull request at the head as GitHub lists it. Here CAPTURE-1 is a
 // child issue: its pull request 86 merges into its parent's branch, legion/CAPTURE-0, whose tip holds
@@ -1890,6 +2025,21 @@ func TestLegionVerdictEachCommitHasAReaderOnTheDefaultSteps(t *testing.T) {
 	})
 }
 
+// C2 and R4: the owner's acceptance reads a commit as each review step's approve does. On the
+// default steps, where the tester's claim records no session, the reviewer's own commit has one
+// reader, the owner, whose claim records a session that made none of the change; so the owner's
+// acceptance writes success on H.
+func TestLegionVerdictTheOwnersAcceptanceIsACommitsOnlyReader(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		acceptingAtCode(t, pool)
+		seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+	})
+	rig.github.mu.Lock()
+	rig.github.messages["code"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
+	rig.acceptedAndWritten(t)
+}
+
 // C2: a commit with no Omp-Session line has no agent maker, as a person's commit has none, so each
 // agent that reads at the head reads it: with the plan implementer reviewer the reviewer's approve
 // writes success. The reviewer also reads a commit whose line names a session that no claim records,
@@ -1928,16 +2078,17 @@ func TestLegionVerdictAReviewerWhoseClaimRecordsNoSessionReadsNoCommit(t *testin
 	rig.noReader(t, "code", wantNoReaderOpening, "code")
 }
 
-// C2: where the fake answers no list of the change's commits, the default steps write failure on H
-// once every step has passed there: where the daemon cannot read every commit of the change, no
-// commit has a reader, and it says why. So does a list that does not reach H, which is the change of
-// another head.
+// C2: where GitHub answers that it cannot serve the compare of the change's commits (404, 422), the
+// default steps write failure on H once every step has passed there: where the daemon cannot read
+// every commit of the change, no commit has a reader, and it says why. So does a list that does not
+// reach H, which is the change of another head.
 func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		github func(*verdictGitHub)
 	}{
-		{"GitHub answers no list", func(g *verdictGitHub) { g.noCommits = true }},
+		{"GitHub answers 404", func(g *verdictGitHub) { g.compareStatus = http.StatusNotFound }},
+		{"GitHub answers 422", func(g *verdictGitHub) { g.compareStatus = http.StatusUnprocessableEntity }},
 		{"the list does not reach H", func(g *verdictGitHub) { g.history = []string{"code-0"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1957,6 +2108,165 @@ func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 
 // changeUnreadLine is what the writer logs when it cannot read the change's commits.
 const changeUnreadLine = "verdict: the change's commits could not be read, so no commit has a reader"
+
+// changeUnansweredLine is what the writer logs each time GitHub gives no answer to its read of the
+// change's commits, and noAnswerLine what it logs once a head has had none on noAnswerSweeps of the
+// writers' sweep's passes in a row.
+const (
+	changeUnansweredLine = "verdict: GitHub gave no answer to the read of the change's commits, so nothing is decided at this head yet; the next write or sweep reads it again"
+	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on several sweeps in a row, so nothing is decided there and legion-verdict stays as it stands"
+)
+
+// A read of the change GitHub gives no answer to (a 5xx, as a transport error or a timeout) decides
+// nothing yet: the success that stands at code stays as it is, with no failure written over it, on
+// a fact's write, on a merge group's write, and on the writers' sweep's, and each such read says so.
+func TestLegionVerdictNoAnswerToTheChangesReadLeavesTheSuccessAsItStands(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	run := rig.acceptedAndWritten(t)
+	made, events := rig.github.recorded()
+	compared := len(compares(events))
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.checkState(t, "code", "k1", verdict.StateYes)
+	rig.written(t)
+	rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+	rig.written(t)
+	rig.swept(t)
+	writes, events := rig.github.recorded()
+	if read := len(compares(events)) - compared; read < 3 {
+		t.Fatalf("GitHub was asked for the change %d times after the success, want at least 3: a fact's, a group's and a sweep's", read)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d left at success: no answer decides nothing", runs, run.ID)
+	}
+	if len(writes) != len(made) {
+		t.Fatalf("the writer wrote %+v, want nothing: no answer decides nothing", writes[len(made):])
+	}
+	if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 0 {
+		t.Fatalf("%q lines = %v, want none: GitHub gave no answer, not one that the change cannot be read", changeUnreadLine, lines)
+	}
+	if lines := loggedMessages(t, rig.logs.String(), changeUnansweredLine); len(lines) < 3 || lines[0]["head"] != "code" {
+		t.Fatalf("%q lines = %v, want one naming code for each read", changeUnansweredLine, lines)
+	}
+}
+
+// A refusal at a head needs no read of the change, so GitHub's silence leaves it standing: a
+// person's request for changes of code, every step passed there, turns the success to failure while
+// GitHub gives no answer to the read of the change, with no reason named, since the commits were not
+// read.
+func TestLegionVerdictAPersonsRefusalWritesFailureWhileGitHubGivesNoAnswer(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.review(t, personsReview(1, "changes_requested"))
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" ||
+		runs[0].Title != "legion-verdict: failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d at failure with no reason named: a person refused code", runs, run.ID)
+	}
+}
+
+// A head whose change GitHub gives no answer to on noAnswerSweeps of the writers' sweep's passes in a
+// row is logged once, as a WARN naming the repository, the head, the count and the last error, so a
+// head left undecided does not stay so silently. An answer starts the count again.
+func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.acceptedAndWritten(t)
+	answers := func(status int) {
+		rig.github.mu.Lock()
+		rig.github.compareStatus = status
+		rig.github.mu.Unlock()
+	}
+	warned := func(want int, after string) {
+		t.Helper()
+		lines := loggedMessages(t, rig.logs.String(), noAnswerLine)
+		if len(lines) != want {
+			t.Fatalf("%q lines after %s = %v, want %d", noAnswerLine, after, lines, want)
+		}
+		for _, line := range lines {
+			if line["level"] != "WARN" || line["repository"] != "acme/widgets" || line["head"] != "code" || line["sweeps"] != float64(noAnswerSweeps) ||
+				!strings.Contains(fmt.Sprint(line["error"]), "502") {
+				t.Fatalf("%q line = %v, want a WARN naming acme/widgets, code, %d sweeps and GitHub's 502", noAnswerLine, line, noAnswerSweeps)
+			}
+		}
+	}
+	answers(http.StatusBadGateway)
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	warned(0, fmt.Sprintf("%d sweeps", noAnswerSweeps-1))
+	rig.swept(t)
+	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
+	rig.swept(t)
+	rig.swept(t)
+	warned(1, "more sweeps with no answer")
+	answers(0)
+	rig.swept(t)
+	answers(http.StatusBadGateway)
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	warned(1, "an answer and then fewer sweeps with no answer than the count")
+	rig.swept(t)
+	warned(2, "the count of sweeps with no answer again")
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want the success left as it stands", runs)
+	}
+}
+
+// unreadReviewersCommit seeds CAPTURE-1 in accepting on the default steps, every step but the
+// owner's acceptance passed at code, where the tester's claim and the owner's record no session:
+// the reviewer's own commit code then has no reader once the owner accepts code.
+func unreadReviewersCommit(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	acceptingAtCode(t, pool)
+	seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+	dropClaimSessions(t, pool, captureArchitect)
+}
+
+// R4 (the run's summary names each commit with no reader, and the merger reads its title): the run's
+// title and summary follow the decision of the head, not its conclusion alone, so a new reason of a
+// failure whose conclusion stays is written over the run. Here the reviewer's own commit code has
+// no reader once the owner accepts it. First the failure stands for another reason: a person's
+// request for changes before the owner's acceptance, which names no reason; or the change GitHub
+// did not serve, refused (404) or with no answer (502), which a later read serves. Then the writer
+// writes the run's title and summary again, naming code.
+func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
+	t.Run("a person's request for changes, then a commit with no reader", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.mu.Unlock()
+		rig.review(t, personsReview(1, "changes_requested"))
+		rig.written(t)
+		if run := rig.soleRun(t, "code", "failure"); run.Title != "legion-verdict: failure" {
+			t.Fatalf("the run's title is %q, want legion-verdict: failure: a person refused code before every step passed there", run.Title)
+		}
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+	})
+	for _, status := range []int{http.StatusNotFound, http.StatusBadGateway} {
+		t.Run(fmt.Sprintf("a compare GitHub answered %d, then a commit with no reader", status), func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
+			rig.github.mu.Lock()
+			rig.github.messages["code"] = commitOf(captureReviewerSession)
+			rig.github.compareStatus = status
+			rig.github.mu.Unlock()
+			rig.apply(t, rig.signOff(t))
+			rig.written(t)
+			rig.github.mu.Lock()
+			rig.github.compareStatus = 0
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			rig.noReader(t, "code", wantNoReaderOpening, "code")
+		})
+	}
+}
 
 // Every Omp-Session line of a commit's message names a session the Omp-Session test reads, in any
 // case of its key and wherever it stands, as a squash can carry it into the body of another: the

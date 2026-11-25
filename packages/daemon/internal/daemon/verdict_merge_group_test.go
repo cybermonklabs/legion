@@ -132,7 +132,7 @@ func TestMergeGroupHandlerIsRegistered(t *testing.T) {
 	}})
 	cfg := config.Config{
 		Project: "CAPTURE", DispatchURL: board.URL, AdmissionCap: 1, Projects: map[string]config.Project{"CAPTURE": {}},
-		VerdictRepositories: []config.VerdictRepository{widgetsEntry},
+		VerdictRepositories: []config.VerdictRepository{widgetsEntry}, GitHubApp: config.GitHubApp{AppID: verdictAppID},
 	}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
 		appauth.NewInstalled(), slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now, nil)

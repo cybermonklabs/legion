@@ -140,8 +140,12 @@ func (w *workflowRuntime) sweepVerdicts(ctx context.Context, boot bool) {
 // reads before that may have been a stale `blocked` that holds the round.
 //
 // A daemon in token mode mints no verdict token, so no read here could lead to a write: it reads
-// nothing, and says so once, as the writer does.
+// nothing, and says so once, as the writer does. A daemon that holds no App id reads nothing either,
+// since its writer writes nothing (writeDecided), and the ERROR where the writer is built says why.
 func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.VerdictRepository, boot bool) error {
+	if w.verdicts.appID == 0 {
+		return nil
+	}
 	serving := w.repositories.serving(entry.Repository)
 	if _, err := w.tokens.VerdictToken(ctx, serving.Owner()); errors.Is(err, appauth.ErrNoVerdictToken) {
 		w.verdicts.tokenMode.Do(func() { w.log.Warn(verdictTokenMode, "repository", entry.Repository.String()) })
