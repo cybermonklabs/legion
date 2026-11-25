@@ -2172,9 +2172,26 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "row.text",
   },
   {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds:
+      "the host's own word for one of a display menu's sections or its choices, which name a field of the table and never a value in it",
+    written: "label",
+  },
+  {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds: "the host's own word for one choice of a display menu's section (`DisplayMenuOption`)",
+    written: "option.label",
+  },
+  {
     file: `${FEATURES}/delivery/lib/freshness.ts`,
     holds: "the page's own line on how fresh a source is",
     written: "live.text",
+  },
+  {
+    file: `${FEATURES}/project/issues-table-actions.ts`,
+    holds:
+      "the List's own line for what a table action did, joined to its own words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+    written: "notice.text",
   },
   {
     file: `${FEATURES}/inbox/AskHandOn.tsx`,

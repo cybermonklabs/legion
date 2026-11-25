@@ -44,6 +44,9 @@ export function SpecToolbar({
   const versionLabels = new Map(
     toolbar.versions.map((item) => [
       String(item.number),
+      // An option of the shared pick reads as its characters, as the `<option>` of the native
+      // select this control replaced did, so a version's summary is drawn here as the one line
+      // a person gave it: spec-version-summary of `DISPATCH_READING_SURFACES`.
       `Version ${item.number}${item.named && item.summary !== null ? ` — ${item.summary}` : ""}`,
     ])
   );

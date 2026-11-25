@@ -907,7 +907,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // A document version's summary, in the spec's version picker and on an artifact's page.
   {
     files: ["packages/dispatch/web/src/features/issue/SpecToolbar.tsx"],
-    reach: "/issues/<ISSUE>/spec, the version picker's options",
+    reach: "/issues/<ISSUE>/spec, the options of the version pick (`components/MultiSelect.tsx`)",
     reason: `A version's summary names the version it was given to. ${ONE_LINE_FIELD_REASON}`,
     record: false,
     rendered: false,
@@ -1295,7 +1295,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // The five places a record's text is still written into an element that can hold no markup.
   {
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
-    reach: "/agents, a row composer's issue `<option>`",
+    reach: "/agents, the options of a row composer's issue pick (`components/MultiSelect.tsx`)",
     reason: `${NO_MARKUP_REASON} An \`<option>\` can hold no markup, and an issue's key and title are that one line; the plain-text projection (\`PlainText\`) is for a record's own markdown, which a title is not.`,
     record: false,
     rendered: false,

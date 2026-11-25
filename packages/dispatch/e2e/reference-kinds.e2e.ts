@@ -1,4 +1,4 @@
-import { agentFilter } from "./agents";
+import { agentFilter, openAgentFilter } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
 import { commentField, highlightedRow, refPicker } from "./ref-picker";
@@ -362,15 +362,17 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const again = await expandedComment(page, stored.id);
     await again.locator(`a[data-dispatch-ref="${ROLE_REFERENCE}"]`).click();
     await expect(page).toHaveURL(`/agents?role=${ROLE_TOKEN}`);
-    // The filter is a multi-select (R7): its trigger says exactly one option is ticked, as the
-    // page's own row reads it (`agents-groups.e2e.ts`), and the ticked option is this role.
-    const roleFilter = agentFilter(page, "role");
-    await expect(roleFilter).toHaveText("Role · 1");
-    await roleFilter.click();
+    // The filter is a multi-select (R7) inside the page's one control row, so the row opens that
+    // row's filter panel to reach it (`openAgentFilter`): its trigger says exactly one option is
+    // ticked, as the page's own row reads it (`agents-groups.e2e.ts`), and the ticked option is
+    // this role.
+    await openAgentFilter(page, "role");
+    await expect(agentFilter(page, "role")).toHaveText("Role · 1");
     await expect(page.getByRole("option", { exact: true, name: ROLE_TOKEN })).toHaveAttribute(
       "aria-selected",
       "true"
     );
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
     await page.goto(`/issues/${world.host.key}/conversation`);
