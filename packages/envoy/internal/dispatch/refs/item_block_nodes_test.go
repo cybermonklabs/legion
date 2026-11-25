@@ -223,7 +223,7 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
 	node := func(step, kind, id string) model.GraphNode {
 		t.Helper()
-		found, ok, err := Node(ctx, tx, model.Actor{}, kind, id, false)
+		found, ok, err := Node(ctx, tx, serverReader, kind, id, false)
 		if err != nil || !ok {
 			t.Fatalf("%s: the node %s %s = %v, %v; want it", step, kind, id, ok, err)
 		}
@@ -266,10 +266,10 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("tombstone the comment: %v", err)
 	}
-	if _, current, err := Node(ctx, tx, model.Actor{}, "comment_block", commentBlock, false); err != nil || current {
+	if _, current, err := Node(ctx, tx, serverReader, "comment_block", commentBlock, false); err != nil || current {
 		t.Fatalf("the deleted comment's block resolves = %v, %v; want no current node", current, err)
 	}
-	removed, held, err := RemovedItemBlockNode(ctx, tx, model.Actor{}, ItemComment, commentBlock, 2)
+	removed, held, err := RemovedItemBlockNode(ctx, tx, serverReader, ItemComment, commentBlock, 2)
 	if err != nil || !held {
 		t.Fatalf("the deleted comment's removed block = %v, %v; want its node", held, err)
 	}

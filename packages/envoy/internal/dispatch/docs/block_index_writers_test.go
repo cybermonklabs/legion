@@ -565,17 +565,10 @@ var indexPasses = map[string]string{
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
 	// after that ask's ask.opened (graphstore.QueueCaused).
 	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
-	// The node of every ask and message a request or a settlement creates, before its row, in the
-	// project or between the parties it belongs to, and caused by the event the create appends.
-	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
-	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
-	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
-	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
-	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
-	// The removal of an untouched document states its node gone before its row goes, caused by
-	// the artifact.removed event it appends.
-	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
+	// The node of an ask block a settlement opens, before its row, in its document's project, and
+	// caused by the event the settlement appends. The object nodes a request's own write states
+	// come with the slices that carry those writers (S3c-documents, S4).
+	"docs/ask_blocks.go#createAskBlock": "the ask block the settlement opens and the document that holds it",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.
