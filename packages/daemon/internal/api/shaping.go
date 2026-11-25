@@ -1177,7 +1177,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 const causeTimesContract = 256
 
 // deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
-// state (version.go's 258): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
+// state (version.go's 297): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
 // the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
 // below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
 // enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
@@ -1196,10 +1196,10 @@ const causeTimesContract = 256
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
 // only with this change's own number, and answers.go's SupportedContracts names the constant
 // rather than its number for that reason.
-const deploymentRolesContract = 258
+const deploymentRolesContract = 297
 
 // strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 259, `strandedClaims.*.token`), and to the release records the tokens of the
+// state (version.go's 298, `strandedClaims.*.token`), and to the release records the tokens of the
 // claims a release suspended (`releases.*.claims`) and of the claim a wake brought back
 // (`resumes.*.claim`): two claims of one issue can hold one role, so the issue and the role no
 // longer name one claim.
@@ -1207,10 +1207,10 @@ const deploymentRolesContract = 258
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and answers.go's SupportedContracts names the constant rather than its number for that
 // reason.
-const strandedTokenContract = 259
+const strandedTokenContract = 298
 
 // startWaitTokenContract is the daemon contract that names each start of an issue's
-// `startWaitsForPod` by its role and the token of the claim it starts (version.go's 285), where
+// `startWaitsForPod` by its role and the token of the claim it starts (version.go's 300), where
 // the list held the roles of the starts, each role once: two claims of one issue can hold one
 // role, so a role named the start of a second agent of the role, such as `implementer-2`, as a
 // start of the role's own agent. A plugin below it reads the list as strings and refuses the
@@ -1220,7 +1220,7 @@ const strandedTokenContract = 259
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and it is the last number of answers.go's SupportedContracts, which names the constant
 // rather than its number for that reason.
-const startWaitTokenContract = 285
+const startWaitTokenContract = 300
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as

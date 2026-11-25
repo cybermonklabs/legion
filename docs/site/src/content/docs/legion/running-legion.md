@@ -1668,7 +1668,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   `priority` (the issue's Dispatch priority, 0 for P0 through 3 for P3, or null for none; absent on an issue the workflow does not record, and absent with the line members' `priority` for a caller below contract 250),
   `architect` and `workers` (one claim per role, the worker on its last-started step; each claim's `state`, and on the implementer `backwardMoves`, the counts keyed `<from>-<to>`, absent if there are none),
   `otherClaims` (each other claim with its role, including a second agent of a role),
-  `startWaitsForPod` (each start waiting for a pod that lacks its claim's slot or its step's role; the `role` and `token` of the claim it starts, or just the distinct roles for contracts 221 through 284), and `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
+  `startWaitsForPod` (each start waiting for a pod that lacks its claim's slot or its step's role; the `role` and `token` of the claim it starts, or just the distinct roles for contracts 297 through 299), and `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`

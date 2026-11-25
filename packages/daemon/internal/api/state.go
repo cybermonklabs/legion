@@ -830,7 +830,7 @@ type Issue struct {
 	// a phases row names one, and otherwise a claim of that role.
 	Workers map[claim.Role]PhaseView `json:"workers"`
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
-	// with the role it holds, in token order, and absent where there is none (contract 259). Two
+	// with the role it holds, in token order, and absent where there is none (contract 298). Two
 	// claims of one issue can hold one role (record.WorkerClaim), and `workers` holds one entry per
 	// role, so a reader finds the other one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
@@ -1110,7 +1110,7 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
 // claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
-	// Token is the claim's token (contract 259): two claims of one issue can hold one role, so the
+	// Token is the claim's token (contract 298): two claims of one issue can hold one role, so the
 	// issue and the role under which a view stands do not name the claim, and this does.
 	Token        claim.Token           `json:"token,omitempty"`
 	Session      string                `json:"session"`

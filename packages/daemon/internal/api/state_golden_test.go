@@ -515,7 +515,7 @@ func populatedState(t *testing.T) State {
 				EntryConfirmedAt: &entryConfirmed,
 				// The reviewer's own claim of an earlier version of the plan, beside the claim
 				// of the agent of a key that works the reviewer's step: a claim `workers` does
-				// not show, listed with its role and found by its token (contract 259).
+				// not show, listed with its role and found by its token (contract 298).
 				OtherClaims: []OtherClaimView{{Role: claim.RoleReviewer,
 					Claim: ClaimView{Token: "legion-legion-legion-208-reviewer", Session: "ses_reviewer_208_v1", State: "suspended"}}},
 				PullRequest: &PullRequestView{
