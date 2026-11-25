@@ -880,13 +880,14 @@ var owedDigestsStatement = `
 
 // owedCarriesStatement is each carried review of version $2 of the document $1 whose row of
 // artifact_review_carries holds no record digest yet: the carry the version's own write queued in
-// its batch (R14), which pinned the digest of the version's stored markdown.
+// its batch (R14), which pinned the digest of the version's stored markdown. It orders no rows:
+// the fill repins the reviews it answers as one set (queueFilledDigest, `review_id = any(...)`),
+// so no review of them comes before another.
 const owedCarriesStatement = `
 	select c.review_id::text
 	from artifact_reviews r
 	join artifact_review_carries c on c.review_id = r.id
-	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null
-	order by c.review_id`
+	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null`
 
 // lostDigestsStatement lists the issues a version of whose documents still owes its record digest
 // though the write that left it owed has committed - a fill a request lost to a failure or a stop
@@ -1054,7 +1055,10 @@ func (s *Service) HoldFills(hold func(issueKey string)) {
 // logged, and its digests stay owed for the block-index tick (fillLostDigests); the write stands
 // committed either way. A caller still holding a pooled connection fills nothing, since the fill's
 // transaction would be a second connection taken while it holds one (store.HoldsPooledConnection),
-// and the tick fills those digests too.
+// and the tick fills those digests too. Its caller holds no room's writer slot either: the fill
+// waits for the issue's owner lock, which another writer of the issue takes before it waits for
+// that slot (joinLiveWrite), and Postgres cannot see a wait on a slot to break the cycle. So a
+// write publishes its rooms' writes first (Ledger.Commit), and a settlement frees its slots first.
 func (s *Service) fillOwed(ctx context.Context, issues []string) []model.Event {
 	if len(issues) == 0 || store.HoldsPooledConnection(ctx) {
 		return nil
@@ -1199,8 +1203,9 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []st
 // the repair's restate): the write phase of ledger, the pass's (runQueue), which writes the row of
 // each version the pass stated and marks each it found mismatched; then, in tx and after those
 // rows, the carry of R14 to each version whose row took its time from it (carryFirstStated); then
-// beforeCommit, where it is given, and the commit, after which it publishes the events the carry
-// appended.
+// beforeCommit, where it is given, and the commit, after which it publishes the events the pass
+// appended - the artifact.indexed of a pass that cleared an owed index (queueIndexedEvent) - and
+// then those the carry appended, in the order they were appended.
 func (s *Service) commitPass(ctx context.Context, tx pgx.Tx, ledger *Ledger, beforeCommit func() error) error {
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return err
@@ -1217,7 +1222,7 @@ func (s *Service) commitPass(ctx context.Context, tx pgx.Tx, ledger *Ledger, bef
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	for _, event := range carried {
+	for _, event := range slices.Concat(ledger.events, carried) {
 		s.events.Publish(event)
 	}
 	return nil
@@ -1369,6 +1374,9 @@ func (s *Service) repairDocumentMismatch(ctx context.Context, marked markedVersi
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return err
+	}
 	queued, ledger := queueWrites(ctx, tx)
 	owner, _, err := lockArtifactOwner(queued, tx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1522,6 +1530,9 @@ func (s *Service) repairRoomMismatch(ctx context.Context, marked markedVersion, 
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return err
+	}
 	queued, ledger := queueWrites(ctx, tx)
 	owner, _, err := lockArtifactOwner(queued, tx, room)
 	if errors.Is(err, pgx.ErrNoRows) {

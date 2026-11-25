@@ -832,8 +832,14 @@ func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, b
 
 // writeCarriedReview carries review from its original approved version (from) to number.
 // When the carry leaves every document of an open approval request approved, it queues the
-// answer in the approver's name, then the new review, its source row, and its artifact.approved.
-// It hands sink the events in that order. The carry records
+// answer in the approver's name, then the review's artifact.approved with the row that records the
+// carry's source and that event, in their place, before the version's artifact.version; and at the
+// end of the write phase's batch (writeLast), after that version event and the version's
+// version_renders row, the review's row and the statements that complete the review and its
+// event, which name the event by its own id (reviewEventID), as R14 orders a carry. It hands sink
+// each event in the place its append runs, and completes the ledger's copy of the
+// artifact.approved once the end of the batch has completed its payload (Ledger.completeEvent).
+// The carry records
 // the kind of the review it carries, since it is that review's approval it follows: a plan version
 // restored to the text its plan review approved stays approved by that plan review, not by the
 // session that wrote the version (ReviewKindPlanReview). A row read from artifact_reviews always
@@ -889,13 +895,25 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 		}
 		askID = &open.ID
 	}
-	// The carried review keeps the kind of the review it follows, which QueueReview writes into
-	// the row; a review read from a row that names no kind is a person's.
+	// The carried review keeps the kind of the review it follows, which its row records; a review
+	// read from a row that names no kind is a person's.
 	kind := cmp.Or(review.Kind, ReviewKindPerson)
+	carried, err := newReviewWrite(artifact, number, "approved", kind, review.Actor, &reason, askID, &from)
+	if err != nil {
+		return err
+	}
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		return queueReview(b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, &from, func(_ model.ArtifactReview, event model.Event) {
-			sink(event)
+		return carried.queueEvent(b, broker, sink)
+	}); err != nil {
+		return err
+	}
+	ledger := ledgerFrom(ctx)
+	if err := writeLast(ctx, tx, func(b *store.WriteBatch) error {
+		carried.queueRow(b)
+		carried.queueCompletion(b, func(_ model.ArtifactReview, event model.Event) {
+			ledger.completeEvent(event)
 		})
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -909,7 +927,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// approved one.
 	//
 	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
-	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,
+	// reviewWrite.queueRow inserts is dated by its column's default, now() (artifact_reviews.created_at,
 	// migration 0014_artifact_reviews). Postgres holds now() at the transaction's start for the
 	// whole transaction, and the insert runs in tx, so the two are one value: a reader before the
 	// write phase names the carry at the time the stored row carries.

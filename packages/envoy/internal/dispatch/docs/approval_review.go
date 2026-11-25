@@ -37,7 +37,8 @@ const (
 const ReviewColumns = `id::text, artifact_id::text, version, state, kind, actor, reason, ask_id::text, created_at, event_seq, content_sha256, content_sha256_source`
 
 // ReviewReadColumns selects a stored review and its carry source without adding a round trip.
-// The write's RETURNING list still uses ReviewColumns: the carry row is queued after the review.
+// The write's RETURNING list still uses ReviewColumns: a carry's row of artifact_review_carries is
+// written by a statement of its own (reviewWrite.queueEvent).
 const ReviewReadColumns = ReviewColumns + `, (select carried_from_version from artifact_review_carries where review_id = artifact_reviews.id)`
 
 // ScanReview decodes one ReviewColumns row.
@@ -84,108 +85,176 @@ func scanReview(row pgx.Row, withCarry bool) (model.ArtifactReview, error) {
 // Every caller already holds the owner's lock before it queues this, and its statements go on one
 // write phase's batch: the row is inserted before the event is appended and its sequence written
 // after. The review's id is chosen here, so the statement that writes that sequence names the row,
-// and takes the sequence from the event the statements before it appended (store.LatestEventID):
-// nothing is read back in Go between them. The update that writes the sequence runs the
-// foreign-key checks again, since Postgres re-checks a row its own transaction inserted, and so
-// asks for the same FOR KEY SHARE locks the insert took: the transaction already holds them, so
-// the request never waits. Migration 0120's trigger, which gives the release before this one's
-// reviews their sequence, would give this row its sequence too, but only at the commit, the first
-// moment the event exists for every release; so the batch writes it itself, and the row is right
-// for any read the caller makes before it commits. The trigger then finds the row sequenced and
-// leaves it. written receives the review and its event as the batch leaves them, and the caller,
-// which owns the transaction, publishes the event after its commit.
+// and takes the sequence from the event the statements before it appended (reviewEventID, which
+// for a review that is no carry is store.LatestEventID): nothing is read back in Go between them.
+// The update that writes the sequence runs the foreign-key checks again, since Postgres re-checks
+// a row its own transaction inserted, and so asks for the same FOR KEY SHARE locks the insert
+// took: the transaction already holds them, so the request never waits. Migration 0120's trigger,
+// which gives the release before this one's reviews their sequence, would give this row its
+// sequence too, but only at the commit, the first moment the event exists for every release; so
+// the batch writes it itself, and the row is right for any read the caller makes before it
+// commits. The trigger then finds the row sequenced and leaves it. written receives the review and
+// its event as the batch leaves them, and the caller, which owns the transaction, publishes the
+// event after its commit.
 func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
-	return queueReview(b, broker, artifact, version, state, kind, actor, reason, askID, nil, written)
+	review, err := newReviewWrite(artifact, version, state, kind, actor, reason, askID, nil)
+	if err != nil {
+		return err
+	}
+	review.queueRow(b)
+	if err := review.queueEvent(b, broker, nil); err != nil {
+		return err
+	}
+	review.queueCompletion(b, written)
+	return nil
 }
 
-// queueReview is the common writer. A carry supplies its source so its row and event can be
-// written in this same batch; an explicit review never supplies one.
-func queueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, carriedFrom *int, written func(model.ArtifactReview, model.Event)) error {
+// reviewWrite is one review as its writer queues it on a write phase's batch, in three parts:
+// its row (queueRow), its event with, for a carry, the row that records the carry's source and
+// that event (queueEvent), and the two statements that complete each from the other - the
+// event's payload with the row's digest and the row's event_seq with the event's seq
+// (queueCompletion). QueueReview queues the three back to back. A carry queues its event in its
+// place and the other two at the end of the write phase's batch (writeCarriedReview), after its
+// version's artifact.version and version_renders row, as R14 orders them. The review's id is
+// chosen here, so each statement names the row; review and event are what the statements left,
+// read by their callbacks.
+type reviewWrite struct {
+	id          string
+	artifact    model.Artifact
+	version     int
+	state, kind string
+	actor       model.Actor
+	actorJSON   []byte
+	reason      *string
+	askID       *string
+	carriedFrom *int
+	eventType   string
+	review      model.ArtifactReview
+	event       model.Event
+}
+
+// newReviewWrite is the write of one review of artifact at version; carriedFrom is the version a
+// carry carries it from, nil for a review that is no carry.
+func newReviewWrite(artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, carriedFrom *int) (*reviewWrite, error) {
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
-		return fmt.Errorf("encode review actor: %w", err)
+		return nil, fmt.Errorf("encode review actor: %w", err)
 	}
 	eventType := "artifact.approved"
 	if state == "changes_requested" {
 		eventType = "artifact.changes_requested"
 	}
-	id := uuid.NewString()
-	var review model.ArtifactReview
-	var event model.Event
+	return &reviewWrite{
+		id: uuid.NewString(), artifact: artifact, version: version, state: state, kind: kind,
+		actor: actor, actorJSON: actorJSON, reason: reason, askID: askID, carriedFrom: carriedFrom,
+		eventType: eventType,
+	}, nil
+}
+
+// queueRow queues the review's row. Its insert's trigger pins the digest artifact_version_text_sha256
+// answers for the version at the insert (migration 20261105084017).
+func (w *reviewWrite) queueRow(b *store.WriteBatch) {
 	b.Queue("", `
 		insert into artifact_reviews (id, artifact_id, version, state, kind, actor, reason, ask_id)
 		values ($1, $2, $3, $4, $5, $6, $7, $8)
-		returning `+ReviewColumns, id, artifact.ID, version, state, kind, actorJSON, reason, askID).QueryRow(func(row pgx.Row) error {
+		returning `+ReviewColumns, w.id, w.artifact.ID, w.version, w.state, w.kind, w.actorJSON, w.reason, w.askID).QueryRow(func(row pgx.Row) error {
 		scanned, err := ScanReview(row)
 		if err != nil {
 			return fmt.Errorf("insert artifact review: %w", err)
 		}
-		review = scanned
-		review.CarriedFromVersion = carriedFrom
-		if review.ContentSHA256 == nil {
+		w.review = scanned
+		w.review.CarriedFromVersion = w.carriedFrom
+		if w.review.ContentSHA256 == nil {
 			slog.Warn("dispatch: review recorded with no content hash: the version names no stored text",
-				"artifact", artifact.ID, "version", version, "review", review.ID)
+				"artifact", w.artifact.ID, "version", w.version, "review", w.review.ID)
 		}
 		return nil
 	})
-	if carriedFrom != nil {
-		b.Queue("record the carried review's source", `
-			insert into artifact_review_carries (review_id, carried_from_version) values ($1, $2)
-		`, id, *carriedFrom)
-	}
+}
+
+// queueEvent queues the review's event, and appended, where it is given, receives it as its append
+// leaves it, before its payload is completed (queueCompletion). For a carry it then records the
+// carry's source and the event's own id on the review's row of artifact_review_carries, in the
+// statement right after the append, which names that event as store.LatestEventID: the
+// statements that complete the review and the event come after the version's artifact.version
+// (writeCarriedReview), where store.LatestEventID names that event instead, so they name this one
+// by the id the row recorded (reviewEventID).
+func (w *reviewWrite) queueEvent(b *store.WriteBatch, broker *events.Broker, appended func(model.Event)) error {
 	if err := broker.QueueAppend(b, documentAskEvent(
-		artifactOwner{IssueKey: artifact.IssueKey}, artifact.ID, eventType, actor,
+		artifactOwner{IssueKey: w.artifact.IssueKey}, w.artifact.ID, w.eventType, w.actor,
 		model.ArtifactReviewEventPayload{
-			ArtifactID:         artifact.ID,
-			Name:               artifact.Name,
-			Version:            version,
-			Kind:               kind,
-			Actor:              actor,
-			Reason:             reason,
-			AskID:              askID,
-			CarriedFromVersion: carriedFrom,
+			ArtifactID:         w.artifact.ID,
+			Name:               w.artifact.Name,
+			Version:            w.version,
+			Kind:               w.kind,
+			Actor:              w.actor,
+			Reason:             w.reason,
+			AskID:              w.askID,
+			CarriedFromVersion: w.carriedFrom,
 			// content_sha256 and content_sha256_source are not set here: the insert's trigger
-			// derives them, and the statement after this append writes them into this payload.
+			// derives them, and the completion writes them into this payload.
 		},
-	), func(appended model.Event) { event = appended }); err != nil {
-		return fmt.Errorf("append %s: %w", eventType, err)
+	), func(event model.Event) {
+		w.event = event
+		if appended != nil {
+			appended(event)
+		}
+	}); err != nil {
+		return fmt.Errorf("append %s: %w", w.eventType, err)
 	}
-	// The digest of the bytes the review approves is the row's, which the insert's trigger wrote
-	// (migration 20261105084017), and the event's payload must carry the same two values. Nothing
-	// of this batch is read in Go before the event is appended - the write phase sends every
-	// statement back to back - so the payload takes them in SQL, from the row this batch
-	// inserted, as the event's own sequence is taken. A carry needs it that way: it pins a
-	// version this same batch writes, so no read before the batch could know the digest at all.
-	b.Queue("record the approved bytes' digest on "+eventType, `
+	if w.carriedFrom != nil {
+		b.Queue("record the carried review's source and its event", `
+			insert into artifact_review_carries (review_id, carried_from_version, event_id) values ($1, $2, `+store.LatestEventID+`)
+		`, w.id, *w.carriedFrom)
+	}
+	return nil
+}
+
+// reviewEventID is the SQL expression of the id of the event of the review the statement's $1
+// names: the id its row of artifact_review_carries recorded where the review is a carry
+// (queueEvent), whose completion runs after its version's artifact.version, and else the event
+// the statements before it appended (store.LatestEventID), which a review that is no carry
+// completes right after its append (QueueReview). Each read is of one row by its primary key.
+const reviewEventID = `coalesce((select c.event_id from artifact_review_carries c where c.review_id = $1), ` + store.LatestEventID + `)`
+
+// queueCompletion queues the two statements that complete the review and its event, each naming
+// the event by its own id (reviewEventID), and written receives both as the batch leaves them.
+// The digest of the bytes the review approves is the row's, which the insert's trigger wrote
+// (migration 20261105084017), and the event's payload must carry the same two values. Nothing of
+// the batch is read in Go before the event is appended - the write phase sends every statement
+// back to back - so the payload takes them in SQL, from the row the batch inserted, as the row's
+// event_seq takes the event's sequence. A carry needs it that way: it pins a version its own
+// batch writes, so no read before the batch could know the digest at all.
+func (w *reviewWrite) queueCompletion(b *store.WriteBatch, written func(model.ArtifactReview, model.Event)) {
+	b.Queue("record the approved bytes' digest on "+w.eventType, `
 		update events set payload = payload || jsonb_build_object(
 			'content_sha256', review.content_sha256,
 			'content_sha256_source', review.content_sha256_source)
 		from artifact_reviews review
-		where review.id = $1 and events.id = `+store.LatestEventID+`
+		where review.id = $1 and events.id = `+reviewEventID+`
 		returning review.content_sha256, review.content_sha256_source
-	`, id).QueryRow(func(row pgx.Row) error {
+	`, w.id).QueryRow(func(row pgx.Row) error {
 		var digest, source *string
 		if err := row.Scan(&digest, &source); err != nil {
-			return fmt.Errorf("record the approved bytes' digest on %s: %w", eventType, err)
+			return fmt.Errorf("record the approved bytes' digest on %s: %w", w.eventType, err)
 		}
-		payload, ok := event.Payload.(model.ArtifactReviewEventPayload)
+		payload, ok := w.event.Payload.(model.ArtifactReviewEventPayload)
 		if !ok {
-			return fmt.Errorf("%s payload must be model.ArtifactReviewEventPayload", eventType)
+			return fmt.Errorf("%s payload must be model.ArtifactReviewEventPayload", w.eventType)
 		}
 		payload.ContentSHA256, payload.ContentSHA256Source = digest, source
-		event.Payload = payload
+		w.event.Payload = payload
 		return nil
 	})
-	b.Queue("record the sequence of "+eventType, `
-		update artifact_reviews set event_seq = (select seq from events where id = `+store.LatestEventID+`)
+	b.Queue("record the sequence of "+w.eventType, `
+		update artifact_reviews set event_seq = (select seq from events where id = `+reviewEventID+`)
 		where id = $1
-	`, id).Exec(func(pgconn.CommandTag) error {
-		seq := int64(event.Seq)
-		review.EventSeq = &seq
-		written(review, event)
+	`, w.id).Exec(func(pgconn.CommandTag) error {
+		seq := int64(w.event.Seq)
+		w.review.EventSeq = &seq
+		written(w.review, w.event)
 		return nil
 	})
-	return nil
 }
 
 // ReviewHashFill counts rows pinned at boot and rows whose version has no stored text.
