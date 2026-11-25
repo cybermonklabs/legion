@@ -403,7 +403,10 @@ if (run === "main") {
     }
     const fails = scenario.sendFails || !allowed;
     if (!fails && !scenario.outboundDropped) {
-      writeFileSync(join(state, "outbound"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      // Whole or not there, as the screen is written: the probe's receiver parses the file the
+      // moment it is there, and one it read between its creation and its write would be empty.
+      writeFileSync(join(state, "outbound.writing"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      renameSync(join(state, "outbound.writing"), join(state, "outbound"));
     }
     log({ step: "sent", ok: !fails, detail: scenario.sendFails ? "tool call error: Envoy is not ready" : allowed ? "delivered to " + plan.outboundTo : "tool call cancelled" });
   } else {
