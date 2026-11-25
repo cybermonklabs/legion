@@ -46,7 +46,8 @@ import {
   sentenceCase,
 } from "./page-words";
 import { commentNode as commentTreeNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
+import { issueTreeQuery, outlineQuery, type TreeAnswer } from "./tree-read/tree-read";
+import { issueAskThreadsQuery } from "./useIssueTree";
 
 const KEY = "CORE-1";
 
@@ -101,10 +102,11 @@ function treeOf(comments: readonly Comment[]): TreeAnswer {
 }
 
 /** Holds `comments` as the issue's comments in `client`, each read with `options`, and the tree
- *  read's answer that holds them (`treeOf`). The outline lands an address by the tree read too
- *  (`useOutlineReads`), so the client holds it as it holds the outline's other reads, and it
- *  holds the comments the client holds: a case that sets other comments sets their tree with
- *  them. */
+ *  read's answer that holds them (`treeOf`), under the tree read's key and under Conversation's
+ *  (`outlineQuery(KEY, "conversation")`), which the outline reads at the issue's address. The
+ *  outline lands an address by the tree read too (`useOutlineReads`), so the client holds it as
+ *  it holds the outline's other reads, and it holds the comments the client holds: a case that
+ *  sets other comments sets their tree with them. */
 function holdComments(
   client: QueryClient,
   comments: readonly Comment[],
@@ -112,16 +114,20 @@ function holdComments(
 ): void {
   client.setQueryData(["comments", KEY], comments, options);
   client.setQueryData(issueTreeQuery(KEY).queryKey, treeOf(comments), options);
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeOf(comments), options);
 }
 
-/** A client holding every read the facts and the writer make, and the tree read the outline
- *  lands an address by (`holdComments`), so the drawing sends none. */
+/** A client holding every read the facts and the writer make, the issue's asks both as the
+ *  history reads them (`["asks", KEY]`) and with their threads as the outline and the writer read
+ *  them (`issueAskThreadsQuery`), and the tree reads the outline lands an address by
+ *  (`holdComments`), so the drawing sends none. */
 function readsHeld(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["agents"], []);
   client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   holdComments(client, [OWN_COMMENT]);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["whoami"], { login: "alice" });
@@ -1193,6 +1199,7 @@ test("the line that says what is new holds across a close and an open of Details
   client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
   const minuteAgo = { updatedAt: Date.now() - 60_000 };
   client.setQueryData(["asks", KEY], [], minuteAgo);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [], minuteAgo);
   client.setQueryData(["comments", KEY], [OWN_COMMENT], minuteAgo);
   client.setQueryData(["issue-messages", KEY], [], minuteAgo);
   /** The history's entries in the order it draws them: each event by its sequence, and the

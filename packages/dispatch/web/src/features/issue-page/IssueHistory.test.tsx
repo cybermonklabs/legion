@@ -46,7 +46,8 @@ function claim(seq: number): DispatchEvent {
 }
 
 /** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events` and the
- *  issue's messages read `messages`, with no comment and no ask. Returns what restores them. */
+ *  issue's messages read `messages`, with no comment and no ask; and the asks with their threads
+ *  the page's writer reads (`outline-writer.tsx`), none. Returns what restores them. */
 function stubHistoryReads(
   events: readonly DispatchEvent[],
   messages: readonly MessageRead[] = []
@@ -56,6 +57,7 @@ function stubHistoryReads(
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
   ];
   return () => {
     for (const read of reads) read.mockRestore();
