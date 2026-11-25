@@ -321,7 +321,16 @@ func (s *server) storeUpload(w http.ResponseWriter, r *http.Request, input artif
 		}
 	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target, answer)
+	// Whether the credential is a person's, for the check of who writes an issue's spec or
+	// Verification document (refuseSpecWriter), read before storeArtifact opens its transaction.
+	// Every upload to an issue reads it, a file's too: a file named verification.md takes the slug
+	// that reads as the issue's Verification document (documentPlays). An upload to a project or to
+	// a session reads nothing for it.
+	writer := specWriter{actor: actor}
+	if target.IssueKey != nil {
+		writer = s.specWriterOf(r, actor)
+	}
+	s.storeArtifact(w, r, input, writer, kind, target, answer)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -804,16 +813,18 @@ func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
 	input artifactUploadInput,
-	actor model.Actor,
+	writer specWriter,
 	kind string,
 	target artifactTarget,
 	answer uploadAnswer,
 ) {
+	actor := writer.actor
 	checksum := sha256.Sum256(input.content)
 	sha := hex.EncodeToString(checksum[:])
 	// A file's object is written before the transaction opens, once the refusals the transaction
-	// would make have been made (putUploadedFile, artifact_files.go).
-	if !s.putUploadedFile(w, r, kind, sha, input, target) {
+	// would make, the check of who writes the issue's Verification document among them, have been
+	// made (putUploadedFile, artifact_files.go).
+	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -880,8 +891,8 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, r, err)
 			return
 		}
-		if refusal := fileUnderRoleNameRefusal(target, kind, input.name, nil, slug); refusal != nil {
-			s.writeHandlerError(w, r, refusal)
+		if err := refuseFileUnderRoleName(r.Context(), tx, writer, target, kind, input.name, nil, slug); err != nil {
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
@@ -904,8 +915,8 @@ func (s *server) storeArtifact(
 	} else if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
-	} else if refusal := fileUnderRoleNameRefusal(target, kind, input.name, &artifact, ""); refusal != nil {
-		s.writeHandlerError(w, r, refusal)
+	} else if err := refuseFileUnderRoleName(r.Context(), tx, writer, target, kind, input.name, &artifact, ""); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	} else if artifact.Kind != kind {
 		// A Markdown upload under the name of an issue's role document that an earlier upload
@@ -955,6 +966,19 @@ func (s *server) storeArtifact(
 				return
 			}
 			artifact.Role = *role
+		}
+	}
+	// The check of who writes an issue's spec or Verification document, on the row as this upload
+	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
+	// before the first document call, so an upload that would change nothing is refused too. It
+	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
+	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
+	// file store holds files, the same check answered a file first, before its object was written
+	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
+	if target.IssueKey != nil {
+		if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
 		}
 	}
 	// A project artifact's owner is the artifact itself, and until here this transaction has not
@@ -1750,6 +1774,8 @@ func (s *server) nameVersion(w http.ResponseWriter, r *http.Request, input creat
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// Read before the transaction opens (specWriterOf), for the check below.
+	writer := s.specWriterOf(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1769,6 +1795,12 @@ func (s *server) nameVersion(w http.ResponseWriter, r *http.Request, input creat
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, r, apicode.NotDocument, "artifact is not a document")
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before the document call, so a named version that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
@@ -1951,6 +1983,12 @@ func (s *server) applyEdits(w http.ResponseWriter, r *http.Request, input editAr
 		release = sync.OnceFunc(acquired)
 		defer release()
 	}
+	// Read before the transaction opens (specWriterOf), for the check below, and only for a document
+	// the check holds: the check passes every other document without reading the writer.
+	writer := specWriter{actor: actor}
+	if _, held := specWriterDocumentName(artifact); held {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1960,6 +1998,12 @@ func (s *server) applyEdits(w http.ResponseWriter, r *http.Request, input editAr
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before ApplyOps, so an edit that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
@@ -2861,9 +2905,9 @@ func createRoleNameRefusal(name, slug, role string) error {
 // every reader that finds it by its slug while holding no text any of them reads. A project's or
 // a session's artifact plays no role (documentPlays), and a slug the owner already holds mints
 // another (plan-md-2), which plays none either, so both answer nil, as a document upload does.
-// Both places that refuse an upload ask it before they compare kinds (refuseUploadBeforeItsObject,
-// storeArtifact), so a file under the name of a role document that is already a document reads
-// this refusal and not ARTIFACT_KIND_MISMATCH.
+// Both places that refuse an upload ask it, behind the writer check (refuseFileUnderRoleName),
+// before they compare kinds (refuseUploadBeforeItsObject, storeArtifact), so a file under the name
+// of a role document that is already a document reads this refusal and not ARTIFACT_KIND_MISMATCH.
 func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *model.Artifact, minted string) error {
 	if target.IssueKey == nil || kind == "doc" {
 		return nil
@@ -2888,6 +2932,28 @@ func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *m
 	return errorf(apicode.ArtifactRoleName,
 		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (save it as %s and send it with dispatch artifact --name %s --path %s: a path ending in .md is sent as Markdown), or give this file another name",
 		name, role, slug, document, document, document)
+}
+
+// refuseFileUnderRoleName is fileUnderRoleNameRefusal behind the check of who writes an issue's
+// spec or Verification document (refuseSpecWriterOfDocument): where the rule refuses the file, the
+// check judges first the row the upload would write, found or the new row minted gives it, so a
+// writer the check refuses that document is told who may write it rather than how to send it as
+// Markdown, as it is for the Markdown upload of the same name. Every other upload passes, and the
+// check of the row as the upload leaves it decides it later (storeArtifact). q is the upload's
+// transaction, or the pool before a file's object is written (refuseUploadBeforeItsObject).
+func refuseFileUnderRoleName(ctx context.Context, q queryer, writer specWriter, target artifactTarget, kind, name string, found *model.Artifact, minted string) error {
+	refusal := fileUnderRoleNameRefusal(target, kind, name, found, minted)
+	if refusal == nil {
+		return nil
+	}
+	row := model.Artifact{IssueKey: target.IssueKey, Slug: minted, Name: name, Kind: kind}
+	if found != nil {
+		row = *found
+	}
+	if err := refuseSpecWriterOfDocument(ctx, q, writer, row); err != nil {
+		return err
+	}
+	return refusal
 }
 
 // newArtifactNameRefusal is the 400 refusing a new artifact's name past maxNewArtifactKeyBytes,

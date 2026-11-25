@@ -26,10 +26,18 @@ import (
 // that its session holds.
 //
 // A write must name the actor session legion-daemon:<project> (legionDaemonSessionOf), the session
-// the daemon of the issue's project writes as. Before the airlock, Dispatch takes the session that
-// a bearer caller names as the caller names it, so any caller whose Dispatch credential proves no
-// session of its own can name that session: the deployment's shared token, and a person's own
-// agent token whatever its scopes. The airlock closes that case, and this route does not.
+// the daemon of the issue's project writes as. Dispatch takes the session that a bearer caller names
+// as the caller names it, so any caller whose Dispatch credential proves no session of its own can
+// name that session: the deployment's shared token, and a person's own agent token whatever its
+// scopes. A project's proven-sessions setting (projects.proven_sessions) closes that case for the
+// project: while it is on, the route takes a write only on a credential that proves the session
+// legion-daemon:<project> (model.Actor.Proven), a broker token of that session, and answers every
+// other 403 ROLE_HOLDER_NOT_PROVEN. While the setting is off, the case stays open.
+//
+// Each publication the route takes marks the issue's project (project_role_holder_marks), in the
+// transaction that writes the set, an empty set included; a refused one marks nothing. The mark
+// puts the issues of the project that Legion runs under the check of who writes their spec and
+// Verification document (spec_writer.go), which is its one reader.
 //
 // A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
 // leaves the set only when the daemon's next publication lands, and until then its row stays. The
@@ -169,6 +177,15 @@ func writeRoleHoldersIssueNotFound(w http.ResponseWriter, r *http.Request, key s
 	writeError(w, r, apicode.IssueNotFound, fmt.Sprintf("no issue %s", key))
 }
 
+// writeRoleHoldersNotProven answers 403 ROLE_HOLDER_NOT_PROVEN: project records proven sessions
+// (projects.proven_sessions), and the request's credential does not prove the session
+// legion-daemon:<project> that a publication of key's role holders must name.
+func writeRoleHoldersNotProven(w http.ResponseWriter, r *http.Request, project, key string) {
+	writeError(w, r, apicode.RoleHolderNotProven, fmt.Sprintf(
+		"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves session %s. This request's credential does not prove that session.",
+		project, key, legionDaemonSessionOf(key)))
+}
+
 // maxRoleHolderSessionBytes is the longest session the route stores. A Legion session id is far
 // shorter: the Legion agent registry holds one to 128 bytes (legionagents.ValidateSessionID). The
 // bound keeps every row inside the unique index on (issue_key, session), whose B-tree entry holds
@@ -194,11 +211,16 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 // checked whole before the transaction opens: each role is one of the six, once, and each session
 // is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A body that fails
 // is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or an index of
-// the table. Six distinct roles bound the set at six holders.
+// the table. Six distinct roles bound the set at six holders. On a project whose proven_sessions
+// is on, a write whose credential does not prove the daemon's session is 403
+// ROLE_HOLDER_NOT_PROVEN, after those refusals; a write the route takes marks the issue's project
+// in its transaction (project_role_holder_marks).
 //
 // unchanged, where it is given, is asked of the stored set once the body has passed every check:
 // true answers that set and writes nothing, which is the no-op PUT of /api/v2
-// (putIssueRoleHoldersV2). /api/v1 gives none, and runs the write whatever the stored set is.
+// (putIssueRoleHoldersV2), once the proof the write would ask for has been asked too, and only on
+// a project a publication has marked already: a publication of an unmarked project is a write,
+// which marks it. /api/v1 gives none, and runs the write whatever the stored set is.
 func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request, input issueRoleHoldersInput, unchanged func(stored issueRoleHolders) bool) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
@@ -256,8 +278,24 @@ func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if found && unchanged(stored) {
-			WriteJSON(w, http.StatusOK, stored)
-			return
+			var project string
+			var provenSessions, marked bool
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+				select i.project_key, p.proven_sessions,
+					exists (select 1 from project_role_holder_marks m where m.project_key = i.project_key)
+				from issues i join projects p on p.key = i.project_key where i.key = $1
+			`, key).Scan(&project, &provenSessions, &marked); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+			if provenSessions && !actor.Proven {
+				writeRoleHoldersNotProven(w, r, project, key)
+				return
+			}
+			if marked {
+				WriteJSON(w, http.StatusOK, stored)
+				return
+			}
 		}
 	}
 
@@ -275,10 +313,11 @@ func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request,
 	// transaction takes no row lock of an owner table and holds no transaction id until its first
 	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
 	// build's writers do); it does not stop a reader.
-	var issue string
+	var issue, project string
+	var provenSessions bool
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
-		select key from issues where key = $1
-	`, []any{key}, &issue); err != nil {
+		select i.key, i.project_key, p.proven_sessions from issues i join projects p on p.key = i.project_key where i.key = $1
+	`, []any{key}, &issue, &project, &provenSessions); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeRoleHoldersIssueNotFound(w, r, key)
 			return
@@ -286,11 +325,22 @@ func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request,
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	if provenSessions && !actor.Proven {
+		writeRoleHoldersNotProven(w, r, project, key)
+		return
+	}
+	// The delete marks the issue's project too (project_role_holder_marks), in a data-modifying
+	// CTE, which Postgres runs once and to its end whatever the delete does. The delete runs for
+	// every publication the route takes, so the mark lands in the transaction that writes the set,
+	// a refused publication marks nothing, and an empty set marks the project as any other set does.
 	if _, err := tx.Exec(r.Context(), `
+		with mark as (
+			insert into project_role_holder_marks (project_key) values ($4) on conflict do nothing
+		)
 		delete from issue_role_holders
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
-	`, issue, roles, sessions); err != nil {
+	`, issue, roles, sessions, project); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

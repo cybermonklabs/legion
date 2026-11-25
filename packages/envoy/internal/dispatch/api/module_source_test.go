@@ -2,7 +2,7 @@
 // constants a statement is assembled from, and the text of such a statement. It carries no
 // build tag and declares no test of its own, and each of those is deliberate.
 //
-// No tag, because its callers are on both sides of one. The nine static guards, and
+// No tag, because its callers are on both sides of one. The ten static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
 // race job (lock_level_test.go's header says what), while two tests of this package use its
 // declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the eighteen tests of those ten files are the text-check job's to run, once
+// included - and the twenty-one tests of those eleven files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 

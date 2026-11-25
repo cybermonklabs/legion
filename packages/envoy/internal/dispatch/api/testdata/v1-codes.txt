@@ -281,6 +281,7 @@ AS_OF_TOKEN_NOT_SERVED 403 # #4557, a read at a cut is not served by this build
 BROWSER_SIGN_IN_REQUIRED 403 # #4631, closing descendants needs a browser sign-in
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements
 DELETE_CONTENDED 409 # #3512, the author of a comment or an issue message can correct or delete it
+DOCUMENT_WRITER_NOT_ARCHITECT 403 # #4725, only a person or an architect of its tree writes the spec or Verification document of an issue Legion runs
 FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
 INVALID_REPOSITORY 400 # #4457, each project has an optional default repository, and Dispatch writes no repository mapping
 INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue
@@ -299,6 +300,7 @@ READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the
 REFERENCES_TIMEOUT 503 # #4554, an issue's reference closure walk runs under a 2 s statement_timeout
 REPLACE_FIELDS 400 # #4610, a doc-edit replace with no with, or a member it does not take, is refused
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue
+ROLE_HOLDER_NOT_PROVEN 403 # #4725, a project's proven-sessions setting takes a role-holder publication only on a credential that proves the daemon's session
 SEARCH_COVERAGE_TIMEOUT 503 # #4378, the search coverage route reads two indexes under a 10 s bound
 STATUS_CHANGE_INPUT 400 # #4631, an invalid status-change request
 STEP_INPUT 400 # #4400, record each phase of an issue as a step

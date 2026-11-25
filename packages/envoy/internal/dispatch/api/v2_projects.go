@@ -72,6 +72,12 @@ const architectureSourceText = "each source {project, repo, branch, enabled, cre
 const projectDefaultRepositoryText = "the repository, owner/name, an issue of the project resolves to when neither " +
 	"the issue nor an issue above it names one"
 
+// projectProvenSessionsText is what the routes that read or write a project's proven-sessions
+// setting say of it.
+const projectProvenSessionsText = "true while the project's proven-sessions setting is on, under which an " +
+	"architect's write of an issue's spec or Verification document, and a role-holder publication, pass only on a " +
+	"credential that proves the writer's session"
+
 // v2ProjectRows are the project, architecture, repository, priority and settings routes: rows 147
 // and 182; 148; 166 and 167, with the default repository's PUT #4457 added; 149; 150, 152 and 178;
 // 154; 155; 151, 153 and 156; 168 and 169; the plans row of #4488 and the two near-copy rows of
@@ -82,10 +88,11 @@ func (s *server) v2ProjectRows() []routeRow {
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/projects", Auth: authAny, Versions: onlyV2,
-			Description: "List every project by key: {key, name, open_asks, gated_steps, default_repository?, created_at}, " +
-				"open_asks the open asks on its open issues and its documents, gated_steps the design-gate steps the Legion " +
-				"deployment that serves it gates, in the order it gates them ([] for none), default_repository " +
-				projectDefaultRepositoryText + ", absent for a project with none. include=default_assignee adds " +
+			Description: "List every project by key: {key, name, open_asks, gated_steps, default_repository?, " +
+				"proven_sessions, created_at}, open_asks the open asks on its open issues and its documents, gated_steps " +
+				"the design-gate steps the Legion deployment that serves it gates, in the order it gates them ([] for " +
+				"none), default_repository " + projectDefaultRepositoryText + ", absent for a project with none, " +
+				"proven_sessions " + projectProvenSessionsText + ". include=default_assignee adds " +
 				"default_assignee, " + projectDefaultAssigneeText + ", which needs the person scope (403 " +
 				"OAUTH_SCOPE_REQUIRED otherwise): the default names a person. limit 1 to 200 (default 50) and offset; " +
 				"{items, total, limit, offset}.",
@@ -122,9 +129,9 @@ func (s *server) v2ProjectRows() []routeRow {
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/projects/{key}", Auth: authAny, Versions: onlyV2,
-			Description: "Change a project {default_assignee?, gated_steps?, default_repository?}, a bearer naming its " +
-				"session in actor. default_assignee moves " + projectDefaultAssigneeText + " to another person, the email of " +
-				"a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
+			Description: "Change a project {default_assignee?, gated_steps?, default_repository?, proven_sessions?}, a " +
+				"bearer naming its session in actor. default_assignee moves " + projectDefaultAssigneeText + " to another " +
+				"person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
 				"settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null " +
 				"included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a " +
 				"person, the default cannot be cleared (null leaves it as it stands). gated_steps publishes the " +
@@ -134,20 +141,26 @@ func (s *server) v2ProjectRows() []routeRow {
 				"lowercase with one trailing .git trimmed and stored under its new name where the repository was renamed, " +
 				"and null clears it. The default " +
 				"belongs to the deployment and needs no scope, so a credential scoped to one project is refused it (403 " +
-				"PROJECT_SCOPE_DEPLOYMENT), the project this path names included. A list or a default repository the " +
-				"project already holds changes nothing and appends no event; another appends project.updated. A body that " +
-				"names none of the three fields, a blank default_assignee, a step that is none of the three or is named " +
-				"twice, and a default_repository that is not a repository GitHub could hold are 400 INVALID_PROJECT. " +
-				"Every field is written in one transaction. Answers the project as GET " +
-				"/api/v2/projects lists it, with default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a " +
-				"project that does not exist.",
+				"PROJECT_SCOPE_DEPLOYMENT), the project this path names included. proven_sessions turns the project's " +
+				"proven-sessions setting on (true) or off (false): with it on, an architect's write of an issue's spec or " +
+				"Verification document passes only on a credential that proves the architect's session, and a role-holder " +
+				"publication only on one that proves legion-daemon:<project>. Turning it on makes a check stronger, so any " +
+				"credential that may write the project's issues turns it on and it needs no scope; turning it off weakens " +
+				"the check, so proven_sessions false needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and its " +
+				"event names the person. A list, a default repository or a setting the project already holds changes " +
+				"nothing and appends no event; another appends project.updated. A body that names none of the four " +
+				"fields, a blank default_assignee, a step that is none of the three or is named twice, and a " +
+				"default_repository that is not a repository GitHub could hold are 400 INVALID_PROJECT. Every field is " +
+				"written in one transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee " +
+				"where the patch named it. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 			Handler:  s.patchProjectV2,
 			Resource: "projects", Kind: kindItem, Key: "{key}",
 			Body:  requestBody{Kind: bodyJSON, Type: patchProjectV2Input{}},
 			Shape: routeShape{Status: http.StatusOK, Response: projectV2{}},
-			Authorities: []authorityRule{{
-				Where: authorityWhere{In: partBody, Name: "default_assignee"}, Scopes: person,
-			}},
+			Authorities: []authorityRule{
+				{Where: authorityWhere{In: partBody, Name: "default_assignee"}, Scopes: person},
+				{Where: authorityWhere{In: partBody, Name: "proven_sessions"}, Value: "false", Scopes: person},
+			},
 			Scope: scopeProject, ProjectOf: projectPathProject,
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, projectMissingRefusal, projectInputRefusal, assigneeNotSignedInRefusal,
@@ -532,16 +545,20 @@ type projectV2 struct {
 	// DefaultRepository is model.Project's DefaultRepo: the repository an issue of the project
 	// resolves to when neither the issue nor an issue above it names one. A project with none
 	// carries no member, as GET /api/v1/projects answers it.
-	DefaultRepository *string   `json:"default_repository,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	DefaultAssignee   *string   `json:"default_assignee,omitempty"`
+	DefaultRepository *string `json:"default_repository,omitempty"`
+	// ProvenSessions is model.Project's ProvenSessions: the project's proven-sessions setting,
+	// which PATCH /api/v2/projects/{key} writes.
+	ProvenSessions  bool      `json:"proven_sessions"`
+	CreatedAt       time.Time `json:"created_at"`
+	DefaultAssignee *string   `json:"default_assignee,omitempty"`
 }
 
 // projectV2Query reads the projects GET /api/v2/projects pages through, by key, each with its open
-// asks counted as GET /api/v1/projects counts them (projectOpenAsksJoin), its default repository
-// and its default assignee: every project, or the one $1 names, $2 of them from $3.
+// asks counted as GET /api/v1/projects counts them (projectOpenAsksJoin), its default repository,
+// its proven-sessions setting and its default assignee: every project, or the one $1 names, $2 of
+// them from $3.
 const projectV2Query = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.created_at, p.default_assignee
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at, p.default_assignee
 		from projects p` + projectOpenAsksJoin + `
 		where $1::text is null or p.key = $1
 		order by p.key
@@ -557,7 +574,7 @@ func (s *server) readProjectsV2(r *http.Request, key *string, limit, offset int,
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (projectV2, error) {
 		var project projectV2
 		var assignee string
-		if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepository, &project.CreatedAt, &assignee); err != nil {
+		if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepository, &project.ProvenSessions, &project.CreatedAt, &assignee); err != nil {
 			return projectV2{}, err
 		}
 		if withDefault {
@@ -599,12 +616,14 @@ func (s *server) createProjectV2(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusCreated, projectV2{
 		Key: created.Key, Name: created.Name, OpenAsks: created.OpenAsks, GatedSteps: created.GatedSteps,
-		DefaultRepository: created.DefaultRepo, CreatedAt: created.CreatedAt, DefaultAssignee: &created.DefaultAssignee,
+		DefaultRepository: created.DefaultRepo, ProvenSessions: created.ProvenSessions, CreatedAt: created.CreatedAt,
+		DefaultAssignee: &created.DefaultAssignee,
 	})
 }
 
-// patchProjectV2Input is PATCH /api/v2/projects/{key}'s body: the three columns of a project three
-// PUTs of /api/v1 wrote (the route map's J16), each absent to leave it as it stands.
+// patchProjectV2Input is PATCH /api/v2/projects/{key}'s body: the four columns of a project the
+// PUTs and the DELETE of /api/v1 wrote (the route map's J16, and the proven-sessions setting #4725
+// added), each absent to leave it as it stands.
 type patchProjectV2Input struct {
 	// DefaultAssignee is the email of the person the project's unowned work lands on, which
 	// needs the person scope; null leaves it as it stands, and blank is refused, since the default
@@ -617,20 +636,26 @@ type patchProjectV2Input struct {
 	// issue nor an issue above it names one: "owner/name" sets it and null clears it. It is held as
 	// its bytes because absent, null and a value are its three states (parseIssueRepo).
 	DefaultRepository json.RawMessage `json:"default_repository"`
-	Actor             *model.Actor    `json:"actor"`
+	// ProvenSessions turns the project's proven-sessions setting on (true), as PUT
+	// /api/v1/projects/{key}/proven-sessions does, or off (false), as its DELETE does, which needs
+	// the person scope (the row's authority rule).
+	ProvenSessions *bool        `json:"proven_sessions"`
+	Actor          *model.Actor `json:"actor"`
 }
 
 // patchProjectV2 answers PATCH /api/v2/projects/{key}: the writes PUT
-// /api/v1/projects/{key}/default-assignee, PUT /api/v1/projects/{key}/gated-steps and PUT
-// /api/v1/projects/{key}/default-repository make (writeProjectDefaultAssignee,
-// writeProjectGatedSteps, writeProjectDefaultRepository), each held to its own rule, in one
-// transaction, answered as the project GET /api/v2/projects lists. The default assignee is the
-// person's own call, so its event names the person the credential acts for (actingPerson), whose
-// person scope the authority gate has already held it to; the gated steps and the default
-// repository name the caller as any write does (requireActor). The default repository belongs to
-// the deployment, so a credential scoped to one project is refused it here, the project this path
+// /api/v1/projects/{key}/default-assignee, PUT /api/v1/projects/{key}/gated-steps, PUT
+// /api/v1/projects/{key}/default-repository and PUT and DELETE
+// /api/v1/projects/{key}/proven-sessions make (writeProjectDefaultAssignee,
+// writeProjectProvenSessions, writeProjectGatedSteps, writeProjectDefaultRepository), each held to
+// its own rule, in one transaction, answered as the project GET /api/v2/projects lists. The
+// default assignee is the person's own call, and turning the proven-sessions setting off weakens a
+// check, so a patch naming either writes its events as the person the credential acts for
+// (actingPerson), whose person scope the authority gate has already held it to; every other patch
+// names the caller as any write does (requireActor). The default repository belongs to the
+// deployment, so a credential scoped to one project is refused it here, the project this path
 // names included, as the PUT's write class refuses it (scopeDeployment); the row's own class,
-// scopeProject, is the other two fields'.
+// scopeProject, is the other three fields'.
 func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -653,13 +678,13 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if body.DefaultAssignee == nil && body.GatedSteps == nil && !repoNamed {
-		writeError(w, r, apicode.InvalidProject, "a patch of a project names default_assignee, gated_steps, default_repository or more than one of them")
+	if body.DefaultAssignee == nil && body.GatedSteps == nil && !repoNamed && body.ProvenSessions == nil {
+		writeError(w, r, apicode.InvalidProject, "a patch of a project names default_assignee, gated_steps, default_repository, proven_sessions or more than one of them")
 		return
 	}
 	var actor model.Actor
 	var ok bool
-	if body.DefaultAssignee != nil {
+	if body.DefaultAssignee != nil || (body.ProvenSessions != nil && !*body.ProvenSessions) {
 		actor, ok = s.actingPerson(w, r)
 	} else {
 		actor, ok = s.requireActor(w, r, body.Actor)
@@ -694,6 +719,19 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		events = append(events, event)
+	}
+	// The setting before the gated steps and the default repository: each of their writes reads
+	// the project row again under its owner lock, so its event carries the setting this patch
+	// wrote.
+	if body.ProvenSessions != nil {
+		event, err := s.writeProjectProvenSessions(r.Context(), tx, actor, &project, *body.ProvenSessions)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if event != nil {
+			events = append(events, *event)
+		}
 	}
 	if body.GatedSteps != nil {
 		event, err := s.writeProjectGatedSteps(r.Context(), tx, actor, &project, steps)

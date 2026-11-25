@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -68,11 +67,9 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
+	// The project is read under its owner lock, in the write's transaction (writeProjectGatedSteps):
+	// an unknown project is 404 PROJECT_NOT_FOUND there, before anything is written.
+	project := model.Project{Key: r.PathValue("key")}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -133,9 +130,12 @@ func validGatedSteps(w http.ResponseWriter, r *http.Request, member string, sent
 }
 
 // writeProjectGatedSteps stores steps as project's gated steps in tx where they differ from the
-// list the row holds, setting project.GatedSteps to the stored list, and appends project.updated,
-// answering the event for the caller to publish once tx commits. A list the row already holds
-// writes nothing and answers no event.
+// list the row holds, setting *project to the row as the write leaves it, and appends
+// project.updated, answering the event for the caller to publish once tx commits. A list the row
+// already holds writes nothing and answers no event. project names the project by its Key; the
+// row is read again here, under the owner lock, and an unknown project is 404 PROJECT_NOT_FOUND
+// before anything is written. PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps) and
+// PATCH /api/v2/projects/{key} (patchProjectV2) write the list through it alike.
 func (s *server) writeProjectGatedSteps(ctx context.Context, tx pgx.Tx, actor model.Actor, project *model.Project, steps []string) (*model.Event, error) {
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, putProjectDefaultAssignee, lockEventOwner). Taking the row first and the lock
@@ -148,16 +148,26 @@ func (s *server) writeProjectGatedSteps(ctx context.Context, tx pgx.Tx, actor mo
 	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project.Key)); err != nil {
 		return nil, err
 	}
-	if err := tx.QueryRow(ctx, `
-		update projects set gated_steps = $2
-		where key = $1 and gated_steps is distinct from $2
-		returning gated_steps
-	`, project.Key, steps).Scan(&project.GatedSteps); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
+	// The row is read under the owner lock, which every writer of the row takes first, so the
+	// event carries the row as this write leaves it. The read comes before the update, which
+	// assigns the transaction id, so it adds no statement to the window an open transaction id
+	// holds (TestXidWindowRouteTable).
+	read, err := s.loadProject(ctx, tx, project.Key)
+	if err != nil {
 		return nil, err
 	}
+	*project = read
+	written, err := tx.Exec(ctx, `
+		update projects set gated_steps = $2
+		where key = $1 and gated_steps is distinct from $2
+	`, project.Key, steps)
+	if err != nil {
+		return nil, err
+	}
+	if written.RowsAffected() == 0 {
+		return nil, nil
+	}
+	project.GatedSteps = steps
 	event, err := s.appendEvent(ctx, tx, projectOwner(project.Key).event("project.updated", actor, *project))
 	if err != nil {
 		return nil, err

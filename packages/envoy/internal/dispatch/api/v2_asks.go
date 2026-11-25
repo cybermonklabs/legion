@@ -150,7 +150,8 @@ func (s *server) v2AskRows() []routeRow {
 				"A body naming both, or neither, is 400 INVALID_ASK. A bearer names its session in actor on a reword; a hand-on " +
 				"is the person's act, recorded as the person the credential acts for. Answers the ask as GET " +
 				"/api/v2/asks/{id} reads it. An ask that is not open is 409 ASK_NOT_OPEN, an approval request's wording 409 " +
-				"ASK_KIND_FIXED, an ask on a closed issue 409 ISSUE_CLOSED; 404 ASK_NOT_FOUND.",
+				"ASK_KIND_FIXED, an ask on a closed issue 409 ISSUE_CLOSED; 404 ASK_NOT_FOUND. " +
+				specWriterDocumentText("a reword of a block ask in its spec or Verification document"),
 			Handler:  s.editAskV2,
 			Resource: "asks", Kind: kindItem, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: editAskV2Input{}},
@@ -165,6 +166,7 @@ func (s *server) v2AskRows() []routeRow {
 				apicode.Refusal{Condition: apicode.AskNotOpenToEdit, Code: apicode.AskNotOpen},
 				apicode.Refusal{Condition: apicode.AskKindChange, Code: apicode.AskKindFixed},
 				apicode.Refusal{Condition: apicode.AskBlockUnrepresentable, Code: apicode.AskBlockText},
+				specWriterNotArchitectRefusal,
 			),
 		},
 		{
@@ -213,7 +215,9 @@ func (s *server) v2AskRows() []routeRow {
 				"answers 200 and writes nothing; any other first answer to an answered ask, and a resolve or a decline of one, " +
 				"is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. Answers the ask as GET /api/v2/asks/{id} reads it; " +
 				"400 STATE_INVALID for any other state, 400 INVALID_ANSWER, INVALID_RESOLUTION or CAP_EXCEEDED for a body its " +
-				"state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND.",
+				"state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. " +
+				specWriterDocumentText("a retraction or a resolution of a block ask whose block, or a copy of it, is in its "+
+					"spec or Verification document,"),
 			Handler:  s.putAskStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{
@@ -241,6 +245,7 @@ func (s *server) v2AskRows() []routeRow {
 				apicode.Refusal{Condition: apicode.ResolutionInvalid, Code: apicode.InvalidResolution},
 				apicode.Refusal{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
 				reasonMissingRefusal,
+				specWriterNotArchitectRefusal,
 			),
 		},
 		{

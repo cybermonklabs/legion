@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -554,12 +555,11 @@ func (r *heldReplay) endedWith() error {
 // same socket opens while the replay waits, and an unsubscribe ends the waiting view at once,
 // cancelling its request rather than waiting the request out.
 //
-// The replay's own timeout (agentStreamReplayTimeout) ends the held request whatever the test does,
-// and a loaded machine can take that long between the request and the test's checks: an attempt
-// the timeout overtook shows neither claim, so the attempt is made again, on a socket of its own,
-// until one shows both. A read loop that waits on the replay opens the second view only once the
-// replay has ended, and a view that waits its request out never ends it cancelled, so either
-// fails at the test binary's deadline, naming the last attempt.
+// The replay's own timeout (agentStreamReplayTimeout) runs on the server's clock, a fake no one
+// moves here, so the held request ends only by the release or by its view's end, however long a
+// loaded machine takes between the request and the row's checks. A read loop that waits on the
+// replay never opens the second view, and a view that waits its request out never ends it
+// cancelled, so either fails by the name of the wait it holds.
 func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	t.Parallel()
 	memory := agentstream.NewMemory()
@@ -567,48 +567,30 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	memory.SetResponder(reviewerSessionID, true)
 	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan *heldReplay, 4), release: make(chan struct{})}
 	t.Cleanup(func() { close(source.release) })
-	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
+	// The server's clock is held: the replay's wait (agentStreamReplayTimeout) never ends on it, and
+	// neither does any other timer of the server's, so a row that came to wait on one would reach
+	// the binary's deadline, where testwait ends it by name.
+	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, clock: clocktest.Held()}, nil)
 
-	attempts := 0
-	testwait.Until(t, "an attempt in which the reviewer's view opened while the planner's replay waited, and the planner's unsubscribe cancelled that replay", func() (string, bool) {
-		attempts++
-		client := rig.dial(t, asUser("alice"))
-		client.subscribeAgent(t, "planner", plannerSessionID)
-		replay := testwait.Receive(t, "the planner's view's request for its replay", source.asked)
-		client.subscribeAgent(t, "reviewer", reviewerSessionID)
-		for {
-			next := client.next(t, "the reviewer's first frame")
-			frame, ok := next.(LiveAgentFrame)
-			if ok && frame.Sub == "reviewer" && frame.Event == "responder" {
-				if data := string(frame.Data); data != `{"v":1,"responding":true}` {
-					t.Fatalf("the reviewer's first frame has data %s", data)
-				}
-				break
-			}
-			// The planner's view answers once its replay has ended, which the replay's timeout can
-			// do first.
-			if !ok || frame.Sub != "planner" || frame.Event != "responder" || replay.endedWith() == nil {
-				t.Fatalf("frame = %+v, want the reviewer's responder", next)
-			}
-		}
-		// Nil when the planner's replay still waited as the reviewer's view opened.
-		opened := replay.endedWith()
+	client := rig.dial(t, asUser("alice"))
+	client.subscribeAgent(t, "planner", plannerSessionID)
+	replay := testwait.Receive(t, "the planner's view's request for its replay", source.asked)
+	client.subscribeAgent(t, "reviewer", reviewerSessionID)
+	// The planner's view answers only once its replay has ended, which nothing ends yet, so the
+	// first frame is the reviewer's.
+	if data := client.agentFrame(t, "reviewer", "responder"); data != `{"v":1,"responding":true}` {
+		t.Fatalf("the reviewer's first frame has data %s", data)
+	}
+	if ended := replay.endedWith(); ended != nil {
+		t.Fatalf("the reviewer's view opened once the planner's replay had ended (%v), want it opened while that replay waited", ended)
+	}
 
-		stopped := time.Now()
-		client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
-		waitUntil(t, "the unsubscribed view's end", func() bool { return memory.Viewers(plannerSessionID) == 0 })
-		t.Logf("the waiting view ended %s after its unsubscribe", time.Since(stopped))
-		switch cancelled := replay.endedWith(); {
-		case opened != nil:
-			_ = client.conn.Close()
-			return fmt.Sprintf("attempt %d: the reviewer's view opened once the planner's replay had ended (%v)", attempts, opened), false
-		case !errors.Is(cancelled, context.Canceled):
-			_ = client.conn.Close()
-			return fmt.Sprintf("attempt %d: the planner's replay ended %v, not cancelled by its unsubscribe", attempts, cancelled), false
-		}
-		client.quiet(t, 300*time.Millisecond, "after the waiting view was unsubscribed")
-		return fmt.Sprintf("attempt %d", attempts), true
-	})
+	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
+	waitUntil(t, "the unsubscribed view's end", func() bool { return memory.Viewers(plannerSessionID) == 0 })
+	if cancelled := replay.endedWith(); !errors.Is(cancelled, context.Canceled) {
+		t.Fatalf("the planner's replay ended %v, want it cancelled by its unsubscribe", cancelled)
+	}
+	client.quiet(t, 300*time.Millisecond, "after the waiting view was unsubscribed")
 }
 
 // failingSource is the in-memory relay whose subscribe or watch fails, as a NATS connection that is

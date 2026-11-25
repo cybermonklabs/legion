@@ -1047,8 +1047,8 @@ func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []ma
 	}
 	defer tx.Rollback(ctx)
 	// The transaction holds owner rows `for share` while its writes run, as the dismissal's own
-	// does, so it is held to the same bound (inboxReadStatementTimeout).
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	// does, so it is held to the same bound (boundInboxStatements).
+	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the marks' statements: %w", err)
 	}
 	login := model.CanonicalLogin(actor.ID)

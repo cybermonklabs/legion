@@ -220,23 +220,33 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 }
 
 // decisionBlockRouteHandlers is every keyed write route of the table (keyedRouteNames), by
-// "<method> <pattern>", with the handler bodies its row mounts. It is read from the source of the
-// functions that declare the rows (tableRowsInSource) rather than from a server's own table so
-// that each row's handler comes with it: a handler read at run time is a function value, and what
-// this guard asks is what that function's source runs.
+// "<method> <pattern>", with the handler bodies its row mounts (routeTableHandlers).
 func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
 	keyed := keyedRouteNames()
+	routes := routeTableHandlers(t, graph, func(name string) bool { return keyed[name] })
+	if len(routes) == 0 {
+		t.Fatal("the guard reads no keyed write row off the routes table")
+	}
+	return routes
+}
+
+// routeTableHandlers is every route of the table, its test hooks in, whose "<method> <pattern>"
+// keep keeps, by that name, with the handler bodies its row mounts: none for a handler the graph
+// does not resolve, which its caller judges. Every /api/v1 and /api/v2 mount of a row is a route
+// of its own here. It is read from the source of the functions that declare the rows
+// (tableRowsInSource) rather than from a server's own table so that each row's handler comes with
+// it: a handler read at run time is a function value, and what a guard asks is what that
+// function's source runs.
+func routeTableHandlers(t *testing.T, graph *lockGraph, keep func(name string) bool) map[string][]*lockFunction {
+	t.Helper()
 	routes := map[string][]*lockFunction{}
 	for _, row := range tableRowsInSource(t, graph) {
 		for _, name := range row.names {
-			if keyed[name] {
+			if keep(name) {
 				routes[name] = graph.functionValue(row.handler)
 			}
 		}
-	}
-	if len(routes) == 0 {
-		t.Fatal("the guard reads no keyed write row off the routes table")
 	}
 	return routes
 }

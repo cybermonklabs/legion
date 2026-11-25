@@ -20,9 +20,10 @@ func init() { addTourSteps("projects", projectsTourSteps) }
 
 // projectsTourSteps are the route tour's steps of the project, architecture, repository,
 // near-copy check, priority, settings and related-search routes: each route, the project list with
-// its default assignees, the project patch of its gated steps alone by the deployment's daemon and
-// of its default repository alone, the sync of one named source and of every source, the related
-// search with the other projects' questions, and the priorities' count alone at limit 0.
+// its default assignees, the project patch of its gated steps alone by the deployment's daemon, of
+// its default repository alone, and of its proven-sessions setting on by the deployment's daemon
+// and off by a person, the sync of one named source and of every source, the related search with
+// the other projects' questions, and the priorities' count alone at limit 0.
 func projectsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	projectMissing := []tourMissing{{Param: "key", Value: "NOPE", Code: apicode.ProjectNotFound}}
@@ -93,6 +94,33 @@ func projectsTourSteps() []tourStep {
 			Method: http.MethodPatch, Pattern: "/projects/{key}", Name: "its default repository",
 			Status:  http.StatusOK,
 			Setup:   onProject(nil, map[string]any{"default_repository": "Tour/Default-Repository.git"}),
+			Missing: projectMissing,
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/projects/{key}", Name: "its proven-sessions setting on, by the deployment's daemon",
+			Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				return tourRequest{
+					Path: map[string]string{"key": tour.project(t)},
+					Body: map[string]any{
+						"proven_sessions": true,
+						"actor":           map[string]any{"kind": "session", "id": tourSession},
+					},
+					As: tourBearer("agent-token"),
+				}
+			},
+			Missing: projectMissing,
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/projects/{key}", Name: "its proven-sessions setting off, by a person",
+			Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				key := tour.project(t)
+				if on := dispatchRequest(t, tour.handler, http.MethodPut, "/api/v1/projects/"+key+"/proven-sessions", nil, "alice"); on.Code != http.StatusOK {
+					t.Fatalf("turn %s's proven-sessions setting on: %d %s", key, on.Code, on.Body.String())
+				}
+				return tourRequest{Path: map[string]string{"key": key}, Body: map[string]any{"proven_sessions": false}, As: alice}
+			},
 			Missing: projectMissing,
 		},
 		{

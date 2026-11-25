@@ -62,6 +62,18 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyProjectGatedSteps, window: storetest.XidWindowOf(3,
 			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
 	},
+	// The read of the project the two proven-sessions routes answer with runs after their
+	// transaction has ended, so it is outside the window.
+	{
+		name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOn, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
+	{
+		name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOff, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
 	{
 		name: "the handoff route", route: "POST /api/v1/issues/{key}/handoffs/{phase} (recordHandoff)",
 		ready: readyHandoff, window: storetest.XidWindowOf(3,

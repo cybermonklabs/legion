@@ -227,6 +227,15 @@ var (
 	// RoleHolderNotTheDaemon is a role-holder set written by any actor but its project's Legion
 	// daemon session.
 	RoleHolderNotTheDaemon = Condition{"role holders from another than the project's daemon"}
+	// RoleHolderSessionUnproven is a role-holder set written, on a project whose proven-sessions
+	// setting is on, by a credential that does not prove the daemon's session.
+	RoleHolderSessionUnproven = Condition{"role holders on a credential that does not prove the daemon's session"}
+	// SpecWriterNotArchitect is a write of the spec or the Verification document of an issue
+	// Legion runs - a version of the document, a create or a move under a parent, a close, a
+	// reopen, or a write that takes the issue out of Legion - by a session that is no person and
+	// no architect of the issue or of an issue above it, or by such an architect's session on a
+	// credential that does not prove it while the project's proven-sessions setting is on.
+	SpecWriterNotArchitect = Condition{"spec or Verification document of a Legion-run issue written by no person and no architect of it"}
 	// DirectThreadWithoutSession is a direct conversation read by a credential without the person
 	// scope that names no session.
 	DirectThreadWithoutSession = Condition{"direct conversation read with no session named"}

@@ -198,6 +198,8 @@ PUT /api/v1/projects/{key}/default-assignee
 PUT /api/v1/projects/{key}/default-repository # #4457, each project has an optional default repository, and Dispatch writes no repository mapping
 PUT /api/v1/projects/{key}/gated-steps
 GET /api/v1/projects/{key}/plans # #4488, each retro rates the plan its issue ran
+DELETE /api/v1/projects/{key}/proven-sessions # #4725, a project's proven-sessions setting, which PATCH /api/v2/projects/{key} writes
+PUT /api/v1/projects/{key}/proven-sessions # #4725, a project's proven-sessions setting, which PATCH /api/v2/projects/{key} writes
 GET /api/v1/projects/{key}/related
 POST /api/v1/projects/{key}/related
 GET /api/v1/reference-targets # #4178, the reads the new issue page needs

@@ -425,7 +425,8 @@ func (s *server) v2DocumentRows() []routeRow {
 				"longer meets, 409 EDIT_LOST_TO_CONCURRENT_CHANGE {code, error, lost_ops or suggestion, participants} for text " +
 				"a concurrent change removed first, 409 TARGET_AMBIGUOUS {code, error, candidates} for a quote found in several " +
 				"places, 409 ISSUE_CLOSED, 400 INVALID_OP, 400 REPLACE_FIELDS for a replace that names no with or carries a " +
-				"member a replace does not take (it takes find, with and occurrence), 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
+				"member a replace does not take (it takes find, with and occurrence), 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND. " +
+				specWriterDocumentText("an edit of its spec or Verification document"),
 			Handler:  s.editArtifactV2,
 			Resource: "edits", Kind: kindCollection,
 			Body: requestBody{Kind: bodyJSON, Type: editArtifactInput{}},
@@ -452,6 +453,7 @@ func (s *server) v2DocumentRows() []routeRow {
 				apicode.Refusal{Condition: apicode.TableRowsTooWide, Code: apicode.TableWidth},
 				apicode.Refusal{Condition: apicode.EditPreconditionMalformed, Code: apicode.InvalidPrecondition},
 				apicode.Refusal{Condition: apicode.ConditionalEditsQueued, Code: apicode.EditQueueFull},
+				specWriterNotArchitectRefusal,
 			),
 		},
 		{
@@ -599,7 +601,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/versions", Auth: authAny, Versions: onlyV2,
 			Description: "Name a document's current version {summary, actor?}, a bearer naming its session in actor: a new " +
 				"named version of the live document, and artifact.version appended. Answers 201 the version. 400 " +
-				"INVALID_VERSION for a blank summary, 400 NOT_DOCUMENT, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND.",
+				"INVALID_VERSION for a blank summary, 400 NOT_DOCUMENT, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND. " +
+				specWriterDocumentText("a named version of its spec or Verification document"),
 			Handler:  s.createNamedVersionV2,
 			Resource: "versions", Kind: kindCollection, Key: "{number}",
 			Body:  requestBody{Kind: bodyJSON, Type: createVersionInput{}},
@@ -609,6 +612,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Refusals: documentRefusals(
 				undeclaredKeyRefusal, documentMissingRefusal, issueClosedRefusal, artifactNotDocumentRefusal,
 				apicode.Refusal{Condition: apicode.VersionSummaryBlank, Code: apicode.InvalidVersion},
+				specWriterNotArchitectRefusal,
 			),
 		},
 		{
@@ -664,7 +668,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Description: "Upload an issue document or file. " + artifactUploadText + " " + artifactUploadPreconditionText +
 				" " + artifactUploadRoleText + " " + artifactUploadAnswerText + " " + artifactUploadRefusals("") +
 				" The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one " +
-				"that does not exist, both answered before the body is read.",
+				"that does not exist, both answered before the body is read. " +
+				specWriterDocumentText("an upload of its spec or Verification document, a file under the name verification.md among them,"),
 			Handler:  s.uploadIssueArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
@@ -677,7 +682,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			RefusesClosedOwner: true,
 			Refusals: documentContentRefusals(
-				uploadBodyRefusals(issueMissingRefusal, documentPreconditionRefusal, roleDocumentNameRefusal)...,
+				uploadBodyRefusals(issueMissingRefusal, documentPreconditionRefusal, roleDocumentNameRefusal, specWriterNotArchitectRefusal)...,
 			),
 		},
 		{

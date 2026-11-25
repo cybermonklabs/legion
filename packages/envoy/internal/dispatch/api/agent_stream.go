@@ -123,11 +123,12 @@ func (q *agentStreamQueue) release(size int) {
 // replayAgentStream asks the session for its history, reporting separately whether anyone
 // answered at all. Only ErrNoResponder means nobody did: a timeout leaves the question open
 // (somebody may be there and slow), and the viewer is not told a live session cannot stream on
-// the strength of one slow answer.
+// the strength of one slow answer. The wait for the answer is agentStreamReplayTimeout on the
+// server's clock, so a test that holds a replay decides when that wait ends.
 func (s *server) replayAgentStream(
 	ctx context.Context, source agentstream.Source, sessionID string,
 ) (agentstream.Frame, bool) {
-	replayCtx, cancel := context.WithTimeout(ctx, agentStreamReplayTimeout)
+	replayCtx, cancel := s.clock().WithTimeout(ctx, agentStreamReplayTimeout)
 	defer cancel()
 	replay, err := source.Replay(replayCtx, sessionID)
 	if errors.Is(err, agentstream.ErrNoResponder) {

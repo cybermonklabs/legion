@@ -239,7 +239,11 @@ func (s *server) v2IssueRows() []routeRow {
 				"related items (outcome found, none or not_made with the reason in missing), how it searched, the three items "+
 				"most like the new issue with each ask item's answer state, words to search with by hand (search_query), and "+
 				"under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on "+
-				"itself through its parent is 409 ISSUE_CYCLE.", contracts.IssueTitleMax),
+				"itself through its parent is 409 ISSUE_CYCLE. When Legion runs the new issue, because it or an issue of its "+
+				"own project above it carries the label legion, a create under a parent by a session that is no person and "+
+				"no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. A create under a "+
+				"parent of another project is judged as a root of the new issue's own project, which this check does not "+
+				"judge.", contracts.IssueTitleMax),
 			// A new child is checked against its parent's status under the same lock as /api/v1.
 			Handler:  s.createIssueV2,
 			Resource: "issues", Kind: kindCollection, Key: "{key}",
@@ -267,6 +271,7 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
 				apicode.Refusal{Condition: apicode.TitleNearCopy, Code: apicode.PossibleDuplicate},
 				apicode.Refusal{Condition: apicode.ParentOutsideCallerProject, Code: apicode.ProjectScope},
+				specWriterNotArchitectRefusal,
 			)...),
 		},
 		{
@@ -343,7 +348,16 @@ func (s *server) v2IssueRows() []routeRow {
 				"the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and "+
 				"the progress of a keyed attempt. A dry run returns the plan without writing. This form answers "+
 				"{issue, changed}; a refusal carries the changes that committed before it. Closing with include_children "+
-				"requires a browser sign-in. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
+				"requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that "+
+				"takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a "+
+				"session that is no person, no architect of the issue or of an issue above it, and not the session of the "+
+				"project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 "+
+				"DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of "+
+				"an issue above it; a move under a parent of another project is judged as a root of the issue's own "+
+				"project, which this check does not judge. When Legion runs the issue, or an issue under it, before the "+
+				"move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that "+
+				"is no person and no architect of each such issue or of an issue above it where it stands. Neither check "+
+				"of a move passes the session of the project's Legion daemon. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
@@ -387,6 +401,7 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.ParentLockContended, Code: apicode.ParentContended},
 				rankInvalidRefusal,
 				apicode.Refusal{Condition: apicode.IssueRouteInvalid, Code: apicode.RouteInvalid},
+				specWriterNotArchitectRefusal,
 			)...),
 		},
 		{
