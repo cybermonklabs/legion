@@ -18,10 +18,11 @@ import (
 // first, so that its first read sees the commit git made and it sets that commit's author as for
 // any other. A workspace with no git working tree compares nothing. The helpers here read the
 // comparison's commands (checkCompared) and the step's snapshot ahead of its first read of what
-// the push sends (checkSnapshotFirst), run a push of a commit git made (rolePushGitMade) and make a
-// commit with git alone (gitCommitWrite); jj_push_test.go uses checkCompared, rolePushGitMade and
-// gitCommitWrite, and jj_push_snapshot_test.go checkCompared. As jj_push_test.go does, the file
-// names nothing the step's change adds, so it compiles and runs at the base too.
+// the push sends (checkSnapshotFirst), run a push of a commit git made (rolePushGitMade), make a
+// commit with git alone (gitCommitWrite) and rebase the branch work with git alone
+// (gitRebaseWork); jj_push_test.go uses checkCompared, rolePushGitMade and gitCommitWrite, and
+// jj_push_snapshot_test.go checkCompared. As jj_push_test.go does, the file names nothing the
+// step's change adds, so it compiles and runs at the base too.
 
 // rolePushComparisonRead is one of the step's jj reads of its comparison of git's HEAD and
 // branches with jj's: its name, whether it reads what the comparison compares, and whether a
@@ -34,13 +35,10 @@ type rolePushComparisonRead struct {
 }
 
 // rolePushComparisonReads are the comparison's jj reads: the read of the workspace's root (`jj
-// workspace root`, or `jj root`, which prints the same), which decides whether there is a git
-// working tree to compare, and the reads of what it compares, @'s first parent and jj's @git
-// bookmarks.
+// workspace root`), which decides whether there is a git working tree to compare, and the reads
+// of what it compares, @'s first parent and jj's @git bookmarks.
 var rolePushComparisonReads = []rolePushComparisonRead{
-	{name: "jj workspace root", is: func(c rolePushCall) bool {
-		return c.pair() == [2]string{"workspace", "root"} || c.pair()[0] == "root"
-	}},
+	{name: "jj workspace root", is: func(c rolePushCall) bool { return c.pair() == [2]string{"workspace", "root"} }},
 	{name: "jj log -r first_parent(@)", compares: true, is: func(c rolePushCall) bool { return c.pair()[0] == "log" && c.has("first_parent(@)") }},
 	{name: "jj bookmark list --all-remotes", compares: true, is: func(c rolePushCall) bool {
 		return c.pair() == [2]string{"bookmark", "list"} && c.has("--all-remotes")
@@ -179,23 +177,35 @@ func (f *rolePushFixture) gitCommitWrite(as rolePushIdentity, commit ...string) 
 	return strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD"))
 }
 
+// gitRebaseWork makes, with jj, base, a commit of the implementer's on main, and c, an unpushed
+// commit on main that the reviewer made with the implementer's trailer, and puts the bookmark
+// work on c; then with git alone, as the implementer, it rebases work onto base (`git rebase`,
+// which leaves git's HEAD on work). It answers base, c and made, the commit git's work names after
+// that rebase, which is a new commit.
+func (f *rolePushFixture) gitRebaseWork() (base, c rolePushChange, made string) {
+	f.t.Helper()
+	impl := rolePushImplementer
+	base = f.commitOn(impl, impl, "main", "base\n")
+	c = f.commitOn(rolePushReviewer, impl, "main", rolePushMessage("work", "implementer"))
+	f.bookmark("work", c.commit)
+	run := f.runner(f.setupPath, impl)
+	run.Run(f.repo, f.git, "rebase", "--quiet", base.commit, "work")
+	made = strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "work"))
+	if made == c.commit {
+		f.t.Fatalf("git rebase left work on %s, want a new commit", made)
+	}
+	return base, c, made
+}
+
 // A git rebase of a branch under @, git alone, of an unpushed commit that the reviewer made with
-// the implementer's trailer, onto a commit of the implementer's, then a push that names the
-// rebased commit by its id: the remote gets that commit with the implementer's author, and the
-// commit below it as it is (rolePushGitMade).
+// the implementer's trailer, onto a commit of the implementer's (gitRebaseWork), then a push that
+// names the rebased commit by its id: the remote gets that commit with the implementer's author,
+// and the commit below it as it is (rolePushGitMade).
 func TestAPushAfterAGitRebaseOfAnotherRolesCommitSetsTheTrailersAuthor(t *testing.T) {
 	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
+	impl := rolePushImplementer
 	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
-		base := f.commitOn(impl, impl, "main", "base\n")
-		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-		f.bookmark("work", c.commit)
-		run := f.runner(f.setupPath, impl)
-		run.Run(f.repo, f.git, "rebase", "--quiet", base.commit, "work")
-		made := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "work"))
-		if made == c.commit {
-			f.t.Fatalf("git rebase left work on %s, want a new commit", made)
-		}
+		base, _, made := f.gitRebaseWork()
 		return made, []rolePushCommit{{change: base.change, author: impl, commit: base.commit}}, false
 	})
 }
@@ -219,27 +229,20 @@ func TestAPushAfterAGitCommitOnTheDetachedHeadSetsTheTrailersAuthor(t *testing.T
 }
 
 // A git rebase of the branch work, git alone, of an unpushed commit that the reviewer made with
-// the implementer's trailer, onto a commit of the implementer's, then a git checkout of the
-// commit it rebased, detached, where jj had left git's HEAD: git moved work and left HEAD on @'s
-// first parent. The step's comparison of git's branches with jj's @git bookmarks finds the branch
-// git moved (spec v35 R1), so the step takes its one snapshot before its first read of what the
-// push sends (checkSnapshotFirst), which imports the rebased commit: `jj git push -b work` sends
-// it with the implementer's author, and the commit below it as it is.
+// the implementer's trailer, onto a commit of the implementer's (gitRebaseWork), then a git
+// checkout of the commit it rebased, detached, where jj had left git's HEAD: git moved work and
+// left HEAD on @'s first parent. The step's comparison of git's branches with jj's @git bookmarks
+// finds the branch git moved (spec v35 R1), so the step takes its one snapshot before its first
+// read of what the push sends (checkSnapshotFirst), which imports the rebased commit: `jj git push
+// -b work` sends it with the implementer's author, and the commit below it as it is.
 func TestAPushAfterAGitRebaseThatMovesOnlyABranchSetsTheTrailersAuthor(t *testing.T) {
 	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
+	impl := rolePushImplementer
 	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushRecords)
-		base := f.commitOn(impl, impl, "main", "base\n")
-		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-		f.bookmark("work", c.commit)
+		base, c, made := f.gitRebaseWork()
 		run := f.runner(f.setupPath, impl)
-		run.Run(f.repo, f.git, "rebase", "--quiet", base.commit, "work")
 		run.Run(f.repo, f.git, "checkout", "--quiet", "--detach", c.commit)
-		made := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "work"))
-		if made == c.commit {
-			t.Fatalf("git rebase left work on %s, want a new commit", made)
-		}
 		if head, parent := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD")), f.read("first_parent(@)").commit; head != parent {
 			t.Fatalf("git's HEAD is on %s, want it on @'s first parent %s, where jj left it", head, parent)
 		}
