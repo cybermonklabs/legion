@@ -274,6 +274,9 @@ const RELEASE_NAMES: readonly (readonly [string, string, boolean?])[] = [
   ["parkPauseHeldLaunch", "delayPauseHeldLaunch"],
   ["parkedLaunchKeepsThePod", "delayedLaunchKeepsThePod"],
   ["runParkedLaunch", "runDelayedLaunch"],
+  ["wokenParked", "wokenDelayed"],
+  ["parkingPace", "delayPace"],
+  ["parkedWakeLetOut", "delayedWakeLetOut"],
   ["wantLaunchParked", "wantLaunchDelayed"],
   [
     "TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles",

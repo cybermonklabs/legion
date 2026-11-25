@@ -6,7 +6,7 @@ body: |-
     previous request's cached prefix, and a cut of the context breaks that prefix only where the
     cut saves more than the cache write it causes. Do not set `task.disabledAgents` in the pods'
     Oh My Pi settings overlay on this build: the cache fix does not yet cover a disabled agent,
-    and a subagent revived from an idle session keeps the prompt of a setting that was set back.
+    and a subagent revived from its saved session keeps the prompt of a setting that was set back.
     The build writes shell frames version 37: a frame stored by `18.18.6-sami.20261123-024918`
     (version 31) is refused, not restored. Its SQL session store makes and checks the same
     tables, indexes and grants as `18.18.6-sami.20261123-024918`, so a deployment already on that

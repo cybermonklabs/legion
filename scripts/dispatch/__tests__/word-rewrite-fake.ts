@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { Ancestry, DaemonStates } from "../word-rewrite/daemons.ts";
 import {
+  type Actor,
   type DispatchReads,
   type DispatchWrites,
   ReadError,
   type ReplaceOp,
+  type Version,
   type WriteOutcome,
 } from "../word-rewrite/dispatch-api.ts";
 import type { Model } from "../word-rewrite/gateway.ts";
@@ -111,6 +113,25 @@ export function blocksOf(markdown: string) {
     index = end + 1;
   }
   return blocks;
+}
+
+/** A document's versions, each its authors and its markdown, served as `versions/<n>` serves
+ *  them: a past version lists typed blocks alone, so these plain paragraphs list none. */
+export function history(versions: readonly { authors: Actor[] | null; markdown: string }[]) {
+  const listed: Version[] = versions.map((version, index) => ({
+    number: index + 1,
+    authors: version.authors,
+  }));
+  const reads = {
+    read: [] as number[],
+    version: async (_id: string, number: number) => {
+      reads.read.push(number);
+      const version = versions[number - 1];
+      if (version === undefined) throw new Error(`no version ${number}`);
+      return { markdown: version.markdown, number, authors: version.authors, blocks: [] };
+    },
+  };
+  return { listed, reads };
 }
 
 export interface FakeDocument {

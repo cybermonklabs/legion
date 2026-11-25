@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Authorship, titleAuthor, versionClass } from "../word-rewrite/authorship.ts";
 import { type Actor, Artifact, Event, Text, type Version } from "../word-rewrite/dispatch-api.ts";
-import { fixture } from "./word-rewrite-fake.ts";
+import { fixture, history } from "./word-rewrite-fake.ts";
 
 const session: Actor = { kind: "session", id: "s1" };
 const person: Actor = { kind: "user", id: "alice" };
@@ -17,25 +17,6 @@ function capturedVersions(name: string): Version[] {
     throw new Error(`issue-artifacts.json lists no versions of ${name}`);
   }
   return found.versions;
-}
-
-/** A document's versions, each its authors and its markdown, served as `versions/<n>` serves
- *  them: a past version lists typed blocks alone, so these plain paragraphs list none. */
-function history(versions: readonly { authors: Actor[] | null; markdown: string }[]) {
-  const listed: Version[] = versions.map((version, index) => ({
-    number: index + 1,
-    authors: version.authors,
-  }));
-  const reads = {
-    read: [] as number[],
-    version: async (_id: string, number: number) => {
-      reads.read.push(number);
-      const version = versions[number - 1];
-      if (version === undefined) throw new Error(`no version ${number}`);
-      return { markdown: version.markdown, number, authors: version.authors, blocks: [] };
-    },
-  };
-  return { listed, reads };
 }
 
 function block(text: string, sentence = text) {

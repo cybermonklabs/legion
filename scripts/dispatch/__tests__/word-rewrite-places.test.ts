@@ -12,7 +12,7 @@ import {
 import { builtInMap } from "../word-rewrite/name-map.ts";
 import { holdsWord } from "../word-rewrite/pattern.ts";
 import { PLACE_REASONS, type PlaceReason } from "../word-rewrite/places.ts";
-import { FakeDispatch, fixture, input } from "./word-rewrite-fake.ts";
+import { FakeDispatch, fixture, history, input } from "./word-rewrite-fake.ts";
 
 const CONTRACT = 220;
 const ENTRIES = builtInMap(CONTRACT);
@@ -199,11 +199,12 @@ const ROWS: Record<PlaceReason, () => Promise<string | null>> = {
   "unknown-author": async () => {
     const id = "00000000-0000-4000-8000-00000000abcd";
     const markdown = input("no-authors");
+    const { listed, reads: versionReads } = history([{ authors: null, markdown }]);
     const reads: DispatchReads = {
       ...fixtureReads({ [id]: { markdown, token: "sha256:2", version: 1 } }),
-      version: async () => ({ markdown, number: 1, authors: null, blocks: [] }),
+      version: versionReads.version,
     };
-    const item = mainIssueDocument(id, "legacy.md", [{ number: 1, authors: null }]);
+    const item = mainIssueDocument(id, "legacy.md", listed);
     return (await examine(context(reads), item)).occurrences[0]?.reason ?? null;
   },
   "code-name-not-yet": async () => {
@@ -243,6 +244,7 @@ describe("the places a program can tell", () => {
     const kept = "The second paragraph says the plan was parked on Tuesday.";
     const made = `The first paragraph says the notes were parked.\n\n${kept}\n`;
     const changed = `The first paragraph says the notes were parked on Monday.\n\n${kept}\n`;
+    const fixtures = fixtureReads({ [id]: { markdown: changed, token: "sha256:4", version: 2 } });
     for (const authors of [
       null,
       [{ kind: "system", id: "document-settlement" }],
@@ -251,22 +253,11 @@ describe("the places a program can tell", () => {
         { kind: "session", id: "s1" },
       ],
     ] satisfies (Actor[] | null)[]) {
-      const versions = [
-        { number: 1, authors: [{ kind: "session", id: "s1" }], markdown: made },
-        { number: 2, authors, markdown: changed },
-      ];
-      const reads: DispatchReads = {
-        ...fixtureReads({ [id]: { markdown: changed, token: "sha256:4", version: 2 } }),
-        version: async (_id, number) => {
-          const version = versions[number - 1];
-          if (version === undefined) throw new Error(`no version ${number}`);
-          return { ...version, blocks: [] };
-        },
-      };
-      const listed = versions.map((version) => ({
-        number: version.number,
-        authors: version.authors,
-      }));
+      const { listed, reads: versionReads } = history([
+        { authors: [{ kind: "session", id: "s1" }], markdown: made },
+        { authors, markdown: changed },
+      ]);
+      const reads: DispatchReads = { ...fixtures, version: versionReads.version };
       const examined = await examine(context(reads), mainIssueDocument(id, "notes.md", listed));
       expect(reasonAfter(examined, "The first paragraph")).toBe("unknown-author");
       expect(reasonAfter(examined, "The second paragraph")).toBeNull();
