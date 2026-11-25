@@ -102,6 +102,11 @@ type Deps struct {
 	// production and for a caller that builds Deps itself; a test of this package sets them.
 	idle           func()
 	coverageParked func(awaitingAnswer bool)
+	// identityRecheck, when positive, is the coverage loop's interval in place of
+	// identityRecheckInterval (recheckInterval): a test of the recheck runs its own Run's in
+	// seconds, beside tests whose Run keeps ten minutes. Zero in production and for a caller that
+	// builds Deps itself.
+	identityRecheck time.Duration
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.

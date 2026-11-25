@@ -27,9 +27,9 @@ const coverageStatementRows = 500
 // after a failed run before it tries that run again. While a rolling deploy that changes the
 // identity still has an old-configuration process embedding, that process commits vectors the
 // new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
-// owed to a vector search already filters out by identity. A var, not a const, so a test can
-// shrink it rather than wait out ten minutes.
-var identityRecheckInterval = 10 * time.Minute
+// owed to a vector search already filters out by identity. A test of the recheck shortens it for
+// its own Run alone (Deps.identityRecheck).
+const identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
 // kind this pass builds: insertMissingIssues and repairStaleIssues, the two statements that
@@ -672,14 +672,14 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", identityRecheckInterval)
+			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.recheckInterval())
 		default:
 			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(identityRecheckInterval))
+		timer := time.NewTimer(duty.Jittered(deps.recheckInterval()))
 		if deps.coverageParked != nil {
 			switch {
 			case err == nil && answered == nil:
@@ -701,6 +701,15 @@ func runCoverage(ctx context.Context, deps Deps) {
 			timer.Stop()
 		}
 	}
+}
+
+// recheckInterval is how long Run's coverage loop waits between its runs: identityRecheckInterval,
+// or the shorter one a test of this package gave its own Run (Deps.identityRecheck).
+func (d Deps) recheckInterval() time.Duration {
+	if d.identityRecheck > 0 {
+		return d.identityRecheck
+	}
+	return identityRecheckInterval
 }
 
 // notIndexedKinds is every kind of node meaning search and keyword search hold no row of at
