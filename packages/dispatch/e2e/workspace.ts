@@ -80,6 +80,50 @@ export const workspaceSessions: FakeSession[] = [
 ];
 export const workspaceSessionIds = workspaceSessions.map((session) => session.session_id);
 
+/** Two sessions beside the workspace's, named as many of production's claim holders are: one by
+ *  a title of 56 characters led by an emoji, as a person titles a session, and one by nothing but
+ *  its id, a session-id-shaped string, which is what a session whose title is its id reads as.
+ *  Each holds work in the review corpus (`e2e/review-seed.ts`), which alone registers them
+ *  (`reviewSessions`): the Agents page of every other spec lists the five sessions above, and
+ *  the review corpus's lists these two under Active beside them. Neither carries a `last_seen`,
+ *  so both stay live however long a run takes. The titles are invented and name no one. */
+const claimHolderSessions: FakeSession[] = [
+  {
+    capabilities: ["aside"],
+    dir: "/workspaces/cache",
+    machine_id: "build-host",
+    roles: [],
+    session_id: sessionIds.cacheWarm,
+    title: "🛠️ FIX: Keep the build cache warm when a runner restarts",
+  },
+  {
+    capabilities: ["aside"],
+    dir: "/workspaces/untitled",
+    machine_id: "review-host",
+    roles: [],
+    session_id: sessionIds.untitled,
+    title: sessionIds.untitled,
+  },
+];
+
+/** The registry the review corpus writes, which the visual review puts back after Playwright's
+ *  own setup cleared it (`e2e/visual.e2e.ts`): the workspace's sessions and the claim holders
+ *  beside them. */
+export const reviewSessions: FakeSession[] = [...workspaceSessions, ...claimHolderSessions];
+
+/** `id`'s session of `reviewSessions` as a write names it, its title stamped in `origin`
+ *  beside whatever else `origin` says (`seedWorkspace`). */
+const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
+  const session = reviewSessions.find((candidate) => candidate.session_id === id);
+  if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
+  return { id, kind: "session", origin: { ...origin, session_title: session.title } };
+};
+
+/** A write's options as `id`'s session (`actor`), through the agent bearer. */
+const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
+
+export { as as asWorkspaceSession };
+
 const workflowSpec =
   "# Local testing workflow\n\nOne command, a seeded corpus, a signed-in browser.\n\n" +
   ':::ask{urgency="high" multiple="false"}\nWhich sign-in path?\n\n' +
@@ -120,12 +164,6 @@ export async function seedWorkspace({
   readonly boundMs: number;
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
-  const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
-    const session = workspaceSessions.find((candidate) => candidate.session_id === id);
-    if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
-    return { id, kind: "session", origin: { ...origin, session_title: session.title } };
-  };
-  const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
   const alice = { login: "alice" };
 
   await setLiveSessions(workspaceSessions);

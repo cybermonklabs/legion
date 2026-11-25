@@ -11,7 +11,7 @@ import type { AskRead, IssueReferenceSummary } from "../../api/types";
 import { Publisher } from "../issue-page/projection-fixture";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { PlainText } from "./plain-text";
+import { PlainText, usePlainHeadline } from "./plain-text";
 import { type PublishedReferences, ReferenceNamesProvider } from "./reference-names";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -252,6 +252,18 @@ test("a name past a link's room reads the same from the page's batch, from its o
   }
 });
 
+/** `markdown`'s first line alone, as the projection reads it for a caller that asks for it
+ *  (`usePlainHeadline`'s `firstLine`), which a node's line on the new issue page does. */
+function FirstLine({ markdown }: { markdown: string }): ReactNode {
+  const { reads, text } = usePlainHeadline(undefined, markdown, { firstLine: true });
+  return (
+    <>
+      {reads}
+      <span data-testid="first">{text?.text ?? ""}</span>
+    </>
+  );
+}
+
 // Decisions 66 and 88 over a nested list: an item of an ordered list opens on its number, and
 // where its first block is a list of its own, the number stands before the first words the item
 // holds, as a rendered body draws it, never on a line of its own.
@@ -265,9 +277,7 @@ test("an ordered item that opens a list of its own reads its number before its f
         <PlainText markdown={markdown}>
           {(line) => <span data-testid="whole">{line ?? ""}</span>}
         </PlainText>
-        <PlainText firstLine markdown={markdown}>
-          {(line) => <span data-testid="first">{line ?? ""}</span>}
-        </PlainText>
+        <FirstLine markdown={markdown} />
         <PlainText markdown={markdown} tree={displayTree(markdown)}>
           {(line) => <span data-testid="read">{line ?? ""}</span>}
         </PlainText>

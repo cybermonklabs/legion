@@ -1,6 +1,6 @@
 name: CI job daemon-go
 
-# The steps of ci.yaml's `daemon-go` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#daemon-go` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,7 +9,7 @@ name: CI job daemon-go
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
 # the race step over those five packages, the forced-order step over the daemon's TestForcedOrder
 # tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
-# and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
+# and boots it against this job's Postgres. They left `.github/workflows/ci.yaml#test` job, which runs
 # the shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
 # packages/claude-envoy ran
@@ -24,9 +24,10 @@ name: CI job daemon-go
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
 #
 # Everything here is what those steps need and nothing else, each job taking its own part:
-#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store; and,
-#     in daemon-go, BROKER_TEST_DATABASE_URL and LEGION_E2E_PG_DSN, the broker rig its cipher
-#     contract tests drive and Stage 1's;
+#   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store, and for
+#     BROKER_TEST_DATABASE_URL, the broker rig of internal/cipher's and internal/dispatch's contract
+#     tests in daemon-go and of internal/daemon's broker tests in daemon-go-race; and, in
+#     daemon-go, LEGION_E2E_PG_DSN, Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED in both, read by the testcontainers-backed NATS tests;
 #     LEGION_RUN_FUZZ_ITERS in daemon-go, read by classify's fuzz tests; and
 #     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race, read by internal/daemon's keptPropertyEnv;
@@ -52,13 +53,13 @@ name: CI job daemon-go
 # merge-group run at the front of the queue, it posts the failing ci-ok at once
 # (.github/actions/ci-ok-report, which says when it posts nothing), as every job of ci.yaml ends,
 # so a failure of either job does not wait for the other to end.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -134,6 +135,7 @@ jobs:
           cache: false
 
       # go-daemon, shared with typecheck and pi-legion.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -144,7 +146,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # proof's boot needs (`scripts/e2e/stage1-skeleton.sh#tmux is required`).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
@@ -166,13 +168,15 @@ jobs:
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
-      # pulled first for the reason the action gives. The two other images the module's tests
-      # start are the race packages' (daemon-go-race below).
-      - name: Pull the NATS test container images
+      # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
+      # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
+      # NATS images the module's tests start are the race packages' (daemon-go-race below).
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
       # The step runs every package of the module except the five daemon-go-race's race step tests
       # and internal/textcheck, whose tests are the text-check job's: so each of the five runs once
@@ -241,8 +245,8 @@ jobs:
   # The race step, in a job of its own beside daemon-go.
   # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
   # Its setup is daemon-go's, less what only the plain step and Stage 1 read: no uv
-  # (internal/runtime/sandbox's), no BROKER_TEST_DATABASE_URL (internal/cipher's), no
-  # LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS (internal/classify's). The comment
+  # (internal/runtime/sandbox's), no LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS
+  # (internal/classify's). The comment
   # on each step of daemon-go's says why it is there; the ones below say what of the five
   # packages reads it.
   daemon-go-race:
@@ -270,6 +274,10 @@ jobs:
       JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
+      # ciphertest's broker rig on this same service, and fail rather than skip on GitHub Actions
+      # without it.
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       TESTCONTAINERS_RYUK_DISABLED: "true"
       # internal/daemon's kept-decision property count follows the lane, as daemon-go's fuzz count
       # does and for the same reason: a pull-request run takes 8 seeds, every other lane the
@@ -291,6 +299,7 @@ jobs:
           cache: false
 
       # go-daemon, which holds the race build of these five packages too (ci-caches.yaml).
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

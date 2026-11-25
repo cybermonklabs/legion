@@ -56,7 +56,7 @@
 #      reads the whole string, not the eight characters alone.
 #   3. a version this repository pins elsewhere that no row carries: no `oven/bun` row at the
 #      version `.bun-version` locks, with or without the `-slim` suffix, or no `library/golang`
-#      row at `ARG GO_VERSION` of packages/daemon/docker/worker.Dockerfile. A row for another
+#      row at `packages/daemon/docker/worker.Dockerfile#ARG GO_VERSION`. A row for another
 #      version is admitted, so raising Bun or Go is two commits: the new version's row first,
 #      which ci.yaml's ci-images job copies, then the pin and every FROM. One commit holding
 #      both would let a consumer job pull the new digest while that same run's copy is still
@@ -334,6 +334,7 @@ REACH = (
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
     "packages/daemon/internal/testnats/nats.go",
+    "packages/daemon/internal/ompsessions/searchpath_test.go",
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
@@ -351,8 +352,9 @@ REACH = (
 IMAGE_FROM = {
     (".github/actions/pull-test-images/action.yml", "image"): (
         "each image is read from a Go string constant the caller's `consts:` input names "
-        "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
-        "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go), "
+        "(packages/daemon/internal/testnats/nats.go, packages/daemon/internal/ompsessions/searchpath_test.go, "
+        "packages/envoy/internal/testnats/nats.go, packages/envoy/internal/testpg/testpg.go, "
+        "packages/envoy/internal/tests3/seaweedfs.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"

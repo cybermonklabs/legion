@@ -128,6 +128,8 @@ jobs:
       # read their own; `all` on a dispatch and when the filters fell open (every_filter).
       # why: .github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates
       matched_filters: ${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}
+      # Selected like any other job now that no run of this workflow is a push to main.
+      # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
       worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image }}
       # why: .github/ci-notes/ci.md#why-the-browser-images-build-carries-no-full-ci-term

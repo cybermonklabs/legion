@@ -5,6 +5,7 @@ import {
   REF_PICKER_WORDS,
   type RefPickerDoor,
 } from "../web/src/features/refs/ref-picker";
+import { setLiveSessions } from "./agents";
 import { getArtifactText } from "./api";
 import { documentEditor, openSpec, placeCaret } from "./editor";
 import {
@@ -316,6 +317,42 @@ test("in the document body `#` and a space make a heading, and the picker the `#
         timeout: 30_000,
       })
       .toContain(`${ANCHOR}\n\n# Release notes\n\n`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): seed the reference world, then open the issue composer and its live document.
+test("a delivering comment picker omits non-routable sessions that the document can cite", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const world = await seedReferenceWorld();
+  await setLiveSessions([
+    { session_id: "route-session", title: "Route reachable" },
+    { session_id: "route.session", title: "Route dotted" },
+    { session_id: "route:session", title: "Route colon" },
+  ]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${world.host.key}/conversation`);
+    const list = await openRefPicker(commentField(page), "@Route");
+    await expect(list.getByRole("option", { name: /^Route reachable\b/u })).toBeVisible();
+    await expect(list.getByRole("option", { name: /^Route (dotted|colon)\b/u })).toHaveCount(0);
+
+    await openSpec(page, world.host.key, ANCHOR);
+    await placeCaret(page, "after", ANCHOR);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("@Route");
+    const documentList = refPicker(page);
+    const dotted = documentList.getByRole("option", { name: /^Route dotted\b/u });
+    await expect(dotted).toBeVisible();
+    await expect(documentList.getByRole("option", { name: /^Route colon\b/u })).toBeVisible();
+    await dotted.click();
+    await expect
+      .poll(async () => (await getArtifactText(world.host.primary_artifact_id)).markdown)
+      .toContain("dispatch://agent/route.session");
   } finally {
     await alice.close();
   }

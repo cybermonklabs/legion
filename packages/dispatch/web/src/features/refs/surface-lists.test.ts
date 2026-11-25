@@ -10,6 +10,8 @@ import {
 } from "@legion/contracts";
 import * as ts from "typescript";
 
+import { referencesLaneFiles } from "../../../../e2e/reference-lane";
+
 /**
  * The two lists say what the framework covers: `DISPATCH_WRITING_BOXES` every box a person
  * writes prose in, `DISPATCH_READING_SURFACES` every surface a reader reads a record on. Both
@@ -2244,6 +2246,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "text",
   },
   {
+    file: `${FEATURES}/priorities/PriorityDescription.tsx`,
+    holds: "the documents' editor's own error for a description it could not draw",
+    written: "failed",
+  },
+  {
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
@@ -2803,9 +2810,6 @@ function handsWithTree(tree: ts.SourceFile, field: string, written: string): boo
  *  `changes` job's paths-filter step reads, a file made at run time that no commit holds. */
 const REFERENCE_GATE = ".github/ci-gates/dispatch-references.py";
 
-/** The script that runs the reference rows' lane, which names its spec files (`lane_files`). */
-const REFERENCE_LANE_SCRIPT = ".github/scripts/dispatch-browser-shard-suite.sh";
-
 /** A quoted string of Python source at `start`, whose quote is `source[start]`, read to its
  *  closing quote with each escape taken as written: the string's characters and where the source
  *  goes on after it, or `undefined` where `start` holds no quote or the string never closes. */
@@ -2879,21 +2883,6 @@ function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
       .filter((pattern) => pattern.startsWith("!"))
       .map((pattern) => new Bun.Glob(pattern.slice(1))),
   };
-}
-
-/** The spec files the reference rows' lane runs, as its script names them (`lane_files`, which
- *  every other lane sets empty), from the repository root; none where the script names none. */
-function referenceLaneFiles(): string[] {
-  let script = "";
-  try {
-    script = readFileSync(join(REPO_ROOT, REFERENCE_LANE_SCRIPT), "utf8");
-  } catch {
-    script = "";
-  }
-  return [...script.matchAll(/\blane_files="([^"]*)"/gu)]
-    .flatMap((assignment) => (assignment[1] ?? "").split(/\s+/u))
-    .filter((file) => file !== "")
-    .map((file) => `packages/dispatch/${file}`);
 }
 
 const REFERENCE_FILTER = referenceFilter();
@@ -3005,7 +2994,7 @@ describe("the walk reads the dashboard's source", () => {
     // be in it, and every covered row below would fail for a reason none of them has. The filter
     // the reading found names every spec file the reference rows' lane runs.
     expect(REFERENCE_FILTER.include.length).toBeGreaterThan(20);
-    const lane = referenceLaneFiles();
+    const lane = referencesLaneFiles().map((file) => `packages/dispatch/${file}`);
     expect(lane.length).toBeGreaterThan(10);
     expect(lane.filter((file) => !inReferenceFilter(file))).toEqual([]);
   });

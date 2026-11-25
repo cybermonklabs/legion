@@ -204,8 +204,10 @@ export function MentionField({
   );
   const listboxId = useId();
   const hintId = useId();
+  const delivered = writing.delivers;
   const picker = useRefPicker({
     caret,
+    delivers: delivered,
     enabled: !disabled && !readOnly && focused,
     issueKey,
     project,
@@ -213,7 +215,6 @@ export function MentionField({
   });
   /** Who this box's write is delivered to, read from the text the reader can see
    *  (`draftParties`): a box whose write delivers nothing names nobody, whatever it cites. */
-  const delivered = writing.delivers;
   const parties = useMemo(() => (delivered ? draftParties(body).targets : []), [body, delivered]);
   const { open } = picker;
   // The key handler and the handle below read the picker as it stands rather than as the render

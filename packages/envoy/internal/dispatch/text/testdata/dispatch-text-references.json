@@ -392,6 +392,40 @@
     ]
   },
   {
+    "body": "[@Bob](dispatch://agent/abc)hello",
+    "refs": [
+      "dispatch://agent/abc"
+    ]
+  },
+  {
+    "body": "[w](dispatch://CORE-24)word",
+    "refs": [
+      "dispatch://CORE-24"
+    ]
+  },
+  {
+    "body": "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    "refs": [
+      "dispatch://LEGION-1/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "[w](dispatch://agent/a(b)c)tail",
+    "refs": [
+      "dispatch://agent/a(b)c"
+    ]
+  },
+  {
+    "body": "(see dispatch://CORE-1)",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "dispatch://CORE-1)word",
+    "refs": []
+  },
+  {
     "body": "see dispatch://CORE-1/spec#b-d%C3%A9cision%3A1.",
     "refs": [
       "dispatch://CORE-1/spec#b-d%C3%A9cision%3A1"

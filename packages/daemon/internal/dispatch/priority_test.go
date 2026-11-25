@@ -28,7 +28,7 @@ func TestListAndDetailCarryTheIssuesOwnPriority(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	level := func(n int) *int { return &n }
 
 	issues, err := client.ListIssues(context.Background(), "LEGION", nil)
