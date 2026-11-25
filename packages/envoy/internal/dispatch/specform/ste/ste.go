@@ -19,7 +19,8 @@
 //   - Python's re.IGNORECASE also matches "ı" (U+0131) and "İ" (U+0130) to "i", which Go's
 //     case folding does not (pythonFold). Both match "ſ" to "s" and "K" (U+212A) to "k".
 //
-// TestPortMatchesSteLintOnTheCorpus holds the port to the Python program on testdata/corpus.jsonl.
+// TestPortMatchesSteLintOnTheCorpus holds the port to the Python program on testdata/corpus.jsonl,
+// through the program's findings recorded as testdata/corpus-findings.jsonl.
 package ste
 
 import (
