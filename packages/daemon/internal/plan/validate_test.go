@@ -401,8 +401,8 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role)), 0, "a", cut(role) + ".", 1},
 		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
 		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
-		// The key's reason comes first, then the step's. stepReasons (validate.go:499-501)
-		// names the whole word `tester:<key>` twice, so its size includes two quotes.
+		// The key's reason comes first, then the step's. stepReasons names the whole word
+		// `tester:<key>` twice, so its size includes two quotes.
 		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
