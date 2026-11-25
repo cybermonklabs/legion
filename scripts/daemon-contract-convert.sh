@@ -1296,7 +1296,7 @@ if ! merged=$(git merge-tree --write-tree --no-messages --name-only "$converted"
   git reset -q
   echo "the merge of $onto_name conflicts in:" >&2
   sed 1d <<<"$merged" | sort -u | sed 's/^/  /' >&2
-  die "the conversion is committed as ${converted:0:10}; merge $onto_name by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
+  die "the conversion is committed as ${converted:0:10}; merge $onto (${onto_sha:0:10}) by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
 fi
 tree=$(head -1 <<<"$merged")
 git read-tree -m -u "$converted" "$tree"
