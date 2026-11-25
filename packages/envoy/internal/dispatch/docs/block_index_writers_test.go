@@ -843,6 +843,12 @@ var indexPasses = map[string]string{
 	// found by an anti-join since the row names no tuple: the tuple is the marker, as a version's
 	// node is the versions pass's. It states only what levels that node with its own row.
 	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
+	// The backfill's Keep pass (R32 of this branch's spec): each Keep's decision_keeps row and the
+	// kept_text_sum its decision's node states, read again under the issue's owner row, each held
+	// to the sum of the decision's words with shaped, which a release before summed, and both written
+	// to the sum of the same words without it from that rule alone. It reads neither side to mend
+	// the other: a side that holds any other sum is left as it stands.
+	"graphcensus/census_keeps.go#writeKeepSumBatch": "each Keep's decision_keeps row, its node's kept_text_sum and its decision's words, read again under its owner row",
 	// The backfill of the references a document makes: each refs row of a document whose row
 	// names its node, its own content, read again under its document's owner row, and the
 	// mentions that node states now, found by an anti-join both ways since refs names no tuple: the

@@ -95,16 +95,16 @@ var censusKinds = []string{
 // graphcensus' projections names it: a run of the command bar and its frames (runProjections), an
 // issue's parent and its waits (issueProjections), a component's parent, its dependencies and an
 // issue's components (componentProjections), a check's result and its retraction
-// (resultProjections), a comment's anchor block (anchorProjections), and the visibility and state
-// of each interaction, lens, finding, risk, constraint and lens kind
-// (visibilityStateProjections), of which the lens catalogue this build's migrations write holds
-// the constraints and the lens kinds. The census must check each and read no difference in it,
-// and no row of one is no refusal. The list is the test's own, as censusKinds is, so a kind the
-// census starts or stops checking fails this test until a person names it in one list or the
-// other.
+// (resultProjections), a comment's anchor block (anchorProjections), the Keeps the backfill's Keep
+// pass owes a write (graphcensus' CensusOfKeepSums), and the visibility and state of each
+// interaction, lens, finding, risk, constraint and lens kind (visibilityStateProjections), of
+// which the lens catalogue this build's migrations write holds the constraints and the lens kinds.
+// The census must check each and read no difference in it, and no row of one is no refusal. The
+// list is the test's own, as censusKinds is, so a kind the census starts or stops checking fails
+// this test until a person names it in one list or the other.
 var censusUnseededKinds = []string{
 	"interaction", "frame", "issue_parent", "issue_link", "component_parent", "component_depends",
-	"issue_component_member", "check_result", "check_result_retraction", "comment_anchor_block",
+	"issue_component_member", "check_result", "check_result_retraction", "comment_anchor_block", "keep_shaped_sum",
 	"interaction_visibility_state", "lens_visibility_state", "finding_visibility_state",
 	"risk_visibility_state", "constraint_visibility_state", "lens_kind_visibility_state",
 }

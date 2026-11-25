@@ -330,6 +330,12 @@ var storeWriteCallSites = map[string]string{
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch": "graphcensus#TestTheAnchorBatchTakesTheStoreLockOrder",
+	// The backfill's Keep pass (R32 of this branch's spec): the owner rows the batch's Keeps stand
+	// under first, then the Keeps and their decisions' words read again under them, then the
+	// decision_keeps rows whose sum is still the one over the words with shaped, the kept_text_sum
+	// values through Write at the sentinel, and the head rows (graphcensus'
+	// TestTheKeepSumBatchTakesTheStoreLockOrder).
+	"graphcensus/census_keeps.go#writeKeepSumBatch": "graphcensus#TestTheKeepSumBatchTakesTheStoreLockOrder",
 	// The backfill's pass over the references a document makes: the owner rows the batch's
 	// documents stand under first, then the refs rows and their documents' nodes' mentions read
 	// again under them, then the mentions tuples each row owes through Write at the sentinel

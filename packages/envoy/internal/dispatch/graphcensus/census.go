@@ -147,6 +147,12 @@ type KindReport struct {
 	// none of them compared and none a difference (projection.unstated).
 	CountsUnstated bool
 	Unstated       int64
+	// CountsOwed says the kind holds its rows that a pass of the backfill still owes a write as a
+	// class of its own, and Owed is how many there are, none of them a difference: the Keeps a
+	// release before summed over a decision's words with `shaped` (CensusOfKeepSums), which the
+	// backfill's Keep pass rewrites, and which read zero once it has run.
+	CountsOwed bool
+	Owed       int64
 	// EmptyAgrees says a kind that read no row, no present node and no unmarked row is no refusal
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
@@ -366,12 +372,16 @@ var projections = slices.Concat(
 // and the fill finds nothing of it to do (projectBackfills). The asks and their followers run
 // after the project passes, whose object pass wrote the node of every ask (decisionBackfills).
 // Every other topic's passes run after those, once every issue, document, ask and message holds
-// its node. rule is the marking rule the block passes mark by (blockBackfills).
+// its node. The Keep pass, which rewrites the sums of Keeps a release before summed over a
+// decision's words with `shaped`, runs after them and before the head fill, which runs last
+// (keepBackfills, headBackfills). rule is the marking rule the block passes mark by
+// (blockBackfills).
 func backfillPasses(rule int) []backfillPass {
 	return slices.Concat(
 		blockBackfills(rule), commentBackfills, runBackfills, preventionBackfills, actorBackfills, projectBackfills,
 		decisionBackfills, issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
-		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills, headBackfills,
+		approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills, keepBackfills,
+		headBackfills,
 	)
 }
 
@@ -1369,16 +1379,20 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			}
 		}
 	}
-	// The head projection is read last, as one kind of its own over every node kind
-	// (CensusOfHeads), once every projection of the nodes its rows read has been read.
-	heads, err := CensusOfHeads(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	kinds = append(kinds, heads)
-	if afterKind != nil {
-		if err := afterKind(ctx, heads.Kind); err != nil {
+	// Two kinds read in Go come after the projections, each one kind of its own: the Keeps the
+	// backfill's Keep pass still owes (CensusOfKeepSums), whose decisions' words only Go renders,
+	// and last the head projection, over every node kind (CensusOfHeads), once every projection of
+	// the nodes its rows read has been read.
+	for _, read := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, CensusOfHeads} {
+		kind, err := read(ctx, tx)
+		if err != nil {
 			return nil, err
+		}
+		kinds = append(kinds, kind)
+		if afterKind != nil {
+			if err := afterKind(ctx, kind.Kind); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return kinds, nil
@@ -1693,6 +1707,10 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		if kind.CountsUnstated {
 			fmt.Fprintf(w, "census: store kind=%s unstated_rows=%s (rows of a document of an issue that has not converted which no pass of this build's rule has stated, as the release before leaves them: counted, compared with nothing)\n",
 				kind.Kind, pgmigrate.Thousands(kind.Unstated))
+		}
+		if kind.CountsOwed {
+			fmt.Fprintf(w, "census: store kind=%s owed_rows=%s (rows a pass of the backfill still owes a write, which it makes on its next run: counted, no difference)\n",
+				kind.Kind, pgmigrate.Thousands(kind.Owed))
 		}
 		switch {
 		case kind.EmptyAgrees && kind.Empty():

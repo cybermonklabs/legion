@@ -353,16 +353,34 @@ func HoldsTypedBlocks(blocks []model.ArtifactBlock) bool {
 
 // DecisionWords is a decision's own words, the text its text sum covers: decision, a decision
 // block node, rendered alone with the readings it closes with left out
-// (pmdoc.TypedContent). A reading never changes the decision it reads, so the decision's words,
-// and the sum a Keep records over them, are the same whether readings hang under it or not. The
-// attributes a markdown rendering never carries - decided_by, kept_by, kept_text_sum - are none
-// of its words.
+// (pmdoc.TypedContent), and with neither its `shaped` attribute nor any attribute its type marks
+// `server`. A reading never changes the decision it reads, so the decision's words, and the sum a
+// Keep records over them, are the same whether readings hang under it or not. `shaped` is a
+// relation out of the decision to the spec nodes it shaped, and no word of it (R32 of
+// dispatch://INFRA-1253's spec), so a write of it alone stales no Keep. A server attribute -
+// decided_by, kept_by, kept_text_sum - is the server's record of the decision and no word of it
+// either; markdown carries none of them today, and this leaves them out whatever the schema says.
+// It is the one function every sum of a decision's words goes through: the reads of a decision
+// (decisionread), the Keep, which compares with those reads, and the decisions step's conversion,
+// which writes a converted Keep's sum (docs' decision_restore.go).
 func DecisionWords(decision *pmdoc.Node) (string, error) {
 	content, _ := pmdoc.TypedContent(decision)
+	attributes, _ := pmdoc.BlockTypeAttributes(decision.Type)
 	own := *decision
 	own.Children = content
+	own.Attrs = make(pmdoc.Attrs, len(decision.Attrs))
+	for name, value := range decision.Attrs {
+		if name == shapedAttribute || attributes.Get(name).Server {
+			continue
+		}
+		own.Attrs[name] = value
+	}
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
+
+// shapedAttribute is the name of a decision's `shaped` attribute, whose store name is
+// TupleShaped's.
+const shapedAttribute = "shaped"
 
 // TypedBlockID is a typed block's id as the block index keys it (storedBlockID).
 func TypedBlockID(node *pmdoc.Node) string {
