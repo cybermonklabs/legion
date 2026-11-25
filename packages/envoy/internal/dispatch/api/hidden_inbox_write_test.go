@@ -33,6 +33,7 @@ import (
 // PUB Reply thread alone, and her unnarrowed dismissal dismisses the two PUB threads alone, so the
 // token still writes over what it sees.
 func TestAnInboxWriteNeverReachesAThreadItsCallerMayNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProjectWith(t, testServerOptions{settle: time.Hour})
 	const caller privateCaller = "alice's person-scope token that lists PUB"
 	threadOn := func(issue string) string {

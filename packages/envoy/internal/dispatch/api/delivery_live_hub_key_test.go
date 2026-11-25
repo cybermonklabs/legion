@@ -16,6 +16,7 @@ import (
 //
 // Control: a key of all, open and sees alone; bob and dave share a view, and the test fails.
 func TestADeliveryViewIsSharedOnlyByReadersOfTheSameRows(t *testing.T) {
+	t.Parallel()
 	reader := func(person, session string, anyPrivate bool) model.Actor {
 		return model.Actor{Viewer: &model.Viewer{Person: person, Session: session, Sees: []string{"PRIV", "PUB"}, AnyPrivate: anyPrivate}}
 	}

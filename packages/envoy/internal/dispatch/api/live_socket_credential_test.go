@@ -18,6 +18,7 @@ import (
 // Control: the heartbeat asks only whether the token still resolves. The narrowed token's socket
 // stays open, still reading PRIV's events under the list it was admitted with, and the test fails.
 func TestALiveSocketClosesWhenItsTokensListChanges(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProjectWith(t, testServerOptions{streamHeartbeat: 50 * time.Millisecond})
 	mint := func(name string) (id, token string, scopes []string) {
 		t.Helper()

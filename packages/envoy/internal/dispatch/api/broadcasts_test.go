@@ -342,6 +342,7 @@ func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T
 // Control: origin/main, where the reply's node is not read, passes; a rule that reads a reply with
 // no node as nobody's fails, naming the planner's answer.
 func TestABroadcastReplyWithNoNodeReachesAnOpenViewerWhereNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
@@ -471,6 +472,7 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 // title, and each reads s-pub's record from the listener and no other. The walk's listener holds
 // privateSession live, so a send that asked it would have reached it.
 func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	type exclusion struct{ SessionID, Title, Reason string }
 	send := func(session string) {
@@ -511,6 +513,7 @@ func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testin
 // routes refuse a viewer that is not open before they read anything (deploymentReadRefusal), so the
 // rule is read here, beneath that gate.
 func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -557,6 +560,7 @@ func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
 // bytes an id nobody holds gets. carol, at her browser, sees PRIV and reads it on both routes, and
 // so does her token that lists PRIV, an open viewer that sees PRIV and session-priv with it.
 func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -611,6 +615,7 @@ func TestACredentialReadsItsPersonsBroadcastOnlyWhereItSeesEveryRecipient(t *tes
 // as she did before a project could be private (R9): with PRIV made public, carol's token that
 // lists no project lists carol's broadcast to session-priv and reads it, as carol does.
 func TestWithNoPrivateProjectAnAuthorReadsHerBroadcastAsToday(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)

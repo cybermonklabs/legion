@@ -194,6 +194,7 @@ func TestASubscriptionPastTheCapIsRefused(t *testing.T) {
 // Control: the socket goes on counting the view the hub dropped; the last subscribe is refused
 // TOO_MANY_SUBSCRIPTIONS and the test fails.
 func TestADeliveryViewTheHubDropsFreesItsPlaceUnderTheCap(t *testing.T) {
+	t.Parallel()
 	events := newFakeLiveKind(0, 0)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, nil)
 	seedPeople(t, rig.database, "alice")

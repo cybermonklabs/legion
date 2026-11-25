@@ -24,6 +24,7 @@ import (
 // Control: leaveOutRoute keeping a reach whose holder is hidden and a role of a hidden project;
 // alice then reads role:legion-priv-architect live and role:reviewer live, and each row fails.
 func TestM6ARouteNamesNoRoleOrHolderItsReaderMayNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	reads := func(key string) []string {
 		return []string{"/api/v1/issues/" + key, "/api/v1/asks/" + seed.asks[key]}

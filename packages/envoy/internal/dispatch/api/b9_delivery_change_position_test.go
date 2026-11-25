@@ -20,6 +20,7 @@ import (
 // Control: deliveryShownChange counts every change at or below the read's position, whatever row
 // it names; alice's position moves with acme/secret#7, and the test fails naming it.
 func TestADeliveryViewsChangePositionMovesOnlyWithRowsItsReaderSees(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	clock := newNoonHubClock()

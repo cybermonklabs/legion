@@ -27,6 +27,7 @@ import (
 // Control: createStoredMessage's hidden attempt 1 off. The message's commit records its attempt 1
 // pending; restored, the sweep sends it to the session and the row fails naming it.
 func TestAMessageToAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	ctx := context.Background()
 	if _, err := walk.database.Pool.Exec(ctx, fmt.Sprintf(`

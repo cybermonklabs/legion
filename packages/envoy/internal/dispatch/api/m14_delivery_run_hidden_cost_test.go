@@ -28,6 +28,7 @@ import (
 // With every project public, alice is shown every run with its jobs, as before any project could
 // be private (R9).
 func TestARunItsReaderIsNotShownCostsWhatAMissingRunCosts(t *testing.T) {
+	t.Parallel()
 	trace := &existenceTrace{}
 	seed := seedDeliveryReadsWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), trace)}, true, true)
 	const missingRun int64 = 999

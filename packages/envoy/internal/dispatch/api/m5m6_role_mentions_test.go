@@ -50,6 +50,7 @@ func roleTargets(t *testing.T, seed hiddenHolderSeed, caller privateCaller, targ
 // Control: the comment filter judging a target's session alone (holdsRoute's role arm dropped);
 // carol's token then reads the role and the row fails naming it.
 func TestM5M6ACommentNamesNoMentionOfAHiddenRole(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	key, _ := seed.claimEventsWrite(t)
 	target := "/api/v1/issues/" + key + "/comments"
@@ -70,6 +71,7 @@ func TestM5M6ACommentNamesNoMentionOfAHiddenRole(t *testing.T) {
 // Control: the message filter judging a target's session alone (holdsRoute's role arm dropped);
 // carol's token then reads the role and the row fails naming it.
 func TestM5M6AMessageNamesNoTargetOfAHiddenRole(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	key, _ := seed.claimEventsWrite(t)
 	target := "/api/v1/issues/" + key + "/messages"
@@ -90,6 +92,7 @@ func TestM5M6AMessageNamesNoTargetOfAHiddenRole(t *testing.T) {
 // every role - three lines: the filter's first test, seenReferences' first test and holdsRoute's
 // role arm; alice then reads no role in the comments and the row fails.
 func TestM5M6WithNoPrivateProjectCommentsAndMessagesReadAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	key, _ := seed.claimEventsWrite(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

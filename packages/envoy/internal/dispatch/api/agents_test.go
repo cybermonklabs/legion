@@ -210,6 +210,7 @@ func TestAgentsTmuxPlaceFromAListenerThatPredatesTheFieldChangesNothing(t *testi
 // Control: drop agentResponse's own Projects field; the embedded session's list is served, the row
 // carries "projects":["PRIV","PUB"], and the test fails naming it.
 func TestAnAgentsRowCarriesNoProjectsWhateverTheListenerSends(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","dir":"/w/planner","machine_id":"example-listener","roles":["planner"],"capabilities":["btw"],"projects":["PRIV","PUB"],"last_seen":100,"state":"live"}]`))
 	}))

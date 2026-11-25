@@ -127,6 +127,7 @@ func retriedToNewHolder(t *testing.T, seed movedRoleSeed) (comment, message stri
 // does (mentionsReadBy, the rule before); the comment reply then answers 400 MENTION_INPUT "target
 // is required when a comment has multiple mentions", and the row fails.
 func TestAReplyFromAMentionedRolesNewHolderIsTaken(t *testing.T) {
+	t.Parallel()
 	seed := seedMovedRole(t)
 	comment, message := retriedToNewHolder(t, seed)
 	for name, path := range map[string]string{
@@ -167,6 +168,7 @@ func TestAReplyFromAMentionedRolesNewHolderIsTaken(t *testing.T) {
 // error reports answering 200 with the attempt that names formerHolder and the shared token's
 // replies 201, and the row fails naming each.
 func TestAReplyToAnAttemptPinnedToASessionItsCallerDoesNotSeeAnswersAsNoAttempt(t *testing.T) {
+	t.Parallel()
 	seed := seedMovedRole(t)
 	comment, message := retriedToNewHolder(t, seed)
 	for kind, id := range map[string]string{"comments": comment, "messages": message} {

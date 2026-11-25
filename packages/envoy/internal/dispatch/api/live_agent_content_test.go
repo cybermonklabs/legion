@@ -208,6 +208,7 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 // list refused (the round before), under which bob is refused his unlisted session. Each fails the
 // row.
 func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
+	t.Parallel()
 	rig := newContentAgentRig(t, testServerOptions{})
 	bobs := func() []contentView {
 		return []contentView{
@@ -250,6 +251,7 @@ func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 // Control: the rule asked only on the re-arm, the heartbeat and access changes, not before each
 // batch; the frame reaches bob, and the test fails.
 func TestARestrictedViewersOwnSessionEndsOnceAnotherPersonActsInIt(t *testing.T) {
+	t.Parallel()
 	rig := newContentAgentRig(t, testServerOptions{agentWatchInterval: time.Hour, streamHeartbeat: time.Hour})
 	client, got := agentVerdict(t, rig.seed, rig.url, callerBob, contentBobUnlistedSession)
 	if got != agentViewResponding {
@@ -285,6 +287,7 @@ func TestARestrictedViewersOwnSessionEndsOnceAnotherPersonActsInIt(t *testing.T)
 // which alice is relayed carol's session with no list; the tie itself not required, under which
 // alice is relayed the untied session. Each fails the test.
 func TestAnOpenViewerWatchesAnUnlistedSessionOnlyWhereItSeesWhatItsPeopleSee(t *testing.T) {
+	t.Parallel()
 	rig := newContentAgentRig(t, testServerOptions{})
 	for _, v := range []contentView{
 		{callerAlice, contentPubUnlistedSession, agentViewHidden, "carol's, no list, and carol sees PRIV"},
@@ -312,6 +315,7 @@ func TestAnOpenViewerWatchesAnUnlistedSessionOnlyWhereItSeesWhatItsPeopleSee(t *
 // Control: the view asking the rule again on its tickers alone, not on the access change; the view
 // is still relaying at the end of the wait, and the test fails.
 func TestAnAccessChangeEndsAnAgentViewItsViewerNoLongerReads(t *testing.T) {
+	t.Parallel()
 	rig := newContentAgentRig(t, testServerOptions{agentWatchInterval: time.Hour, streamHeartbeat: time.Hour})
 	client, got := agentVerdict(t, rig.seed, rig.url, callerBob, contentBobSession)
 	if got != agentViewResponding {
@@ -331,6 +335,7 @@ func TestAnAccessChangeEndsAnAgentViewItsViewerNoLongerReads(t *testing.T) {
 // the person that credential acts for (session_owners), as it records the session's project, once
 // per pair; a write of a browser, which proves no session, records none.
 func TestASessionsProvedWritesTieItToItsPerson(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for range 2 {
 		seed.asSessionOf(t, seedBob, contentBobSession, seedPrivate, http.MethodPost,
@@ -368,6 +373,7 @@ func TestASessionsProvedWritesTieItToItsPerson(t *testing.T) {
 // Control: the tie written on a proved write alone (no TieSession in brokerTokenActor); the
 // session is tied to nobody, and the test fails.
 func TestASessionThatOnlyReadsIsTiedToItsPerson(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for range 2 {
 		seed.asSessionOf(t, seedCarol, contentCarolPodSession, seedPublic, http.MethodGet,

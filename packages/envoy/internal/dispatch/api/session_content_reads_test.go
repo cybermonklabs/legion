@@ -35,6 +35,7 @@ type sessionContentRead struct {
 // Control: PartyClause holding a session party to SessionClause alone, as before this rule, and
 // alice reads all three while PRIV is private; the test names each.
 func TestASessionsFilesNodesAndDirectMessagesFollowTheContentRule(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, `[
 		{"session_id":"`+sessionContentSession+`","title":"carol's PUB session","capabilities":["btw"],"last_seen":100}
 	]`)

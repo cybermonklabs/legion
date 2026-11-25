@@ -37,6 +37,7 @@ func runAnswer(t *testing.T, seed privateSeed, caller privateCaller, id int64) s
 // her Pipeline page counts no production apply, and her read of run 702 answers what run 999, which
 // no run holds, answers. carol, who sees PRIV, still reads run 702's jobs.
 func TestADeployRunThatShippedNothingIsHiddenWhereAHiddenProjectOwnsTheDeployRepository(t *testing.T) {
+	t.Parallel()
 	seed := seedRunThatShippedNothing(t, true)
 	mapDeployRepositoryToPRIV(t, seed)
 	if got := readShownDelivery(t, seed, callerAlice).runs; len(got) != 0 {
@@ -67,6 +68,7 @@ func TestADeployRunThatShippedNothingIsHiddenWhereAHiddenProjectOwnsTheDeployRep
 // (C2 is PRIV's P2's and C9 names #99, which no row holds), and her read of C9 answers what run 999
 // answers. carol, who sees PRIV, still counts both and reads C9.
 func TestAPRChecksRunNamingNoStoredPullRequestIsHiddenWhereAHiddenProjectOwnsTheDeployRepository(t *testing.T) {
+	t.Parallel()
 	seed := seedDeliveryReads(t, true, true)
 	mapDeployRepositoryToPRIV(t, seed)
 	if got := decodeBody[deliveryPipelineResponse](t, seed.mustRequest(t, callerAlice, http.MethodGet, deliveryReadsTargets[2].target, nil, http.StatusOK)).PRChecks.Run.Total.N; got != 0 {
@@ -92,6 +94,7 @@ func TestAPRChecksRunNamingNoStoredPullRequestIsHiddenWhereAHiddenProjectOwnsThe
 // in her timeline, measures and Pipeline page and reads its jobs, and her Pipeline page counts C2
 // and C9 and she reads C9's jobs, as before any project could be private.
 func TestRunsNamingNoPullRequestAreShownAsBeforeWhereNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	failed := seedRunThatShippedNothing(t, true)
 	checks := seedDeliveryReads(t, true, true)
 	for _, seed := range []privateSeed{failed, checks} {

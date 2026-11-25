@@ -25,6 +25,7 @@ const censusGapsAnswersSession = "s-census-gaps-answers"
 // PRIV, reads the decline, so the row reaches a live event. With PRIV public, no project is
 // private, and alice reads the decline as before (R9).
 func TestASessionsAnswersCarryNoHiddenEvent(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	ctx := context.Background()
 	seed.asSession(t, censusGapsAnswersSession, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",

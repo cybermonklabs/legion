@@ -95,6 +95,7 @@ func claimEventsOf(events []issueEvent) (types []string, naming []string) {
 // Controls, one line each: the claim rule passing every claim event (the claim events reach carol's
 // token); the payload filter leaving claim alone (the issue.updated payload names session-priv).
 func TestM5M6TheEventsNameNoHiddenClaimHolderOrRole(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	socketURL := liveURLOf(t, seed.handler)
 	live := map[privateCaller]*socketClient{}
@@ -188,6 +189,7 @@ func TestM5M6TheEventsNameNoHiddenClaimHolderOrRole(t *testing.T) {
 //
 // Control: the claim rule hiding every claim event; alice then reads none and the row fails.
 func TestM5M6WithNoPrivateProjectTheEventsReadAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	key, _ := seed.claimEventsWrite(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

@@ -128,6 +128,7 @@ func (node titleReadNode) everyNode() []titleReadNode {
 // history and answers no title, which is the cost of the rule: a session's events are read to the
 // end when none of its titles is one the reader may read.
 func TestTheReadersSessionTitlesReadStopsAtTheNewestTitleItMayRead(t *testing.T) {
+	t.Parallel()
 	database := newReaderTitlesFixture(t)
 	const index = "events_session_actor_created_at_idx"
 	// The plan's counts are averages over the loops, rounded, so the rows a node touched are

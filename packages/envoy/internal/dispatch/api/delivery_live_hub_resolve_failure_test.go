@@ -21,6 +21,7 @@ import (
 //
 // Control: the old reader kept when the re-resolve fails; no ended frame reaches alice's page.
 func TestADeliveryViewWhoseReaderNoLongerResolvesEnds(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	seedPeople(t, seed.database, contentDora)

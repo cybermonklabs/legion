@@ -47,6 +47,7 @@ func (h heldReplay) Replay(ctx context.Context, session string) (agentstream.Fra
 //
 // Control: the replay sent without the re-ask; alice is sent dora's session's replay.
 func TestAnAgentViewAsksItsRuleAgainBeforeTheReplay(t *testing.T) {
+	t.Parallel()
 	held := heldReplay{session: contentDoraUnlistedSession, asked: make(chan struct{}), release: make(chan struct{}), first: new(sync.Once)}
 	rig := newContentAgentRigWith(t, testServerOptions{agentWatchInterval: time.Hour, streamHeartbeat: time.Hour},
 		func(memory *agentstream.Memory) agentstream.Source {
@@ -89,6 +90,7 @@ func TestAnAgentViewAsksItsRuleAgainBeforeTheReplay(t *testing.T) {
 // Control: the view trusting the viewer it resolved while no project was private (no read before
 // the batch); the frame reaches alice.
 func TestAnAgentViewOfAnAllPublicDeploymentReadsWhetherAProjectIsPrivateBeforeEachBatch(t *testing.T) {
+	t.Parallel()
 	rig := newContentAgentRig(t, testServerOptions{agentWatchInterval: time.Hour, streamHeartbeat: time.Hour})
 	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	client, got := agentVerdict(t, rig.seed, rig.url, callerAlice, contentCarolPodSession)
@@ -123,6 +125,7 @@ const rosterListedSession = "6a3f8b6d-0e7c-4fc0-9b8d-6c7d8e9fa0b1"
 // Control: the ask reading the stored answer as it is (no refresh); the expired answer lists
 // nothing, the untied session passes no open viewer, and alice's view ends (dropped).
 func TestAnAgentViewOfAListedSessionOutlivesItsStoredListenerAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newReachedRigOf(t, `[
 		{"session_id":"`+rosterListedSession+`","title":"Lists PUB","capabilities":["btw"],"last_seen":900,"projects":["PUB"]}
 	]`, rosterListedSession)
