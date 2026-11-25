@@ -1,13 +1,15 @@
 import { z } from "zod";
 import type { GithubReads } from "./build";
-import type { SkillCutsConfig } from "./config";
+import type { Registry, SkillCutsConfig } from "./config";
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const REVISION = "org.opencontainers.image.revision";
 const SOURCE = "org.opencontainers.image.source";
 const IMAGE = /^(?:[\w.-]+\/)+[\w.-]+(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
-const GHCR = /^ghcr\.io\/([a-z0-9._/-]+?)(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
+/** A digest-pinned reference: its host (with its port, if any), its path and its digest. */
+const REFERENCE =
+  /^([A-Za-z0-9.-]+(?::\d+)?)\/([a-z0-9._/-]+?)(?::[\w.-]+)?@(sha256:[a-f0-9]{64})$/;
 
 export class PodNotMeasurable extends Error {
   constructor(why: string) {
@@ -25,8 +27,23 @@ export interface PodImage {
 export interface ImageConfig {
   readonly labels: Readonly<Record<string, string>>;
   readonly env: readonly string[];
+  /** The config blob's `rootfs.diff_ids`: the digest of each layer uncompressed, in order. */
+  readonly diffIds: readonly string[];
 }
 export type ReadImageConfig = (image: string) => Promise<ImageConfig | undefined>;
+
+/** One HTTP GET of `url` (`fetch` in a real run). */
+export type RegistryFetch = (
+  url: string,
+  init: { readonly headers?: Record<string, string>; readonly signal: AbortSignal }
+) => Promise<Response>;
+
+/** What `registryImageConfig` reads a registry with: the registries the configuration names
+ *  (`registries`), and the fetch it sends (`fetch` when absent). */
+export interface RegistryAccess {
+  readonly registries?: readonly Registry[];
+  readonly fetch?: RegistryFetch;
+}
 
 const Manifest = z.object({
   config: z.object({ digest: z.string().regex(DIGEST) }).optional(),
@@ -44,28 +61,68 @@ const ConfigBlob = z.object({
     Labels: z.record(z.string(), z.string()).nullish(),
     Env: z.array(z.string()).nullish(),
   }),
+  rootfs: z.object({ diff_ids: z.array(z.string()).nullish() }).nullish(),
 });
 
-/** Read a public GHCR image's config, not its layers. The reference must pin a digest. */
-export async function registryImageConfig(image: string): Promise<ImageConfig | undefined> {
-  const match = GHCR.exec(image);
-  const [, repository, digest] = match ?? [];
-  if (repository === undefined || digest === undefined) return undefined;
+/** The token of each registry's tokenCommand, by its argv: the command runs once per process. */
+const tokens = new Map<string, Promise<string>>();
+
+/** The trimmed standard output of `registry`'s tokenCommand, run once per process. Its failure
+ *  names the host and the exit status, never what the command printed. */
+function registryToken(registry: Registry): Promise<string> {
+  const key = JSON.stringify(registry.tokenCommand);
+  const known = tokens.get(key);
+  if (known !== undefined) return known;
+  const token = (async () => {
+    const child = Bun.spawn([...registry.tokenCommand], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    if (code !== 0) throw new Error(`the token command of ${registry.host} exited ${code}`);
+    const trimmed = out.trim();
+    if (trimmed === "") throw new Error(`the token command of ${registry.host} printed no token`);
+    return trimmed;
+  })();
+  tokens.set(key, token);
+  return token;
+}
+
+/** Read an image's config, not its layers, from its registry: a registry the configuration names
+ *  (`access.registries`) with the Bearer token its tokenCommand prints, else a public GHCR image
+ *  with the anonymous pull token GHCR gives; undefined for any other host. The reference must pin
+ *  a digest. No message names the token. */
+export async function registryImageConfig(
+  image: string,
+  access: RegistryAccess = {}
+): Promise<ImageConfig | undefined> {
+  const [, host, repository, digest] = REFERENCE.exec(image) ?? [];
+  if (host === undefined || repository === undefined || digest === undefined) return undefined;
   if (repository.split("/").some((part) => part === "" || part === "." || part === ".."))
     return undefined;
+  const registry = access.registries?.find((each) => each.host === host);
+  if (registry === undefined && host !== "ghcr.io") return undefined;
+  const send = access.fetch ?? ((url, init) => fetch(url, init));
   const signal = AbortSignal.timeout(30_000);
-  const tokenUrl = new URL("https://ghcr.io/token");
-  tokenUrl.searchParams.set("scope", `repository:${repository}:pull`);
-  const get = async (url: string | URL, headers?: Record<string, string>): Promise<unknown> => {
-    const response = await fetch(url, { headers, signal });
+  const get = async (url: string, headers?: Record<string, string>): Promise<unknown> => {
+    const response = await send(url, { headers, signal });
     if ([401, 403, 404].includes(response.status)) return undefined;
     if (!response.ok) throw new Error(`reading ${image}: registry HTTP ${response.status}`);
     return response.json();
   };
-  const token = z.object({ token: z.string() }).safeParse(await get(tokenUrl));
-  if (!token.success) return undefined;
+  let token: string;
+  if (registry === undefined) {
+    const tokenUrl = new URL("https://ghcr.io/token");
+    tokenUrl.searchParams.set("scope", `repository:${repository}:pull`);
+    const anonymous = z.object({ token: z.string() }).safeParse(await get(tokenUrl.href));
+    if (!anonymous.success) return undefined;
+    token = anonymous.data.token;
+  } else {
+    token = await registryToken(registry);
+  }
   const headers = {
-    Authorization: `Bearer ${token.data.token}`,
+    Authorization: `Bearer ${token}`,
     Accept: [
       "application/vnd.oci.image.index.v1+json",
       "application/vnd.oci.image.manifest.v1+json",
@@ -73,7 +130,7 @@ export async function registryImageConfig(image: string): Promise<ImageConfig | 
       "application/vnd.docker.distribution.manifest.v2+json",
     ].join(", "),
   };
-  const root = `https://ghcr.io/v2/${repository}`;
+  const root = `https://${host}/v2/${repository}`;
   const manifest = async (id: string) =>
     Manifest.safeParse(await get(`${root}/manifests/${id}`, headers));
   let found = (await manifest(digest)).data;
@@ -87,8 +144,39 @@ export async function registryImageConfig(image: string): Promise<ImageConfig | 
   if (found?.config === undefined) return undefined;
   const blob = ConfigBlob.safeParse(await get(`${root}/blobs/${found.config.digest}`, headers));
   return blob.success
-    ? { labels: blob.data.config.Labels ?? {}, env: blob.data.config.Env ?? [] }
+    ? {
+        labels: blob.data.config.Labels ?? {},
+        env: blob.data.config.Env ?? [],
+        diffIds: blob.data.rootfs?.diff_ids ?? [],
+      }
     : undefined;
+}
+
+/**
+ * Whether the image `base` is the start of the image `image`, by their configs' `rootfs.diff_ids`
+ * (each layer's digest uncompressed): `base` holds some, and they are the first of `image`'s.
+ * The manifests' layer digests are of the compressed layers, which differ where a build
+ * compressed a base layer again, so they decide nothing. `words` say so, or why not, naming both
+ * images.
+ */
+export function builtOn(
+  base: { readonly name: string; readonly diffIds: readonly string[] },
+  image: { readonly name: string; readonly diffIds: readonly string[] }
+): { readonly on: boolean; readonly words: string } {
+  const n = base.diffIds.length;
+  const m = image.diffIds.length;
+  if (n === 0) return { on: false, words: `${base.name} holds no rootfs.diff_ids` };
+  if (m === 0) return { on: false, words: `${image.name} holds no rootfs.diff_ids` };
+  const counts = `the ${n} rootfs.diff_ids of ${base.name}`;
+  if (n > m) return { on: false, words: `${counts} are more than the ${m} of ${image.name}` };
+  const differs = base.diffIds.findIndex((id, at) => id !== image.diffIds[at]);
+  if (differs >= 0) {
+    return {
+      on: false,
+      words: `${counts} are not the first ${n} of the ${m} of ${image.name} (entry ${differs + 1} differs)`,
+    };
+  }
+  return { on: true, words: `${counts} are the first ${n} of the ${m} of ${image.name}` };
 }
 
 function commentAbove(lines: readonly string[], index: number): string {
@@ -101,14 +189,14 @@ function commentAbove(lines: readonly string[], index: number): string {
   return comment.join(" ");
 }
 
-interface FinalStage {
+export interface FinalStage {
   readonly base: string | undefined;
   readonly instructions: readonly string[];
   readonly baseComment: string;
 }
 
 /** Read the final stage's literal FROM (or its ARG default) and instructions. */
-function finalStage(dockerfile: string): FinalStage {
+export function finalStage(dockerfile: string): FinalStage {
   const lines = dockerfile.split(/\r?\n/);
   const at = lines.findLastIndex((line) => /^\s*FROM\s/i.test(line));
   const from = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)/i.exec(lines[at] ?? "")?.[1];
@@ -171,8 +259,8 @@ export async function sessionPodImage(
     .object({ config: z.record(z.string(), z.unknown()) })
     .safeParse(Bun.YAML.parse(pin));
   const image = stack.data?.config[pinKey];
-  const digest =
-    typeof image === "string" ? IMAGE.exec(image)?.[1]?.slice("sha256:".length) : undefined;
+  const pinned = typeof image === "string" ? image : "";
+  const digest = IMAGE.exec(pinned)?.[1]?.slice("sha256:".length);
   if (digest === undefined)
     throw new PodNotMeasurable(`${pinAt} has no pinned digest at ${pinKey}`);
   const pinLines = pin.split(/\r?\n/);
@@ -196,7 +284,11 @@ export async function sessionPodImage(
   if (base === undefined || !IMAGE.test(base))
     throw new PodNotMeasurable(`${dockerfile} at ${build} has no digest-pinned final FROM`);
   const oci = await github.imageConfig(base);
-  const source = oci?.labels[SOURCE];
+  if (oci === undefined)
+    throw new PodNotMeasurable(
+      `the runner cannot read the OCI config of ${base}, the base ${dockerfile} at ${build} names, from its registry, so it cannot confirm that the pinned image sha256:${digest} is built on it`
+    );
+  const source = oci.labels[SOURCE];
   if (
     source !== undefined &&
     source.replace(/\/$/, "").toLowerCase() !==
@@ -206,7 +298,22 @@ export async function sessionPodImage(
       `source label of ${base} does not match the configured worker repository`
     );
   }
-  const revision = oci?.labels[REVISION];
+  // A build can pass the Dockerfile another base than its ARG default, so the images confirm the
+  // base: its layers are the first of the pinned image's.
+  const pinnedConfig = await github.imageConfig(pinned);
+  if (pinnedConfig === undefined)
+    throw new PodNotMeasurable(
+      `the runner cannot read the OCI config of the pinned image sha256:${digest} (${pinned}) from its registry, so it cannot confirm that the image is built on ${base}, the base ${dockerfile} at ${build} names`
+    );
+  const layers = builtOn(
+    { name: base, diffIds: oci.diffIds },
+    { name: pinned, diffIds: pinnedConfig.diffIds }
+  );
+  if (!layers.on)
+    throw new PodNotMeasurable(
+      `${dockerfile} at ${build} names the base ${base}, but ${layers.words}, so the pinned image sha256:${digest} is not built on it`
+    );
+  const revision = oci.labels[REVISION];
   const fromLabel = revision !== undefined && SHA.test(revision);
   const historical = /\b(?:tag commit|built from commit) ([a-f0-9]{40})\b/.exec(
     stage.baseComment
@@ -221,8 +328,8 @@ export async function sessionPodImage(
     throw new PodNotMeasurable(`${workerDockerfile} at ${sha} is missing`);
   const worker = finalStage(workerRecipe);
   const baseLinks = linksIn(profile, [], worker);
-  const podLinks = linksIn(profile, oci?.env.length ? oci.env : baseLinks.env, stage);
+  const podLinks = linksIn(profile, oci.env.length ? oci.env : baseLinks.env, stage);
   const directories = [...new Set([...baseLinks.found, ...podLinks.found])];
-  const why = `Inference: ${pinAt}:${pinLine + 1} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
+  const why = `Inference: ${pinAt}:${pinLine + 1} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
   return { repo: workerRepository, sha, directories, why };
 }

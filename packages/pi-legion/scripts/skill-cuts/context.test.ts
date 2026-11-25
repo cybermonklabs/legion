@@ -8,6 +8,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -25,6 +26,7 @@ import {
   cacheKey,
   ghSource,
   gitBlobId,
+  IncompleteCacheEntry,
   installedCopies,
   LOCAL_SKILL_REPO,
   legionRole,
@@ -449,6 +451,109 @@ test("the installed copy of each repository skill a context installs is its cach
   );
   const absent = await buildContext(c, none, options);
   expect(installedCopies(absent.record, options.cacheDir)).toEqual([beta]);
+});
+
+/** A made-up plugin of acme/legion that is an Oh My Pi extension and runs no build: it ships its
+ *  extension's source, which Oh My Pi loads as it is. */
+const LISTED_PLUGIN = {
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/plugin-listed",
+  name: "plugin-listed",
+};
+
+/** A devbox case whose profile installs LISTED_PLUGIN, its context built once under `root`: its
+ *  case, arm and options, the options of a second build under a fresh root (`again`), and the
+ *  cache entry of the plugin's checkout (`tree`) with that entry's file list (`list`). */
+async function listedPluginBuilt(root: string) {
+  const c = aCase("devbox", { plugins: [LISTED_PLUGIN], contextFiles: [] });
+  const { options, arm } = setUp(root, c);
+  writeTree(path.join(root, "repos", "acme", "legion", COMMIT), {
+    [`${LISTED_PLUGIN.path}/package.json`]: JSON.stringify({
+      name: LISTED_PLUGIN.name,
+      files: ["extensions"],
+      omp: { extensions: ["extensions/listed.ts"] },
+    }),
+    [`${LISTED_PLUGIN.path}/extensions/listed.ts`]: "export default function plugin(): void {}\n",
+  });
+  const first = await buildContext(c, arm, options);
+  expect(first.record.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+    [LISTED_PLUGIN.name, "extension"],
+  ]);
+  const key = cacheKey(LISTED_PLUGIN.repo, COMMIT);
+  return {
+    c,
+    arm,
+    again: { ...options, root: path.join(root, "again") },
+    tree: path.join(options.cacheDir, "trees", key),
+    list: path.join(options.cacheDir, "lists", "trees", `${key}.json`),
+  };
+}
+
+// Catches: a cached checkout restored from a save that kept only files newer than a cutoff, which
+// lacked its plugins' package.json, so the plugins were installed as `skills only`, their tools
+// and agents left out, and nothing said so.
+test("a cached checkout that lacks a file it was made with is refused, naming the file's full path, where its plugin would have been installed as skills only", async () => {
+  const built = await listedPluginBuilt(path.join(dir, "listed-missing"));
+  const manifest = path.join(built.tree, LISTED_PLUGIN.path, "package.json");
+  rmSync(manifest);
+  const failed = await buildContext(built.c, built.arm, built.again).then(
+    (context) => context.record.plugins,
+    (error: unknown) => error
+  );
+  expect(failed).toBeInstanceOf(IncompleteCacheEntry);
+  expect(String(failed)).toContain(`${manifest} (missing)`);
+});
+
+// Catches: a cached checkout made before file lists were kept taken as it is, though a save cut
+// by file time may have kept only part of it: only a tree keeps its source's file times.
+test("a cached checkout with no file list is made again, with its list, and its plugin is installed", async () => {
+  const built = await listedPluginBuilt(path.join(dir, "listed-unlisted"));
+  rmSync(built.list, { force: true });
+  const again = await buildContext(built.c, built.arm, built.again);
+  expect(again.record.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+    [LISTED_PLUGIN.name, "extension"],
+  ]);
+  expect(again.record.builds.filter((build) => build.kind === "tree")).toMatchObject([
+    { hit: false },
+  ]);
+  expect(existsSync(built.list)).toBe(true);
+});
+
+// Catches: a cached skill whose file changed since it was made copied into the context as it is.
+test("a cached skill whose file's size differs from its list's is refused, naming the file and both sizes", async () => {
+  const root = path.join(dir, "listed-skill");
+  const c = aCase("devbox", { contextFiles: [] });
+  const { options, arm } = setUp(root, c);
+  await buildContext(c, arm, options);
+  const file = path.join(
+    options.cacheDir,
+    "skills",
+    cacheKey("acme/skills", COMMIT, "skills/beta"),
+    "references/r.md"
+  );
+  writeFileSync(file, "Beta.\n");
+  const failed = await buildContext(c, arm, { ...options, root: path.join(root, "again") }).then(
+    (context) => context.record.skills,
+    (error: unknown) => error
+  );
+  expect(failed).toBeInstanceOf(IncompleteCacheEntry);
+  expect(String(failed)).toContain(`${file} (size 16 recorded, 6 found)`);
+});
+
+// Catches: a file the entry did not hold when it was made (a compose writes its Go test into a
+// checkout while it runs) taken for a change to the entry.
+test("a file written into a cached checkout after it was made is no change to its list, and the checkout is a hit", async () => {
+  const built = await listedPluginBuilt(path.join(dir, "listed-added"));
+  expect(existsSync(built.list)).toBe(true);
+  writeTree(built.tree, { [`${LISTED_PLUGIN.path}/added/note.md`]: "Written after the build.\n" });
+  const again = await buildContext(built.c, built.arm, built.again);
+  expect(again.record.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+    [LISTED_PLUGIN.name, "extension"],
+  ]);
+  expect(again.record.builds.filter((build) => build.kind === "tree")).toMatchObject([
+    { hit: true },
+  ]);
 });
 
 test("a second copy of a name whose text differs goes in a skills directory of its namespace, which the capture gives Oh My Pi after skills/, so it lists the copy as <namespace>/<name>", async () => {

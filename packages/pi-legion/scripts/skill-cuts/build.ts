@@ -282,13 +282,17 @@
  * or digest-times.sql for `--reprofile`) and the step's message time, or the session's start for
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
- * - Only the default profile in a devbox store uses the dev box's installers. A named profile in
+ * - The context follows the store, the Oh My Pi profile and where the session's skills came from
+ *   (SESSION_CONTEXT_RULE). A default-profile session in a devbox store uses the dev box's
+ *   installers, and so does a named-profile one with a `[Skill file: …]` header under the
+ *   configuration's `devboxHome`: a pod that mounts the dev box's home. Any other named profile in
  *   that store reads the session-pod image at the root's prompt build. A separate profile in a
  *   Legion store does not inherit Legion role plugins. The `context` label does not change.
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
- *   read result before the step is under, or the path of a successful whole read by path of the
- *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
- *   of the copy attribute.ts's rules place the read at (a checkout, the session's profile); and,
+ *   read result before the step is under, in every context; outside a pod whose links decide its
+ *   units, also the path of a successful whole read by path of the case's copy (`pathCopy`,
+ *   `profileReads`); for a path no row maps, each unit of the prefix rows of the copy
+ *   attribute.ts's rules place the read at (a checkout, the session's profile); and,
  *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
  *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
@@ -334,9 +338,12 @@
  *   deployment's project file (else its Pulumi config) names the image. Its commit is the one
  *   GitHub's build provenance of the image's digest names; else the one the labels of the image's
  *   own OCI config name (`org.opencontainers.image.revision`, else the release tag of
- *   `org.opencontainers.image.version`); else the one the pin history names (the comment lines
- *   right above the image's line); else the image's commit is not known, and the case or task is
- *   not measurable and is left out, since the repository's default branch would be a guess. The
+ *   `org.opencontainers.image.version`); else, for an image the configuration's
+ *   `deploymentImages` names (one the deployment builds on a worker image), the commit of the
+ *   base its Dockerfile at the image's revision names, once the base's `rootfs.diff_ids` are the
+ *   first of the image's; else the one the pin history names (the comment lines right above the
+ *   image's line); else the image's commit is not known, and the case or task is not measurable
+ *   and is left out, since the repository's default branch would be a guess. The
  *   commit its daemon image was built from, at which a capture composes the role prompt, is an
  *   evidence item of its own (LEGION_DAEMON_RULE). A
  *   repository GitHub gives no commit of
@@ -730,7 +737,14 @@ import {
   transientReason,
   writeWhole,
 } from "./common";
-import { type CutOrSet, cutOrSet, OMP_VERSION, type SkillCutsConfig, storeNamed } from "./config";
+import {
+  type CutOrSet,
+  cutOrSet,
+  type DeploymentImage,
+  OMP_VERSION,
+  type SkillCutsConfig,
+  storeNamed,
+} from "./config";
 import {
   composedAt,
   DAEMON_IMAGE_ITEM,
@@ -803,6 +817,8 @@ import {
 import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
+  builtOn,
+  finalStage,
   type ImageConfig,
   type PodImage,
   PodNotMeasurable,
@@ -1061,6 +1077,8 @@ export interface BuildIo {
   /** The process's peak resident memory so far, in bytes; memory.ts's `procPeakRssBytes` when
    *  absent (cli.ts's `skill-cuts build-cases`, whose io already samples it). */
   peakRssBytes?(): number;
+  /** Reads an image's config from its registry (`registryImageConfig` with the configuration's
+   *  `registries` when absent). */
   readonly imageConfig?: ReadImageConfig;
   /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
    *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
@@ -3267,13 +3285,18 @@ export class GithubReads {
 }
 
 /** The profile's GitHub reads with `io`'s gh: a read that failed for a transient reason waits with
- *  `io.sleep` before it is sent again, and is said on `io.err` as `who`'s. */
+ *  `io.sleep` before it is sent again, and is said on `io.err` as `who`'s. An image's config is
+ *  read with `io.imageConfig`, else from its registry with the registries `config` names. */
 function githubReads(
   io: BuildIo,
+  config: SkillCutsConfig,
   branches: ReadonlyMap<string, string>,
   who: "build-cases" | "build-tasks"
 ): GithubReads {
-  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm, io.imageConfig);
+  const registries = config.registries ?? [];
+  const imageConfig =
+    io.imageConfig ?? ((image: string) => registryImageConfig(image, { registries }));
+  return new GithubReads(io.gh, branches, commandRetries(io, who), io.npm, imageConfig);
 }
 
 /** Which skills a package pinned by an exact npm version ships, and where its source says so. */
@@ -3355,6 +3378,9 @@ const DEVBOX_CHECKOUT_RULE =
 /** Which units a dev-box profile installs beside those its session's reads come from. */
 const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
+/** Which context a session's profile is built in, and which of its reads place units there. */
+const SESSION_CONTEXT_RULE =
+  "a session's context follows its store, its Oh My Pi profile (its transcript's path: <home>/.omp/agent/ for the default profile, <home>/.omp/profiles/<name>/agent/ for a named one) and where its skills came from, which a [Skill file: <path>] header shows, since Oh My Pi prints one only for a skill it loaded. There are five kinds. A default-profile session of a devbox store ran on the dev box, which installs its own repository's units with their pins at the session's start (DEVBOX_INSTALLERS_RULE). A named-profile session of a devbox store with at least one such header under the dev box's home (the configuration's devboxHome, matched by whole path segments; no session has this kind where the configuration names none) ran in a pod that mounts that home, whose Oh My Pi loaded the dev box's skills, so it gets the dev box's context too. Any other named-profile session of a devbox store ran in a session pod, which links the packages of its pinned image into the profile. A legion-profile session of a Legion store ran in a Legion pod, which installs its worker image's packages and its deployment's role setup. Any other named-profile session of a Legion store gets its session repository's project skills. In every context each such header places its unit at the copy its path resolves to (the prefix table, else attribute.ts's rules), which is direct proof, and a unit the context installs already is not added again; a whole read of a file by its path places a unit only in a dev box's context, a Legion pod's legion profile or a session whose profile is not known, since in a pod its links, not the files a session read, decide which units it ships";
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob, matched against the skill's own name and again against the name it is listed under, <namespace>/<name> for a later copy of a name whose text differs (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
@@ -3380,6 +3406,47 @@ function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
     source: `${DEVBOX_INSTALLERS_RULE}; ${homes.length === 0 ? "no repository holds both" : `${homes.length} repositories hold both (${homes.join(", ")})`}, so the profile installs only the units the session's reads come from`,
   });
   return undefined;
+}
+
+/** The items of a profile's evidence that name the context of a pod that mounts the dev box's
+ *  home (SESSION_CONTEXT_RULE), and that of such a pod's session that read skill files outside
+ *  that home too, each followed by the profile's name. */
+const MOUNTED_HOME_ITEM = "a pod that mounts the dev box's home, profile ";
+const MIXED_HEADERS_ITEM = "skill files from the dev box's home and the pod's own paths, profile ";
+
+/** Whether the absolute path `file` is in the directory `dir` by whole path segments:
+ *  `/home/dev2/x` is not in `/home/dev`. */
+function inDirectory(file: string, dir: string): boolean {
+  const below = path.posix.relative(dir, file);
+  return path.posix.isAbsolute(file) && below !== ".." && !below.startsWith("../");
+}
+
+/** The evidence that a session of the named profile `profile` in a devbox store ran in a pod that
+ *  mounts the dev box's home `home` (SESSION_CONTEXT_RULE): `headers`, its `[Skill file: …]`
+ *  reads, hold one or more under that home. With a second item, naming a header of each kind,
+ *  where some are outside it. Undefined where none is under it. */
+function mountedHome(
+  profile: string,
+  home: string,
+  headers: readonly ShownRead[]
+): Evidence[] | undefined {
+  const inside = headers.filter((read) => inDirectory(read.header, home));
+  const [first] = inside;
+  if (first === undefined) return undefined;
+  const outside = headers.find((read) => !inDirectory(read.header, home));
+  const one = inside.length === 1;
+  const mounted = {
+    item: `${MOUNTED_HOME_ITEM}${profile}`,
+    source: `${inside.length} [Skill file: …] header${one ? "" : "s"} of the session ${one ? "is" : "are"} under the dev box's home ${home} (the configuration's devboxHome), the first at message ${first.index}: ${first.header}; Oh My Pi prints such a header only for a skill it loaded, so the pod's Oh My Pi loaded the dev box's skills, and the profile is the dev box's at the session's start: ${SESSION_CONTEXT_RULE}`,
+  };
+  if (outside === undefined) return [mounted];
+  return [
+    mounted,
+    {
+      item: `${MIXED_HEADERS_ITEM}${profile}`,
+      source: `message ${first.index} reads [Skill file: ${first.header}], under the dev box's home ${home}, and message ${outside.index} reads [Skill file: ${outside.header}], outside it; the profile is the dev box's, and each header outside that home places its unit too, which is direct proof: ${SESSION_CONTEXT_RULE}`,
+    },
+  ];
 }
 
 /** The item of a profile's evidence that names the Oh My Pi build the dev box's repository pins
@@ -3486,7 +3553,7 @@ function legionCatalog(
 }
 
 /** Which commit of its repository a Legion pod's worker image carries. */
-const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that the deployment names for its project at the deployment's commit of the session's start: the top-level image: line of the project file, else the image: line of the project's entry in the deployment's Pulumi config (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>); that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the image itself decides, by the labels of its OCI config (read from the registry by digest, the config blob alone and no layer: org.opencontainers.image.revision, a commit of the repository, else org.opencontainers.image.version, mapped to the release tag v<version> or <name>-v<version> that the repository has); failing that, for an image of a repository that the configuration's deploymentImages names (an image the deployment builds on a worker image), the base it was built on decides: its OCI config's org.opencontainers.image.source label names the deployment and its org.opencontainers.image.revision label a commit of the deployment at or before its read, the Dockerfile the entry names at that commit builds its final stage on a digest-pinned base, and that base's rootfs.diff_ids are the first of the image's (a Dockerfile's ARG default is no proof of the base, since a build can pass another; the diff ids are the digests of the layers uncompressed, and the manifests' layer digests are not compared, since they differ where the build compressed a base layer again); the image's commit is then the base's, by the build provenance of its digest, else by its labels, and where any of these steps fails the image's commit is not known; for any other image, failing the labels, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the image's commit is not known, the repository's default branch is a guess that no profile is built on, and the case or task is not measurable`;
 
 /** At which commit of the worker image's repository a Legion pod's daemon composed its role
  *  prompt (context.ts reads the item DAEMON_IMAGE_ITEM that names it). */
@@ -3559,18 +3626,20 @@ function projectFileImage(
 
 const OCI_REVISION = "org.opencontainers.image.revision";
 const OCI_VERSION = "org.opencontainers.image.version";
+const OCI_SOURCE = "org.opencontainers.image.source";
 
 /**
- * The commit of `imageRepo` that the OCI config of the image `image` (a digest-pinned GHCR
- * reference; `GithubReads.imageConfig` reads its manifest and config blob from the registry,
- * which gives a public image's anonymous pull token, and pulls no layer) names: the commit of its
- * `org.opencontainers.image.revision` label that `imageRepo` holds at or before `when.at`; else
- * the last commit at or before `when.at` of the release tag its `org.opencontainers.image.version`
- * label names (`v<version>`, or `<name>-v<version>` for the first words of the image's name, the
- * longest first), the first of them that `imageRepo` has. `how` says what was read, and, with no
- * `sha`, why no label decided; it is empty when the registry gave no config (not a GHCR image, or
- * no anonymous pull). A commit or tag that `imageRepo` does not have, such as a label that names
- * another repository's build, decides nothing.
+ * The commit of `imageRepo` that the OCI config of the image `image` (a digest-pinned reference;
+ * `GithubReads.imageConfig` reads its manifest and config blob from the registry, a public GHCR
+ * image's with the anonymous pull token GHCR gives, a configured registry's with its token, and
+ * pulls no layer) names: the commit of its `org.opencontainers.image.revision` label that
+ * `imageRepo` holds at or before `when.at`; else the last commit at or before `when.at` of the
+ * release tag its `org.opencontainers.image.version` label names (`v<version>`, or
+ * `<name>-v<version>` for the first words of the image's name, the longest first), the first of
+ * them that `imageRepo` has. `how` says what was read, and, with no `sha`, why no label decided;
+ * it is empty when the registry gave no config (a host neither GHCR nor configured, or no pull).
+ * A commit or tag that `imageRepo` does not have, such as a label that names another
+ * repository's build, decides nothing.
  */
 async function labelCommit(
   github: GithubReads,
@@ -3637,13 +3706,115 @@ async function labelCommit(
   };
 }
 
+/**
+ * The commit of `imageRepo` that the image `image` carries, where the configuration names its
+ * repository as one the deployment `deployment` builds on a worker image (`deploymentImages`, the
+ * entry `built`), by LEGION_IMAGE_RULE's deployment step: the image's OCI config labels
+ * `org.opencontainers.image.source` the deployment (case aside, a trailing `/` aside) and
+ * `org.opencontainers.image.revision` a commit that `deployment` holds at or before `when.at`; the
+ * Dockerfile `built.dockerfile` at that commit builds its final stage on a digest-pinned base
+ * (pod-image.ts's `finalStage`); the base's `rootfs.diff_ids` are the first of the image's
+ * (`builtOn`: a build can pass the Dockerfile another base than its ARG default); and the commit
+ * is the base's, by its build provenance in `imageRepo`, else by its labels (`labelCommit`). `how`
+ * names each read, or, with no `sha`, the step that failed and why. Throws when a GitHub read
+ * fails other than with a 404 of the Dockerfile or of a provenance.
+ */
+async function deploymentCommit(
+  github: GithubReads,
+  read: {
+    readonly image: string;
+    readonly built: DeploymentImage;
+    readonly deployment: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly how: string }> {
+  const { image, built, deployment, imageRepo, when } = read;
+  const step = `the configuration's deploymentImages names ${built.repository}, an image ${deployment} builds on a worker image`;
+  const config = await github.imageConfig(image);
+  if (config === undefined) {
+    return { how: `${step}, but its registry gives no OCI config of ${image}` };
+  }
+  const source = config.labels[OCI_SOURCE];
+  const revision = config.labels[OCI_REVISION];
+  const deployed = `https://github.com/${deployment}`;
+  if (source === undefined || revision === undefined) {
+    return {
+      how: `${step}, but the OCI config of ${image} has no ${source === undefined ? OCI_SOURCE : OCI_REVISION} label`,
+    };
+  }
+  if (source.replace(/\/$/, "").toLowerCase() !== deployed.toLowerCase()) {
+    return {
+      how: `${step}, but the OCI config of ${image} labels ${OCI_SOURCE} ${source}, not the deployment's ${deployed}`,
+    };
+  }
+  const labels = `the OCI config of ${image} labels ${OCI_SOURCE} ${source} and ${OCI_REVISION} ${revision}`;
+  if (!/^[0-9a-f]{40}$/.test(revision)) {
+    return { how: `${step}, but ${labels}, which names no commit (40 hex digits)` };
+  }
+  const asked = commitsRead(deployment, revision, when.at);
+  let commit: string | undefined;
+  try {
+    commit = await github.commitAt(deployment, revision, when.at);
+  } catch (error) {
+    // A commit the deployment does not hold, or one made after the read.
+    if (transientFailure(error)) throw error;
+  }
+  if (commit !== revision) {
+    return {
+      how: `${step}, but ${labels}, which is no commit of ${deployment} at or before ${when.words} ${when.at} (${asked})`,
+    };
+  }
+  const labelled = `${step}: ${labels}, a commit of ${deployment} (${asked})`;
+  const recipe = `${deployment}:${built.dockerfile} at ${revision} (gh api repos/${deployment}/contents/${built.dockerfile}?ref=${revision})`;
+  const text = await github.text(deployment, revision, built.dockerfile);
+  if (text === undefined) return { how: `${labelled}; ${recipe} does not exist` };
+  const base = finalStage(text).base;
+  const baseDigest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
+  if (base === undefined || baseDigest === undefined) {
+    return {
+      how: `${labelled}; ${recipe} ${base === undefined ? "names no base of its final stage" : `builds its final stage on ${base}, which pins no digest`}`,
+    };
+  }
+  const on = `${labelled}; ${recipe} builds its final stage on ${base}`;
+  const baseConfig = await github.imageConfig(base);
+  if (baseConfig === undefined) {
+    return { how: `${on}, but its registry gives no OCI config of ${base}` };
+  }
+  // A build can pass the Dockerfile another base than its ARG default, so the images confirm it.
+  const layers = builtOn(
+    { name: base, diffIds: baseConfig.diffIds },
+    { name: image, diffIds: config.diffIds }
+  );
+  if (!layers.on) {
+    return {
+      how: `${on}, but ${layers.words}, so ${image} is not built on the base the Dockerfile names`,
+    };
+  }
+  const confirmed = `${on}; ${layers.words}, so the image is built on it`;
+  const provenance = `gh api repos/${imageRepo}/attestations/sha256:${baseDigest}`;
+  const found = await github.attestedCommit(imageRepo, baseDigest);
+  if (found !== undefined) {
+    return {
+      sha: found.commit,
+      how: `${confirmed}; ${provenance} names ${found.uri} at ${found.commit}`,
+    };
+  }
+  const without = `the base's digest has no build provenance that names a commit (${provenance})`;
+  const baseLabels = await labelCommit(github, { image: base, imageRepo, when });
+  return baseLabels.sha === undefined
+    ? { how: `${confirmed}, but ${without}, and ${baseLabels.how}` }
+    : { sha: baseLabels.sha, how: `${confirmed}; ${without}; ${baseLabels.how}` };
+}
+
 /** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
  *  built from, read from `deployment` at `sha` by LEGION_IMAGE_RULE: the project file's top-level
  *  `key:` line, else the one of the project's entry in the Pulumi config; `how` gives the reads
  *  that decided it, or, with no `sha`, why no source gave one: the build provenance of the image's
- *  digest, then the OCI config labels of the image itself (`labelCommit`), then the comment lines
- *  above its line. Throws when a GitHub read fails other than with a 404 of the project file, of
- *  the config file or of a provenance. */
+ *  digest, then the OCI config labels of the image itself (`labelCommit`), then, for an image of a
+ *  repository `deploymentImages` names, the base the deployment built it on (`deploymentCommit`),
+ *  else the comment lines above its line. Throws when a GitHub read fails other than with a 404 of
+ *  the project file, of the config file, of a Dockerfile or of a provenance. */
 async function imageCommit(
   github: GithubReads,
   read: {
@@ -3654,6 +3825,8 @@ async function imageCommit(
     readonly project: string;
     readonly imageRepo: string;
     readonly when: { readonly at: string; readonly words: string };
+    /** The configuration's deploymentImages. */
+    readonly deploymentImages: readonly DeploymentImage[];
   }
 ): Promise<{ readonly sha?: string; readonly how: string }> {
   const { key, deployment, sha, project, imageRepo, when } = read;
@@ -3702,6 +3875,21 @@ async function imageCommit(
     return { sha: labelled.sha, how: `${named}${without}; ${labelled.how}` };
   }
   if (labelled.how !== "") without = `${without}, and ${labelled.how}`;
+  // An image the deployment built on a worker image: the commit of the base its Dockerfile names,
+  // once the images confirm that base; a step that fails leaves the commit not known.
+  const repository = entry.image.replace(/@.*$/, "").replace(/:[^/]*$/, "");
+  const built = read.deploymentImages.find((each) => each.repository === repository);
+  if (built !== undefined) {
+    const based = await deploymentCommit(github, {
+      image: entry.image,
+      built,
+      deployment,
+      imageRepo,
+      when,
+    });
+    const how = `${named}${without}; ${based.how}`;
+    return based.sha === undefined ? { how } : { sha: based.sha, how };
+  }
   if (entry.comment.length === 0) {
     return { how: `${named}${without}, and no comment line is right above its ${line}` };
   }
@@ -4709,13 +4897,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const legionStore = input.context.startsWith("legion:");
   // The Legion worker sets OMP_PROFILE=legion (packages/daemon/docker/worker.Dockerfile).
   const legion = legionStore && ompProfile === "legion";
-  const devbox = input.context === "devbox" && ompProfile === "default";
   const named = ompProfile !== "default" && ompProfile !== "unknown";
+  // Where the session's skills came from decides a named profile's context in a devbox store
+  // (SESSION_CONTEXT_RULE): a `[Skill file: …]` header under the dev box's home shows a pod that
+  // mounts that home, whose Oh My Pi loaded the dev box's skills, so the session is a dev-box
+  // session for every step below. A read by path shows no skill Oh My Pi loaded.
+  const headers = input.reads.filter((read) => read.byPath !== true);
+  const homeDir = run.config.devboxHome;
+  const mounted =
+    input.context === "devbox" && named && homeDir !== undefined
+      ? mountedHome(ompProfile, homeDir, headers)
+      : undefined;
+  const devbox = input.context === "devbox" && (ompProfile === "default" || mounted !== undefined);
   const isolated = !devbox && !legion;
   const inferReadUnits = !isolated || ompProfile === "unknown";
+  // A header places its unit in every context, as direct proof; a read by path only where no
+  // pod's links decide which units the pod ships.
+  const placing = inferReadUnits ? input.reads : headers;
   let pod: PodImage | undefined;
   if (ompProfile !== "unknown") evidence.push({ item: OMP_PROFILE_ITEM, source: ompProfile });
-  if (input.context === "devbox" && named) {
+  if (mounted !== undefined) {
+    evidence.push(...mounted);
+  } else if (input.context === "devbox" && named) {
     if (run.config.sessionPod === undefined)
       throw new PodNotMeasurable(`profile ${ompProfile} needs sessionPod in the configuration`);
     const at =
@@ -4858,8 +5061,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The first `[Skill file: …]` read that places each unit, by its key: it shows Oh My Pi loaded
   // that unit's skills, which a pool's version rule takes over the pinned build (POOL_VERSION_RULE).
   const shownBy = new Map<string, ShownRead>();
-  // Pod links, not reads of arbitrary files, decide which complete units the pod ships.
-  for (const read of inferReadUnits ? input.reads : []) {
+  // Each header places its unit in every context; a read by path only where no pod's links decide
+  // the units (`placing`).
+  for (const read of placing) {
     if (read.skill !== undefined && !readCopies.has(read.skill)) {
       const copy = run.placer.place(input.store, read.header, read.skill, ompProfile).copy;
       if (copy !== undefined) {
@@ -5339,6 +5543,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         project: input.project ?? "",
         imageRepo,
         when: whenOf(deployment),
+        deploymentImages: run.config.deploymentImages ?? [],
       };
       const worker = await imageCommit(github, { ...read, key: "image" });
       const daemon = await imageCommit(github, { ...read, key: "daemonImage" });
@@ -5522,7 +5727,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The prefix rows the same manifests give at the session's start (copies.ts's rules,
   // `resolved.prefixes`) place the read at the unit that installed it then, and at its copy.
   const placedAtStart = new Set<string>();
-  for (const read of inferReadUnits ? input.reads : []) {
+  for (const read of placing) {
     const name = read.skill;
     if (name === undefined || placedAtStart.has(read.header)) continue;
     placedAtStart.add(read.header);
@@ -7900,7 +8105,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
   const run: ProfileRun = {
     config,
     copies,
-    github: githubReads(io, copies.branches, "build-cases"),
+    github: githubReads(io, config, copies.branches, "build-cases"),
     placer: placing,
   };
   // Each case's session head, for its working directory.
@@ -8981,7 +9186,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     navigation: new Map(),
     dropNavigation: values["drop-navigation"] === true,
     copies,
-    github: githubReads(io, copies.branches, "build-cases"),
+    github: githubReads(io, config, copies.branches, "build-cases"),
     gateway: readerGateway(config, given["key-file"], io.spendRecorder, budgetUsd),
     placer: placing,
     servedIds: new Set(config.servedModels.map(modelId)),
@@ -9907,7 +10112,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     navigation: new Map(),
     dropNavigation: inputs.dropNavigation === true,
     copies,
-    github: githubReads(io, copies.branches, "build-cases"),
+    github: githubReads(io, config, copies.branches, "build-cases"),
     gateway: readerGateway(
       config,
       given["key-file"],
@@ -10392,7 +10597,7 @@ function profilesPlan(
     run: {
       config,
       copies,
-      github: githubReads(io, copies.branches, "build-tasks"),
+      github: githubReads(io, config, copies.branches, "build-tasks"),
       placer: placing,
     },
   };
@@ -11257,7 +11462,7 @@ async function reprofileTasks(
   const run: ProfileRun = {
     config,
     copies,
-    github: githubReads(io, copies.branches, "build-tasks"),
+    github: githubReads(io, config, copies.branches, "build-tasks"),
     placer: placing,
   };
 

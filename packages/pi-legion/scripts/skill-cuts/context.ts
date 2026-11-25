@@ -102,11 +102,12 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
+  type Stats,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { messageFor } from "@legion/envoy-client/errors";
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import { type Arm, type InstalledCopy, installedFromArm, legionStore } from "./arms";
 import { type Case, listedName, type ProfileSkill } from "./cases";
@@ -225,6 +226,25 @@ export class UnreadableDirectory extends Error {
 /** How the drop of a behaviour screen's case, or of a load test's task, begins when its context
  *  holds an UnreadableDirectory: the rest of the drop is the error's message. */
 export const UNREADABLE_DIRECTORY = "unreadable-directory";
+
+/** What a hit of a cache entry throws when a path of the entry's file list (`Builds`) is missing
+ *  from the entry, or is no longer the kind, the size or the link target it was made with: the
+ *  cache lost or changed a file, and a context built from it would differ in silence. Its message
+ *  names the entry, how many listed paths differ, and up to 5 of them in full with what differs. */
+export class IncompleteCacheEntry extends Error {
+  constructor(
+    entry: string,
+    list: string,
+    listed: number,
+    changed: readonly { readonly file: string; readonly differs: string }[]
+  ) {
+    const shown = changed.slice(0, 5).map(({ file, differs }) => `${file} (${differs})`);
+    if (changed.length > shown.length) shown.push(`and ${changed.length - shown.length} more`);
+    super(
+      `the cache entry ${entry} is not what it was made with: ${changed.length} of the ${listed} paths its list ${list} holds ${changed.length === 1 ? "is" : "are"} missing or changed: ${shown.join("; ")}. Removing the entry and its list builds it again.`
+    );
+  }
+}
 
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
  *  and how long it took, in milliseconds. */
@@ -984,13 +1004,77 @@ export function localSource(root: string): RepoSource {
   };
 }
 
-/** The builds of one context, each timed and kept in the cache. */
+/** One file or symbolic link of a cache entry, as the entry's file list keeps it (`Builds`): its
+ *  path below the entry (`.` for an entry that is one file), and its size in bytes or its target. */
+type Listed =
+  | { readonly path: string; readonly kind: "file"; readonly size: number }
+  | { readonly path: string; readonly kind: "link"; readonly target: string };
+
+/** Each file and symbolic link of the entry at `at` (a directory, or one file). */
+function entryFiles(at: string): Listed[] {
+  const files: Listed[] = [];
+  const visit = (full: string, below: string): void => {
+    const stats = lstatSync(full);
+    if (stats.isSymbolicLink()) {
+      files.push({ path: below, kind: "link", target: readlinkSync(full) });
+    } else if (stats.isFile()) {
+      files.push({ path: below, kind: "file", size: stats.size });
+    } else if (stats.isDirectory()) {
+      for (const name of readdirSync(full).sort()) {
+        visit(path.join(full, name), path.join(below, name));
+      }
+    }
+  };
+  visit(at, ".");
+  return files;
+}
+
+/** How `full`, the path of `listed` in its entry, differs from it, or undefined when it does not. */
+function listedChange(full: string, listed: Listed): string | undefined {
+  let found: Stats | undefined;
+  try {
+    found = lstatSync(full, { throwIfNoEntry: false });
+  } catch (error) {
+    // A directory on its path is no directory now.
+    if (!hasErrnoCode(error, "ENOTDIR")) throw error;
+  }
+  if (found === undefined) return "missing";
+  const kind = found.isSymbolicLink()
+    ? "link"
+    : found.isFile()
+      ? "file"
+      : found.isDirectory()
+        ? "directory"
+        : "special file";
+  if (kind !== listed.kind) return `a ${listed.kind} recorded, a ${kind} found`;
+  if (listed.kind === "file") {
+    return found.size === listed.size
+      ? undefined
+      : `size ${listed.size} recorded, ${found.size} found`;
+  }
+  const target = readlinkSync(full);
+  return target === listed.target ? undefined : `target ${listed.target} recorded, ${target} found`;
+}
+
+/** The builds of one context, each timed and kept in the cache. Each entry
+ *  `cacheDir/<kind>s/<key>` has its file list, `cacheDir/lists/<kind>s/<key>.json`: each file and
+ *  symbolic link the entry was made with, by its path, its size or its target (`entryFiles`), kept
+ *  apart so that nothing that reads an entry or lists a kind's entries finds it. A hit is checked
+ *  against its list, and a listed path that is missing or changed is an IncompleteCacheEntry: a
+ *  cache restored from a save that kept only files newer than a cutoff held checkouts without
+ *  their plugins' package.json, which installed those plugins as `skills only`, with nothing to
+ *  say so. A file the entry holds beyond its list is no change (a compose writes its Go test into
+ *  a checkout while it runs). An entry with no list was made before lists were kept: a tree is
+ *  made again, since only a tree's files keep their source's file times (the tarball's), so only a
+ *  tree can be partly kept by a save that cuts by file time; any other entry, written by the
+ *  runner at build time, is taken unchecked, since making each again would cost a GitHub read per
+ *  file of thousands of entries. */
 class Builds {
   readonly list: Build[] = [];
   constructor(readonly cacheDir: string) {}
 
-  /** `cacheDir/<kind>s/<key>`, made by `make` into a fresh path that is then renamed into place,
-   *  unless the cache holds it already. */
+  /** `cacheDir/<kind>s/<key>`, checked against its list when the cache holds it; else made by
+   *  `make` into a fresh path, whose list is renamed into place before the entry is. */
   async entry(
     kind: Build["kind"],
     key: string,
@@ -998,15 +1082,44 @@ class Builds {
   ): Promise<string> {
     const started = performance.now();
     const where = path.join(this.cacheDir, `${kind}s`, key);
+    const listFile = path.join(this.cacheDir, "lists", `${kind}s`, `${key}.json`);
     let hit = existsSync(where);
+    if (hit && existsSync(listFile)) {
+      const listed = JSON.parse(readFileSync(listFile, "utf8")) as Listed[];
+      const changed = listed.flatMap((each) => {
+        const file = path.join(where, each.path);
+        const differs = listedChange(file, each);
+        return differs === undefined ? [] : [{ file, differs }];
+      });
+      if (changed.length > 0) {
+        throw new IncompleteCacheEntry(where, listFile, listed.length, changed);
+      }
+    } else if (hit && kind === "tree") {
+      // Made before lists were kept: moved aside, removed, and made again.
+      const aside = `${where}.unlisted-${randomBytes(4).toString("hex")}`;
+      try {
+        renameSync(where, aside);
+      } catch (error) {
+        // Another capture moved it aside first.
+        if (!hasErrnoCode(error, "ENOENT")) throw error;
+      }
+      rmSync(aside, { recursive: true, force: true });
+      hit = false;
+    }
     if (!hit) {
       mkdirSync(path.dirname(where), { recursive: true });
-      const fresh = `${where}.part-${randomBytes(4).toString("hex")}`;
+      mkdirSync(path.dirname(listFile), { recursive: true });
+      const part = `part-${randomBytes(4).toString("hex")}`;
+      const fresh = `${where}.${part}`;
+      const freshList = `${listFile}.${part}`;
       try {
         await make(fresh);
+        writeFileSync(freshList, `${JSON.stringify(entryFiles(fresh))}\n`);
+        renameSync(freshList, listFile);
         renameSync(fresh, where);
       } catch (error) {
         rmSync(fresh, { recursive: true, force: true });
+        rmSync(freshList, { force: true });
         // Another capture made the same entry first: it is the same build.
         if (!existsSync(where)) throw error;
         hit = true;
@@ -1359,7 +1472,7 @@ type ProfilePlugin = Case["profile"]["plugins"][number];
 
 /** The checkout of the repository of `c`'s profile plugin `plugin` at its commit, through the
  *  cache. A read that failed stops the case, naming the plugin, as a failed role-prompt read does,
- *  so every arm of a case has the same plugins. */
+ *  so every arm of a case has the same plugins; an IncompleteCacheEntry stops it as it is. */
 async function pluginCheckout(
   c: ContextCase,
   plugin: ProfilePlugin,
@@ -1369,6 +1482,7 @@ async function pluginCheckout(
   try {
     return await checkout(builds, source, plugin.repo, plugin.commit);
   } catch (error) {
+    if (error instanceof IncompleteCacheEntry) throw error;
     throw new Error(
       `case ${c.id}: the repository of the plugin ${plugin.name}, ${plugin.repo} at ${plugin.commit}, could not be read: ${messageFor(error)}`
     );
@@ -2216,6 +2330,9 @@ export async function buildContext(
       extensions.push(dir);
       pluginRecords.push({ ...where, as: "extension", key });
     } catch (error) {
+      // A cache entry that lost a file stops the context: leaving the plugin out would change it
+      // in silence.
+      if (error instanceof IncompleteCacheEntry) throw error;
       pluginRecords.push({
         ...where,
         as: "left out",

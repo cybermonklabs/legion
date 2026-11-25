@@ -53,6 +53,7 @@ import {
 import { mtimeRange } from "./countsql";
 import { blindOrder, stepText } from "./judge";
 import { loadProfile, recordedLines } from "./load";
+import type { ImageConfig } from "./pod-image";
 import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
@@ -1872,7 +1873,11 @@ const io = (lines: string[]): BuildIo => ({
   npm: async (name, version) => TARBALLS[`${name}@${version}`]?.(),
   // The suite's worker images carry the label of the commit its repositories are read at (SHA),
   // since an image no source dates is left out and never read at its repository's default branch.
-  imageConfig: async () => ({ env: [], labels: { "org.opencontainers.image.revision": SHA } }),
+  imageConfig: async () => ({
+    env: [],
+    labels: { "org.opencontainers.image.revision": SHA },
+    diffIds: [],
+  }),
   gh: async (args) => {
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -8155,12 +8160,14 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // The summary records their profiles. The profile files keep the same bytes. The profiles
   // summary counts a subagents.sql query for each of the two session tasks, read before its
   // profile is built (sessionQueries 2); one query of their store after both was counted before.
+  // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
+  // step.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "85dc0b754ac23142309d9268e69f3483ed1396ad30610b6a0ee508bbc5b4fd0a",
+    "profiles summary": "37da5b74d367f4d9667b0aa410b1cb3f6a4fb5d6c61c752cffc9f42d6189cd7c",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -8198,6 +8205,28 @@ function changedStore(
 const POD_BASE = `ghcr.io/acme/worker@sha256:${"1".repeat(64)}`;
 const POD_PIN = `registry.example/acme/session@sha256:${"2".repeat(64)}`;
 const POD_BUILD = "d5".repeat(20);
+/** The rootfs.diff_ids of POD_BASE, and those of POD_PIN, built on it: POD_BASE's and one more. */
+const POD_LAYERS = [1, 2, 3].map((n) => `sha256:${String(n).repeat(64)}`);
+const POD_PIN_LAYERS = [...POD_LAYERS, `sha256:${"4".repeat(64)}`];
+
+/** A `read` call of `url` (`skill://<name>`) and its successful result, which starts
+ *  `[Skill file: <header>]`, as a case's two messages: as `readFirst` puts them in a transcript. */
+function skillFileRead(url: string, header: string): SessionMessage[] {
+  const callId = `toolu_${url.slice("skill://".length)}`;
+  return [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: url } }],
+    },
+    {
+      role: "toolResult",
+      toolCallId: callId,
+      toolName: "read",
+      isError: false,
+      content: [{ type: "text", text: `[Skill file: ${header}]\n# ${url}\n` }],
+    },
+  ];
+}
 
 async function podProfile(
   name: string,
@@ -8207,9 +8236,36 @@ async function podProfile(
     label = true,
     legion = false,
     readAt,
-  }: { task?: boolean; label?: boolean; legion?: boolean; readAt?: string } = {}
+    pinLayers = POD_PIN_LAYERS,
+    home = "/home/fixture",
+    devboxHome,
+    reads = [],
+    byPath,
+    podLinks = ["/opt/legion/pi-acme"],
+    manifests = HOME_MANIFESTS,
+  }: {
+    task?: boolean;
+    label?: boolean;
+    legion?: boolean;
+    readAt?: string;
+    /** The rootfs.diff_ids the registry gives of POD_PIN; no config of it when `unread`. */
+    pinLayers?: readonly string[] | "unread";
+    /** The home directory whose `.omp/` holds the session's transcript. */
+    home?: string;
+    /** The configuration's devboxHome; the configuration names none when absent. */
+    devboxHome?: string;
+    /** `[Skill file: …]` reads put after the prompt, in this order, before alpha's. */
+    reads?: readonly { readonly url: string; readonly header: string }[];
+    /** The directory the session reads alpha's two files from whole by their paths, in place of
+     *  its skill:// reads: the case's pathCopy. */
+    byPath?: string;
+    /** The directories the session pod's Dockerfile links into the profile. */
+    podLinks?: readonly string[];
+    /** The manifests.tsv rows added to the suite's copies output. */
+    manifests?: readonly (readonly (string | number)[])[];
+  } = {}
 ) {
-  const file = `/home/fixture/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
+  const file = `${home}/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
   const db = legion ? "store_b" : "store_a";
   const template = await profileCase(legion ? "legion" : "good");
   const cfg = changedStore(name, (files) => {
@@ -8219,8 +8275,18 @@ async function podProfile(
     const readRoot = legion
       ? `${target}/.omp/skills/alpha`
       : (readAt ?? "/opt/legion/pi-acme/dist/skills/alpha");
+    const entries = inDirectory(text, target)
+      .replaceAll(oldRoot, readRoot)
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    if (byPath !== undefined) readsUnder(byPath)(entries);
+    // Each read goes right after the prompt, so the last is put first.
+    for (const [n, read] of [...reads.entries()].reverse()) {
+      readFirst(`b0${n}0000`, read.url, read.header, `# ${read.url}\n`)(entries);
+    }
     const store = files[db] ?? {};
-    store[file] = inDirectory(text, target).replaceAll(oldRoot, readRoot);
+    store[file] = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
   });
   writeFileSync(
     cfg,
@@ -8234,9 +8300,10 @@ async function podProfile(
         workerRepository: "acme/skills",
         workerDockerfile: "worker.Dockerfile",
       },
+      ...(devboxHome === undefined ? {} : { devboxHome }),
     })
   );
-  const copies = copiesWith(`copies-${name}`, { "manifests.tsv": HOME_MANIFESTS });
+  const copies = copiesWith(`copies-${name}`, { "manifests.tsv": manifests });
   const dir = path.join(scratch, name);
   mkdirSync(dir, { recursive: true });
   const from = path.join(dir, "before.jsonl");
@@ -8246,10 +8313,12 @@ async function podProfile(
   const options: BuildIo = {
     ...standin,
     imageConfig: async (image: string) => {
+      if (image === POD_PIN)
+        return pinLayers === "unread" ? undefined : { env: [], labels: {}, diffIds: pinLayers };
       expect(image).toBe(POD_BASE);
       const labels: Record<string, string> = {};
       if (label) labels["org.opencontainers.image.revision"] = IMAGE_SHA;
-      return { env: ["OMP_PROFILE=legion"], labels };
+      return { env: ["OMP_PROFILE=legion"], labels, diffIds: POD_LAYERS };
     },
     gh: async (args: readonly string[]) => {
       const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -8261,7 +8330,7 @@ async function podProfile(
       if (route === "repos/acme/infra/contents/pods/Dockerfile") {
         expect(args).toContain(`ref=${POD_BUILD}`);
         return answer(
-          `ARG WORKER=${POD_BASE}\nFROM \${WORKER}\nRUN omp plugin link /opt/legion/pi-acme\n`
+          `ARG WORKER=${POD_BASE}\nFROM \${WORKER}\n${podLinks.map((dir) => `RUN omp plugin link ${dir}\n`).join("")}`
         );
       }
       if (route.includes(`sha=${POD_BUILD}`)) return answer(POD_BUILD);
@@ -8306,7 +8375,24 @@ async function podProfile(
       )
     )
   );
-  writeFileSync(from, `${JSON.stringify({ ...template, source, messages })}\n`);
+  if (byPath !== undefined) {
+    readsUnder(byPath)(messages.map((message) => ({ type: "message", message })));
+  }
+  const added = reads.flatMap((read) => skillFileRead(read.url, read.header));
+  messages.splice(1, 0, ...added);
+  const skillReads = template.skillReads.map((index) =>
+    index >= 1 ? index + added.length : index
+  );
+  writeFileSync(
+    from,
+    `${JSON.stringify({
+      ...template,
+      source,
+      messages,
+      skillReads,
+      ...(byPath === undefined ? {} : { pathCopy: { dir: byPath } }),
+    })}\n`
+  );
   const code = await main(
     [
       "build-cases",
@@ -8325,8 +8411,11 @@ async function podProfile(
     ],
     options
   );
-  const profile = code === EXIT.ok ? loadCases(out, old)[0]?.profile : undefined;
-  return { code, profile, lines };
+  const [built] = code === EXIT.ok ? loadCases(out, old) : [];
+  const evidence = Object.fromEntries(
+    built?.evidence?.map((each) => [each.item, each.source]) ?? []
+  );
+  return { code, profile: built?.profile, lines, evidence };
 }
 
 test("session context row 1: only a default-root session uses the dev box's installers", async () => {
@@ -8365,6 +8454,31 @@ test("session context row 5: without an OCI revision or pin evidence the pod is 
   expect(result.lines.join("\n")).toContain("not measurable");
 }, 60_000);
 
+// Catches: a session pod read at the commit of the base its Dockerfile's ARG default names,
+// though a build can pass another base: the pinned image was never read, so an image built on
+// another base was taken for one built on that base.
+test("session context row 7: a pinned image whose rootfs.diff_ids do not start with its base's is not measurable, naming its digest and the mismatch; one whose do builds as before", async () => {
+  const pinDigest = `sha256:${"2".repeat(64)}`;
+  const other = [POD_LAYERS[0] ?? "", `sha256:${"9".repeat(64)}`, ...POD_PIN_LAYERS.slice(2)];
+  const mismatch = await podProfile("pin-other-base", "legion", { pinLayers: other });
+  expect(mismatch.code).toBe(EXIT.failed);
+  expect(mismatch.lines.join("\n")).toContain(
+    `pod profile not measurable: pods/Dockerfile at ${POD_BUILD} names the base ${POD_BASE}, but the 3 rootfs.diff_ids of ${POD_BASE} are not the first 3 of the 4 of ${POD_PIN} (entry 2 differs), so the pinned image ${pinDigest} is not built on it`
+  );
+  const unread = await podProfile("pin-unread", "legion", { pinLayers: "unread" });
+  expect(unread.code).toBe(EXIT.failed);
+  expect(unread.lines.join("\n")).toContain(
+    `pod profile not measurable: the runner cannot read the OCI config of the pinned image ${pinDigest} (${POD_PIN}) from its registry, so it cannot confirm that the image is built on ${POD_BASE}, the base pods/Dockerfile at ${POD_BUILD} names`
+  );
+  const matched = await podProfile("pin-same-base", "legion");
+  expect(matched.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(matched.evidence?.["session pod profile legion"]).toContain(
+    `pods/Dockerfile at that commit uses ${POD_BASE}; the 3 rootfs.diff_ids of ${POD_BASE} are the first 3 of the 4 of ${POD_PIN}, so the pinned image is built on it.`
+  );
+}, 120_000);
+
 // Catches: vskills-293's porting-released-proofs, whose read of the project's own
 // .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
 // of that name, so the profile installed that plugin whole (20 of the 21 names it added).
@@ -8380,6 +8494,184 @@ test("session context row 6: a read inside the session checkout's own .claude/sk
   // The same read at the plugin's own install location installs it, as row 1's does.
   const plugin = await podProfile("plugin-skill-read", "");
   expect((plugin.profile?.skills ?? []).map((skill) => skill.name)).toContain("beta");
+}, 60_000);
+
+// INFRA-4676's architect, 2026-11-25: a session's context follows where its skills came from. A
+// named-profile session of a devbox store whose [Skill file: …] headers are under the dev box's
+// home ran in a pod that mounts that home, whose Oh My Pi loaded the dev box's skills, so it gets
+// the dev box's context; one with no such header gets the session pod's. In every context a
+// [Skill file: …] header places its unit, as direct proof; a read by path does so only where pod
+// links do not decide.
+
+/** The dev box's home a pod can mount (the configuration's devboxHome), and the home of the pod's
+ *  own user, whose named profile holds the pod's transcripts. */
+const DEV_HOME = "/home/dev";
+const POD_HOME = "/home/agent";
+/** acme/skills's alpha where the dev box's Oh My Pi has it, among its user skills. */
+const HOME_ALPHA = `${DEV_HOME}/.omp/agent/skills/alpha`;
+/** acme/skills's beta where the worker image's package stages it: a pod's own path. */
+const POD_BETA = "/opt/legion/pi-acme/dist/skills/beta/SKILL.md";
+/** acme/skills's beta among the user skills of a home whose path starts with DEV_HOME's text and
+ *  is not in it. */
+const OTHER_HOME_BETA = "/home/dev2/.omp/agent/skills/beta/SKILL.md";
+/** The evidence items that name the context of a pod that mounts the dev box's home, and that of
+ *  such a pod's session that read skill files on the pod's own paths too, each followed by the
+ *  profile's name. */
+const MOUNTED_HOME = "a pod that mounts the dev box's home, profile ";
+const MIXED_HEADERS = "skill files from the dev box's home and the pod's own paths, profile ";
+/** The unit by which the dev box's plugin list (acme/dots's) installs acme/powers. */
+const DOTS_POWERS = "unit package:acme-powers (acme/dots:omp/plugins/package.json)";
+
+/** The case of a legion-profile session under POD_HOME in the devbox store store_a that reads
+ *  pack-one of the dev box's pool (PACK_ONE) and then alpha, as the dev box's Oh My Pi links it
+ *  (HOME_ALPHA): its [Skill file: …] headers are under DEV_HOME. acme/dots is the dev box's
+ *  repository, and the session pod's image links nothing into the profile. */
+const homeMounted = (name: string, options: Parameters<typeof podProfile>[2] = {}) =>
+  podProfile(name, "legion", {
+    home: POD_HOME,
+    readAt: HOME_ALPHA,
+    reads: [{ url: "skill://pack-one", header: PACK_ONE }],
+    podLinks: [],
+    manifests: DOTS_MANIFESTS,
+    ...options,
+  });
+
+/** The profile's skills of `result`, each as `<name> <repo> <commit>`. */
+const skillsOf = (result: { readonly profile?: Case["profile"] | undefined }) =>
+  (result.profile?.skills ?? []).map((skill) => `${skill.name} ${skill.repo} ${skill.commit}`);
+
+/** `result`'s exit status, with what it printed where it is no success. */
+const outcomeOf = (result: { readonly code: number; readonly lines: readonly string[] }) => ({
+  code: result.code,
+  said: result.code === EXIT.ok ? "" : result.lines.join("\n"),
+});
+
+// Catches: a session of a pod that mounts the dev box's home given the session pod's profile,
+// which installs the image's links alone, so it lacks the copy the session read and the case is
+// left out.
+test("skill source row 1: a named-profile session of a devbox store whose [Skill file] headers are under devboxHome gets the dev box's context: its installers' units, the pool a header names at its installer's pin, the copy the case read, and the evidence item that names the context", async () => {
+  const result = await homeMounted("home-mounted", { devboxHome: DEV_HOME });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  // The copy the case read, as the dev box's Oh My Pi linked it at the session's start.
+  expect(skills).toContain(`alpha acme/skills ${SHA}`);
+  // The pool the header names, at the commit the dev box's installer pins.
+  expect(skills).toContain(`pack-one acme/pack ${PACK_PIN}`);
+  // A unit the dev box's installers install, which no header names.
+  expect(skills).toContain(`power-two acme/powers ${SHA}`);
+  expect(result.evidence?.[DOTS_POWERS]).toStartWith(
+    "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start"
+  );
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toStartWith(
+    `3 [Skill file: …] headers of the session are under the dev box's home ${DEV_HOME} (the configuration's devboxHome), the first at message 2: ${PACK_ONE}; `
+  );
+  expect(result.evidence?.["session pod profile legion"]).toBeUndefined();
+  expect(result.evidence?.[`${MIXED_HEADERS}legion`]).toBeUndefined();
+}, 60_000);
+
+// Guards the session pod's branch: devboxHome changes nothing for a session whose headers are all
+// on the pod's own paths.
+test("skill source row 2: a named-profile session of a devbox store whose [Skill file] headers are all on the pod's own paths gets the session pod's profile", async () => {
+  const result = await podProfile("pod-only", "legion", { home: POD_HOME, devboxHome: DEV_HOME });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Catches: a session that read skill files under the dev box's home and on the pod's own paths
+// given one context with no word of the other, or the pod path's unit left out of it.
+test("skill source row 3: a session with [Skill file] headers under devboxHome and on the pod's own paths gets the dev box's context, the unit its pod-path header names, and an evidence item naming a header of each kind", async () => {
+  const result = await homeMounted("home-mixed", {
+    devboxHome: DEV_HOME,
+    reads: [
+      { url: "skill://pack-one", header: PACK_ONE },
+      { url: "skill://beta", header: POD_BETA },
+    ],
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toStartWith(
+    `3 [Skill file: …] headers of the session are under the dev box's home ${DEV_HOME} (the configuration's devboxHome), the first at message 2: ${PACK_ONE}; `
+  );
+  expect(result.evidence?.[`${MIXED_HEADERS}legion`]).toStartWith(
+    `message 2 reads [Skill file: ${PACK_ONE}], under the dev box's home ${DEV_HOME}, and message 4 reads [Skill file: ${POD_BETA}], outside it; `
+  );
+  // The worker image's package, which the pod-path header places.
+  expect(
+    result.evidence?.["unit package:@acme/pi-acme (acme/skills:packages/pi-acme/package.json)"]
+  ).toStartWith(
+    `message 4 reads [Skill file: ${POD_BETA}], under the prefix-table.tsv row /opt/legion/pi-acme/dist/skills/beta/`
+  );
+  expect(result.profile?.plugins.map((plugin) => plugin.name)).toContain("pi-acme");
+  expect(skillsOf(result)).toContain(`power-two acme/powers ${SHA}`);
+  expect(result.evidence?.["session pod profile legion"]).toBeUndefined();
+}, 60_000);
+
+// Catches: a [Skill file] header in a session pod's context placing no unit, since the pod's
+// links alone decided its units; and a home whose path only starts with devboxHome's text taken
+// for the dev box's.
+test("skill source row 4: a session pod's [Skill file] header outside devboxHome installs the unit it places beside the image's links, and the context stays the session pod's", async () => {
+  const result = await podProfile("pod-proof", "legion", {
+    home: POD_HOME,
+    devboxHome: DEV_HOME,
+    reads: [{ url: "skill://beta", header: OTHER_HOME_BETA }],
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  for (const name of ["alpha", "beta", "omicron"]) {
+    expect(skills).toContain(`${name} acme/skills ${IMAGE_SHA}`);
+  }
+  // acme/skills's user skills, which the header places: older is theirs alone, and the image's
+  // package ships none of it.
+  expect(skills).toContain(`older acme/skills ${IMAGE_SHA}`);
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toStartWith(
+    `message 2 reads [Skill file: ${OTHER_HOME_BETA}], under the prefix-table.tsv row **/agent/skills/beta/`
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Guards the rule pod links keep: a whole read by path in a session pod's context places no unit,
+// even of a copy under devboxHome, and decides no context.
+test("skill source row 5: a session pod's whole reads by path of a copy the image's links do not give install nothing of it, and reads by path under devboxHome do not make the context the dev box's", async () => {
+  const result = await podProfile("pod-by-path", "legion", {
+    home: POD_HOME,
+    devboxHome: DEV_HOME,
+    byPath: HOME_ALPHA,
+  });
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  expect(result.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toBe(
+    undefined
+  );
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
+}, 60_000);
+
+// Catches: rule 1 applied with no devboxHome in the configuration, or the session pod's context
+// placing no unit of the session's [Skill file] headers.
+test("skill source row 6: with no devboxHome, a session like row 1's keeps the session pod's context, and its [Skill file] headers install their units, and the dev box's installers nothing", async () => {
+  const result = await homeMounted("home-unconfigured");
+  expect(outcomeOf(result)).toEqual({ code: EXIT.ok, said: "" });
+  const skills = skillsOf(result);
+  expect(skills.some((skill) => skill.startsWith("alpha acme/skills "))).toBe(true);
+  expect(skills.some((skill) => skill.startsWith("pack-one acme/pack "))).toBe(true);
+  expect(skills.some((skill) => skill.startsWith("power-two "))).toBe(false);
+  expect(result.evidence?.["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toStartWith(
+    `message 4 reads [Skill file: ${HOME_ALPHA}/SKILL.md], under the prefix-table.tsv row **/agent/skills/alpha/`
+  );
+  expect(
+    result.evidence?.["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]
+  ).toStartWith(
+    `message 2 reads [Skill file: ${PACK_ONE}], under the prefix-table.tsv row **/vendor/acme-pack/skills/pack-one/`
+  );
+  expect(result.evidence?.[DOTS_POWERS]).toBeUndefined();
+  expect(result.evidence?.["session pod profile legion"]).toStartWith("Inference: ");
+  expect(result.evidence?.[`${MOUNTED_HOME}legion`]).toBeUndefined();
 }, 60_000);
 
 /** `text`, a session's transcript, with its header's working directory `cwd`. */
@@ -9350,8 +9642,11 @@ function attestationOf(commit: string): string {
  *  of acme/skills (`<name> <commit>`) and plugins of it (`<name> <commit> <path>`), and the
  *  sources of its evidence items of the worker image's and the daemon image's commits. `labels`
  *  are the OCI config labels the registry gives each image (no config when undefined, as for an
- *  image it does not hold), and `registryReads` the images asked; `refused` says the build is
- *  expected to leave the case out (exit 1) instead of writing it. */
+ *  image it does not hold), `images` the whole config it gives an image it names, over `labels`,
+ *  and `registryReads` the images asked; `deploymentImages` the configuration's key of that name
+ *  (the suite's configuration when undefined); `gh` answers a route it knows before the suite's
+ *  answers; `refused` says the build is expected to leave the case out (exit 1) instead of
+ *  writing it. */
 async function reprofiledLegion(
   name: string,
   answers: {
@@ -9359,6 +9654,12 @@ async function reprofiledLegion(
     readonly project?: string;
     readonly attested: Readonly<Record<string, string>>;
     readonly labels?: Readonly<Record<string, string>>;
+    readonly images?: Readonly<Record<string, ImageConfig>>;
+    readonly deploymentImages?: readonly {
+      readonly repository: string;
+      readonly dockerfile: string;
+    }[];
+    readonly gh?: (route: string, args: readonly string[]) => GhResult | undefined;
     readonly refused?: true;
   }
 ) {
@@ -9372,19 +9673,39 @@ async function reprofiledLegion(
   const standin = io(lines);
   const registryReads: string[] = [];
   const missing = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+  let configFile = config;
+  if (answers.deploymentImages !== undefined) {
+    configFile = path.join(dir, "skill-cuts.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(config, "utf8")),
+        deploymentImages: answers.deploymentImages,
+      })
+    );
+  }
   const code = await main(
     [
-      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["build-cases", "--config", configFile, "--old", old, "--copies", copiesDir],
       ...["--count", countDir, "--reprofile", from, "--out", fresh],
     ],
     {
       ...standin,
       imageConfig: async (image) => {
         registryReads.push(image);
-        return answers.labels === undefined ? undefined : { env: [], labels: answers.labels };
+        const own = answers.images?.[image];
+        if (own !== undefined) return own;
+        return answers.labels === undefined
+          ? undefined
+          : { env: [], labels: answers.labels, diffIds: [] };
       },
       gh: async (args) => {
         const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+        const known = answers.gh?.(route, args);
+        if (known !== undefined) {
+          ghCalls.push([...args]);
+          return known;
+        }
         if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
           ghCalls.push([...args]);
           return answers.pulumi !== undefined && args.includes(`ref=${SHA}`)
@@ -9516,6 +9837,142 @@ describe("build-cases --reprofile of a Legion pane whose project file names its 
       `${own} gives the project ACME the daemonImage ${daemonImage}; ${names(DAEMON, DAEMON_SHA)}, so the role prompt is composed from acme/skills at ${DAEMON_SHA}: the Legion daemon`
     );
   }, 60_000);
+});
+
+// Catches: a project image that the deployment built on a worker image in a private registry
+// (its labels name the deployment's commit, not the worker repository's) left out as not
+// measurable; and a Dockerfile's ARG default taken for the image's base, though a build can pass
+// another: the images' rootfs.diff_ids confirm it, not the manifests' layer digests, which differ
+// where the builder compressed a layer again.
+describe("build-cases --reprofile of a Legion pane whose image the deployment built on a worker image", () => {
+  const layer = (n: number) => `sha256:${String(n).repeat(64)}`;
+  const REPOSITORY = "registry.example.test/acme/deploy/worker";
+  const A = "a".repeat(64);
+  const B = "b".repeat(64);
+  const IMAGE = `${REPOSITORY}@sha256:${A}`;
+  const BASE = `ghcr.io/acme/worker@sha256:${B}`;
+  /** The commit of acme/infra (the suite's deployment) the image was built at. */
+  const REVISION = "de".repeat(20);
+  const VERSION = "sha-dededededede";
+  const DOCKERFILE = "images/worker.Dockerfile";
+  const RECIPE = `ARG LEGION_WORKER=${BASE}\nFROM \${LEGION_WORKER}\nRUN echo the deployment's layer\n`;
+  const LAYERS = [1, 2, 3, 4, 5].map(layer);
+  const own = `acme/infra:legion/projects/10-ACME.yaml at ${SHA} gives the project ACME the image ${IMAGE}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${A}), and the OCI config of ${IMAGE}, read from its registry by digest, labels org.opencontainers.image.revision ${REVISION} and org.opencontainers.image.version ${VERSION}, which name no commit or release tag of acme/skills`;
+  const step = `the configuration's deploymentImages names ${REPOSITORY}, an image acme/infra builds on a worker image`;
+  const labelled = `${step}: the OCI config of ${IMAGE} labels org.opencontainers.image.source https://github.com/acme/infra and org.opencontainers.image.revision ${REVISION}, a commit of acme/infra (gh api repos/acme/infra/commits?sha=${REVISION}&until=`;
+  const recipe = `acme/infra:${DOCKERFILE} at ${REVISION} (gh api repos/acme/infra/contents/${DOCKERFILE}?ref=${REVISION}) builds its final stage on ${BASE}`;
+  const notKnown =
+    "pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ";
+  const rule = ": a Legion pod runs the worker image";
+
+  /** The legion case built again with ACME's project file naming IMAGE, the registry giving
+   *  IMAGE's config (its source label `source`) and BASE's (its diff ids `baseLayers`, its
+   *  revision label IMAGE_SHA), acme/infra holding REVISION and RECIPE at it, and the
+   *  configuration's deploymentImages naming `listed` with DOCKERFILE. */
+  const built = (
+    name: string,
+    {
+      source = "https://github.com/acme/infra",
+      baseLayers = LAYERS.slice(0, 3),
+      listed = REPOSITORY,
+      refused,
+    }: {
+      source?: string;
+      baseLayers?: readonly string[];
+      listed?: string;
+      refused?: true;
+    } = {}
+  ) =>
+    reprofiledLegion(`deployed-${name}`, {
+      project: `key: ACME\ninstructions: acme.md\nimage: ${IMAGE}\n`,
+      attested: {},
+      images: {
+        [IMAGE]: {
+          env: [],
+          labels: {
+            "org.opencontainers.image.source": source,
+            "org.opencontainers.image.revision": REVISION,
+            "org.opencontainers.image.version": VERSION,
+          },
+          diffIds: LAYERS,
+        },
+        [BASE]: {
+          env: [],
+          labels: { "org.opencontainers.image.revision": IMAGE_SHA },
+          diffIds: baseLayers,
+        },
+      },
+      deploymentImages: [{ repository: listed, dockerfile: DOCKERFILE }],
+      gh: (route, args) => {
+        const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
+        if (route.startsWith(`repos/acme/infra/commits?sha=${REVISION}&`))
+          return ok(`${REVISION}\n`);
+        if (route === `repos/acme/infra/contents/${DOCKERFILE}` && args.includes(`ref=${REVISION}`))
+          return ok(RECIPE);
+        return undefined;
+      },
+      ...(refused === undefined ? {} : { refused }),
+    });
+
+  test("an image the configuration lists, whose labels name the deployment's commit, takes the commit of the base its Dockerfile there names, once the base's diff ids are the first of the image's", async () => {
+    const result = await built("base");
+    expect(result.skills).toEqual([
+      `alpha ${IMAGE_SHA}`,
+      `beta ${IMAGE_SHA}`,
+      `omicron ${IMAGE_SHA}`,
+    ]);
+    expect(result.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
+    expect(result.registryReads).toContain(BASE);
+    expect(result.worker).toStartWith(`${own}; ${labelled}`);
+    expect(result.worker).toContain(
+      `); ${recipe}; the 3 rootfs.diff_ids of ${BASE} are the first 3 of the 5 of ${IMAGE}, so the image is built on it; the base's digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${B}); the OCI config of ${BASE}, read from its registry by digest, labels org.opencontainers.image.revision ${IMAGE_SHA}, a commit of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_SHA}&until=`
+    );
+    expect(result.worker).toContain(
+      `), so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test("a base whose diff ids are not the first of the image's leaves the case out, naming the mismatch", async () => {
+    const result = await built("mismatch", {
+      baseLayers: [layer(1), layer(9), layer(3)],
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own}; ${labelled}`);
+    expect(result.said).toContain(
+      `); ${recipe}, but the 3 rootfs.diff_ids of ${BASE} are not the first 3 of the 5 of ${IMAGE} (entry 2 differs), so ${IMAGE} is not built on the base the Dockerfile names${rule}`
+    );
+  }, 120_000);
+
+  test("an image whose source label names another repository than the deployment leaves the case out, naming the label", async () => {
+    const result = await built("source", {
+      source: "https://github.com/acme/other",
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(
+      `${notKnown}${own}; ${step}, but the OCI config of ${IMAGE} labels org.opencontainers.image.source https://github.com/acme/other, not the deployment's https://github.com/acme/infra${rule}`
+    );
+    expect(result.registryReads).not.toContain(BASE);
+  }, 120_000);
+
+  test("an image the configuration does not list is left out as before: its Dockerfile and its base are not read", async () => {
+    const result = await built("unlisted", { listed: `${REPOSITORY}-other`, refused: true });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(
+      `${notKnown}${own}, and no comment line is right above its image: line${rule}`
+    );
+    expect(result.registryReads).not.toContain(BASE);
+  }, 120_000);
 });
 
 // Catches: a SKILL.md read GitHub refused for its primary rate limit ("API rate limit exceeded

@@ -47,11 +47,14 @@ test("a configuration with every required key loads", () => {
 /** The keys a configuration may leave out. */
 const OPTIONAL_KEYS = [
   "devboxClaudeConfigDir",
+  "devboxHome",
   "sets",
   "dotfilesRepo",
   "clones",
   "sessionPod",
   "ompPin",
+  "registries",
+  "deploymentImages",
 ];
 
 test.each(
@@ -76,6 +79,44 @@ test("sessionPod accepts a deployment pin and two repository-relative Dockerfile
   expect(
     refusal({ ...valid(), sessionPod: { ...sessionPod, dockerfile: "../Dockerfile" } })
   ).toContain("sessionPod.dockerfile:");
+});
+
+// Catches: a registry the runner reads with a token, or an image a deployment builds, stated in a
+// shape the readers cannot use (a host with a path, a token command of no program, an image
+// reference with its tag or digest, a Dockerfile outside the repository) loaded as if it could.
+test("registries and deploymentImages are optional; a host with its token command and an image repository with its Dockerfile load, and any other is refused by name", () => {
+  const registry = { host: "registry.example.test", tokenCommand: ["acme-token", "print"] };
+  const deployed = {
+    repository: "registry.example.test/acme/deploy/worker",
+    dockerfile: "images/worker.Dockerfile",
+  };
+  expect(parseConfig(valid()).registries).toBeUndefined();
+  expect(parseConfig(valid()).deploymentImages).toBeUndefined();
+  const config = parseConfig({ ...valid(), registries: [registry], deploymentImages: [deployed] });
+  expect(config.registries).toEqual([registry]);
+  expect(config.deploymentImages).toEqual([deployed]);
+  expect(
+    parseConfig({ ...valid(), registries: [{ ...registry, host: "registry.example.test:5000" }] })
+      .registries
+  ).toHaveLength(1);
+  expect(
+    refusal({ ...valid(), registries: [{ ...registry, host: "registry.example.test/v2" }] })
+  ).toContain("registries[0].host: a registry host, such as registry.example.test");
+  expect(refusal({ ...valid(), registries: [{ ...registry, tokenCommand: [] }] })).toContain(
+    "registries[0].tokenCommand:"
+  );
+  for (const repository of [
+    `${deployed.repository}:latest`,
+    `${deployed.repository}@sha256:${"a".repeat(64)}`,
+    "worker",
+  ]) {
+    expect(refusal({ ...valid(), deploymentImages: [{ ...deployed, repository }] })).toContain(
+      "deploymentImages[0].repository: an image reference without tag or digest, such as registry.example.test/acme/worker"
+    );
+  }
+  expect(
+    refusal({ ...valid(), deploymentImages: [{ ...deployed, dockerfile: "../Dockerfile" }] })
+  ).toContain("deploymentImages[0].dockerfile:");
 });
 
 // Catches: a dev box's Oh My Pi pin the pool version rule cannot read (a file outside the
@@ -107,6 +148,14 @@ test("devboxClaudeConfigDir is optional, and an absolute path when given", () =>
   expect(refusal({ ...valid(), devboxClaudeConfigDir: "acme-dotfiles/.claude" })).toContain(
     "devboxClaudeConfigDir: an absolute path"
   );
+});
+
+// Catches: a dev box's home the context rule cannot match a [Skill file: …] header against (a
+// relative path) loaded as if it could, or an older configuration without it refused.
+test("devboxHome is optional, and an absolute path when given", () => {
+  expect(parseConfig(valid()).devboxHome).toBeUndefined();
+  expect(parseConfig({ ...valid(), devboxHome: "/home/dev" }).devboxHome).toBe("/home/dev");
+  expect(refusal({ ...valid(), devboxHome: "home/dev" })).toContain("devboxHome: an absolute path");
 });
 
 /** Two made-up skill sets and the repository that pins them. */
