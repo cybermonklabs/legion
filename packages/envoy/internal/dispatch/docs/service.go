@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -101,6 +102,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -920,6 +928,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
