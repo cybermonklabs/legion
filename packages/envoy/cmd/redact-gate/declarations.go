@@ -12,13 +12,23 @@ import (
 	"strings"
 )
 
+// headFile is the text of file at repo's HEAD, the head a leak's files and declarations are
+// copied from.
+func headFile(repo, file string) ([]byte, error) {
+	data, err := exec.Command("git", "-C", repo, "show", "HEAD:"+file).Output()
+	if err != nil {
+		return nil, fmt.Errorf("the head's %s: %v", file, err)
+	}
+	return data, nil
+}
+
 // headDeclarations puts, in the Go file d.File of the tree at wt, the head's text of each
 // declaration d names in place of the base's (spliceDeclarations). The head is repo's HEAD, as
 // for a leak's whole files.
 func headDeclarations(repo, wt string, d declaration) error {
-	head, err := exec.Command("git", "-C", repo, "show", "HEAD:"+d.File).Output()
+	head, err := headFile(repo, d.File)
 	if err != nil {
-		return fmt.Errorf("the head's %s: %v", d.File, err)
+		return err
 	}
 	path := filepath.Join(wt, d.File)
 	base, err := os.ReadFile(path)

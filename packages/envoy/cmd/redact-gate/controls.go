@@ -770,9 +770,9 @@ func earlierTree(repo string, inv inventory, l leak) (string, string) {
 	}
 	defer exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run()
 	for _, f := range l.Files {
-		data, err := exec.Command("git", "-C", repo, "show", "HEAD:"+f).Output()
+		data, err := headFile(repo, f)
 		if err != nil {
-			return fmt.Sprintf("the head's %s: %v", f, err), ""
+			return err.Error(), ""
 		}
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(wt, f)), 0o755); err != nil {
 			return err.Error(), ""
