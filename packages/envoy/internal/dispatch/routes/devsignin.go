@@ -7,6 +7,7 @@ package routes
 // can mint a cookie without the sign-in issuer is in this file.
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,11 +20,13 @@ import (
 
 // DevSignInOrigin returns the host:port of serverURL, the dashboard origin, when it names this
 // machine, and refuses it otherwise: a deployment's origin is its public one, so the dev sign-in
-// route cannot take effect there. The host must be "localhost" or a loopback IP literal.
+// route cannot take effect there. The host must be "localhost" or a loopback IP literal. The
+// refusal names the settings and never the origin: envoy.json's dispatch.serverUrl is held to an
+// http(s) URL with a host and nothing more, so the origin as written can carry a credential.
 func DevSignInOrigin(serverURL string) (string, error) {
 	parsed, ok := parseLoopbackURL(serverURL)
 	if !ok {
-		return "", fmt.Errorf("DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin %q (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost", serverURL)
+		return "", errors.New("DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost")
 	}
 	return parsed.Host, nil
 }
