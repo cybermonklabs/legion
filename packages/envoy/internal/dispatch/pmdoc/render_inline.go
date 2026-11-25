@@ -145,51 +145,178 @@ func (r *renderer) wwwMayFollow() bool {
 // mark and at once opened one written with the same delimiter character, which the parser reads as
 // one run.
 //
-// A text `<` the escape rules leave as it is (angleConstruct judges it within its own node) can
-// still open an autolink or inline raw HTML with what the run writes after it, out to a `>` in a
-// later node: the text after an address, which the readers split off from the text before it, or
-// a link's syntax (`&lt;javascript:void(a@b.cc)>` written `<javascript:void([a@b.cc](mailto:a@b.cc))>`
-// reads as one autolink to a `javascript:` address, `x &lt;!-- a@b.cc --> y` written
-// `x <!-- [a@b.cc](mailto:a@b.cc) --> y` as one HTML comment). So the run is written, and where
-// the markdown it wrote opens an autolink (autolinkAt) or raw HTML (rawHTMLScan) at such a `<`, it
-// is written again with each of those escaped. That markdown reads back as no run that holds the
-// `<` as text, so a run that reads back keeps its bytes; and escaping a `<` changes neither at
-// another: an autolink stops at any `<`, and the backslash comes before a `<`, which no closer of
-// raw HTML holds and a tag holds only inside a quoted value.
+// A text `<` is written as it is, and is escaped only where it opens an autolink or inline raw
+// HTML with what the run writes after it, out to a `>` in its own text or in a later node: the
+// text after an address, which the readers split off from the text before it, or a link's syntax
+// (`&lt;javascript:void(a@b.cc)>` written `<javascript:void([a@b.cc](mailto:a@b.cc))>` reads as
+// one autolink to a `javascript:` address, `x &lt;!-- a@b.cc --> y` written
+// `x <!-- [a@b.cc](mailto:a@b.cc) --> y` as one HTML comment). A `<` that opens neither, such as
+// `<at most 2x>`, whose `2x` is no attribute name, is the writer's text and keeps no backslash
+// (INFRA-4345 R11). So the run is written, and where the markdown it wrote opens an autolink
+// (autolinkAt) or raw HTML (rawHTMLScan) at such a `<`, it is written again with each of those
+// escaped. That markdown reads back as no run that holds the `<` as text, so a run that reads
+// back keeps its bytes; and escaping a `<` changes neither at another: an autolink stops at any
+// `<`, and the backslash comes before a `<`, which no closer of raw HTML holds and a tag holds
+// only inside a quoted value.
+//
+// A text backtick is written as it is too, and is escaped only where the run's markdown reads it
+// into a code span (codeSpanOpeners): a backtick that no other backtick closes is the writer's
+// text (INFRA-4345 R12). Escaping one adds a backslash before a backtick, which no tag name,
+// attribute name or unquoted value holds, so it opens no autolink or raw HTML at a `<`; and
+// escaping a `<` changes no backtick run. The run is written again until neither scan escapes
+// another, each pass escaping at least one more, so the passes end.
 //
 // A spelling that orders marks otherwise than as written is never kept once it fuses a delimiter
 // run, so its writing is thrown away here and in the search (inlineWithEscapes).
 func (r *renderer) writeInlineRun(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	from := r.b.Len()
-	r.openers = r.openers[:0]
-	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
-	if r.err != nil || fused && spelling.order != marksAsWritten {
-		return fused
-	}
-	written := r.b.Bytes()
-	var escaped []angleOpener
-	html := rawHTMLScan{written: written, from: from, prefix: prefix}
-	for _, opener := range r.openers {
-		if written[opener.at] == '<' && (autolinkAt(written[opener.at+1:]) || html.opensAt(opener.at)) {
-			escaped = append(escaped, opener)
+	escaped := map[openerKey]bool(nil)
+	for {
+		r.openers = r.openers[:0]
+		r.escapedOpeners = escaped
+		fused = r.writeInlineNodes(nodes, prefix, context, spelling)
+		r.escapedOpeners = nil
+		if r.err != nil || fused && spelling.order != marksAsWritten {
+			return fused
 		}
+		written := r.b.Bytes()
+		more := false
+		html := rawHTMLScan{written: written, from: from, prefix: prefix}
+		for _, opener := range r.openers {
+			if written[opener.at] == '<' && (autolinkAt(written[opener.at+1:]) || html.opensAt(opener.at)) {
+				escaped, more = escapeOpener(escaped, opener), true
+			}
+		}
+		for _, opener := range codeSpanOpeners(written, from, r.openers) {
+			escaped, more = escapeOpener(escaped, opener), true
+		}
+		if !more {
+			return fused
+		}
+		r.b.Truncate(from)
 	}
-	if len(escaped) == 0 {
-		return fused
-	}
-	r.b.Truncate(from)
-	r.escapedOpeners = escaped
-	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
-	r.escapedOpeners = nil
-	return fused
 }
 
-// angleOpener is a text `<` written as it is: where it stands in the markdown, and the node and
-// offset in its text it is written from.
-type angleOpener struct {
+// textOpener is a text `<` or backtick written as it is: where it stands in the markdown, and the
+// node and offset in its text it is written from.
+type textOpener struct {
 	at     int
 	node   *Node
 	offset int
+}
+
+// openerKey names a text `<` or backtick by the node and the offset in its text it is written
+// from, which every writing of a run shares.
+type openerKey struct {
+	node   *Node
+	offset int
+}
+
+// escapeOpener adds opener to escaped, the openers a run's next writing escapes.
+func escapeOpener(escaped map[openerKey]bool, opener textOpener) map[openerKey]bool {
+	if escaped == nil {
+		escaped = map[openerKey]bool{}
+	}
+	escaped[openerKey{node: opener.node, offset: opener.offset}] = true
+	return escaped
+}
+
+// codeSpanOpeners is each text backtick of openers, the run's text `<` and backticks written as
+// they are, that the run's markdown, written from from to the end of written, reads into a code
+// span. It reads the backtick runs as CommonMark and the browser editor's engine read code spans:
+// from the start, a run that no backslash escapes opens a code span closed by the next run of the
+// same length, backslash or not, and is text where none follows. A text backtick is escaped where
+// it stands in a run that also holds a backtick of the run's syntax, in a run that opens or closes
+// a code span, or inside one. Every other backtick in the markdown, a code span's fence among
+// them, is taken as it stands, so a code span the run writes closes at its own fence: its fence is
+// longer than any backtick run its code holds (inlineCodeFence). Raw HTML and autolinks can only
+// take backticks out of this reading, so a text backtick it leaves as text is text to the readers.
+func codeSpanOpeners(written []byte, from int, openers []textOpener) []textOpener {
+	var ticks []textOpener
+	for _, opener := range openers {
+		if written[opener.at] == '`' {
+			ticks = append(ticks, opener)
+		}
+	}
+	if len(ticks) == 0 {
+		return nil
+	}
+	// runAt is the backtick run that starts at start: where it ends, and whether it holds a text
+	// backtick.
+	next := 0
+	runAt := func(start int) (end int, text bool) {
+		end = start
+		for end < len(written) && written[end] == '`' {
+			end++
+		}
+		for next < len(ticks) && ticks[next].at < start {
+			next++
+		}
+		return end, next < len(ticks) && ticks[next].at < end
+	}
+	var escaped []textOpener
+	// take escapes every text backtick from start to end.
+	take := func(start, end int) {
+		for _, tick := range ticks {
+			if tick.at >= start && tick.at < end {
+				escaped = append(escaped, tick)
+			}
+		}
+	}
+	for at := from; at < len(written); at++ {
+		if written[at] != '`' {
+			continue
+		}
+		if escapedByBackslashes(written, at) {
+			continue
+		}
+		end, text := runAt(at)
+		closer := codeSpanCloser(written, end, end-at)
+		mixed := text && !allTicks(ticks, at, end)
+		switch {
+		case closer >= 0:
+			take(at, closer+end-at)
+			at = closer + end - at - 1
+		case mixed:
+			take(at, end)
+			at = end - 1
+		default:
+			at = end - 1
+		}
+	}
+	return escaped
+}
+
+// codeSpanCloser is where the next backtick run of exactly length starts at or after from in
+// written, or -1 where none does.
+func codeSpanCloser(written []byte, from, length int) int {
+	for at := from; at < len(written); {
+		if written[at] != '`' {
+			at++
+			continue
+		}
+		end := at
+		for end < len(written) && written[end] == '`' {
+			end++
+		}
+		if end-at == length {
+			return at
+		}
+		at = end
+	}
+	return -1
+}
+
+// allTicks reports whether every byte from start to end of the markdown is one of ticks, the run's
+// text backticks written as they are.
+func allTicks(ticks []textOpener, start, end int) bool {
+	count := 0
+	for _, tick := range ticks {
+		if tick.at >= start && tick.at < end {
+			count++
+		}
+	}
+	return count == end-start
 }
 
 // autolinkAt reports whether markdown written after a `<` closes it into an autolink, as goldmark
@@ -333,18 +460,14 @@ func blockLine(written []byte, start int, prefix string) (stop, next int) {
 	return stop, next
 }
 
-// escapesOpener reports whether the text `<` at offset in node is the next of the openers the run's
-// writing escapes (writeInlineRun), which the writing reaches in the order it recorded them.
+// escapesOpener reports whether the text `<` or backtick at offset in node is one of the openers
+// the run's writing escapes (writeInlineRun).
 func (r *renderer) escapesOpener(node *Node, offset int) bool {
-	if len(r.escapedOpeners) == 0 || r.escapedOpeners[0].node != node || r.escapedOpeners[0].offset != offset {
-		return false
-	}
-	r.escapedOpeners = r.escapedOpeners[1:]
-	return true
+	return r.escapedOpeners != nil && r.escapedOpeners[openerKey{node: node, offset: offset}]
 }
 
-// writeInlineNodes writes nodes in spelling for writeInlineRun, recording each text `<` it writes
-// as it is (angleOpener).
+// writeInlineNodes writes nodes in spelling for writeInlineRun, recording each text `<` and
+// backtick it writes as it is (textOpener).
 func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	escapePipes := context.tableCell
 	var active []Mark
@@ -690,7 +813,7 @@ func (r *renderer) writeInlineText(node *Node, position *inlinePosition, prefix 
 		width := utf8.RuneLen(char)
 		context.textLineStart = textLineStart
 		context.afterMarker = position.afterMarker
-		escape := needsInlineEscape(value, byteOffset, char, context) || char == '<' && r.escapesOpener(node, byteOffset)
+		escape := needsInlineEscape(value, byteOffset, char, context) || (char == '<' || char == '`') && r.escapesOpener(node, byteOffset)
 		if lineStart >= 0 && r.heldLineStart == nil {
 			switch lineStartOf(value, lineStart, byteOffset, char, escape) {
 			case lineStartEscaped:
@@ -720,8 +843,8 @@ func (r *renderer) writeInlineText(node *Node, position *inlinePosition, prefix 
 			r.writeText(value[segmentStart:byteOffset])
 			r.writeSyntax(textEscape(char, context.tildeBackslash))
 			segmentStart = byteOffset + width
-		} else if char == '<' {
-			r.openers = append(r.openers, angleOpener{at: r.b.Len() + byteOffset - segmentStart, node: node, offset: byteOffset})
+		} else if char == '<' || char == '`' {
+			r.openers = append(r.openers, textOpener{at: r.b.Len() + byteOffset - segmentStart, node: node, offset: byteOffset})
 		}
 		lineEnd := char == '\n'
 		if lineEnd {

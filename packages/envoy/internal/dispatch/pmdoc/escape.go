@@ -80,7 +80,9 @@ type escapeContext struct {
 	pairBackslash, tildeBackslash bool
 }
 
-// needsInlineEscape decides one character from the text alone.
+// needsInlineEscape decides one character from the text alone. A `<` and a backtick are not
+// decided here: what they open depends on what the run writes after them, so the run decides them
+// once it is written (writeInlineRun).
 func needsInlineEscape(value string, offset int, char rune, context escapeContext) bool {
 	textLineStart := context.textLineStart
 	switch char {
@@ -98,8 +100,6 @@ func needsInlineEscape(value string, offset int, char rune, context escapeContex
 			context.delimiters == delimitersAll
 	case '_':
 		return emphasisDelimiter(value, offset, '_', context.scan) || context.delimiters == delimitersAll
-	case '`':
-		return true
 	case '~':
 		return context.delimiters >= delimitersTildes
 	case '!':
@@ -113,8 +113,6 @@ func needsInlineEscape(value string, offset int, char rune, context escapeContex
 		return offset > 0 && value[offset-1] == ']'
 	case ']':
 		return context.label == labelBracketsEscaped
-	case '<':
-		return angleConstruct(value, offset, context.scan)
 	case '&':
 		return entityReference(value, offset)
 	case '#':
@@ -329,13 +327,13 @@ func lineStartOf(value string, lineStart, offset int, char rune, escape bool) li
 }
 
 // lineStartMarker reports whether char, first in a line's text, can begin a form that only the
-// whole line decides: a block form, or, for `[`, the task checkbox a list item's text would open
-// with `[ ]` or `[x]`.
+// whole line decides: a block form, a backtick fence among them, or, for `[`, the task checkbox a
+// list item's text would open with `[ ]` or `[x]`.
 func lineStartMarker(value string, offset int, char rune) bool {
 	if char == '[' {
 		return taskCheckboxText(value, offset)
 	}
-	return strings.ContainsRune("-*_=~:<|", char)
+	return strings.ContainsRune("-*_=~:<|`", char)
 }
 
 // taskCheckboxText reports whether the text at offset is `[ ]`, `[x]` or `[X]` followed by a
@@ -605,12 +603,12 @@ func linkOpener(value string, offset int, scan *forwardScan) bool {
 
 // forwardScan answers where a byte next occurs at or after an offset of one text, remembering
 // the last answer and the bounds of delimiter runs. writeInlineText asks in offset order, so a
-// text of many `[`, `<`, `&`, `*`, or `_` costs one pass over each run, not one per character
+// text of many `[`, `&`, `*`, or `_` costs one pass over each run, not one per character
 // (LEGION-465).
 type forwardScan struct {
 	value string
-	// closer is the last answer for `]` and `>`, which are the only closers this renderer scans.
-	closer [2]scanSlot
+	// closer is the last answer for `]`, the only closer this renderer scans a text for.
+	closer scanSlot
 	// delimiter is the current `*` or `_` run, which the delimiter rules inspect together.
 	delimiter [2]delimiterRun
 }
@@ -631,15 +629,10 @@ func newForwardScan(value string) *forwardScan {
 
 // indexFrom is the index of the first b at or after offset, or -1 when there is none.
 func (s *forwardScan) indexFrom(offset int, b byte) int {
-	var slot *scanSlot
-	switch b {
-	case ']':
-		slot = &s.closer[0]
-	case '>':
-		slot = &s.closer[1]
-	default:
+	if b != ']' {
 		panic("forwardScan asked for an unsupported closer")
 	}
+	slot := &s.closer
 	if !slot.seen || offset < slot.asked || offset > slot.next {
 		slot.seen, slot.asked = true, offset
 		if found := strings.IndexByte(s.value[offset:], b); found < 0 {
@@ -767,21 +760,10 @@ func linkLabel(nodes []*Node, index int, link Mark) string {
 	return label.String()
 }
 
-// opensAngleConstruct reports whether char, the byte written right after a `<`, is one an
-// autolink or inline raw HTML can begin with: an ASCII letter or digit, `/`, `!` or `?`.
-// angleConstruct asks it of one node's text, rawHTMLScan.opensAt of the markdown a run wrote.
+// opensAngleConstruct reports whether char, the byte written right after a `<`, is one inline raw
+// HTML can begin with: an ASCII letter or digit, `/`, `!` or `?` (rawHTMLScan.opensAt).
 func opensAngleConstruct(char byte) bool {
 	return isASCIIAlphaNumeric(char) || char == '/' || char == '!' || char == '?'
-}
-
-// angleConstruct reports whether the `<` at offset opens an autolink or HTML with a `>` later in
-// its own text; one a later node's markdown closes is judged once the run is written
-// (writeInlineRun).
-func angleConstruct(value string, offset int, scan *forwardScan) bool {
-	if offset+1 >= len(value) || !opensAngleConstruct(value[offset+1]) {
-		return false
-	}
-	return scan.indexFrom(offset+1, '>') >= 0
 }
 
 // entityReference reports whether the `&` at offset opens `&name;` or `&#digits;`: letters, digits
