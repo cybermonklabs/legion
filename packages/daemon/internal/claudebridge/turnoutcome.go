@@ -170,7 +170,6 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	post.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(post)
 	if err != nil {
-		// LEGION_DAEMON_URL can carry user information, a query or a fragment; Unanswered drops them.
 		err = oauth2call.Unanswered(err, post, "")
 		if cause := context.Cause(ctx); cause != nil {
 			err = fmt.Errorf("%w (%v)", cause, err)

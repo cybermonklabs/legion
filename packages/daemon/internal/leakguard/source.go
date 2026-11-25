@@ -60,9 +60,7 @@ type Source struct {
 	// carries the download's own token, and a renamed repository's route with a 301 to
 	// /repositories/<id> on the API's own origin. The read sends its token on only to a redirect
 	// on the origin it asked (originToken, which sets the CheckRedirect of a copy of Client, so
-	// Client's own is never asked). A read that got no answer names its failure through
-	// oauth2call.Unanswered, which prints none of net/http's own words for it, nor any part of a
-	// redirect's target on another host.
+	// Client's own is never asked).
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration

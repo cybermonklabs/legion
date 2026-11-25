@@ -737,7 +737,6 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		// --cache-url can carry user information or a query; Unanswered drops them.
 		return nil, oauth2call.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
