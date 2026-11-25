@@ -1,0 +1,1 @@
+{"errors":[{"path":["query","repository","pullRequest","number"],"extensions":{"code":"argumentLiteralsIncompatible","typeName":"Field","argumentName":"number"},"locations":[{"line":1,"column":55}],"message":"Argument 'number' on Field 'pullRequest' has an invalid value (\"1003\"). Expected type 'Int!'."}]}

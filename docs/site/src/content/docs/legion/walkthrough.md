@@ -65,7 +65,8 @@ On the default steps, when the reviewer approves, the architect reads the eviden
 handoff, the state of each `before_merge` check at the approved head in `dispatch results`, the
 approval of the head) and accepts the change: it posts a comment on the issue, then signs off with the `legion` tool's `sign_off`, which
 moves the issue to `retro`, since the acceptance is the last of the default steps. A change that
-falls short goes back to an earlier step of its task instead. Retro runs next.
+falls short goes back to an earlier step of its task instead. Retro runs next, once each check
+that a CI job runs passes at the head and no fix of a failed check still runs beside the steps.
 
 ## 7. The merge
 

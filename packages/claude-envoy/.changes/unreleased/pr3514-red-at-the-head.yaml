@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The Legion plugin this package builds ships `skill://legion-worker/references/red-at-the-head.md`:
+  the reviewer in `reviewing`, the implementer while it holds `implementing`, or the merger in
+  `merging` at a head its own forward merge made re-runs a red check at the head of its pull request
+  once, after it records the failure. The merger re-runs only a failed `pull_request` check, records
+  the failure in a `dispatch comment` on the issue, and re-runs no group build and nothing at any
+  other head. The tester reads no CI, and the `legion-controller` skill keeps one issue per test
+  that such a re-run cleared.
+custom:
+  Issue: pr3514

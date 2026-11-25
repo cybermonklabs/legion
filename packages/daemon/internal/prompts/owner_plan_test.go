@@ -774,7 +774,7 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 			"go/reviewer.md", func(t *testing.T) string { return goPart(t, "reviewer.md") },
 			[]string{
 				"Before you approve, you wait only for what the rules above name, a required check still `queued` or `in_progress` and a `ci_check` run still going; the daemon does the rest of the waiting",
-				"So once your read finds the head's required checks and its `ci_check` runs concluded, there is nothing more of CI to wait for or decide.",
+				"So once your read finds the head's required checks and its `ci_check` runs concluded, your re-run included where you pressed one, there is nothing more of CI to wait for or decide.",
 			},
 			[]string{"You wait for none of them", "So once you have read the head's checks there is nothing of CI to wait for or decide."},
 		},

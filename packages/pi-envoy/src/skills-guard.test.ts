@@ -16,6 +16,8 @@ import {
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  retiredRerunProhibitions,
+  retiredTesterCiReads,
   shippedAgents,
   skillLinks,
   stageSkills,
@@ -275,6 +277,25 @@ test("every skill://<name>/<path> link names a file that exists, and its #anchor
 
 test("every relative link resolves to a file inside the staged partition", () => {
   expect(brokenRelativeLinks(staged)).toEqual([]);
+});
+
+// INFRA-1303 gave the reviewer in `reviewing`, the implementer while it holds `implementing` and
+// the merger in `merging` at a head its own forward merge made one re-run of a red at the head the
+// change did not make (`skill://legion-worker/references/red-at-the-head.md`), and took the
+// sentence that forbade it out of skills/envoy/SKILL.md, which this partition ships. A forward
+// merge keeps both sides of a deletion with no conflict for anyone to read, so the prohibitions are
+// refused over the whole partition rather than over the one file they were deleted from.
+test("no staged skill forbids the holders' re-run of a red at the head", () => {
+  expect(retiredRerunProhibitions([staged])).toEqual([]);
+});
+
+// The tester reads no CI (Sami's decision on
+// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), and its sentences that read CI,
+// held the re-run, waited on CI or recorded a red at the head are refused over this partition too,
+// since its Envoy skill is where a wait on CI is written and a forward merge could bring one back
+// there.
+test("no staged skill has the tester read CI, re-run a red, wait on CI or record a red", () => {
+  expect(retiredTesterCiReads([staged])).toEqual([]);
 });
 
 // This plugin's skills reach every session with Dispatch, including one with no other plugin

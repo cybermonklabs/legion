@@ -73,7 +73,9 @@ problem that needs a decision goes to a person in a Dispatch ask.
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
 large work into child issues, and runs each change through the phase workers its plan names, in the
 order it names them — in the default steps a **planner**, an **implementer**, a **tester** and a
-**reviewer** — then a **merger**. The phase workers of an issue share its one workspace, and the
+**reviewer** — then a **merger**. The phase workers of an issue share its one workspace, but for
+a fix: when a check that a CI job runs fails at the head while a later step runs, the implementer
+works that **fix** beside it in a working copy of its own. The
 planner, the implementer, the tester and the reviewer each record a structured handoff on the issue
 in Dispatch, which the next role reads and a restarted agent recovers from. The coordinator writes
 the issue's status back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
@@ -147,7 +149,8 @@ business.
    back to the implementer, and through the steps after it again.
 6. Where the plan has the architect's acceptance step (in the default steps, once the reviewer
    approves), the architect reads the evidence and accepts the change (or sends it back); once the
-   plan's last step passes, the retrospective runs. The merger then reads the pull request and merges it
+   plan's last step passes, each check a CI job runs passes at the head and no fix of one still
+   runs, the retrospective runs. The merger then reads the pull request and merges it
    itself, at the head it read, under a message it writes rather than GitHub's default; it lands
    under the repository's own rules, and the coordinator closes the issue when it reads that
    merge: it is Done.

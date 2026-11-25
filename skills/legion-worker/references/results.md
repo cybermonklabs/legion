@@ -25,19 +25,22 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 - A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
   So after a push, record each `before_merge` check with no `ci_check` again.
+  Beside a running fix, record at the pull request's head you read before you worked, never at a commit of your own branch: no pull request heads it, so a result there stands nowhere.
 
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
-  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
+  Lint, types and the unit and integration suites are CI's: the tester lets CI do its job, boots and runs the app's real workflows like a user would, and reads no check run, re-runs no CI and waits on no CI, since the reviewer reads the head's checks before it approves.
 
 - After a forward merge, the tester reruns each check the merge can reach (`skill://legion-worker/references/conflicts-and-rewrites.md`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
   A class search that finds an instance, or a parent's last round, takes a full test round.
 
 ## Never waiting on CI
 
-- The implementer re-runs once a red check whose failure is not in this pull request's code, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
-  A merge-group run is never re-run.
+- The implementer re-runs once a red check whose failure is not in this pull request's code, and so do the reviewer and the merger, each within its bounds: a red check that failed on its own is re-run once with `gh run rerun <run-id> --failed`, by the reviewer in `reviewing`, the implementer while it holds `implementing`, or the merger in `merging` at a head its own forward merge made, after it records the failure, and its settlement waited for as `skill://envoy` says, never by sleeping (where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress).
+  The merger re-runs only a failed `pull_request` check, records the failure in a `dispatch comment` on the issue, since it writes no handoff, and at any other head re-runs nothing.
+  `skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the role's own pod does not move; that a red is acted on in the head's own `pull_request` run once that run has completed, however the role learned of it; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.
+  A merge-group run is never re-run: it goes only through the merger's one requeue of a `failed_checks` removal.
 
 - A required check missing at the head: read `gh pr view <n> --json mergeStateStatus` first.
   `DIRTY` means the head conflicts with its base, so no `pull_request` run starts and a body edit re-judges nothing: merge the base forward.

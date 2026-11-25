@@ -31,6 +31,7 @@ import {
   STALL_READ_ENVIRONMENT,
   STALL_WATCH_ENTRY,
   type StallEvidenceRecord,
+  type StallProcessScan,
   type StallWatchRecord,
   stallArgumentsDigest,
   stallEvidenceRecord,
@@ -53,9 +54,16 @@ afterEach(() => {
 });
 
 /** One real child of this process, with the environment the case needs, left running until the
- * case ends. `sh -c` is what makes a process of its own: a command Oh My Pi runs in its own shell
- * has none (measured). */
-async function child(environment: Record<string, string>): Promise<number> {
+ * case ends, and the reading of the machine that showed it so. `sh -c` is what makes a process of
+ * its own: a command Oh My Pi runs in its own shell has none (measured).
+ *
+ * A case judges that reading and reads no second one: a later read of `/proc/<pid>/environ` in
+ * this pod can find the same process with no environment at all (the row this file pins failed
+ * once that way on 2026-11-15, expecting `toolu_stuck` and finding none, then passed alone 6 of 6),
+ * so a second read would test the pod's `/proc` rather than the reader. */
+async function child(
+  environment: Record<string, string>
+): Promise<{ readonly pid: number; readonly scan: Extract<StallProcessScan, { read: true }> }> {
   // `exec`, so the process the case reads is the one `kill` ends: a shell that forks `sleep`
   // leaves it running when the shell is killed, reparented to pid 1 (measured).
   const running = Bun.spawn(["sh", "-c", "exec sleep 300"], {
@@ -69,23 +77,28 @@ async function child(environment: Record<string, string>): Promise<number> {
   // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
   // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
   // has no argv at all, so the case would read the process as `[sh]`.
-  await until(async () => {
-    const scan = await readStallProcesses();
-    if (!scan.read) return false;
-    const found = scan.processes.find((candidate) => candidate.pid === running.pid);
-    return (
-      found !== undefined &&
-      found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command === "sleep 300"
-    );
+  const scan = await until(async () => {
+    const reading = await readStallProcesses();
+    if (!reading.read) return undefined;
+    const found = reading.processes.find((candidate) => candidate.pid === running.pid);
+    if (
+      found === undefined ||
+      found.environment.PI_TOOL_CALL_ID !== environment.PI_TOOL_CALL_ID ||
+      found.command !== "sleep 300"
+    ) {
+      return undefined;
+    }
+    return reading;
   });
-  return running.pid;
+  return { pid: running.pid, scan };
 }
 
-/** Waits for one reading of the machine to come true, up to ten seconds. */
-async function until(ready: () => Promise<boolean>): Promise<void> {
+/** Reads the machine until `read` answers a reading, not `undefined`, up to ten seconds, and
+ * returns that reading. */
+async function until<T>(read: () => Promise<T | undefined>): Promise<T> {
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (await ready()) return;
+    const reading = await read();
+    if (reading !== undefined) return reading;
     await Bun.sleep(10);
   }
   throw new Error("the machine never reached the state the case needs");
@@ -93,15 +106,13 @@ async function until(ready: () => Promise<boolean>): Promise<void> {
 
 test("the tree names every process of the agent, read from this pod's own /proc", async () => {
   const claimSecret = fixtureSecret("claim");
-  const pid = await child({
+  const { pid, scan } = await child({
     PI_TOOL_CALL_ID: "toolu_stuck",
     // A credential of the kind an environment routinely holds: the reader keeps two names and
     // this is not one of them, so nothing downstream can write it anywhere.
     LEGION_CLAIM_SECRET: claimSecret,
   });
 
-  const scan = await readStallProcesses();
-  if (!scan.read) throw new Error(`this pod's /proc could not be read: ${scan.reason}`);
   const agent = scan.processes[0];
   expect(agent?.pid).toBe(process.pid);
   // Measurement 1: the agent's own environment is the one `/proc` will not hand it here, so the
@@ -208,8 +219,8 @@ function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
 }
 
 test("the record names the tool, the digest, the start, the age and the real tree", async () => {
-  const pid = await child({ PI_TOOL_CALL_ID: "toolu_stuck" });
-  const tree = stallProcessTree(await readStallProcesses());
+  const { pid, scan } = await child({ PI_TOOL_CALL_ID: "toolu_stuck" });
+  const tree = stallProcessTree(scan);
   const at = START + 65 * MINUTE;
   const record = stallEvidenceRecord(evidenceOf({ tree }), at, {
     session: { kind: "phase-worker", role: "implementer", tree: "INFRA-1000", issue: "INFRA-1274" },

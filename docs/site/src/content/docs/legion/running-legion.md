@@ -366,7 +366,8 @@ Dispatch read them, delete the files, then install every App from
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
-  and no longer. What outlives a pod is what was pushed to the issue's branch, each agent's
+  and no longer. What outlives a pod is what was pushed to the issue's branch, or, beside a running
+  fix, to the branches of the fix and of the steps beside it, each agent's
   conversation, which the session database holds, and, when the daemon released an idle pod, the
   workspace's unpushed work, which the release saves as a git bundle in the daemon's database and
   the next pod restores. The daemon-launched controller's pod has a
@@ -1283,9 +1284,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers and resolves the bot's threads and pushes, and
-   the bot runs again; the reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
+   image pin (an empty list is refused too). A review bot's red is now CI like any other: the
+   daemon names it, with every other check GitHub reported, in one message to the tree's architect,
+   the worker of the issue's current phase and the implementer, and moves the issue for none of
+   them. The base branch holds the merge for a check it requires, and a re-run does not clear a
+   bot's red while its thread stands, so the implementer answers or fixes each of the bot's
+   threads, resolves them and pushes, and the bot runs again on that push. Where the bot's
    threads must be closed before a merge, make that the repository's own rule (a ruleset's
    "Require conversation resolution before merging").
 
@@ -1690,5 +1694,7 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
-its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
+its issues held go to the next issues in line. That leave, and the new generation a later `todo`
+starts, also has Legion delete the branches beside a fix of the tree's tasks, so a fix's work that
+was never pushed to its issue's branch goes with them. `todo` admits a labelled root again, as a new generation that starts from its
 architect.

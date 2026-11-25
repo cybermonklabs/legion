@@ -38,6 +38,8 @@ section can use the words without stopping to explain them.
   creates a branch: GitHub can refuse that push on a large repository. An issue's workspace with
   no branch to start from starts at that default branch too. A pull request or push names its
   repository, and counts for an issue only in the issue's own.
+  While a fix runs, the fix and each step beside it push to branches of their own for a while
+  (**CI**, under [review signalling](#review-signalling)).
 
 ## Several repositories
 
@@ -162,14 +164,15 @@ the same session. Under the Kubernetes runtime the pod is shorter-lived than the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head (on a task that takes a fix, its report or a prompt to read Dispatch) — brings the pod back
+and resumes the same sessions where they stopped.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
-| `testing` | tester | Runs the changed surface for real, tries to break it, and judges whether the tests would catch what breaks; it reads no CI, runs no lane again as a whole and waits for none. Records each check's result with `dispatch result` and completes with no verdict: the state of each `before_merge` check at the tested head sends the issue on to the task's next step, or back to the step its completion's `return_to` names, or with none named to the first implementation step before it. | review App |
+| `testing` | tester | Boots and runs the app's real workflows like a user would, tries to break the changed surface, and judges whether the tests would catch what breaks; it lets CI do its job: it reads no check run, runs no lane again as a whole and waits for none. Records each check's result with `dispatch result` and completes with no verdict: the state of each `before_merge` check at the tested head sends the issue on to the task's next step, or back to the step its completion's `return_to` names, or with none named to the first implementation step before it. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads the state of each `before_merge` check of the issue's Verification document in `dispatch results`, at the head the step before it passed, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
@@ -186,7 +189,8 @@ holds blocked, on a check or a review the base branch requires, keeps the issue 
 until that merge state comes clean. What a red check does is reach the architect that owns
 the issue, the worker of the issue's current phase and the implementer, as one message naming each
 check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+checks. On a task that takes a fix, a red check that a CI job proves also starts a fix, and every
+task waits before its retro until each such check passes ([review signalling](#review-signalling)).
 
 ### The plan of an issue
 
@@ -466,13 +470,38 @@ Legion uses GitHub's own review mechanisms rather than labels:
   issue nowhere; in `merging` the merge and what breaks it are the merger's. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
-  names no pull request. A red is for those roles to decide on — re-run a check that failed on
-  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
-  branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the architect before it accepts; those
+  names no pull request. A red is for the reviewer in `reviewing` or the implementer while it holds
+  `implementing` to act on, and in `merging` for the merger. Three roles hold the re-run of a check
+  that failed on itself: the reviewer in `reviewing`, the implementer while it holds
+  `implementing`, and the merger in `merging` at a head its own forward merge made. Each re-runs it
+  once at that head, only after it records the failure, and follows the order, the waits and the
+  read of the spend in `skills/legion-worker/references/red-at-the-head.md`. The merger re-runs
+  only a failed `pull_request` check, records the failure in a `dispatch comment` on the issue,
+  since it writes no handoff, and re-runs nothing at any other head. It re-runs no merge queue
+  group build: the first `failed_checks` removal of a head gets that head queued once more. The
+  tester and an implementer that runs retro re-run nothing. The implementer fixes code that is at
+  fault, and a check still running is waited for. GitHub holds the merge over a red,
+  under the base branch's own required checks, which Legion reads only to decide whether a
+  conflicting head needs its merge forward now (below), and never re-implements. The reviewer reads
+  the head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
+  On a task whose run started on this release, a check that a CI job runs and that fails at the
+  task's head, as Dispatch's state says, is not left to those roles: while the task's
+  implementation step runs, the failure goes to that step; after it, Legion starts that step again
+  as a **fix**, beside the step the issue stands in, in a working copy of its own. Until the fix
+  ends, it and each step beside it push to a branch of their own, `legion-beside/<KEY>/…`, never to
+  `legion/<KEY>`, and record their results at the pull request's head; the fix takes the others'
+  commits from there before its one push to `legion/<KEY>`, at its end, and Legion deletes those
+  branches. While the fix holds the branch, no merge forward is asked. A step that fails beside the
+  fix holds the issue until the fix ends, and the fix's end decides what runs next. A review beside
+  the fix decides at the head its step started at, and the fix's check holds neither its approval
+  nor the owner's acceptance. On such a task a settlement's message is a report of the runs that
+  newly ended at the head, which says that Dispatch's state of each check decides, and a change of a
+  check's state there prompts the step that runs to read Dispatch again: neither says that a check
+  passed or asks for work. On every task, a settlement that comes while Legion itself acts next — a
+  fix that runs, a hold before the retro, a testing step that waits for Dispatch's states — names
+  that act and asks nothing.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
   minute apart, since a read made while GitHub is still computing can be stale. It acts only on a
@@ -677,7 +706,8 @@ workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
 database; then its Sandboxes are deleted, once no member's check is open. Closing a root yourself
 from the Dispatch dashboard lingers the tree at once, children and all: your decision outranks
-that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch: a
+that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch, or
+beside a fix to its own branches, which a stop leaves in place: a
 workspace lives as long as the pod it was provisioned in, and the next pod provisions it again
 from that branch. Setting a done root back to `todo` runs it again as a new generation, starting
 from its architect.
@@ -708,8 +738,8 @@ Four moves release a held issue. The architect's own retry puts it back in that 
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion issue status`: the issue returns to
 that phase and its worker starts again at the same generation, in the same pod and at the same place
-in the admission line. Where the pull request's head is red, the issue goes on to implementing
-instead, and a held review whose round is already decided goes where that decision sends it; the
+in the admission line. A red head moves nothing, and a restored reviewer or implementer reads the
+head's checks itself; a held review whose round is already decided goes where that decision sends it, and the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start

@@ -16,9 +16,9 @@ Read, against the goal, every check and every requirement:
 
 1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
+2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed, but the check a running fix's message names, which is the fix's and holds no acceptance;
 
-3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head;
+3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head; beside a fix that head is the one its step started at, even after the fix pushed;
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 

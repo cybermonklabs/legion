@@ -6200,7 +6200,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Eleven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6214,6 +6214,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds or extracts anything, through that same copy.
+The twelfth is pi-legion's skill-scenario rig ([`packages/pi-legion/scripts/skill-scenarios/rig.sh`](../../packages/pi-legion/scripts/skill-scenarios/rig.sh)), whose `own_dispatch` reads `SKILL_SCENARIOS_POSTGRES_URL` with `run_database_url` alone, through [`lib/rig.sh`](#librigsh), where it names each run's own database.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
@@ -6225,6 +6226,7 @@ psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
 Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) and [`approved-version-news.sh`](#approved-version-newssh) unset them before their own calls.
+The skill-scenario rig drops the three in its sweep of the environment it does not inherit.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -6496,7 +6498,13 @@ Each item below names a flag, then what it means.
   optional: the Oh My Pi build steps 2 and 3 run (`github:cybermonklabs/oh-my-pi@<version>`), `.omp-pin`'s by default.
   Stage 2 and Stage 3 pass the build their daemon and panes run, so no other build opens the profile;
   under `LEGION_E2E_MODEL_ROUTE=box-login` that profile's `agent.db` is the operator's login database ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
+  It is always a tool spec: a path given to it goes to mise as one.
   Refused when empty.
+
+- `--omp-binary <path>`
+
+  optional: an `omp` binary steps 2 and 3 run as it is, with no mise call at all, for a machine that carries the pinned binary and no mise (a Kubernetes issue pod's `LEGION_OMP_PATH`; the skill-scenario rig passes its `SKILL_SCENARIOS_OMP`).
+  Refused, by its path, when it is not an executable file, and refused when empty or given beside `--omp`.
 
 The first four flags are required; each refusal names its flag and exits 2.
 Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PROFILE=<name> omp plugin list --json` reports the plugin;
@@ -6515,6 +6523,7 @@ Then:
 Steps 2 and 3 run the Oh My Pi `--omp` names, else the one the daemon pins (`.omp-pin`), under `HOME=<home>`, from `<dir>`, as the daemon runs it:
 the build's own `bin/omp` by its absolute path (`mise where <pin>`) under `mise x <pin> --`, never an `omp` looked up on the caller's `PATH`.
 An operator's wrapper there (the devbox's `~/.dotfiles/shims/omp`) reads its own files from `HOME`, which is the run's, and its own setup could rewrite the profile, whose `agent.db` is the operator's login database under the box-login route.
+With `--omp-binary` they run that binary by its absolute path instead, under the same `HOME` and from the same `<dir>`.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 
