@@ -84,7 +84,7 @@ var searchToolSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// finalSchema is the object an answer is asked to be (R2): the answer's own text and the block
+// finalSchema is the object an answer is asked to be (R3): the answer's own text and the block
 // drawn beside it. It keeps to the subset of JSON Schema every service that serves structured
 // outputs takes - one object, every property required, additionalProperties false on every
 // object, no union - which schema_test.go holds it to. answer is the first property, so it is the

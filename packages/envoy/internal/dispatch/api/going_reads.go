@@ -1,6 +1,6 @@
 package api
 
-// going_reads.go holds the reads a command-bar run's tools make beside the search (R8), each one
+// going_reads.go holds the reads a command-bar run's tools make beside the search (R12), each one
 // a read a route of this table serves and made through the same functions that route answers
 // with, in process, for the run's author: GET /api/v1/agents, GET /api/v1/issues and
 // an issue's progress, GET /api/v1/projects/{key}/architecture and /activity, and the three
@@ -242,7 +242,7 @@ func issueHit(key, title string) going.Hit {
 // listener's list. A listener that is refilling its list is waited out for the Retry-After it
 // sent while the run's window leaves room to answer after it, then read again; a listener that is
 // unavailable, or still refilling once the window leaves no room, leaves the sessions Dispatch's
-// own rows name, marked stored (R10), which name no delivery modes.
+// own rows name, marked stored (R12), which name no delivery modes.
 func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
 	if err := decodeGoingArguments(arguments, &struct{}{}); err != nil {
 		return going.Read{}, err

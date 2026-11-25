@@ -24,7 +24,7 @@ var ErrDecisionModelUnreachable = errors.New("the decision model cannot be reach
 
 // Decider is the decision model a deployment configured, with the entry the committed
 // measurement holds for it (going.DecisionRecord). Only NewDecider builds one, and it builds none
-// for a model the record does not hold (R11), so a *Decider is always a measured model.
+// for a model the record does not hold (R13), so a *Decider is always a measured model.
 type Decider struct {
 	model  agentloop.Model
 	record going.Record

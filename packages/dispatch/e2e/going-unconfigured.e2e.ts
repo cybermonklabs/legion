@@ -5,7 +5,8 @@ import { usesFakeModels } from "./harness-models";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-// Check c14 of dispatch://INFRA-1588/artifact/verification-md, serving R8: a Dispatch with
+// Check c14 of dispatch://INFRA-1588/artifact/verification-md@v16, serving what spec v61's Design
+// keeps from #3924 (the capability route, GET /api/v1/going/capability): a Dispatch with
 // nothing configured opens the bar and says in one sentence that it cannot answer (design v3,
 // state 13). The default stack starts the server with no answering model, no deciding model, no
 // session and no label; the bar opens, the hits appear, the one sentence shows where the line on

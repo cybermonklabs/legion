@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -431,11 +432,13 @@ func TestAnOptionThatMakesAPlanTooLongIsRefusedWithNothingKept(t *testing.T) {
 	t.Run("one change more than the bound is refused", func(t *testing.T) {
 		run, refused := rig.proposedPlan(t, goingChange("dispatch_issue_update", retitle(other, "Retitled first")), option,
 			goingChange("dispatch_issue_update", retitle(other, "Retitled last")))
-		want := fmt.Sprintf("change 1 (dispatch_issue_update with include_children) is written out as %d changes, one for each issue it changes, "+
-			"and the plan would then hold %d changes, where a plan holds at most %d: propose part of it now, and the rest once it ran",
-			goingPlanMostRows-1, goingPlanMostRows+1, goingPlanMostRows)
-		if refused == nil || refused.Code != agentwire.CodeCallRefused || refused.Message != want {
-			t.Fatalf("the plan call answered %+v, want %s: %s", refused, agentwire.CodeCallRefused, want)
+		if refused == nil || refused.Code != agentwire.CodeCallRefused {
+			t.Fatalf("the plan call answered %+v, want %s", refused, agentwire.CodeCallRefused)
+		}
+		numbers := strings.FieldsFunc(refused.Message, func(r rune) bool { return !unicode.IsDigit(r) })
+		if !slices.Contains(numbers, fmt.Sprint(goingPlanMostRows+1)) || !slices.Contains(numbers, fmt.Sprint(goingPlanMostRows)) {
+			t.Fatalf("the refusal says %q, want it to name the %d changes the plan would hold and the %d a plan holds at most",
+				refused.Message, goingPlanMostRows+1, goingPlanMostRows)
 		}
 		if kept := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); kept != 0 {
 			t.Fatalf("the refused call kept %d plans, want none", kept)

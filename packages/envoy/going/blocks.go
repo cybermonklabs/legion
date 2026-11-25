@@ -13,13 +13,13 @@ import (
 	"time"
 )
 
-// A block is drawn beside the answer when the typed words name its kind (R2): the words decide,
+// A block is drawn beside the answer when the typed words name its kind (R3): the words decide,
 // and no confidence does. The model writes the block's spec - the
 // read that fills it, that read's arguments, the table and fields it draws, never a number - and
 // the server runs that read again as the run's author and fills the block from its answer alone,
-// so every number a block shows is a value the read returned (R2, R9).
+// so every number a block shows is a value the read returned (R3).
 
-// The seven kinds of block, the closed list of R2, and BlockNone, the kind a structured reply
+// The seven kinds of block (R3), a closed list, and BlockNone, the kind a structured reply
 // that draws no block names.
 const (
 	BlockChart       = "chart"
@@ -48,7 +48,7 @@ const (
 	tableRowMax      = 50
 	progressRowMax   = 20
 	timelineEventMax = 100
-	// chartPointMin is the fewest points a chart plots: one point is no series (R9).
+	// chartPointMin is the fewest points a chart plots: one point is no series (R3).
 	chartPointMin = 2
 )
 
@@ -325,7 +325,7 @@ type BlockData struct {
 // Fill builds the block from the read its spec names, and from nothing else: the rows are the
 // read's table's own, cut to the fields the block draws. A block the read cannot fill is not
 // drawn - a table or field the read does not hold, a value that is no number where a number is
-// drawn, a chart of fewer than two points (R9), a metric whose table is not one row - and the
+// drawn, a chart of fewer than two points (R3), a metric whose table is not one row - and the
 // error says which.
 func (b Block) Fill(read Read) (BlockData, error) {
 	rows, err := normalizedTable(read, b.spec.Table)

@@ -48,8 +48,9 @@ type Action struct {
 	Description string
 }
 
-// The guidance the decision model is given beside the catalogue's descriptions. R5 corrects
-// this text, and never a case's label, where the model chooses wrong.
+// The guidance the decision model is given beside the catalogue's descriptions. R13 measures the
+// model on the labels of the committed cases, so where it chooses wrong this text is corrected,
+// and never a case's label.
 const (
 	actionInstructions = "The state holds the words a person typed into Dispatch's command bar and the page they typed them on. " +
 		"Choose the one action the words ask Dispatch to perform, judged by the change the person wants made. " +

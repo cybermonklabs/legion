@@ -820,3 +820,40 @@ test("a project change asks the same words again, and the line on top starts ove
     client.clear();
   }
 });
+
+// The line on top is also of whether the words are asked of a model at all. Words the bar stops
+// asking about, as words become a hit's exact title once the hits arrive, keep no line Jev named
+// while they were asked, though the words and the project stay as they were.
+test("words the bar stops asking about drop the line Jev named for them, the words and the project unchanged", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const bar = renderHook(
+    ({ enabled }: { readonly enabled: boolean }) =>
+      useGoingBar({
+        context: { path: "/projects/LEGION/issues" },
+        enabled,
+        login: "alice",
+        project: "LEGION",
+        showHits: true,
+        words: "mark the astrolabe started",
+      }),
+    {
+      initialProps: { enabled: true },
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    await waitFor(() => expect(bar.result.current.answers).toBe(true));
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(bar.result.current.line).toBe("do"));
+
+    bar.rerender({ enabled: false });
+    expect(bar.result.current.line).toBe("ask");
+  } finally {
+    bar.unmount();
+    client.clear();
+  }
+});

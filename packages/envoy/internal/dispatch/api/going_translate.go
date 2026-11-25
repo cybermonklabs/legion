@@ -1,6 +1,6 @@
 package api
 
-// going_translate.go is what each row of the going catalogue's routes takes of a call (R3). A
+// going_translate.go is what each row of the going catalogue's routes takes of a call (R12). A
 // tool's arguments are the `dispatch` CLI's, and the CLI does more than fill a path and send the
 // rest: it resolves a document named by slug to the id a route's path takes, a session named by
 // title to its id, moves an argument a route reads under another name (`reply_to_ask` is a

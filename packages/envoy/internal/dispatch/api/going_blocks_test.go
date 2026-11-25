@@ -78,7 +78,7 @@ func (rig blockRig) askForBlock(t *testing.T, words, project string) ([]goingEve
 	if !frameData(t, frames, contracts.GoingEventBlock, &block) {
 		return frames, nil
 	}
-	// A block rides after every text frame and before the ending (R2).
+	// A block rides after every text frame and before the ending (R3).
 	at := slices.Index(names, contracts.GoingEventBlock)
 	if slices.Contains(names[at+1:], contracts.GoingEventText) {
 		t.Errorf("the run stored %v, want the block after every text frame", names)
@@ -316,7 +316,7 @@ func TestGoingBlockWithNoReadBehindItIsNotDrawn(t *testing.T) {
 	}
 }
 
-// A chart whose read returns fewer than two points is not drawn (R9): one week of activity is one
+// A chart whose read returns fewer than two points is not drawn (R3): one week of activity is one
 // point.
 func TestGoingBlockUnderTwoPointsDrawsNoChart(t *testing.T) {
 	t.Parallel()
@@ -329,7 +329,7 @@ func TestGoingBlockUnderTwoPointsDrawsNoChart(t *testing.T) {
 }
 
 // A block the model writes unasked for a plain question is dropped, and so is a kind outside the
-// seven: the words decide, and the list is closed (R2). The structured call is told
+// seven: the words decide, and the list is closed (R3). The structured call is told
 // to write no block, since the words name none.
 func TestGoingBlockUnaskedOrOfAnUnknownKindIsDropped(t *testing.T) {
 	t.Parallel()

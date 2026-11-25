@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 )
 
-// The read tools an answer may call beside the search (R8): each is a read Dispatch serves, made
+// The read tools an answer may call beside the search (R12): each is a read Dispatch serves, made
 // as the run's author, which the caller supplies by name in Request.Reads. The model asks for the
 // read it needs rather than being handed every read with every question, and a block's spec names
 // one of them as its source, which the server runs again to fill the block (blocks.go).

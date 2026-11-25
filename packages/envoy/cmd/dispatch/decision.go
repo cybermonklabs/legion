@@ -50,7 +50,7 @@ func resolveDecisionModel(env settingValues) (decisionConfig, error) {
 // newDecider builds the decision model cfg names, or nil where there is none to build, which is
 // a server that boots and decides nothing rather than one that refuses to boot: no endpoint, no
 // model named, or a model the committed measurement does not hold (going.DecisionRecord), since
-// a model nobody measured is no decision model (R11). Each of those logs one line saying why. The
+// a model nobody measured is no decision model (R13). Each of those logs one line saying why. The
 // decider's token is the file's contents at the moment of each call (going.FileTokenSource), so a
 // file that is absent or empty fails that call as the decision model that cannot be reached
 // (api.ErrDecisionModelUnreachable) and never the boot. The line it logs for a decider names the

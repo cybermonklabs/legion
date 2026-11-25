@@ -22,12 +22,13 @@ import { countAskedRuns, plainWords, seedIssue, shownWords } from "./going-panel
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check c1 of dispatch://INFRA-1588/artifact/verification-md, serving R1: with the fake writing
-// model, the bar's answer is short, linked to what it read, and absent when there is none, in a
-// panel of its own beside the hits. Each row scripts what the model writes and reads what the
-// panel draws of it, after the server's filter: the cut, the dropped link, the none frame, the
-// end frame's count of items. No model is called on a keystroke, which the last row counts on
-// the fakes themselves. Every row runs in the models lane alone (`bun run e2e:models`).
+// Check c1 of dispatch://INFRA-1588/artifact/verification-md@v16, serving R3 of spec v61: with
+// the fake writing model, the bar's answer is short, linked to what it read, and absent when
+// there is none, in a panel of its own beside the hits. Each row scripts what the model writes
+// and reads what the panel draws of it, after the server's filter: the cut, the dropped link, the
+// none frame, the end frame's count of items. No model is called on a keystroke, which the last
+// row counts on the fakes themselves. Every row runs in the models lane alone
+// (`bun run e2e:models`).
 
 /** The words a person asks, which the seeded issue answers. They are not its exact title: words
  *  that are a hit's own key or title are answered by that hit alone, and no model is asked (R2). */

@@ -8,7 +8,7 @@
 // display rates pool every answer of every repeat.
 //
 // It prints a markdown table and writes going/decision_models.json (going.EncodeRecords), which
-// holds the models a deployment may name (R11). Beside the pooled table it prints each repeat's
+// holds the models a deployment may name (R13). Beside the pooled table it prints each repeat's
 // right choices, their spread, the cases a model chose right in some repeats and wrong in others,
 // and the paired test of each two models over the same cases and repeats (going.ComparePaired).
 //
@@ -1048,8 +1048,8 @@ func yesNo(ok bool) string {
 }
 
 // printMisses names each case of R13's set a model chose wrong or gave no answer on, in each
-// repeat, with its confidence, so a description R5 must correct can be found. A case outside the
-// set has its line in the report already (outsideLines).
+// repeat, with its confidence, so a description to correct for R13's floors can be found. A case
+// outside the set has its line in the report already (outsideLines).
 func printMisses(w io.Writer, m *measured) {
 	repeats := r13Answers(m.repeats)
 	fmt.Fprintf(w, "\n%s: misses\n", m.record.Model)

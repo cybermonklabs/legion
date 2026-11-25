@@ -161,33 +161,24 @@ var (
 	// updateNoWrite's to place, after writesOf has set comments aside, so that a comment cannot
 	// end in a word that hides the write after it.
 	driveUpdateColumn = regexp.MustCompile(`(?i)\bset\s+update\s*=`)
-	// driveVerbLiteral is a string literal whose whole text is one write verb, as a read of a
-	// command-bar run compares going_landings.method with 'DELETE' (goingRunWithdrawerOf): writesOf
-	// reads the verb as a write word with no table. A literal names no table, so it cannot hide a
-	// write; the characters around it, kept as they are, are no quote, so it is the whole literal.
-	driveVerbLiteral = regexp.MustCompile(`(?i)(^|[^'])'(insert|update|delete|merge)'([^']|$)`)
 	// lastUsedUpdate is the one write of a personal token a read may make: its last use.
 	lastUsedUpdate = regexp.MustCompile(`(?is)^\s*update\s+agent_(read_)?tokens\s+set\s+last_used_at\s*=`)
 )
 
 // driveWritesOf is writesOf (read_only_token_test.go) over statement with a compaction's set
 // update = set aside (driveUpdateColumn), the one column of doc_updates named update that
-// updateNoWrite would read as a write, and each string literal that is one write verb alone
-// (driveVerbLiteral).
+// updateNoWrite would read as a write.
 func driveWritesOf(statement string) ([]string, bool) {
 	read := driveUpdateColumn.ReplaceAllStringFunc(statement, func(column string) string {
 		return updateWord.ReplaceAllString(column, "update_column")
 	})
-	read = driveVerbLiteral.ReplaceAllString(read, "${1}'verb_literal'${3}")
 	return writesOf(read)
 }
 
 // The drive judges each statement it records by driveWritesOf and readMayWrite
 // (requireReadsWrites): a compaction's rewrite of doc_updates is a write a read may make, a
-// document load's read of the column named update is no write, a write after a comment that ends
-// in select is still the write it is, a literal that is one write verb alone is no write, and a
-// write beside such a literal, or within a literal that holds more than the verb, is still the
-// write it is.
+// document load's read of the column named update is no write, and a write after a comment that
+// ends in select is still the write it is.
 func TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -198,10 +189,6 @@ func TestTheDriveReadsOnlyACompactionsUpdateColumnAsNoVerb(t *testing.T) {
 		{"a compaction's fold (docs/compaction.go)", "update doc_updates set update = $3, content_changed = $4 where artifact_id = $1 and version = $2", "update doc_updates", true},
 		{"a document load's read of the column", "select update, d.update from doc_updates d where d.artifact_id = $1", "", true},
 		{"a write after a comment that ends in select", "-- the reader's note, then select\nupdate projects set name = name", "update projects", false},
-		{"a read that compares a method with a verb's literal (goingRunWithdrawerOf)",
-			"select 1 from going_landings l where l.phase = 'do' and l.method = 'DELETE' and l.path <> 'delete'", "", true},
-		{"a write beside a verb's literal", "delete from going_landings where method = 'DELETE'", "delete going_landings", false},
-		{"a literal that holds more than a verb", "select 1 from going_landings where path = 'delete from projects'", "delete projects", false},
 	} {
 		writes, readable := driveWritesOf(row.sql)
 		if !readable {

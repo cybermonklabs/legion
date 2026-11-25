@@ -9,15 +9,15 @@ package api
 // each issue the option changes, before it reads any row, so every row is an ordinary update with
 // its own approval, its own landing and its own Undo, which walks the rows newest first.
 //
-// Which issues an option reaches, and in which order the writes keep the parent status rule (R24),
-// are the route's own: expandStatusOptions reads the plan with readStatusChange and
-// statusChangeRead.steps, the two functions the route plans its call with, so the bar and the route
-// cannot disagree. It reads them from the store, not through the route with dry_run: a dry run
-// answers each issue's new status and parent but not the option that moved it, which a row's
-// needs are made from, and it answers the rule's conflict alone, with no steps, when the plan
-// breaks the rule, even where the deployment's rule is off, so it could give the bar no rows
-// there. The person's own read of what a row shows is made later, row by row, as every row of a
-// plan is read (goingReadRow); the named issue is read as the person here, so a refusal of it is
+// Which issues an option reaches, and in which order the writes keep the parent status rule (R24
+// of dispatch://INFRA-3320/spec), are the route's own: expandStatusOptions reads the plan with
+// readStatusChange and statusChangeRead.steps, the two functions the route plans its call with, so
+// the bar and the route cannot disagree. It reads them from the store, not through the route with
+// dry_run: a dry run answers each issue's new status and parent but not the option that moved it,
+// which a row's needs are made from, and it answers the rule's conflict alone, with no steps, when
+// the plan breaks the rule, even where the deployment's rule is off, so it could give the bar no
+// rows there. The person's own read of what a row shows is made later, row by row, as every row of
+// a plan is read (goingReadRow); the named issue is read as the person here, so a refusal of it is
 // the route's words. The bar's person is a sign-in or a personal token, which names no project
 // (callerProject), so the route's project check (refuseStepsOutsideCallerProject) has nothing to
 // hold the steps to.

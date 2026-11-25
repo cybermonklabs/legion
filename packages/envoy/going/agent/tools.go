@@ -21,11 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// The six tools a run's model is given (R12, the spec's Design): a search of Dispatch, a read of
-// one item, the tool specs that fit a need, a read by a tool's name, the plan of changes the
-// person approves, and a question to the person. A tool reads only through a call of agent/v1 to
-// the server, which makes it as the run's person: none reads a file or another process. A
-// question reads nothing: the reply that asks it is the run's answer (saveReply).
+// The six tools a run's model is given: the five of the spec's Design (R12), a search of Dispatch,
+// a read of one item, the tool specs that fit a need, a read by a tool's name and the plan of
+// changes the person approves, and a sixth, a question to the person (ask_person). A tool reads
+// only through a call of agent/v1 to the server, which makes it as the run's person: none reads a
+// file or another process. A question reads nothing: the reply that asks it is the run's answer
+// (saveReply).
 const (
 	toolSearch      = "search"
 	toolRead        = "read"

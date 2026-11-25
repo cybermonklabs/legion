@@ -26,8 +26,8 @@ import {
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check c4 of dispatch://INFRA-1588/artifact/verification-md, serving R2, and the browser legs
-// of c6, serving R9: a block is drawn when it is asked for, and its numbers are the server's
+// Check c4 and the browser legs of c6 of dispatch://INFRA-1588/artifact/verification-md@v16,
+// serving R3 of spec v61: a block is drawn when it is asked for, and its numbers are the server's
 // read. Each row seeds a fixture whose counts it set, scripts the fake writing model to name the
 // read that fills a block - a spec that names fields and never a number - and reads what the
 // panel draws against the fixture. A plain question draws no block, even where the model writes

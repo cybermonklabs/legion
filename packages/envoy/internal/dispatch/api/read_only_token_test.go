@@ -708,6 +708,11 @@ var (
 	mergeAction = regexp.MustCompile(`(?i)\bthen\s+(update|insert|delete)\b`)
 	// updateWord is the word update wherever it stands; updateNoWrite decides where it is none.
 	updateWord = regexp.MustCompile(`(?i)\bupdate\b`)
+	// verbLiteral is a string literal whose whole text is one write verb, as a read of a
+	// command-bar run compares going_landings.method with 'DELETE' (goingRunWithdrawerOf). A
+	// literal names no table, so it cannot hide a write; the characters around it, kept as they
+	// are, are no quote, so it is the whole literal.
+	verbLiteral = regexp.MustCompile(`(?i)(^|[^'])'(insert|update|delete|merge)'([^']|$)`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -716,10 +721,12 @@ var (
 // of scan.l: a -- comment ends at a newline or a carriage return; none starts inside a string or a
 // quoted name; and a dollar quote's body, a function's or a DO block's, is read as SQL, its own
 // strings and dollar quotes kept whole, so a write inside one it EXECUTEs stays visible), reads a
-// merge as a write of its table, and reads the word update as no write only where updateNoWrite
+// merge as a write of its table, reads a string literal that is one write verb alone
+// (verbLiteral) as no write, and reads the word update as no write only where updateNoWrite
 // places it, so a write it cannot place is a write.
 func writesOf(statement string) ([]string, bool) {
 	read := pgmigrate.WithoutComments(statement)
+	read = verbLiteral.ReplaceAllString(read, "${1}'verb_literal'${3}")
 	read = upsertUpdate.ReplaceAllString(read, "do upsert")
 	if mergeInto.MatchString(read) {
 		read = mergeAction.ReplaceAllString(read, "then merge_action")
@@ -781,7 +788,8 @@ func startsWithSQLWord(s, word string) bool {
 // writesOf reads a write by its verb and its table, and the word update by where it stands: a
 // column of that name a document room reads (doc_updates.update) and a row lock are no write, an
 // update statement however it names its table is one, a comment hides no write and a merge is one,
-// and a write word it cannot place a table for leaves the statement unreadable.
+// a string literal that is one write verb alone is no write, and a write word it cannot place a
+// table for leaves the statement unreadable.
 func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -825,6 +833,11 @@ func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
 		// A dollar quote inside a DO body is a string, kept whole, so a write in SQL the body
 		// EXECUTEs stays visible, a -- before it included.
 		{`do $$ begin execute $q$select 1 -- note update projects set name = name$q$; end $$`, []string{"update projects"}, true},
+		// A string literal that is one write verb alone names no table and is no write; a write
+		// beside such a literal, or a literal that holds more than the verb, is still its write.
+		{`select 1 from going_landings l where l.phase = 'do' and l.method = 'DELETE' and l.path <> 'delete'`, nil, true},
+		{`delete from going_landings where method = 'DELETE'`, []string{"delete going_landings"}, true},
+		{`select 1 from going_landings where path = 'delete from projects'`, []string{"delete projects"}, true},
 	} {
 		writes, readable := writesOf(tc.statement)
 		if readable != tc.readable || !slices.Equal(writes, tc.writes) {

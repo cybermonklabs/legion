@@ -5,14 +5,14 @@ import { countAskedRuns, plainWords, seedIssue } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check c2 of dispatch://INFRA-1588/artifact/verification-md, serving R1: a run the person types
-// past is cancelled, so a stale answer neither keeps running nor arrives. The fake writing model
-// streams the first answer slowly; one more character typed once it has begun cancels the run,
-// the fake counts its reply abandoned within one step, no further frame of it reaches the panel,
-// and the answer for the new words streams in its place. With cancellation off the first stream
-// runs to its end and the fake counts nothing abandoned, which this row catches.
+// Check c2 of dispatch://INFRA-1588/artifact/verification-md@v16, serving R3 of spec v61: a run
+// the person types past is cancelled, so a stale answer neither keeps running nor arrives. The
+// fake writing model streams the first answer slowly; one more character typed once it has begun
+// cancels the run, the fake counts its reply abandoned within one step, no further frame of it
+// reaches the panel, and the answer for the new words streams in its place. With cancellation off
+// the first stream runs to its end and the fake counts nothing abandoned, which this row catches.
 //
-// The second row serves R1 too: the answer the person typed past stays on the screen, its link
+// The second row serves R3 too: the answer the person typed past stays on the screen, its link
 // with it, marked as the earlier words' answer, while its run is cancelled, until the new words'
 // first text takes its place. Where the bar clears the panel at the keystroke instead, the mark
 // and the kept answer are missing, which that row catches.

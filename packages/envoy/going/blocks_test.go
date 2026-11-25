@@ -107,7 +107,7 @@ func TestParseBlockDropsWhatDoesNotFitTheKindsSchema(t *testing.T) {
 }
 
 // A chart is filled from its read's table alone: each point is the read's own x and y, a row whose
-// y is no number is left out, and fewer than two points draw no chart (R9).
+// y is no number is left out, and fewer than two points draw no chart (R3).
 func TestFillChartTakesEveryPointFromTheRead(t *testing.T) {
 	block := mustParse(t, going.BlockChart, `{"source":"read_project_activity","params":{},"table":"weeks","x":"week","y":"events","mark":"line"}`)
 	read := going.Read{Tables: map[string][]map[string]any{"weeks": {
@@ -329,7 +329,7 @@ func TestAChartOrATableTakesTheColumnsItsChainMakes(t *testing.T) {
 // TestAOnePointChartIsToldWhatToDrawInstead: chart-17 of the eval drew open P0 issues by project,
 // which one project held, and was refused a chart of one point with no word of what to draw; at
 // 59e2a6ec, told to chart a field with more values, it kept only its chart of P1 issues. The
-// refusal says to draw a metric or a table for one point; the minimum of two points stays (R9).
+// refusal says to draw a metric or a table for one point; the minimum of two points stays (R3).
 func TestAOnePointChartIsToldWhatToDrawInstead(t *testing.T) {
 	results := openIssues(t)
 	results[0] = issueList(t, 4, "DEMO", issuesOf("DEMO", 3, "todo", 2))

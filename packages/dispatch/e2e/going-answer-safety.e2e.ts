@@ -4,13 +4,13 @@ import { seedIssue } from "./going-panel";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-// Check c3 of dispatch://INFRA-1588/artifact/verification-md, serving R1: nothing the model
-// writes in the prose becomes a link, an image or a tag. The fake writing model writes a markdown
-// link to an outside address, an image, a bare address and an img tag with an onerror attribute,
-// beside a link to the one issue it was given. The server escapes the prose and drops a word a
-// renderer would link; this row reads the panel: the link's and the image's words show as text,
-// the prose holds no a and no img element, no handler ran, the escapes are invisible under the
-// page's markdown renderer, and the panel's only links are the item frames. A panel that drew
+// Check c3 of dispatch://INFRA-1588/artifact/verification-md@v16, serving R3 of spec v61: nothing
+// the model writes in the prose becomes a link, an image or a tag. The fake writing model writes a
+// markdown link to an outside address, an image, a bare address and an img tag with an onerror
+// attribute, beside a link to the one issue it was given. The server escapes the prose and drops a
+// word a renderer would link; this row reads the panel: the link's and the image's words show as
+// text, the prose holds no a and no img element, no handler ran, the escapes are invisible under
+// the page's markdown renderer, and the panel's only links are the item frames. A panel that drew
 // the text frame as raw HTML would put a link or an image in the prose, which this row catches.
 
 const title = "Quasar sightings log";

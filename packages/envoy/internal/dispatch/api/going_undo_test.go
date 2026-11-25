@@ -179,12 +179,14 @@ func replaceText(find, with string) []any {
 // undone by nothing, saying why. Undo is offered while History lists the run's conversation, so a
 // run 8 days old in a conversation whose newest run is 1 day old is undone, and one whose
 // conversation's newest run is 8 days old answers 404. A second press answers each row whose undo
-// landed from that landing, sending nothing twice, and resumes where the first press ended. An
-// undo whose request its route answered as done while it committed nothing says it changed
-// nothing, never that it reversed the change, and records that as its landing: a second press
-// answers it from there and sends nothing, and the run counts the call in no count. A keyed press
-// whose process ended mid-walk, after it recorded a call, is finished by a repeat under its key,
-// which walks the run again rather than being told the write landed (KEY_COMMITTED).
+// landed from that landing, sending nothing twice, and resumes where the first press ended. Two
+// presses made at once undo a call once, and the press whose record of the undo finds the other's
+// landing answers that landing's line (recordUndo). An undo whose request its route answered as
+// done while it committed nothing says it changed nothing, never that it reversed the change, and
+// records that as its landing: a second press answers it from there and sends nothing, and the run
+// counts the call in no count. A keyed press whose process ended mid-walk, after it recorded a
+// call, is finished by a repeat under its key, which walks the run again rather than being told
+// the write landed (KEY_COMMITTED).
 func TestUndoOfOneRun(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -335,6 +337,42 @@ func TestUndoOfOneRun(t *testing.T) {
 		}
 		if sent := released.Load(); sent != 1 || rig.issueRead(t, issue).Claim != nil {
 			t.Fatalf("the release was sent %d times, want once, the claim gone", sent)
+		}
+	})
+
+	t.Run("two presses at once undo the call once, and both answer its undo", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed and undone by two presses")
+		run := rig.ran(t, "rename Renamed and undone by two presses", goingChange("dispatch_issue_update", retitle(issue, "Renamed by the run")))
+		var sent atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			sent.Add(1)
+			inner.ServeHTTP(w, r)
+		})
+		// The press the test makes reads the issue once it found no undo of the call landed. Before
+		// that read is served, a second press runs whole: its write back lands and records the
+		// call's undo. The first press then reads the title written back, keeps it as a change made
+		// since the run, and records that undo, where the second press's landing stands already.
+		var pressed atomic.Bool
+		var racing *httptest.ResponseRecorder
+		rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			if pressed.CompareAndSwap(false, true) {
+				racing = dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil, "alice")
+			}
+			inner.ServeHTTP(w, r)
+		})
+		lines := rig.undone(t, run, "dispatch_issue_update")
+		if racing == nil || racing.Code != http.StatusOK {
+			t.Fatalf("the press made beside the first answered %+v, want 200", racing)
+		}
+		raced := decodeBody[goingUndoAnswer](t, racing).Lines
+		if len(raced) != 1 || !raced[0].Outcome.OK || !reflect.DeepEqual(lines, raced) {
+			t.Fatalf("the press whose write back landed answered %+v and the press beside it %+v, want the write back, answered alike", raced, lines)
+		}
+		if title := rig.title(t, issue); title != "Renamed and undone by two presses" || sent.Load() != 1 {
+			t.Fatalf("after the two presses the issue is titled %q with %d write backs sent, want its title back, written once", title, sent.Load())
+		}
+		if landings := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); landings != 1 {
+			t.Fatalf("the run holds %d undo landings, want the one its write back recorded", landings)
 		}
 	})
 

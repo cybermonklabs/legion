@@ -108,9 +108,9 @@ const (
 
 // goingCapability is what the capability route answers, and all it answers: each of the four
 // things the command bar needs, apart, so the bar can tell a deployment that answers and cannot
-// decide from one that does neither (R8). The models are named, since a name is what an operator
-// and the production check compare with the record; no endpoint and no credential has a field
-// here, so none can appear in the answer.
+// decide from one that does neither (a route spec v61's Design keeps from #3924). The models are
+// named, since a name is what an operator and the production check compare with the record; no
+// endpoint and no credential has a field here, so none can appear in the answer.
 type goingCapability struct {
 	Answer   goingAnswerCapability   `json:"answer"`
 	Decision goingDecisionCapability `json:"decision"`
@@ -127,7 +127,7 @@ type goingAnswerCapability struct {
 }
 
 // goingDecisionCapability is the decision model: whether a measured one is configured (a name
-// the record does not hold is none, R11), its name ("" with none), and whether a call to it could
+// the record does not hold is none, R13), its name ("" with none), and whether a call to it could
 // be made now (Decider.Reachable; false with none).
 type goingDecisionCapability struct {
 	Configured bool   `json:"configured"`
@@ -473,7 +473,7 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, outcome 
 		return g.running.Err()
 	}
 	if outcome.StructuredOutput != "" {
-		// After every text frame and before the ending (R2): the block the structured reply
+		// After every text frame and before the ending (R3): the block the structured reply
 		// wrote, filled from its read, and how fresh the roster the run read was. Neither
 		// counts against the answer's word cut.
 		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words); drawn {
