@@ -20,8 +20,8 @@
 import {
   createLegionDaemonClient,
   LegionDaemonApiError,
-  LegionDaemonContractError,
   type LegionDaemonClient,
+  LegionDaemonContractError,
 } from "@legion/pi-shared/daemon-client";
 import { z } from "zod";
 import pkg from "../package.json";

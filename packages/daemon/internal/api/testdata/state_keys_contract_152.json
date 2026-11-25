@@ -36,69 +36,28 @@
     },
     "admission": {
       "strict": false,
-      "keys": [
-        "active",
-        "blocked",
-        "cap",
-        "free",
-        "held",
-        "trees",
-        "waiting"
-      ],
-      "required": [
-        "active",
-        "blocked",
-        "cap",
-        "waiting"
-      ]
+      "keys": ["active", "blocked", "cap", "free", "held", "trees", "waiting"],
+      "required": ["active", "blocked", "cap", "waiting"]
     },
     "admission.blocked.*": {
       "strict": false,
-      "keys": [
-        "blockedBy",
-        "issue"
-      ],
-      "required": [
-        "blockedBy",
-        "issue"
-      ]
+      "keys": ["blockedBy", "issue"],
+      "required": ["blockedBy", "issue"]
     },
     "admission.held.*": {
       "strict": false,
-      "keys": [
-        "heldBy",
-        "issue",
-        "reason"
-      ],
-      "required": [
-        "issue",
-        "reason"
-      ]
+      "keys": ["heldBy", "issue", "reason"],
+      "required": ["issue", "reason"]
     },
     "agentSecretsLogin": {
       "strict": false,
-      "keys": [
-        "state"
-      ],
-      "required": [
-        "state"
-      ]
+      "keys": ["state"],
+      "required": ["state"]
     },
     "capabilities.*": {
       "strict": false,
-      "keys": [
-        "configLine",
-        "decision",
-        "detail",
-        "name",
-        "source",
-        "status"
-      ],
-      "required": [
-        "detail",
-        "name",
-        "status"
-      ]
+      "keys": ["configLine", "decision", "detail", "name", "source", "status"],
+      "required": ["detail", "name", "status"]
     },
     "consumers.*": {
       "strict": false,
@@ -111,75 +70,27 @@
         "unavailable",
         "waiting"
       ],
-      "required": [
-        "lastHandledAt",
-        "name",
-        "oldestAgeSeconds",
-        "oldestAt",
-        "stalled",
-        "waiting"
-      ]
+      "required": ["lastHandledAt", "name", "oldestAgeSeconds", "oldestAt", "stalled", "waiting"]
     },
     "contract": {
       "strict": false,
-      "keys": [
-        "caller",
-        "daemon"
-      ],
-      "required": [
-        "daemon"
-      ]
+      "keys": ["caller", "daemon"],
+      "required": ["daemon"]
     },
     "controllerLocator": {
       "strict": false,
-      "keys": [
-        "external",
-        "pluginContract",
-        "registeredAt",
-        "runtime",
-        "sessionId"
-      ],
-      "required": [
-        "external",
-        "pluginContract",
-        "registeredAt",
-        "runtime",
-        "sessionId"
-      ]
+      "keys": ["external", "pluginContract", "registeredAt", "runtime", "sessionId"],
+      "required": ["external", "pluginContract", "registeredAt", "runtime", "sessionId"]
     },
     "daemon": {
       "strict": false,
-      "keys": [
-        "boots",
-        "firstBootAt",
-        "project",
-        "schemaVersion",
-        "startedAt"
-      ],
-      "required": [
-        "boots",
-        "firstBootAt",
-        "project",
-        "schemaVersion",
-        "startedAt"
-      ]
+      "keys": ["boots", "firstBootAt", "project", "schemaVersion", "startedAt"],
+      "required": ["boots", "firstBootAt", "project", "schemaVersion", "startedAt"]
     },
     "heldOutboxRows.*": {
       "strict": false,
-      "keys": [
-        "id",
-        "issue",
-        "kind",
-        "waitedSeconds",
-        "waitsOn"
-      ],
-      "required": [
-        "id",
-        "issue",
-        "kind",
-        "waitedSeconds",
-        "waitsOn"
-      ]
+      "keys": ["id", "issue", "kind", "waitedSeconds", "waitsOn"],
+      "required": ["id", "issue", "kind", "waitedSeconds", "waitsOn"]
     },
     "issues.*": {
       "strict": false,
@@ -218,13 +129,7 @@
         "why",
         "workers"
       ],
-      "required": [
-        "generation",
-        "key",
-        "phase",
-        "status",
-        "workers"
-      ]
+      "required": ["generation", "key", "phase", "status", "workers"]
     },
     "issues.*.architect": {
       "strict": false,
@@ -250,121 +155,47 @@
         "updateReasons",
         "updateRound"
       ],
-      "required": [
-        "pluginContract",
-        "session",
-        "state"
-      ]
+      "required": ["pluginContract", "session", "state"]
     },
     "issues.*.architect.capabilities": {
       "strict": false,
-      "keys": [
-        "incarnation",
-        "measuredAt",
-        "ok",
-        "open"
-      ],
-      "required": [
-        "incarnation",
-        "measuredAt",
-        "ok",
-        "open"
-      ]
+      "keys": ["incarnation", "measuredAt", "ok", "open"],
+      "required": ["incarnation", "measuredAt", "ok", "open"]
     },
     "issues.*.architect.capabilities.open.*": {
       "strict": false,
-      "keys": [
-        "detail",
-        "name"
-      ],
-      "required": [
-        "detail",
-        "name"
-      ]
+      "keys": ["detail", "name"],
+      "required": ["detail", "name"]
     },
     "issues.*.architect.failure": {
       "strict": false,
-      "keys": [
-        "at",
-        "attempts",
-        "cause",
-        "detail"
-      ],
-      "required": [
-        "attempts",
-        "cause",
-        "detail"
-      ]
+      "keys": ["at", "attempts", "cause", "detail"],
+      "required": ["attempts", "cause", "detail"]
     },
     "issues.*.architect.failure.attempts": {
       "strict": false,
-      "keys": [
-        "deaths",
-        "launchFailures",
-        "promptFailures",
-        "promptRetires"
-      ],
-      "required": [
-        "deaths",
-        "launchFailures",
-        "promptFailures",
-        "promptRetires"
-      ]
+      "keys": ["deaths", "launchFailures", "promptFailures", "promptRetires"],
+      "required": ["deaths", "launchFailures", "promptFailures", "promptRetires"]
     },
     "issues.*.architect.locator": {
       "strict": false,
-      "keys": [
-        "claim",
-        "incarnation",
-        "runtime",
-        "sandbox",
-        "tmux"
-      ],
-      "required": [
-        "claim",
-        "incarnation",
-        "runtime"
-      ]
+      "keys": ["claim", "incarnation", "runtime", "sandbox", "tmux"],
+      "required": ["claim", "incarnation", "runtime"]
     },
     "issues.*.architect.locator.tmux": {
       "strict": false,
-      "keys": [
-        "pane",
-        "window"
-      ],
-      "required": [
-        "pane",
-        "window"
-      ]
+      "keys": ["pane", "window"],
+      "required": ["pane", "window"]
     },
     "issues.*.architect.locator.sandbox": {
       "strict": false,
-      "keys": [
-        "container",
-        "generation",
-        "name",
-        "namespace",
-        "podUid"
-      ],
-      "required": [
-        "container",
-        "generation",
-        "name",
-        "namespace",
-        "podUid"
-      ]
+      "keys": ["container", "generation", "name", "namespace", "podUid"],
+      "required": ["container", "generation", "name", "namespace", "podUid"]
     },
     "issues.*.architect.pendingTask": {
       "strict": false,
-      "keys": [
-        "lastSendError",
-        "phase",
-        "queuedAt",
-        "sendFailures"
-      ],
-      "required": [
-        "queuedAt"
-      ]
+      "keys": ["lastSendError", "phase", "queuedAt", "sendFailures"],
+      "required": ["queuedAt"]
     },
     "issues.*.architect.step": {
       "strict": false,
@@ -382,17 +213,8 @@
     },
     "issues.*.assignments.*": {
       "strict": false,
-      "keys": [
-        "drawnAt",
-        "experiment",
-        "mode",
-        "variant"
-      ],
-      "required": [
-        "experiment",
-        "mode",
-        "variant"
-      ]
+      "keys": ["drawnAt", "experiment", "mode", "variant"],
+      "required": ["experiment", "mode", "variant"]
     },
     "issues.*.check": {
       "strict": false,
@@ -422,29 +244,13 @@
     },
     "issues.*.check.lastWake": {
       "strict": false,
-      "keys": [
-        "at",
-        "detail",
-        "kind"
-      ],
-      "required": [
-        "at",
-        "detail",
-        "kind"
-      ]
+      "keys": ["at", "detail", "kind"],
+      "required": ["at", "detail", "kind"]
     },
     "issues.*.designGate": {
       "strict": false,
-      "keys": [
-        "approvedVersion",
-        "artifactId",
-        "currentVersion"
-      ],
-      "required": [
-        "approvedVersion",
-        "artifactId",
-        "currentVersion"
-      ]
+      "keys": ["approvedVersion", "artifactId", "currentVersion"],
+      "required": ["approvedVersion", "artifactId", "currentVersion"]
     },
     "issues.*.gatedSteps.*": {
       "strict": false,
@@ -456,11 +262,7 @@
         "status",
         "step"
       ],
-      "required": [
-        "approvedVersion",
-        "status",
-        "step"
-      ]
+      "required": ["approvedVersion", "status", "step"]
     },
     "issues.*.mergeWait": {
       "strict": false,
@@ -473,39 +275,17 @@
         "toldState",
         "waitsOn"
       ],
-      "required": [
-        "checkRuns",
-        "waitsOn"
-      ]
+      "required": ["checkRuns", "waitsOn"]
     },
     "issues.*.pullRequest": {
       "strict": false,
-      "keys": [
-        "head",
-        "mergeState",
-        "number",
-        "repo",
-        "reviewDecision",
-        "state"
-      ],
-      "required": [
-        "head",
-        "number",
-        "repo",
-        "state"
-      ]
+      "keys": ["head", "mergeState", "number", "repo", "reviewDecision", "state"],
+      "required": ["head", "number", "repo", "state"]
     },
     "issues.*.slot": {
       "strict": false,
-      "keys": [
-        "admittedAt",
-        "index",
-        "lentTo"
-      ],
-      "required": [
-        "admittedAt",
-        "index"
-      ]
+      "keys": ["admittedAt", "index", "lentTo"],
+      "required": ["admittedAt", "index"]
     },
     "issues.*.waitingLine": {
       "strict": false,
@@ -523,52 +303,22 @@
         "rootRank",
         "since"
       ],
-      "required": [
-        "length",
-        "place"
-      ]
+      "required": ["length", "place"]
     },
     "issues.*.waitingOn": {
       "strict": false,
-      "keys": [
-        "answeredAt",
-        "answeredBy",
-        "artifactId",
-        "ask",
-        "gateVersion",
-        "kind",
-        "since"
-      ],
-      "required": [
-        "kind"
-      ]
+      "keys": ["answeredAt", "answeredBy", "artifactId", "ask", "gateVersion", "kind", "since"],
+      "required": ["kind"]
     },
     "issues.*.why": {
       "strict": false,
-      "keys": [
-        "reason",
-        "state"
-      ],
-      "required": [
-        "reason",
-        "state"
-      ]
+      "keys": ["reason", "state"],
+      "required": ["reason", "state"]
     },
     "issues.*.workers.*": {
       "strict": false,
-      "keys": [
-        "backwardMoves",
-        "claim",
-        "handoffCommit",
-        "handoffRecord",
-        "pass",
-        "rounds"
-      ],
-      "required": [
-        "claim",
-        "pass",
-        "rounds"
-      ]
+      "keys": ["backwardMoves", "claim", "handoffCommit", "handoffRecord", "pass", "rounds"],
+      "required": ["claim", "pass", "rounds"]
     },
     "issues.*.workers.*.claim": {
       "strict": false,
@@ -594,121 +344,47 @@
         "updateReasons",
         "updateRound"
       ],
-      "required": [
-        "pluginContract",
-        "session",
-        "state"
-      ]
+      "required": ["pluginContract", "session", "state"]
     },
     "issues.*.workers.*.claim.capabilities": {
       "strict": false,
-      "keys": [
-        "incarnation",
-        "measuredAt",
-        "ok",
-        "open"
-      ],
-      "required": [
-        "incarnation",
-        "measuredAt",
-        "ok",
-        "open"
-      ]
+      "keys": ["incarnation", "measuredAt", "ok", "open"],
+      "required": ["incarnation", "measuredAt", "ok", "open"]
     },
     "issues.*.workers.*.claim.capabilities.open.*": {
       "strict": false,
-      "keys": [
-        "detail",
-        "name"
-      ],
-      "required": [
-        "detail",
-        "name"
-      ]
+      "keys": ["detail", "name"],
+      "required": ["detail", "name"]
     },
     "issues.*.workers.*.claim.failure": {
       "strict": false,
-      "keys": [
-        "at",
-        "attempts",
-        "cause",
-        "detail"
-      ],
-      "required": [
-        "attempts",
-        "cause",
-        "detail"
-      ]
+      "keys": ["at", "attempts", "cause", "detail"],
+      "required": ["attempts", "cause", "detail"]
     },
     "issues.*.workers.*.claim.failure.attempts": {
       "strict": false,
-      "keys": [
-        "deaths",
-        "launchFailures",
-        "promptFailures",
-        "promptRetires"
-      ],
-      "required": [
-        "deaths",
-        "launchFailures",
-        "promptFailures",
-        "promptRetires"
-      ]
+      "keys": ["deaths", "launchFailures", "promptFailures", "promptRetires"],
+      "required": ["deaths", "launchFailures", "promptFailures", "promptRetires"]
     },
     "issues.*.workers.*.claim.locator": {
       "strict": false,
-      "keys": [
-        "claim",
-        "incarnation",
-        "runtime",
-        "sandbox",
-        "tmux"
-      ],
-      "required": [
-        "claim",
-        "incarnation",
-        "runtime"
-      ]
+      "keys": ["claim", "incarnation", "runtime", "sandbox", "tmux"],
+      "required": ["claim", "incarnation", "runtime"]
     },
     "issues.*.workers.*.claim.locator.tmux": {
       "strict": false,
-      "keys": [
-        "pane",
-        "window"
-      ],
-      "required": [
-        "pane",
-        "window"
-      ]
+      "keys": ["pane", "window"],
+      "required": ["pane", "window"]
     },
     "issues.*.workers.*.claim.locator.sandbox": {
       "strict": false,
-      "keys": [
-        "container",
-        "generation",
-        "name",
-        "namespace",
-        "podUid"
-      ],
-      "required": [
-        "container",
-        "generation",
-        "name",
-        "namespace",
-        "podUid"
-      ]
+      "keys": ["container", "generation", "name", "namespace", "podUid"],
+      "required": ["container", "generation", "name", "namespace", "podUid"]
     },
     "issues.*.workers.*.claim.pendingTask": {
       "strict": false,
-      "keys": [
-        "lastSendError",
-        "phase",
-        "queuedAt",
-        "sendFailures"
-      ],
-      "required": [
-        "queuedAt"
-      ]
+      "keys": ["lastSendError", "phase", "queuedAt", "sendFailures"],
+      "required": ["queuedAt"]
     },
     "issues.*.workers.*.claim.step": {
       "strict": false,
@@ -726,47 +402,18 @@
     },
     "issues.*.workers.*.handoffRecord": {
       "strict": false,
-      "keys": [
-        "id",
-        "version"
-      ],
-      "required": [
-        "id",
-        "version"
-      ]
+      "keys": ["id", "version"],
+      "required": ["id", "version"]
     },
     "pendingStatusWrites.*": {
       "strict": false,
-      "keys": [
-        "attempts",
-        "issue",
-        "lastError",
-        "nextAt",
-        "payload"
-      ],
-      "required": [
-        "attempts",
-        "issue",
-        "nextAt",
-        "payload"
-      ]
+      "keys": ["attempts", "issue", "lastError", "nextAt", "payload"],
+      "required": ["attempts", "issue", "nextAt", "payload"]
     },
     "repositories": {
       "strict": false,
-      "keys": [
-        "caches",
-        "mapped",
-        "owners",
-        "refused",
-        "withoutWebhookApp"
-      ],
-      "required": [
-        "caches",
-        "mapped",
-        "owners",
-        "refused",
-        "withoutWebhookApp"
-      ]
+      "keys": ["caches", "mapped", "owners", "refused", "withoutWebhookApp"],
+      "required": ["caches", "mapped", "owners", "refused", "withoutWebhookApp"]
     },
     "repositories.caches.*": {
       "strict": false,
@@ -783,36 +430,17 @@
         "sandbox",
         "state"
       ],
-      "required": [
-        "ready",
-        "repo",
-        "sandbox",
-        "state"
-      ]
+      "required": ["ready", "repo", "sandbox", "state"]
     },
     "repositories.mapped.*": {
       "strict": false,
-      "keys": [
-        "apps",
-        "cache",
-        "default",
-        "repo"
-      ],
-      "required": [
-        "default",
-        "repo"
-      ]
+      "keys": ["apps", "cache", "default", "repo"],
+      "required": ["default", "repo"]
     },
     "repositories.mapped.*.apps": {
       "strict": false,
-      "keys": [
-        "implement",
-        "review"
-      ],
-      "required": [
-        "implement",
-        "review"
-      ]
+      "keys": ["implement", "review"],
+      "required": ["implement", "review"]
     },
     "repositories.mapped.*.cache": {
       "strict": false,
@@ -829,87 +457,37 @@
         "sandbox",
         "state"
       ],
-      "required": [
-        "ready",
-        "repo",
-        "sandbox",
-        "state"
-      ]
+      "required": ["ready", "repo", "sandbox", "state"]
     },
     "repositories.refused.*": {
       "strict": false,
-      "keys": [
-        "apps",
-        "reason",
-        "repo"
-      ],
-      "required": [
-        "reason",
-        "repo"
-      ]
+      "keys": ["apps", "reason", "repo"],
+      "required": ["reason", "repo"]
     },
     "repositories.refused.*.apps": {
       "strict": false,
-      "keys": [
-        "implement",
-        "review"
-      ],
-      "required": [
-        "implement",
-        "review"
-      ]
+      "keys": ["implement", "review"],
+      "required": ["implement", "review"]
     },
     "repositories.withoutWebhookApp.*": {
       "strict": false,
-      "keys": [
-        "reason",
-        "repo"
-      ],
-      "required": [
-        "reason",
-        "repo"
-      ]
+      "keys": ["reason", "repo"],
+      "required": ["reason", "repo"]
     },
     "settings": {
       "strict": false,
-      "keys": [
-        "review_round_cap",
-        "worker_boot_timeout_seconds"
-      ],
-      "required": [
-        "review_round_cap",
-        "worker_boot_timeout_seconds"
-      ]
+      "keys": ["review_round_cap", "worker_boot_timeout_seconds"],
+      "required": ["review_round_cap", "worker_boot_timeout_seconds"]
     },
     "strandedClaims.*": {
       "strict": false,
-      "keys": [
-        "issue",
-        "role",
-        "state"
-      ],
-      "required": [
-        "issue",
-        "role",
-        "state"
-      ]
+      "keys": ["issue", "role", "state"],
+      "required": ["issue", "role", "state"]
     },
     "wakesWaiting.*": {
       "strict": false,
-      "keys": [
-        "claim",
-        "dueAt",
-        "issue",
-        "kind",
-        "role"
-      ],
-      "required": [
-        "claim",
-        "dueAt",
-        "issue",
-        "kind",
-        "role"
-      ]
+      "keys": ["claim", "dueAt", "issue", "kind", "role"],
+      "required": ["claim", "dueAt", "issue", "kind", "role"]
     }
   },
   "enums": {
@@ -926,21 +504,9 @@
       "tree_parked",
       "unclassified"
     ],
-    "capabilities.*.source": [
-      "boot",
-      "configuration"
-    ],
-    "capabilities.*.status": [
-      "decided",
-      "open",
-      "present",
-      "unchecked",
-      "withheld"
-    ],
-    "controllerLocator.runtime": [
-      "kubernetes",
-      "tmux"
-    ],
+    "capabilities.*.source": ["boot", "configuration"],
+    "capabilities.*.status": ["decided", "open", "present", "unchecked", "withheld"],
+    "controllerLocator.runtime": ["kubernetes", "tmux"],
     "issues.*.architect.failure.cause": [
       "died",
       "launch_refused",
@@ -986,22 +552,9 @@
       "suspended",
       "working"
     ],
-    "issues.*.architectStalls.*": [
-      "claim-unreachable",
-      "slow-before-gate",
-      "took-nothing"
-    ],
-    "issues.*.gatedSteps.*.status": [
-      "approved",
-      "changes_requested",
-      "unregistered",
-      "waiting"
-    ],
-    "issues.*.gatedSteps.*.step": [
-      "criteria",
-      "decisions",
-      "spec"
-    ],
+    "issues.*.architectStalls.*": ["claim-unreachable", "slow-before-gate", "took-nothing"],
+    "issues.*.gatedSteps.*.status": ["approved", "changes_requested", "unregistered", "waiting"],
+    "issues.*.gatedSteps.*.step": ["criteria", "decisions", "spec"],
     "issues.*.heldFrom": [
       "accepting",
       "admitted",
@@ -1016,15 +569,8 @@
       "reviewing",
       "testing"
     ],
-    "issues.*.memoryDrawMode": [
-      "off",
-      "on",
-      "random"
-    ],
-    "issues.*.memoryGroup": [
-      "memory",
-      "none"
-    ],
+    "issues.*.memoryDrawMode": ["off", "on", "random"],
+    "issues.*.memoryGroup": ["memory", "none"],
     "issues.*.mergeWait.mergeState": [
       "behind",
       "blocked",
@@ -1070,11 +616,7 @@
       "unknown",
       "unstable"
     ],
-    "issues.*.pullRequest.state": [
-      "closed",
-      "merged",
-      "open"
-    ],
+    "issues.*.pullRequest.state": ["closed", "merged", "open"],
     "issues.*.waitingLine.kind": [
       "answered",
       "first_phase",
@@ -1082,10 +624,7 @@
       "returning",
       "waiting_on_issue"
     ],
-    "issues.*.waitingLine.part": [
-      "returned",
-      "starting"
-    ],
+    "issues.*.waitingLine.part": ["returned", "starting"],
     "issues.*.waitingOn.answeredBy": [
       "approved",
       "ask",
@@ -1097,12 +636,7 @@
       "turn",
       "version"
     ],
-    "issues.*.why.state": [
-      "blocked",
-      "claim_stopped",
-      "unlisted",
-      "waiting"
-    ],
+    "issues.*.why.state": ["blocked", "claim_stopped", "unlisted", "waiting"],
     "issues.*.workers.*.claim.failure.cause": [
       "died",
       "launch_refused",
@@ -1148,20 +682,8 @@
       "suspended",
       "working"
     ],
-    "repositories.caches.*.state": [
-      "cloning",
-      "failing",
-      "ready",
-      "refused",
-      "starting"
-    ],
-    "repositories.mapped.*.cache.state": [
-      "cloning",
-      "failing",
-      "ready",
-      "refused",
-      "starting"
-    ],
+    "repositories.caches.*.state": ["cloning", "failing", "ready", "refused", "starting"],
+    "repositories.mapped.*.cache.state": ["cloning", "failing", "ready", "refused", "starting"],
     "strandedClaims.*.role": [
       "architect",
       "implementer",
@@ -1170,18 +692,7 @@
       "reviewer",
       "tester"
     ],
-    "strandedClaims.*.state": [
-      "failed",
-      "retired",
-      "suspended"
-    ],
-    "wakesWaiting.*.role": [
-      "architect",
-      "implementer",
-      "merger",
-      "planner",
-      "reviewer",
-      "tester"
-    ]
+    "strandedClaims.*.state": ["failed", "retired", "suspended"],
+    "wakesWaiting.*.role": ["architect", "implementer", "merger", "planner", "reviewer", "tester"]
   }
 }
