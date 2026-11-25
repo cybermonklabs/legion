@@ -3501,24 +3501,22 @@ var (
 		select * from held order by next_at, id`
 )
 
-// pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
-// none (PauseHeldRow). project is the project token, role the payload's `role`, named its `claim`
-// and entries the phases rows of the held rows' issues. A start, a hook's words, an update ask and
-// a merge forward's message are for the claim they name, which their producer read as the worker
-// of the role's step, a keyed agent's among them. One the release before wrote names none, and
-// the merge-queue message names none and goes to the issue's merger: each is for the claim its
-// executor reaches, the worker on its role's step (WorkerClaimOf over entries, as the outbox's
-// workerToken reads it), which is the claim the role's phases row names while that row runs a
-// step of the plan, and otherwise the role's own claim. A role message names the claim's token
-// itself (record.RoleMessage.Role).
+// pauseHeldClaim is the claim a held row is for, where the row names one or reaches one, and ""
+// where it reaches none (PauseHeldRow). project is the project token, role the payload's `role`,
+// named its `claim` and entries the phases rows of the held rows' issues. A start, a hook's words,
+// an update ask and a merge forward's message are for the claim QueuedClaimOf gives them, the
+// claim their executor acts on: the claim they name, which their producer read as the worker of
+// the role's step, a keyed agent's among them, and for one the release before wrote, which names
+// none, the worker on its role's step, which is the claim the role's phases row names while that
+// row runs a step of the plan, and otherwise the role's own claim. The merge-queue message names
+// none and goes to the issue's merger, so it is for the claim QueuedClaimOf gives the merger's
+// role. A role message names the claim's token itself (record.RoleMessage.Role). A row of a role or
+// an issue no token spells is for no claim, as a row of another kind is.
 func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Token, entries map[PhaseRole]PhaseEntry) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
-		if named != "" {
-			return named
-		}
 	case OutboxKindMergeQueueRemoval:
-		role = string(claim.RoleMerger)
+		role, named = string(claim.RoleMerger), ""
 	case OutboxKindRoleMessage:
 		if _, _, ok := claim.Token(role).Cut(); ok {
 			return claim.Token(role)
@@ -3527,7 +3525,7 @@ func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Toke
 	default:
 		return ""
 	}
-	token, err := WorkerClaimOf(project, row.Issue, claim.Role(role), entries)
+	token, err := QueuedClaimOf(project, row.Issue, claim.Role(role), named, entries)
 	if err != nil {
 		return ""
 	}
@@ -3810,7 +3808,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	// names the claim it was queued for, and two claims of one issue can hold one role
 	// (WorkerClaim), so a start of one is no queued run of the other, whichever of them keys ask for
 	// that role by. A row that names none, one the release before wrote, is the run of the claim it
-	// reaches, the worker on its role's step.
+	// reaches, the worker on its role's step: the rule of the claim a queued row acts on
+	// (QueuedClaim, through reachedClaim).
 	reaches := func(row queuedIdentity, entries map[PhaseRole]PhaseEntry) claim.Token {
 		wanted := candidates[row.roleRunIdentity]
 		var token claim.Token
@@ -3867,12 +3866,19 @@ type queuedIdentity struct {
 	named claim.Token
 }
 
-// reachedClaim resolves the claim a queued row reaches: its named claim, else its role's worker.
+// reachedClaim is the claim a queued row acts on (QueuedClaimOf over entries), "" where it reaches
+// none: the claim it names, else the worker on its role's step, the claim role's phases row names
+// while that row runs a step of the issue's plan and the role's own token otherwise. The project
+// token the role's own token is built with is read from key, the token of a claim of that issue
+// (claim.Token.Project): a key that names no agent of an issue builds no such token, and a role
+// that is no role reaches nothing.
 func reachedClaim(row queuedIdentity, key claim.Token, entries map[PhaseRole]PhaseEntry) claim.Token {
-	if row.named != "" {
-		return row.named
+	project, _ := key.Project()
+	token, err := QueuedClaimOf(project, row.issue, claim.Role(row.role), row.named, entries)
+	if err != nil {
+		return ""
 	}
-	return roleRunWorker(key, row.issue, claim.Role(row.role), entries)
+	return token
 }
 
 // readQueued is the one read of queued supervise rows that RoleRuns and ClaimQueued select from.
@@ -3920,23 +3926,6 @@ func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string,
 		add(token, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts, Running: running, Age: age})
 	}
 	return rows.Err()
-}
-
-// roleRunWorker is the claim a supervise row of role on issue that names no claim reaches when it
-// runs (WorkerClaimOf over entries): the claim role's phases row names while that row runs a step
-// of the issue's plan, and the role's own token otherwise. The project token WorkerClaimOf builds
-// that token with is read from key, the token of a claim of that issue (claim.Token.Project); a key
-// that names no agent of an issue, and a role that is no role, reach nothing.
-func roleRunWorker(key claim.Token, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) claim.Token {
-	project, ok := key.Project()
-	if !ok {
-		return ""
-	}
-	token, err := WorkerClaimOf(project, issue, role, entries)
-	if err != nil {
-		return ""
-	}
-	return token
 }
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' last

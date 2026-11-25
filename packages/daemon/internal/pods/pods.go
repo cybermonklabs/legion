@@ -152,7 +152,7 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
 // WaitingStart is one start row that waits because its issue's pod lacks the slot of the start's
 // claim or the role of its step (StartWaitsForPodPrefix): the role of the start's step, and the
-// claim the row names, "" for a row that names none, whose claim is the one record.StartClaim
+// claim the row names, "" for a row that names none, whose claim is the one record.QueuedClaim
 // gives it. Two claims of one issue can hold one role (record.WorkerClaim), so the role alone does
 // not say which agent a start brings up, and the claim the start acts on is another type
 // (record.WaitingClaim). It is a type of this package, which record imports, so the idle view and

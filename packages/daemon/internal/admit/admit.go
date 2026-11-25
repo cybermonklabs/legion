@@ -3746,11 +3746,12 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
 // the stopped worker again the moment a slot came (stopOutlivedStart). The claim a row would
-// start is the claim it names (record.OwedStart.Claim), the claim it was queued for, which the
-// outbox acts on; a row the release before wrote names none, and starts the claim of its role's
-// worker (record.WorkerClaimOf). The second read is one batched PhaseEntries call, made only for
-// rows that name no claim, and one batched RoleClaims call over the rows the fences kept, and no
-// read at all when they kept none: the rule reads nothing of the queued rows beside those claims.
+// start is the claim the outbox's start acts on (record.QueuedClaimOf): the claim it names
+// (record.OwedStart.Claim), the claim it was queued for, and for a row the release before wrote,
+// which names none, the claim of its role's worker. The second read is one batched PhaseEntries
+// call, made only for rows that name no claim, and one batched RoleClaims call over the rows the
+// fences kept, and no read at all when they kept none: the rule reads nothing of the queued rows
+// beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -3800,12 +3801,11 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	if len(kept) == 0 {
 		return finished, nil
 	}
-	// The claim each kept row would start is the claim it names, and for a row that names none
-	// the claim record.WorkerClaimOf gives its role's step, read from those rows' phases rows in
-	// one statement. A row whose
-	// issue and role yield no claim token has no run to read, as the slot repair's holders have
-	// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than failing
-	// the whole fact.
+	// The claim each kept row would start is the claim record.QueuedClaimOf gives it: the claim it
+	// names, and for a row that names none the claim of its role's step, read from those rows'
+	// phases rows in one statement. A row whose issue and role yield no claim token has no run to
+	// read, as the slot repair's holders have none (resumeSlottedWorkers): it stays owed and the rule
+	// passes over it rather than failing the whole fact.
 	var unnamed []string
 	for _, keptRow := range kept {
 		if keptRow.owed.Claim == "" {
@@ -3820,11 +3820,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	weighed := kept[:0]
 	for _, keptRow := range kept {
-		token := keptRow.owed.Claim
-		if token == "" {
-			if token, err = record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries); err != nil {
-				continue
-			}
+		token, err := record.QueuedClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, keptRow.owed.Claim, entries)
+		if err != nil {
+			continue
 		}
 		keptRow.token = token
 		weighed = append(weighed, keptRow)

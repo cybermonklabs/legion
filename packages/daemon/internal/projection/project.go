@@ -280,7 +280,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// Each start that waits for the issue's pod, by its role and the claim it starts, each once
 		// (record.StartClaims): the claim its row names, or, for a row that names none, the claim the
 		// record gives the role's step, which is the claim the outbox's next try of that row acts on,
-		// since the outbox's start reads it by the same rule (record.StartClaim). Two claims of one
+		// since the outbox's start reads it by the same rule (record.QueuedClaim). Two claims of one
 		// issue can hold one role, so a role alone would name a second agent of the role as the
 		// role's own agent. The rule fails only for a role or an issue no token spells, and the
 		// outbox read this same claim from the same row's role and issue on the try that wrote its

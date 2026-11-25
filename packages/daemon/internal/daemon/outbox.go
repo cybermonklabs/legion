@@ -2415,23 +2415,23 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 }
 
 // workerToken is the claim a row of role on issue acts on, and whose Envoy topic a role message of
-// the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix):
-// held, the claim the row's producer named, where it names one; otherwise the claim of the worker
-// on role's step over the issue's phases rows as the record holds them when the row runs, read in
-// a transaction of its own (record.ReadWorkerClaim). Two claims of one issue can hold one role
-// (record.WorkerClaim), so the role's own token would reach no agent or the wrong one.
-// issue is the row's own (record.OutboxRow.Issue),
+// the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix): the
+// claim record.QueuedClaim gives the row, the one rule of a queued row's claim. That is held, the
+// claim the row's producer named, where it names one; otherwise the claim of the worker on role's
+// step over the issue's phases rows as the record holds them when the row runs, read only then
+// (phaseRows). Two claims of one issue can hold one role (record.WorkerClaim), so the role's own
+// token would reach no agent or the wrong one. issue is the row's own (record.OutboxRow.Issue),
 // or for a pause's stop keyed by the project the issue its payload names (pauseStop).
 func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role, held claim.Token) (claim.Token, error) {
-	if held != "" {
-		return held, nil
-	}
-	var token claim.Token
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+	var rows []record.PhaseRow
+	if held == "" {
 		var err error
-		token, err = record.ReadWorkerClaim(ctx, r.records, tx, r.project, issue, role)
-		return err
-	}); err != nil {
+		if rows, err = r.phaseRows(ctx, issue); err != nil {
+			return "", fmt.Errorf("the %s of %s: %w", role, issue, err)
+		}
+	}
+	token, err := record.QueuedClaim(r.project, issue, role, held, rows)
+	if err != nil {
 		return "", fmt.Errorf("the %s of %s: %w", role, issue, err)
 	}
 	return token, nil
@@ -2691,18 +2691,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	// The claim the row acts on is the one record.StartClaim gives it, the rule the served state and
-	// the idle release's notice name a waiting start by too: the claim a phase worker's start was
-	// queued for, or the one stored claim a row of another op stands for, which the row names; and
-	// for a row that names none, one the release before wrote, the claim record.WorkerClaim gives
-	// its role's step.
+	// The claim the row acts on, for every op, is the one record.QueuedClaim gives it, the rule each
+	// reader of a queued row's claim reads, the served state and the idle release's notice of a
+	// waiting start among them: the claim a phase worker's start was queued for, or the one stored
+	// claim a row of another op stands for, which the row names; and for a row that names none, one
+	// the release before wrote, the claim record.WorkerClaim gives its role's step.
 	var read []record.PhaseRow
 	if payload.Claim == "" {
 		if read, err = phaseRows(); err != nil {
 			return err
 		}
 	}
-	token, err := record.StartClaim(r.project, row.Issue, payload.Role, payload.Claim, read)
+	token, err := record.QueuedClaim(r.project, row.Issue, payload.Role, payload.Claim, read)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 	}
@@ -5021,13 +5021,13 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 }
 
 // phaseRows is issue's phases rows as the record holds them, read in a transaction of its own just
-// before the supervise executor acts on a row. A start reads its fence from them, the phase entry
+// before the outbox acts on a row. A start reads its fence from them, the phase entry
 // its role's row names (record.PhaseRow.Entry, 0 for a role whose row holds no entry and for one
 // the record has no row of at all): the transition writes that number in its own transaction
 // before the start it queues can run (workflow.Engine.enter), so a start reading a number above its
 // own is reading a later entry of the same phase. A news-only start reads the same entry from them
 // (startNewsOf). A row that names no claim reads from the same rows the claim of the worker on its
-// role's step (record.WorkerClaim).
+// role's step (record.QueuedClaim, in the supervise executor and in workerToken).
 func (r *outbox) phaseRows(ctx context.Context, issue string) ([]record.PhaseRow, error) {
 	var rows []record.PhaseRow
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
