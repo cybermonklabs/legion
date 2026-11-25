@@ -28,8 +28,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -583,17 +585,27 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 // was handed over — which is every release of a broker with no rules file. The keys of Values, of
 // Airlock.Names and of GitHubLeftOut are the broker's text too, and encoding/json decodes a key
 // into no redact.RemoteText: a line names a name or a profile only where this run asked for it
-// (releasedName), and an account only as LeftOutAccounts holds it.
+// (releasedName), and an account only as LeftOut holds it.
 type GrantValues struct {
 	Values        map[string]string                         `json:"values"`
 	ExpiresAt     *time.Time                                `json:"expires_at"`
 	Locations     []string                                  `json:"locations"`
 	GitHubLeftOut map[string]map[string][]redact.RemoteText `json:"github_left_out"`
 	Airlock       *AirlockRelease                           `json:"airlock"`
-	// LeftOutAccounts is each account GitHubLeftOut names, by its key as it came, held with the
-	// release request's record (redact.Answer.Said), which the decode gives no key. GrantValues
-	// fills it from the answer; no member of the answer does.
-	LeftOutAccounts map[string]redact.RemoteText `json:"-"`
+	// LeftOut is GitHubLeftOut as reportLeftOut prints it, one entry for each profile and account,
+	// in that order. GrantValues fills it from the answer; no member of the answer does.
+	LeftOut []leftOut `json:"-"`
+}
+
+// leftOut is one line of what a release's GitHub profile left out: the profile (a key of the
+// answer, which a line names only where this run asked for it), one account of its release, held
+// as the answer said it with the release request's record (redact.Answer.Said, since the decode
+// gives a key no box), and every entry of the profile's permissions the installation on that
+// account does not hold.
+type leftOut struct {
+	Profile string
+	Account redact.RemoteText
+	Entries []redact.RemoteText
 }
 
 // AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
@@ -663,14 +675,10 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 	if err := answer.Decode(&values); err != nil {
 		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
 	}
-	// An account is a key of github_left_out, which the decode holds in no box: each is held here
-	// as the answer said it, with its request's record, for the line that names it (reportLeftOut).
-	for _, accounts := range values.GitHubLeftOut {
-		for account := range accounts {
-			if values.LeftOutAccounts == nil {
-				values.LeftOutAccounts = make(map[string]redact.RemoteText)
-			}
-			values.LeftOutAccounts[account] = answer.Said(account)
+	for _, profile := range slices.Sorted(maps.Keys(values.GitHubLeftOut)) {
+		accounts := values.GitHubLeftOut[profile]
+		for _, account := range slices.Sorted(maps.Keys(accounts)) {
+			values.LeftOut = append(values.LeftOut, leftOut{Profile: profile, Account: answer.Said(account), Entries: accounts[account]})
 		}
 	}
 	return values, nil
