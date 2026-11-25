@@ -653,7 +653,8 @@
           "path": "/api/v1/artifacts/01234567-0000-4000-8000-00000000000a/text",
           "headers": {
             "Accept": "application/json",
-            "Authorization": "Bearer secret"
+            "Authorization": "Bearer secret",
+            "Dispatch-Asks": "1"
           },
           "body": null
         },

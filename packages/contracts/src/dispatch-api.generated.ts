@@ -578,7 +578,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
+    /** @description A document's canonical markdown, its whole-document token and its version, with asks: one entry per ask block in document order, its state and answer read from its ask. A reader that reads asks sends Dispatch-Asks: 1 and is served markdown with none of an ask block's eight server-owned attributes (state, answered_by, answered_at, selected, answer, invalid, copied_from, copied_from_document), which it can upload back unchanged; a request without that header is served the form kept for one release for the readers of the release before, with selected, answer and invalid taken off every ask block and state, answered_by, answered_at, copied_from and copied_from_document as the document holds them. Both forms answer the same token. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -1522,7 +1522,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description An issue document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, its ask blocks served as GET /api/v1/artifacts/{id}/text serves them with and without Dispatch-Asks: 1; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2814,7 +2814,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description A project document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, its ask blocks served as GET /api/v1/artifacts/{id}/text serves them with and without Dispatch-Asks: 1; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;

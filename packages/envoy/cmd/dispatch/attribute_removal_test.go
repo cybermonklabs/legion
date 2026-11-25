@@ -410,9 +410,10 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// The server's own text read, once the fleet is one build and before any write of it, while
-	// the documents the base release wrote still hold the attributes it and the roll window wrote,
-	// live and stored: Verification v43's statements, each read by name.
+	// The server's own text read, read with `Dispatch-Asks: 1` as this build's CLI reads it
+	// (servedTextOf), once the fleet is one build and before any write of it, while the documents
+	// the base release wrote still hold the attributes it and the roll window wrote, live and
+	// stored: Verification v43's statements, each read by name.
 	slugOf := func(document string) string {
 		t.Helper()
 		var slug string
@@ -1027,11 +1028,18 @@ type servedText struct {
 	Asks     []model.TextAsk `json:"asks"`
 }
 
-// servedTextOf is what the text route path answers through p.
+// servedTextOf is what the text route path answers through p to a reader of this build, which
+// sends `Dispatch-Asks: 1` as this build's CLI does (asReaderOfAsks).
 func servedTextOf(t *testing.T, p *dispatchProcess, path string) servedText {
 	t.Helper()
+	answer := p.send(t, http.MethodGet, path, "", asReaderOfAsks(dispatchTestLogin))
+	if answer.status != http.StatusOK {
+		t.Fatalf("GET %s: status %d, want %d: %s", path, answer.status, http.StatusOK, answer.body)
+	}
 	var text servedText
-	readJSON(t, p, path, &text)
+	if err := json.Unmarshal(answer.body, &text); err != nil {
+		t.Fatalf("decode GET %s: %v: %s", path, err, answer.body)
+	}
 	return text
 }
 

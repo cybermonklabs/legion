@@ -160,14 +160,15 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 			}
 		}
 	}
+	// The live text as this build's CLI reads it, with `Dispatch-Asks: 1` (documentText).
 	text := current.documentText(t, spec)
 	if eightAskAttributes.MatchString(text) {
-		t.Errorf("GET /api/v1/artifacts/%s/text serves a server-owned ask attribute:\n%s", spec, text)
+		t.Errorf("GET /api/v1/artifacts/%s/text, read with Dispatch-Asks: 1, serves a server-owned ask attribute:\n%s", spec, text)
 	}
 	// It serves the same spec: the version's stored text with the eight taken off, character for
 	// character.
 	if want := withoutTheEightAskAttributes(markdown); text != want {
-		t.Errorf("GET /api/v1/artifacts/%s/text serves\n%s\nwant the spec's version %d with none of the eight server-owned ask attributes, character for character:\n%s",
+		t.Errorf("GET /api/v1/artifacts/%s/text, read with Dispatch-Asks: 1, serves\n%s\nwant the spec's version %d with none of the eight server-owned ask attributes, character for character:\n%s",
 			spec, text, number, want)
 	}
 	t.Logf("the previous build's CLI requested approval:\n%s\nthe spec's version %d:\n%s", requested, number, markdown)

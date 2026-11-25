@@ -836,7 +836,8 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 	// The copy's block in the stored version keeps copied_from and copied_from_document, as R10
 	// keeps them until the kept-for-one-release item stored-ask-state removes them, and the text
-	// route serves the block without them.
+	// route, read with `Dispatch-Asks: 1` as this build's CLI reads it, serves the block without
+	// them.
 	sourceAddress := "dispatch://" + c.issue + "/spec"
 	copied := keptBlock{block: c.sourceBlock, ask: c.source, copied: sourceAddress}
 	copyNumber, copyMarkdown := latestMarkdown(t, current, copyDocument)
@@ -845,7 +846,7 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 		t.Helper()
 		text := servedTextOf(t, current, "/api/v1/artifacts/"+copyDocument+"/text")
 		if opener := blockOpener(text.Markdown, c.sourceBlock); opener == "" || askServerAttribute.MatchString(opener) {
-			t.Errorf("%s: %s, GET /api/v1/artifacts/{id}/text opens the copy's block %q, want it holding none of the server-owned attributes:\n%s",
+			t.Errorf("%s: %s, GET /api/v1/artifacts/{id}/text read with Dispatch-Asks: 1 opens the copy's block %q, want it holding none of the server-owned attributes:\n%s",
 				c.what, when, opener, text.Markdown)
 		}
 		return text

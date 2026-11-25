@@ -16,8 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// AskedText is a document as the text routes serve it (TextWithAsks): its canonical markdown, which
-// holds no server-owned attribute on any ask block; its whole-document token; its blocks, whose
+// AskedText is a document as the text routes serve it (TextWithAsks, KeptText): its canonical
+// markdown, which holds no server-owned attribute on any ask block, or for a reader of a release
+// before this one the kept form of them (KeptText); its whole-document token; its blocks, whose
 // byte ranges index that markdown, for a read that asked for them; and its asks, one entry per ask
 // block of that markdown, in document order, nil where the markdown holds no ask block, so the
 // text routes answer such a document with no asks member, as the release before answered it.
@@ -28,9 +29,11 @@ type AskedText struct {
 	Asks     []model.TextAsk
 }
 
-// TextWithAsks is the document an agent reads through the text routes (GET
+// TextWithAsks is the document an agent of this build reads through the text routes (GET
 // /api/v1/artifacts/{id}/text and its issue and project slug variants, and so `dispatch read` and
-// `doc-read`): its canonical markdown and its whole-document token, with its blocks beside them
+// `doc-read`), which a reader that reads the asks member asks for with `Dispatch-Asks: 1` (api's
+// asksHeader; every other reader is served KeptText): its canonical markdown and its
+// whole-document token, with its blocks beside them
 // when withBlocks, rendered from its tree with the server-owned attributes of every ask block
 // (askServerAttributeNames) taken off first, whatever the tree holds: the roll window keeps them
 // in step with the asks rows while another build serves (rollWindowAskAttributes), and a document
@@ -51,6 +54,31 @@ type AskedText struct {
 // decode, the version's text is read back into a tree and served from it (storedAskedText) rather
 // than failing the read.
 func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error) {
+	return s.askedText(ctx, artifactID, withBlocks, false)
+}
+
+// KeptText is TextWithAsks for a reader that reads no asks member, which is every reader of a
+// release before this one (R10): its markdown keeps on each ask block the state, the answerer, the
+// time and a copy's provenance as the document holds them, and takes off the answer's words, its
+// selection and invalid (keptTextTakesOff), so that reader still reads which asks are answered or
+// resolved, and by whom, and no answer's words, which R3 holds on the ask's node alone. Its token
+// is TextWithAsks's, since no token weighs a server-owned attribute, so a precondition holds
+// whichever of the two its reader read; and its asks are TextWithAsks's, read off the same tree
+// with every server-owned attribute taken off.
+//
+// kept for one release: stored-ask-state
+func (s *Service) KeptText(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error) {
+	return s.askedText(ctx, artifactID, withBlocks, true)
+}
+
+// keptTextTakesOff are the server-owned attributes of an ask block that KeptText takes off: the
+// answer's selection and words (answerWords), and invalid, which no version stores.
+//
+// kept for one release: stored-ask-state
+var keptTextTakesOff = []string{"selected", "answer", "invalid"}
+
+// askedText is TextWithAsks, or KeptText where kept.
+func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, kept bool) (AskedText, error) {
 	var stored *AskedText
 	if !withBlocks {
 		markdown, token, served, err := s.storedText(ctx, artifactID)
@@ -67,7 +95,7 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 	read, tree, err := s.readDocument(ctx, artifactID)
 	if err != nil {
 		if stored != nil && errors.Is(err, ErrDocumentUnloadable) {
-			return s.storedAskedText(ctx, artifactID, *stored, err)
+			return s.storedAskedText(ctx, artifactID, *stored, err, kept)
 		}
 		return AskedText{}, err
 	}
@@ -83,11 +111,17 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 	}
 	var answer AskedText
 	if pmdoc.HoldsAskBlock(tree) {
-		if stripped, took := withoutAskServerAttributes(tree); took {
-			tree, text = stripped, nil
-		}
-		if answer.Asks, err = s.textAsks(ctx, artifactID, tree); err != nil {
+		stripped, took := withoutAskServerAttributes(tree)
+		if answer.Asks, err = s.textAsks(ctx, artifactID, stripped); err != nil {
 			return AskedText{}, err
+		}
+		served := stripped
+		// kept for one release: stored-ask-state
+		if kept {
+			served, took = withoutAskAttributes(tree, keptTextTakesOff)
+		}
+		if took {
+			tree, text = served, nil
 		}
 	}
 	switch {
@@ -113,24 +147,29 @@ func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlock
 	return answer, nil
 }
 
-// storedAskedText is TextWithAsks for stored, the markdown and the token of the document's latest
+// storedAskedText is askedText for stored, the markdown and the token of the document's latest
 // version, which a room of this process holds, where the history the room stands behind does not
 // decode (unloadable, the read's error): the version's markdown read back into a tree
-// (pmdoc.ParseRendering), rendered again only where an ask block of it held a server-owned
-// attribute, with the version's own token, and the asks of that tree. A markdown that does not
-// read back answers unloadable.
-func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored AskedText, unloadable error) (AskedText, error) {
+// (pmdoc.ParseRendering), rendered again only where an ask block of it held an attribute the
+// read takes off (kept: KeptText's), with the version's own token, and the asks of that tree. A
+// markdown that does not read back answers unloadable.
+func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored AskedText, unloadable error, kept bool) (AskedText, error) {
 	tree, err := pmdoc.ParseRendering(stored.Markdown)
 	if err != nil {
 		return AskedText{}, unloadable
 	}
-	if stripped, took := withoutAskServerAttributes(tree); took {
-		tree = stripped
-		if stored.Markdown, err = documentMarkdown(tree); err != nil {
+	stripped, took := withoutAskServerAttributes(tree)
+	served := stripped
+	// kept for one release: stored-ask-state
+	if kept {
+		served, took = withoutAskAttributes(tree, keptTextTakesOff)
+	}
+	if took {
+		if stored.Markdown, err = documentMarkdown(served); err != nil {
 			return AskedText{}, err
 		}
 	}
-	if stored.Asks, err = s.textAsks(ctx, artifactID, tree); err != nil {
+	if stored.Asks, err = s.textAsks(ctx, artifactID, stripped); err != nil {
 		return AskedText{}, err
 	}
 	return stored, nil

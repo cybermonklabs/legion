@@ -496,13 +496,18 @@ func attributesOf(node *pmdoc.Node) *pmdoc.Node {
 
 // withoutAskServerAttributes is attributeRemovalCase's neutral, and the tree the text routes
 // render (TextWithAsks): a copy of tree with every ask block's server-owned attributes
-// (askServerAttributeNames) taken off, and whether any block held one. Each container on the way
-// and each such block is a fresh node; every other node is the tree's own, which nothing here
-// changes (withAskBlocksChanged).
+// (askServerAttributeNames) taken off, and whether any block held one (withoutAskAttributes).
 func withoutAskServerAttributes(tree *pmdoc.Node) (*pmdoc.Node, bool) {
+	return withoutAskAttributes(tree, askServerAttributeNames[:])
+}
+
+// withoutAskAttributes is a copy of tree with each attribute names names taken off every ask
+// block, and whether any block held one. Each container on the way and each such block is a fresh
+// node; every other node is the tree's own, which nothing here changes (withAskBlocksChanged).
+func withoutAskAttributes(tree *pmdoc.Node, names []string) (*pmdoc.Node, bool) {
 	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		var stripped pmdoc.Attrs
-		for _, name := range askServerAttributeNames {
+		for _, name := range names {
 			if _, held := node.Attrs[name]; held {
 				if stripped == nil {
 					stripped = maps.Clone(node.Attrs)

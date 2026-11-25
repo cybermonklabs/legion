@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    `DispatchClient.docRead` of a live document and `docReadWithBlocks` send `Dispatch-Asks: 1`,
+    since `dispatch doc-read`, `dispatch request-approval` and the block listing read each ask's
+    state and answer from the `asks` member. Dispatch then serves markdown with none of an ask
+    block's server-owned attributes, so the text `dispatch doc-read` prints still uploads back
+    unchanged. A read of a version sends no such header.
+time: 2026-11-25T22:30:00Z
+custom:
+    Issue: INFRA-5570

@@ -5,6 +5,7 @@ import {
   ARTIFACT_NAME_EXISTS_RULE,
   type Artifact,
   type BlockPath,
+  DISPATCH_ASKS_HEADER,
   dispatchToolSpecs,
   type GraphEdge,
   type GraphEdgeKind,
@@ -9617,7 +9618,8 @@ describe("executeDispatchTool", () => {
       `:::ask{#${block} urgency="med" multiple="false"}\nQuestion of ${block}?\n:::`;
     // `live`, when given, is what the live text (`GET /artifacts/{id}/text`) renders; without it
     // the live text renders what version 4 does. `liveAsks`, when given, is the live text's `asks`
-    // member, which a Dispatch of the release before does not send.
+    // member, which a Dispatch of the release before does not send. `textReads` is the
+    // `Dispatch-Asks` header of each read of the live text, or null where it sent none.
     const requestOver = async (
       blocks: string[],
       version4: string[],
@@ -9627,7 +9629,8 @@ describe("executeDispatchTool", () => {
     ) => {
       const posts: string[] = [];
       const requests: string[] = [];
-      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const textReads: (string | null)[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const target = new URL(String(url));
         requests.push(target.pathname);
         if (target.pathname === "/api/v1/issues/DSP-42") {
@@ -9656,6 +9659,7 @@ describe("executeDispatchTool", () => {
           return response({ number: 4, markdown: ["## Where", ...version4].join("\n\n") });
         }
         if (target.pathname === "/api/v1/artifacts/artifact-42/text") {
+          textReads.push(new Headers(init?.headers).get(DISPATCH_ASKS_HEADER));
           return response({
             markdown: ["## Where", ...(live ?? version4)].join("\n\n"),
             token: "sha256:live",
@@ -9688,7 +9692,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl: fetchImpl as typeof fetch,
       });
-      return { outcome, posts, requests };
+      return { outcome, posts, requests, textReads };
     };
     const blockAsk = (block: string, state: string) => ({
       id: `ask-${block}`,
@@ -9886,7 +9890,8 @@ describe("executeDispatchTool", () => {
     // on the open asks of each document it renders while two builds serve, over an ask the server
     // answers as decided: a block of its own ask (run 4) and a copy naming its source (run 5). A
     // server that answers no `asks`, as one of a release before this one, is still read by the
-    // stored line.
+    // stored line. Each run reads the live text with `Dispatch-Asks: 1`, which says that it reads
+    // `asks` and is served markdown with none of an ask block's server-owned attributes.
     test("the stored state of an ask block decides nothing when the live text answers asks", async () => {
       const answered = {
         block_id: "b-1",
@@ -9902,10 +9907,22 @@ describe("executeDispatchTool", () => {
       const copyLine = (state?: string) =>
         `:::ask{#b-1 urgency="med" multiple="false"${state === undefined ? "" : ` state="${state}"`} copied_from="${source.copied_from}" copied_from_document="${source.copied_from_document}"}\nQuestion of b-1?\n:::`;
       const sent = ["/api/v1/artifacts/artifact-42/approval-requests"];
+      // readsAsks fails where a run read the live text without `Dispatch-Asks: 1`.
+      const readsAsks = (run: { readonly textReads: readonly (string | null)[] }) => {
+        if (run.textReads.some((header) => header !== "1")) {
+          throw new Error(
+            `the command read the live text with ${DISPATCH_ASKS_HEADER} ${JSON.stringify(run.textReads)}, want "1" on each read`
+          );
+        }
+      };
       // sends fails with failure and the refusal where the run refused, and otherwise requires the
       // one request the run should have sent.
       const sends = async (
-        run: { readonly outcome: Promise<unknown>; readonly posts: readonly string[] },
+        run: {
+          readonly outcome: Promise<unknown>;
+          readonly posts: readonly string[];
+          readonly textReads: readonly (string | null)[];
+        },
         failure: string
       ) => {
         const refusal = await run.outcome.then(
@@ -9914,6 +9931,7 @@ describe("executeDispatchTool", () => {
         );
         if (refusal !== undefined) throw new Error(`${failure}:\n${refusal}`);
         expect(run.posts).toEqual(sent);
+        readsAsks(run);
       };
 
       // Run 1: the stored line holds no state on a block whose own ask is answered.
@@ -9960,6 +9978,7 @@ describe("executeDispatchTool", () => {
         );
       }
       expect(refused.split("\n")[1]).toBe('- "Question of b-1?" (block b-1, ask ask-b-1)');
+      readsAsks(run3);
 
       // Run 4: the stored line shows open a block whose own ask is answered.
       const run4 = await requestOver(

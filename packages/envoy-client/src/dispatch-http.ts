@@ -84,6 +84,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  DISPATCH_ASKS_HEADER,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -1968,7 +1969,7 @@ export class DispatchClient {
   async docRead(id: string, version?: number): Promise<ArtifactText | ArtifactVersionText>;
   async docRead(id: string, version?: number): Promise<ArtifactText | ArtifactVersionText> {
     return version === undefined
-      ? this.#json("GET", ["api", "v1", "artifacts", id, "text"])
+      ? this.#liveText(id)
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
   }
 
@@ -1977,7 +1978,20 @@ export class DispatchClient {
    *  by another session between two reads cannot leave the blocks indexing markdown they were not
    *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
   async docReadWithBlocks(id: string): Promise<ArtifactText> {
-    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
+    return this.#liveText(id, { blocks: true });
+  }
+
+  /** `GET /api/v1/artifacts/{id}/text` with `query`, sent with `Dispatch-Asks: 1`
+   *  (`DISPATCH_ASKS_HEADER`): this client reads each ask's state and answer from the `asks`
+   *  member (`liveTextAsks`), so Dispatch serves it markdown with none of an ask block's
+   *  server-owned attributes, which an upload of the text takes back unchanged. A request without
+   *  the header is served the form a client of the release before reads. A Dispatch older than the
+   *  header serves its own form whatever the request sends. */
+  async #liveText(id: string, query?: object): Promise<ArtifactText> {
+    const path = ["api", "v1", "artifacts", id, "text"];
+    const headers = { [DISPATCH_ASKS_HEADER]: "1" };
+    return (await this.#jsonAnswer<ArtifactText>("GET", path, undefined, { query, headers }))
+      .payload;
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
@@ -2223,7 +2237,9 @@ export class DispatchClient {
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
    *  writes nothing (a conversion, `markdownRoundTrip`): it is sent as a POST is, under one key
-   *  with its retries, but never read as a write that may have landed (`WriteCall.writes`). */
+   *  with its retries, but never read as a write that may have landed (`WriteCall.writes`).
+   *  `headers` are a read's own request headers, which a GET sends beside the credential's
+   *  (`#liveText`'s `Dispatch-Asks`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2233,9 +2249,10 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       readonly key?: string | undefined;
       readonly writes?: boolean;
+      readonly headers?: Readonly<Record<string, string>>;
     } = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, writes = true } = options;
+    const { query, signal, key, writes = true, headers } = options;
     const url = this.#url(path, query);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
@@ -2245,7 +2262,7 @@ export class DispatchClient {
       return { status: answer.response.status, payload: this.#payloadOf<T>(method, url, answer) };
     }
     return this.#noRoute(async () => {
-      const response = await this.#send(method, url, encoded, undefined, signal);
+      const response = await this.#send(method, url, encoded, undefined, signal, headers);
       return { status: response.status, payload: await this.#response<T>(method, url, response) };
     }, signal);
   }
@@ -2398,32 +2415,34 @@ export class DispatchClient {
    * says it did nothing. A second such answer is returned as any other refusal is. A trade the
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
    * words, which name `agent-secrets login` after a revoke. A write (POST or PATCH) goes through
-   * `#write` instead.
+   * `#write` instead. `headers` go out on each presentation beside the credential's own.
    */
   async #send(
     method: string,
     url: string,
     body?: EncodedBody,
     accept = "application/json",
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    headers?: Readonly<Record<string, string>>
   ): Promise<Response> {
-    const sent = await this.#sendOnce(method, url, body, accept, signal);
+    const sent = await this.#sendOnce(method, url, body, accept, signal, headers);
     if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
       return sent.answer;
     }
     // The presentation the dead token went out in, so the credential drops that token alone.
     this.#credential.stale(undefined, sent.presented);
-    return (await this.#sendOnce(method, url, body, accept, signal)).answer;
+    return (await this.#sendOnce(method, url, body, accept, signal, headers)).answer;
   }
 
   /** One request of a read, presenting the credential for it, and the headers it presented;
-   *  `signal` aborts it beside the client's own signal. */
+   *  `signal` aborts it beside the client's own signal, and `headers` are the read's own. */
   async #sendOnce(
     method: string,
     url: string,
     body: EncodedBody | undefined,
     accept: string,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    headers: Readonly<Record<string, string>> | undefined
   ): Promise<{ readonly answer: Response; readonly presented: Readonly<Record<string, string>> }> {
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
@@ -2442,6 +2461,7 @@ export class DispatchClient {
       headers: {
         Accept: accept,
         ...(body === undefined ? {} : { "Content-Type": body.type }),
+        ...headers,
         ...presented,
       },
       signal: limit,

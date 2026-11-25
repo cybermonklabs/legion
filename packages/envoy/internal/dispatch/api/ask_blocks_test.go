@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,108 @@ func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T
 		!strings.Contains(text, `selected=[] answer="Yes."`) {
 		t.Fatalf("answered block text:\n%s", text)
 	}
+}
+
+// The text routes serve each reader the form it reads (R10): a reader that reads the asks member
+// sends `Dispatch-Asks: 1` (asksHeader) and is served markdown with none of an ask block's
+// server-owned attributes, and a request without it, as every reader of a release before this one
+// sends, is served the kept form: the answered ask's state, answerer and time as the document holds
+// them, and no answer's words or selection. Both forms answer the same token and the same asks, by
+// id and by slug, and each answer tells a cache that the header chooses its bytes.
+func TestTheTextRoutesServeAReaderOfAsksNoAskAttributeAndEveryOtherReaderTheKeptForm(t *testing.T) {
+	t.Parallel()
+	var documentService *docs.Service
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Two forms of the text", "Before\n")
+	const stripped = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Ship: Now.\n- Hold: Later.\n:::\n"
+	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, stripped, model.Actor{Kind: "session", ID: "session-1"}); err != nil {
+		t.Fatalf("write ask block: %v", err)
+	}
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": "Ship it?", "options": []map[string]string{{"label": "Ship", "description": "Now."}, {"label": "Hold", "description": "Later."}},
+		"actor": model.Actor{Kind: "session", ID: "session-1"},
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create indexed ask: status=%d body=%s", created.Code, created.Body.String())
+	}
+	askID := decodeBody[model.Ask](t, created).ID
+	if _, err := database.Pool.Exec(context.Background(), `
+		update asks set block_id = 'ask-1', block_artifact_id = $2 where id = $1
+	`, askID, issue.PrimaryArtifactID); err != nil {
+		t.Fatalf("attach indexed ask to block: %v", err)
+	}
+	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
+		"selected": []string{"Ship"}, "text": "Ship it now.",
+	}, "alice")
+	if answered.Code != http.StatusOK {
+		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	type servedText struct {
+		Markdown string          `json:"markdown"`
+		Token    string          `json:"token"`
+		Asks     []model.TextAsk `json:"asks"`
+	}
+	for _, path := range []string{
+		"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text",
+		"/api/v1/issues/" + issue.Key + "/artifacts/spec/text",
+	} {
+		var forms [2]servedText
+		for index, readsAsks := range []bool{true, false} {
+			response := textRead(t, handler, path, readsAsks)
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET %s (Dispatch-Asks %t): status=%d body=%s", path, readsAsks, response.Code, response.Body.String())
+			}
+			if !slices.Contains(response.Header().Values("Vary"), asksHeader) {
+				t.Errorf("GET %s (Dispatch-Asks %t): Vary = %v, want %s named in it", path, readsAsks, response.Header().Values("Vary"), asksHeader)
+			}
+			forms[index] = decodeBody[servedText](t, response)
+		}
+		asked, kept := forms[0], forms[1]
+		if asked.Markdown != stripped {
+			t.Errorf("GET %s with Dispatch-Asks: 1 serves\n%s\nwant the ask block with none of the server-owned attributes:\n%s", path, asked.Markdown, stripped)
+		}
+		if len(asked.Asks) != 1 || asked.Asks[0].State != "answered" || asked.Asks[0].AnsweredBy != "alice" || asked.Asks[0].AnsweredAt == "" {
+			t.Fatalf("GET %s with Dispatch-Asks: 1 answers asks %s, want ask-1 answered by alice", path, askLines(asked.Asks))
+		}
+		opener, _, _ := strings.Cut(kept.Markdown, "\n")
+		_, attrs, opens := pmdoc.ParseTypedDirectiveOpen(opener)
+		if !opens || attrs["state"] != "answered" || attrs["answered_by"] != "alice" || attrs["answered_at"] != asked.Asks[0].AnsweredAt {
+			t.Errorf("GET %s without Dispatch-Asks opens the answered ask with %q, want its state, answerer and time as the asks member answers them (%s)", path, opener, askLines(asked.Asks))
+		}
+		for _, name := range []string{"selected", "answer", "invalid"} {
+			if value, held := attrs[name]; held {
+				t.Errorf("GET %s without Dispatch-Asks serves the answered ask's %s=%v, want no answer's words on the block", path, name, value)
+			}
+		}
+		if body := strings.TrimPrefix(kept.Markdown, opener); body != strings.TrimPrefix(stripped, ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}") {
+			t.Errorf("GET %s without Dispatch-Asks serves\n%s\nwant the text with Dispatch-Asks but for the block's opening line:\n%s", path, kept.Markdown, stripped)
+		}
+		if kept.Token != asked.Token || kept.Token == "" {
+			t.Errorf("GET %s answers token %q without Dispatch-Asks and %q with it, want one token", path, kept.Token, asked.Token)
+		}
+		if askLines(kept.Asks) != askLines(asked.Asks) {
+			t.Errorf("GET %s answers asks %s without Dispatch-Asks and %s with it, want the same asks", path, askLines(kept.Asks), askLines(asked.Asks))
+		}
+	}
+}
+
+// textRead is GET target, a text route, as alice: under `Dispatch-Asks: 1` (asksHeader) where
+// readsAsks, as every reader of this build that reads the asks member sends it, and without it,
+// as a reader of a release before this one sends it, where not.
+func textRead(t *testing.T, handler http.Handler, target string, readsAsks bool) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	if readsAsks {
+		request.Header.Set(asksHeader, "1")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func TestSearchAskBlockOptionDescription(t *testing.T) {
@@ -527,17 +630,17 @@ func awaitVersionText(t *testing.T, handler http.Handler, document, what string,
 // routes serve on any ask block (docs.TextWithAsks).
 var askServerAttributes = [...]string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
 
-// agentText is document's text as an agent reads it (GET /api/v1/artifacts/{id}/text): its
-// markdown, then a line `asks:` and one line per entry of its asks member (askLines). A person's
-// answer is held on the ask's node alone, so the asks member is where a
-// test reads it beside the text. It fails t where an ask block of the markdown carries a
-// server-owned attribute (askServerAttributes).
+// agentText is document's text as an agent of this build reads it (GET
+// /api/v1/artifacts/{id}/text under `Dispatch-Asks: 1`, textRead): its markdown, then a line
+// `asks:` and one line per entry of its asks member (askLines). A person's answer is held on the
+// ask's node alone, so the asks member is where a test reads it beside the text. It fails t where
+// an ask block of the markdown carries a server-owned attribute (askServerAttributes).
 func agentText(t *testing.T, handler http.Handler, document string) string {
 	t.Helper()
 	read := decodeBody[struct {
 		Markdown string          `json:"markdown"`
 		Asks     []model.TextAsk `json:"asks"`
-	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+document+"/text", nil, "alice"))
+	}](t, textRead(t, handler, "/api/v1/artifacts/"+document+"/text", true))
 	for _, line := range strings.Split(read.Markdown, "\n") {
 		kind, attrs, opens := pmdoc.ParseTypedDirectiveOpen(strings.TrimLeft(line, " \t>"))
 		if !opens || kind != "ask" {
