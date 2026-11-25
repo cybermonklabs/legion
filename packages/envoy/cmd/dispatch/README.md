@@ -3155,7 +3155,7 @@ A scope of the delivery reconcile's progress matches where it holds the old name
 The transaction of each line takes the pass's one advisory lock (`repoRenameLockNamespace`, `0`) and a five-second `lock_timeout`, so two processes that boot at once take turns on each line, and the second finds nothing left to write.
 Where the new name gives a row the key of another row, the row under the new name stays, and the pass deletes the row under the old name and logs it at WARN with its table and key.
 The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
-It writes no other column, `updated_at` included, and appends no event.
+Beside those fields it writes only the stale marks of the stored eval figures' cuts a rename moves (`eval_figure_cuts_stale`, below); it writes no other column, `updated_at` included, and appends no event.
 It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.
 After its writes it counts the rows of those fields that still name an old name.
 It also counts them before its writes, and where that count finds none, it runs no line.
@@ -3170,9 +3170,14 @@ The attribution of pull requests, the results read, the writers of `pull_request
 So a row that a failed pass left on an old name still attaches its pull requests.
 
 The eval registry's computed rows name repositories too: the day rows' `repo` and `deploy_repo` (`eval_days`), their members' (`eval_day_members`, whose row keys and `shipped_by` name a pull request's or a run's repository), the stored figures' `repo` and `deploy_repo` (`eval_range_figures`, `eval_day_figures`) and the repository of each issue's stored Legion facts (`issue_facts.repo`).
-Each is computed from the stored rows the pass writes, never from a name a person gives, so it holds the name those rows hold.
+A row that stores a repository is computed from the stored rows the pass writes, never from a name a person gives, so it holds the name those rows hold.
 The pass writes `issue_facts.repo` itself, and the repository inside the owner keys of what a repository attributes, which no read finds under the old name; the rows the refresher computes it does not write in place, since two of them can fold into one under the new name.
 The pass's writes of the delivery rows, the settings and `issue_facts.repo` are changes their triggers log (`issue_facts_changed` also logs the filing of an issue whose repository moved, migration `20261117100002`), so the refresher's next pass writes the days, members and figures of those rows again under the new name and deletes those it held under the old one (`TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName`).
+The stored figures' `repo` is the cut that a read naming that repository folds, and the cut of the repository a project publishes as its default (`eval_days_defaults.repo`) holds, beside the rows that store that repository, the project's own Legion rows of issues whose chain names no repository, which store `:default` (`legionfacts.DefaultRepo`) and never a name.
+The pass writes the published default in the same line as the owner keys, so the refresher sees no move of a default, and no write of the pass logs a change of those `:default` rows, which do not move: their figures stay in the old name's cut, and the new name's cut holds none of them.
+So that line, after it writes `eval_days_defaults.repo`, marks stale (`eval_figure_cuts_stale`) the cut of the old name, in each spelling a row holds it in, and the cut of the new name, of each project that now publishes the new name or holds stored figures of the old name, for every eval (`evals` null); a mark that stands already takes its next generation, its refold begun again.
+It writes the defaults and then the marks, the order `evals.publishDefaults` writes them in, so a refresher of another process that publishes a move beside the pass waits for the line rather than deadlocking with it.
+Every refresher pass folds each marked cut again (`evals.refoldStaleCuts`), and until it has, a read of a marked cut folds the day rows instead of reading its stored figures (`TestARenamedPublishedDefaultIsReadUnderItsNewNameFromTheRefoldOfItsCut`).
 
 Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
 has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?

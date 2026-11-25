@@ -30,11 +30,12 @@ import (
 //     start, a space, `=` or `,` and before the end, a space or `,`. That is how delivery's
 //     searchProgressScope and runsProgressScope write a repository into a scope.
 //
-// The pass writes no other column, updated_at included, and appends no event. It never writes
-// repo_projects, the event log, the text of documents, comments, asks and messages, the reference
-// tables read from that text (refs, block_refs, graph_edges), architecture_snapshots.files, a
-// daemon's own readings (legion_current, legion_observations) or github_rate_limits, whose scope
-// names no repository.
+// Beside those fields the pass writes only the stale marks of the eval figures' cuts a rename
+// moves (markRenamedCuts). It writes no other column, updated_at included, and appends no event.
+// It never writes repo_projects, the event log, the text of documents, comments, asks and
+// messages, the reference tables read from that text (refs, block_refs, graph_edges),
+// architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
+// github_rate_limits, whose scope names no repository.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -336,7 +337,7 @@ type repoRenameLine struct {
 // INFO, under the field table.write. deletes is true where the statement deletes the colliding
 // rows of table: it returns the key of each row it deleted, as text, and each is counted and
 // logged at WARN. A step that neither writes nor deletes is a statement whose rows a write step of
-// the line counts already.
+// the line counts already, or one that writes no field of the pass (markRenamedCuts).
 type repoRenameStep struct {
 	table, where string
 	write        string
@@ -456,6 +457,45 @@ func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep 
 	}
 }
 
+// markRenamedCuts marks stale (eval_figure_cuts_stale) the stored eval figures' cut of the old name
+// and the cut of the new name of each project that publishes the new name as its default
+// (eval_days_defaults), which the line's write before it gave every project that published the old
+// name, or that holds stored figures of a cut of the old name (eval_range_figures,
+// eval_day_figures), each name matched in any case: the old name's cut under each spelling the
+// stored figures hold it in, and, of a published default, under the old name.
+// It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every eval
+// (evals null): a cut no mark holds at generation 1, and one a mark holds at its next generation,
+// its refold to begin again from the cut's first end day (next_day null), for every eval whatever
+// the standing mark named. It takes the cuts in the byte order of their keys, the order every
+// writer of the marks takes them in.
+//
+// It runs after the line writes eval_days_defaults, as evals.publishDefaults writes the defaults
+// and then the marks in one transaction, so a refresher of another process that publishes a move
+// beside the pass takes the rows in the same order and waits for the line rather than deadlocking
+// with it. A project that published the new name before the rename has its two cuts marked too,
+// which costs their refold and leaves each of their figures the fold of the rows that stand.
+//
+// Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
+// names the old name until the refresher's refold clears it, so the count of the rows left reads no
+// mark. The line's write steps keep the line in that count until it commits, and the marks with it.
+func markRenamedCuts(r repoRename) repoRenameStep {
+	named := r.named("repo")
+	return repoRenameStep{
+		table: "eval_figure_cuts_stale",
+		where: "false",
+		sql: `with old as (
+				select project_key, ` + r.from() + ` as repo from eval_days_defaults where lower(repo) = ` + r.to() + `
+				union select project_key, repo from eval_range_figures where ` + named + `
+				union select project_key, repo from eval_day_figures where ` + named + `
+			)
+			insert into eval_figure_cuts_stale (project_key, repo, generation, next_day, evals)
+			select project_key, repo, 1, null, null
+			from (select project_key, repo from old union select project_key, ` + r.to() + ` from old) cut
+			order by project_key collate "C", repo collate "C"
+			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, next_day = null, evals = null`,
+	}
+}
+
 // citedNamed is true where a delivery pull request cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
@@ -484,6 +524,19 @@ var repoRenameLines = []repoRenameLine{
 	// old name's row of the same key goes, as every other line's collision does. The day-row
 	// refresher writes the new name's rows again from their input, and the eval_days change each
 	// write logs wakes the views that read them.
+	//
+	// The published defaults (eval_days_defaults) take the new name in the same transaction, so
+	// the refresher sees no move of a default and marks no cut stale itself. But a project's own
+	// Legion rows of an issue whose chain names no repository are stored under
+	// legionfacts.DefaultRepo (':default'), never under a name, and a read folds them into the
+	// cut of the default the project publishes: no row of them moves, and no change the pass's
+	// writes log names them, so their stored figures stay in the old name's cut and the new
+	// name's holds none of them. So the line, once it has written the defaults, marks both cuts
+	// of each such project stale, every eval of them (markRenamedCuts), in the order
+	// evals.publishDefaults takes them (defaults, then marks), so a refresher of another process
+	// publishing beside it waits rather than deadlocks. The refresher's next pass folds every
+	// marked cut again (evals.refoldStaleCuts, which every pass runs), and a read of a marked cut
+	// folds the day rows until then.
 	{
 		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
 		steps: func(r repoRename) []repoRenameStep {
@@ -510,7 +563,8 @@ var repoRenameLines = []repoRenameLine{
 					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
 						` where ` + ownerNamed(r, "owner"),
 				},
-				nameWrite(r, "eval_days_defaults", "repo"))
+				nameWrite(r, "eval_days_defaults", "repo"),
+				markRenamedCuts(r))
 		},
 	},
 	nameLine("check_results", "commit_repo"),
