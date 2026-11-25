@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeRoster is the live-session list a route-status test's listener answers: session id to
@@ -743,13 +744,8 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 		t.Fatalf("the second server's own fetch reads %s, want live ses-sre", got)
 	}
 	release()
-	select {
-	case roster := <-older:
-		if got := sreReach(roster); got != "live ses-sre" {
-			t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the read waiting on the older fetch never returned")
+	if got := sreReach(testwait.Receive(t, "the read waiting on the older fetch to return", older)); got != "live ses-sre" {
+		t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
 	}
 	if got := sreReach(readRoster(t, first, context.Background())); got != "live ses-sre" {
 		t.Fatalf("the first server's next read reads %s, want the newer stored live ses-sre", got)

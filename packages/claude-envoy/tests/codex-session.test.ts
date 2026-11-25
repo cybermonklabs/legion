@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject, IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Subprocess } from "bun"
 import { sessionAdmission } from "../src/channel-connection"
@@ -11,7 +12,7 @@ import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
-import { callingThread } from "../src/codex/codex-server"
+import { callingThread, dispatchToolDefinition } from "../src/codex/codex-server"
 import {
   codexHome,
   codexPluginDataDirectory,
@@ -28,6 +29,10 @@ import {
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
 import { FakeNats, waitFor } from "./channel-session-harness"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const directory = temporaryDirectory("codex-session")
 
@@ -558,7 +563,7 @@ describe("the Codex router of a person's messages", () => {
       deliver: async (item) => {
         delivered.push(item)
       },
-      dispatch: () =>
+      dispatch: async () =>
         ({
           acceptMessageDelivery: async (id: string) => {
             if (options.acceptThrows !== undefined) throw options.acceptThrows
@@ -718,5 +723,18 @@ describe("the Codex thread a tool call comes from", () => {
     expect(callingThread({ progressToken: 1 })).toBeUndefined()
     expect(callingThread(undefined)).toBeUndefined()
     expect(callingThread({ threadId: "" })).toBeUndefined()
+  })
+})
+
+// The `dispatch` command exits 2 for a usage error and 1 for every other failure, a Dispatch it
+// cannot reach as much as a refusal (runDispatchCli in packages/envoy-client/src/dispatch-cli.ts),
+// so the Codex tool that runs it says so and no longer reads exit 1 as a refusal alone.
+describe("the Codex dispatch tool's description", () => {
+  test("says exit 1 is any failure but a usage error", () => {
+    const { description } = dispatchToolDefinition()
+    expect(description).toContain(
+      "0 written or read, 2 a usage error, 1 any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.",
+    )
+    expect(description).not.toContain("1 refused by Dispatch")
   })
 })

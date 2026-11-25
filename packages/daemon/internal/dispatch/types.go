@@ -208,6 +208,9 @@ type IssueSummary struct {
 	Parent     *string
 	Rank       string
 	HandedOver bool
+	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
+	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
+	Priority *int
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -238,7 +241,7 @@ func (s IssueSummary) Issue() Issue {
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -256,6 +259,8 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	LastSeq           int64
+	// Priority is IssueSummary.Priority.
+	Priority *int
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.

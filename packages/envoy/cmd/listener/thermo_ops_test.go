@@ -57,6 +57,7 @@ func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
 }
 
 func TestThermoOpsRoleSetRejectsUnregisteredSession(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
 

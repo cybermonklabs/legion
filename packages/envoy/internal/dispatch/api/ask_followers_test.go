@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func followerSessions(followers []model.AskFollower) []string {
@@ -282,24 +283,21 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	askID := testwait.UntilPolling(t, 10*time.Millisecond, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != "block-ask" {
-				continue
+			if ask.BlockID != nil && *ask.BlockID == "block-ask" {
+				return ask.ID, true
 			}
-			if got := readAskFollowers(t, handler, ask.ID); strings.Join(got, ",") != "s-writer" {
-				t.Fatalf("ask block followers = %v, want [s-writer]", got)
-			}
-			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		return "", false
+	})
+	if got := readAskFollowers(t, handler, askID); strings.Join(got, ",") != "s-writer" {
+		t.Fatalf("ask block followers = %v, want [s-writer]", got)
 	}
-	t.Fatal("typed ask block did not settle into the inbox")
 }
 
 func followerRequest(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {

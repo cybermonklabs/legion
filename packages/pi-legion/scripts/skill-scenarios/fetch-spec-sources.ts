@@ -416,7 +416,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   if (outside !== undefined) return refuse(outside);
   let dispatch: ProductionDispatch;
   try {
-    dispatch = new ProductionDispatch(resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
+    dispatch = new ProductionDispatch(await resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
   } catch (error) {
     return refuse(messageFor(error));
   }

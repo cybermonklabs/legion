@@ -2278,9 +2278,11 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // It runs before the stale-plugin pass rather than after it, and one machine's inbox is FIFO
 // (supervisor.inbox: "unbounded … and in order, so a claim sees its events as its sources
 // reported them"), so the StalePlugin that pass posts a moment later is decided behind this
-// end. That is what makes the order right: the refresh reads a claim already out of its round,
-// and the pass's own skip is by round kind for the same reason (refreshStalePlugins), since the
-// claims both passes walk are the boot's own reading, where the round still stands.
+// end. That is what makes the order right: the refresh's own decision reads a claim already out
+// of its round. The pass's skip is by round kind for the same reason (refreshStalePlugins): this
+// pass walks the boot's own reading, where the round still stands, and the refresh pass reads each
+// claim as its machine last published it, which still shows the round until the machine has
+// decided this end, so either pass can find the round standing.
 //
 // A retired claim is posted nothing it needs: its round went with it (supervise's retire calls
 // clearUpdate), and the end is ignored in that state anyway. A worker that answers such a round
@@ -2385,13 +2387,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // turn as the wave drains, and the last idle stragglers would wait sweeps behind credits that
 // raised nothing.
 //
-// The skip is as imperfect as the one above it, and costs exactly what that one costs. This
-// pass reads the claims of a snapshot, and the machine decides the post as the claim stands
-// then: a claim read idle can have started a turn by the time its post is decided, and one read
-// working can have ended it. The first is posted a credit the machine gives straight back
-// (refreshPlugin, endRefreshLane) and is relaunched at that turn's end or at a later sweep; the
-// second is posted none, and raises its relaunch at the next sweep, which is one minute. One
-// sweep is what an imperfect skip costs here, as it is for the wake the parked skip reads.
+// Every term of the lane is read of each claim as its machine last published it
+// (supervise.Machine.Published), not as claims holds it: claims says which claims to walk. A
+// sweep reads them before its orphan reconciliation, which under Kubernetes lists every Sandbox,
+// so by the time this pass walks them a claim can have been suspended, failed or retired, had its
+// relaunch start, started a turn, or registered this daemon's contract. A credit posted to such a
+// claim comes back only as its machine decides the post, which a machine deciding something else
+// first holds until that decision ends — a relaunch waits minutes for its pod — and until then the
+// gate counts it out and this pass refuses every claim after it: the lane spends the credit on
+// nothing for a sweep or more (dispatch://INFRA-3904). The published claim is the one the machine
+// decides the post against unless a decision lands in between, so what is left of that window is
+// one decision long rather than a reconciliation long.
+//
+// The skip of a claim in a turn is as imperfect as the parked skip above, and costs what that one
+// costs. The machine decides the post as the claim stands when the post reaches it: a claim read
+// idle can have started a turn by then, and one read working can have ended it. The first is
+// posted a credit the machine gives straight back (refreshPlugin, endRefreshLane) and is
+// relaunched at that turn's end or at a later sweep; the second is posted none, and its machine
+// asks the gate for a credit of its own as it decides the post (refreshPlugin's guard), so it is
+// relaunched then if a credit is free and at the next sweep otherwise.
 //
 // One line is written for the refusals of a pass, naming how many claims are left for a later
 // sweep, rather than one per claim: a boot over a fleet of several hundred refuses hundreds at
@@ -2410,6 +2424,9 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
+		if m, supervised := s.supervisor.Machine(c.Token); supervised {
+			c = m.Published()
+		}
 		if !staleForTheLane(c, noInstall) {
 			continue
 		}
@@ -2465,16 +2482,18 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // A claim in a plugin round is in the set, and the term is by round kind for that reason. The
 // boot's own de-round pass has posted such a claim its end a moment before the refresh pass
 // runs (endPluginRounds), and one machine's inbox is FIFO, so that end is decided ahead of the
-// post and the machine sees a claim in no round at all. What that pass reads is the claims the
-// boot restored, where the round still stands, so a term of "in any round" would pass over
-// exactly the claims the de-round pass has just freed and leave each of them a sweep — a whole
-// minute, and a credit of the gate each — behind the rest of the fleet, and would have the
-// count hide that work at the one moment it exists to be read: a boot over a fleet an earlier
-// daemon left mid-round. A claim whose plugin round is somehow still standing when its machine
-// takes the post is decided nothing wrong by it either: refreshPlugin relaunches it, and no
-// plugin round holds a relaunch back, since the ask that did was deleted with the round. A
-// claim that left its round at a registration speaking this daemon's contract (supervise's
-// endCurrentPluginRound) is no longer stale at all, and the contract term above passes over it.
+// post and the machine sees a claim in no round at all. What that pass reads is each claim as its
+// machine last published it, which still shows the round until the machine has decided that end,
+// and the count reads the claims the store holds, where the round stands until that end's own
+// write. So a term of "in any round" would pass over exactly the claims the de-round pass has just
+// freed and leave each of them a sweep — a whole minute, and a credit of the gate each — behind
+// the rest of the fleet, and would have the count hide that work at the one moment it exists to
+// be read: a boot over a fleet an earlier daemon left mid-round. A claim whose plugin round is
+// somehow still standing when its machine takes the post is decided nothing wrong by it either:
+// refreshPlugin relaunches it, and no plugin round holds a relaunch back, since the ask that did
+// was deleted with the round. A claim that left its round at a registration speaking this
+// daemon's contract (supervise's endCurrentPluginRound) is no longer stale at all, and the
+// contract term above passes over it.
 //
 // noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
