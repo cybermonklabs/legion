@@ -447,10 +447,10 @@ news_base() {
 }
 
 # control_compat TREE writes into TREE, the scratch copy of the base that part one's control
-# builds, the base's version of each of the two seams this checkout's part-one seed calls that
-# an older base lacks, each a test file of package daemon of the control's own under
-# //go:build e2e, so the base's own packages and any daemon built from them carry neither. The
-# head defines both beside the basis tests (basis_stays_scratch_dispatch_test.go), a file the
+# builds, the base's version of each of the three seams this checkout's part-one driver calls
+# that an older base lacks, each a test file of package daemon of the control's own under
+# //go:build e2e, so the base's own packages and any daemon built from them carry none. The
+# head defines all three beside the basis tests (basis_stays_scratch_dispatch_test.go), a file the
 # control does not copy. Each seam's Go is a file under scripts/e2e/lib whose name ends .go.txt,
 # which no Go tool reads there, and the control copies it where TREE's package daemon defines no
 # function of that name. seedTransact, the seed's transaction
@@ -459,20 +459,23 @@ news_base() {
 # once it committed, as the seed did before #4533 moved it onto store.Transact, which the base
 # lacks. recordTaskAt, which keeps a member's plan task where its recorded phase stands
 # (approved-version-news-control-task.go.txt), does nothing, since the base records no task place,
-# so a record the seed writes in a phase needs no move there. The transcript names each file
-# written and each seam TREE already defines.
+# so a record the seed writes in a phase needs no move there. versionNewsPluginContract, the
+# contract the driver's claims register with (approved-version-news-control-contract.go.txt),
+# returns the base's constant api.DaemonAPIVersion, which #5399 made a function of the registry.
+# The transcript names each file written and each seam TREE already defines.
 control_compat() {
   local tree=$1 daemon_dir seam fn source file use
   daemon_dir=$tree/packages/daemon/internal/daemon
   for seam in \
     "seedTransact approved-version-news-control-transact.go.txt approved_version_news_control_transact_live_test.go takes its transaction through" \
-    "recordTaskAt approved-version-news-control-task.go.txt approved_version_news_control_task_live_test.go calls"; do
+    "recordTaskAt approved-version-news-control-task.go.txt approved_version_news_control_task_live_test.go calls" \
+    "versionNewsPluginContract approved-version-news-control-contract.go.txt approved_version_news_control_contract_live_test.go registers its claims' contract through"; do
     read -r fn source file use <<<"$seam"
     if grep -q -E "^func $fn\\(" "$daemon_dir"/*.go 2>/dev/null; then
       note "the base's package daemon defines $fn, so the control writes no file for it"
     else
       cp "$root/scripts/e2e/lib/$source" "$daemon_dir/$file" || fail "could not write $daemon_dir/$file"
-      note "wrote $daemon_dir/$file: the base's package daemon defines no $fn, which $seed_file $use"
+      note "wrote $daemon_dir/$file: the base's package daemon defines no $fn, which part one's driver $use"
     fi
   done
   # Only the copied driver's calls change. The control still runs the base's worker start code.
