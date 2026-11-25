@@ -742,7 +742,7 @@ test("the name is taken at the turn the server signals, not at the boot, and two
   expect(pane.lines).toEqual([])
 })
 
-// Contract 289: a registration that names the session this one replaces (the claim's session
+// Contract entry 20261125170509: a registration that names the session this one replaces (the claim's session
 // the daemon forgot) has the claim name it as its predecessor, which the listener reads as the
 // session whose unread messages it hands to this one. The case above is the control: the golden
 // registration replaces no session, and its claim names none.

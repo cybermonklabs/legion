@@ -482,7 +482,7 @@ test("two first-turn signals claim once", async () => {
   expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([`claimRole ${claimToken}`]);
 });
 
-// Contract 289: the registration names the session this one replaces, the claim's session the
+// Contract entry 20261125170509: the registration names the session this one replaces, the claim's session the
 // daemon forgot, and the role claim carries it, so the listener hands that session's unread
 // messages here. A claim the listener answered 503 is made again naming it again.
 test("the role claim names the session the registration says this one replaces, on every try", async () => {

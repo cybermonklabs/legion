@@ -1514,7 +1514,7 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
- * `replaces` (contract 289) is the session this registration replaces: the claim's session that
+ * `replaces` (contract entry 20261125170509) is the session this registration replaces: the claim's session that
  * the daemon forgot, when it is another session than the one registering. The session names it
  * as `previous_session_id` in its Envoy role claim, so the listener hands that session's unread
  * messages to it. Absent when the claim forgot no session, or forgot this very one. */
@@ -1775,7 +1775,7 @@ export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>
  * fetched, or a daemon-launched controller's own boot token): the project's controller role token,
  * the role `controller`, a generation — the capability's for the operator's controller, the
  * launch's for the daemon's own, which its `claims/ready` names — and the secret its controller
- * grants authenticate with. No tree, no issue. `replaces` (contract 289) is the session this
+ * grants authenticate with. No tree, no issue. `replaces` (contract entry 20261125170509) is the session this
  * registration replaces, as on a claim's registration: the session names it as
  * `previous_session_id` in its Envoy role claim. */
 export const LegionControllerRegisterResponse = z.object({

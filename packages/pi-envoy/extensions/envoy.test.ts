@@ -7569,7 +7569,7 @@ console.log(JSON.stringify(args));
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
-  // Contract 289: a Legion claim names the session it replaces, as the daemon's registration
+  // Contract entry 20261125170509: a Legion claim names the session it replaces, as the daemon's registration
   // names it, and the bridge sends that session as the claim's `previous_session_id` on a claim
   // that stays hard (a Legion claim is last-claim-wins), so the listener hands that session's
   // unread messages to this one. A claim naming none, or an empty one, sends no such key.
