@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
@@ -59,6 +60,15 @@ import (
 func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
 	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, w.Line) {
+		return nil
+	}
+	holds, err := e.fixHoldsBranch(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	if holds && !e.mergeForwardBesideFix {
+		e.logOnCommit(ctx, "workflow: a confirmed conflict waits for the fix that holds the task's branch", "issue", issue.Key, "task", w.Task,
+			"phase", at, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 		return nil
 	}
 	asker := record.MergeForwardAsker(at)
@@ -143,6 +153,30 @@ func (e *Engine) fixHoldsBranch(ctx context.Context, tx pgx.Tx, issue record.Iss
 // then, once. Where the conflicting head is no longer the task's head, it reads nothing: the reads
 // the head's move owes decide.
 func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string) error {
+	if e.noAskAtWay {
+		return nil
+	}
+	pr, err := e.store.PullRequest(ctx, tx, key)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen || !classify.ConflictRound(*pr) {
+		return err
+	}
+	if e.askAtWayWithNoRules {
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return err
+		}
+		return e.mergeForward(ctx, tx, *issue, w, pr, record.ConflictRulesUnread)
+	}
+	if e.cfg.ReadMergeState == nil {
+		return nil
+	}
+	e.logOnCommit(ctx, "workflow: the way after a fix reads the conflict that waited for it", "issue", key, "pullRequest", pr.Number,
+		"head", pr.HeadSHA, "base", pr.Base)
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 
@@ -154,6 +188,19 @@ func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string
 // of the task's branch: the ask's own messages end undelivered (leftMergeForwardAt), its landing
 // is the fix's (mergeForwardLanded), and no completion fence is made of it (mergedForwardRefusal).
 func (e *Engine) takeOwedMerge(ctx context.Context, tx pgx.Tx, pass *fixPass, number int) error {
+	if e.ordinaryMergeAfterTakeover || e.mergeOutsideFix || owedMerge(pass.pr, pass.head) == nil {
+		return nil
+	}
+	taken := *pass.pr.MergeForward
+	taken.Fix = &record.MergeForwardFix{Generation: pass.issue.Generation, Task: pass.w.Task, Number: number}
+	pr := *pass.pr
+	pr.MergeForward = &taken
+	if err := e.putPullRequest(ctx, tx, pr); err != nil {
+		return err
+	}
+	pass.pr = &pr
+	e.logOnCommit(ctx, "workflow: a fix takes the merge forward its implementer owes", "issue", pass.issue.Key, "task", pass.w.Task,
+		"fix", number, "pullRequest", pr.Number, "head", taken.Head, "base", taken.Base, "askedIn", taken.Phase)
 	return nil
 }
 
@@ -174,7 +221,7 @@ func owedMerge(pr *record.PullRequest, head string) *record.MergeForward {
 // fixOwns says whether owner names fix of task in issue's generation: the fix that took a merge
 // forward (record.MergeForward.Fix) is of the task a completion reports on.
 func fixOwns(owner *record.MergeForwardFix, issue record.Issue, task string) bool {
-	return false
+	return owner != nil && owner.Generation == issue.Generation && owner.Task == task
 }
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
@@ -316,6 +363,17 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
+	if asked.Fix != nil {
+		landed := *asked
+		landed.Landed, landed.ReviewAsked = pr.HeadSHA, false
+		pr.MergeForward = &landed
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the merge forward a fix took landed with its end push", "issue", issue.Key, "tree", issue.Tree,
+			"task", asked.Fix.Task, "fix", asked.Fix.Number, "pullRequest", pr.Number, "head", asked.Head, "landed", pr.HeadSHA)
+		return nil
+	}
 	at := record.StandsAt(issue)
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -416,6 +474,8 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 		return "the record holds no merge forward"
 	case pr.MergeForward.Head != head:
 		return fmt.Sprintf("the merge forward the record holds is of head %s", pr.MergeForward.Head)
+	case pr.MergeForward.Fix != nil:
+		return fmt.Sprintf("the merge forward of head %s is fix %d of task %s's own work", head, pr.MergeForward.Fix.Number, pr.MergeForward.Fix.Task)
 	case (step == record.MergeForwardAsk || step == record.MergeForwardHold) && pr.MergeForward.Landed != "":
 		return fmt.Sprintf("the merge forward landed at head %s", pr.MergeForward.Landed)
 	}

@@ -408,7 +408,9 @@ func TestAConflictBesideAFixIsAskedAtItsWay(t *testing.T) {
 
 	t.Run("case one: a conflict R0 leaves alone asks nobody", func(t *testing.T) {
 		r, reads := beside(t, returnEngine(), true, fixHead)
-		r.assertWay(wayAfterFix, phase.Testing, claim.RoleTester, fixHead, 1, reviewingTesting)
+		// At a head held in a confirmed conflict the return is a conflict round's, counted apart from
+		// the pairs (record.ReturnCounts.ConflictRounds), so only the one return is read here.
+		r.assertWay(wayAfterFix, phase.Testing, claim.RoleTester, fixHead, 1, "")
 		if messages := asks(r); len(messages) != 0 {
 			t.Fatalf("merge-forward messages %+v in the way's transaction, want none", messages)
 		}
@@ -442,7 +444,7 @@ func TestAConflictBesideAFixIsAskedAtItsWay(t *testing.T) {
 
 	t.Run("row 3: a head the fix moved reads nothing for X", func(t *testing.T) {
 		r, reads := beside(t, returnEngine(), false, headTwo)
-		r.assertWay(wayAfterFix, phase.Testing, claim.RoleTester, headTwo, 1, reviewingTesting)
+		r.assertWay(wayAfterFix, phase.Testing, claim.RoleTester, headTwo, 1, "")
 		if messages := asks(r); len(messages) != 0 || len(*reads) != 0 {
 			t.Fatalf("merge-forward messages %+v and reads %v, want none: Y's own reads decide", messages, *reads)
 		}

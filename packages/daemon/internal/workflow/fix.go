@@ -587,6 +587,10 @@ func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 			facts.Failed, facts.Cases[state.Check] = append(facts.Failed, state.Check), state.CICase
 		}
 	}
+	ours := record.MergeForwardFix{Generation: issue.Generation, Task: w.Task, Number: fix.Fix}
+	if owed := owedMerge(pr, fix.Head); owed != nil && !e.mergeOutsideFix && (owed.Fix == nil || *owed.Fix == ours) {
+		facts.MergeHead, facts.MergeBase = owed.Head, owed.Base
+	}
 	return facts, nil
 }
 
