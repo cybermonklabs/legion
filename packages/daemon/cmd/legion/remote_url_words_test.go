@@ -11,10 +11,12 @@ import (
 // TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule: a working directory's git remote
 // whose URL carries a made-up user name and password and a token in its query, and that the
 // wrapper cannot read (a github.com URL naming no OWNER/REPO, url-line; an ssh remote on another
-// host, ssh-elsewhere; a line of `git remote -v` whose URL holds a space, remote-v-line), refuses
-// the call naming the remote with its URL through the URL rule. The refusal named the URL as
-// written, or the whole line. The twin shows each URL holds the credentials and each call is
-// still refused, so the row can see one printed. Captures legion.git-remote/<case>.
+// host, ssh-elsewhere; a line of `git remote -v` whose URL holds a space, remote-v-line, or holds
+// a second URL gh reads as the remote's, remote-v-second-url), refuses the call naming the remote
+// with its URL, or the URL gh reads from the line, through the URL rule, and never the line. The
+// refusal named the URL as written, or the whole line. The twin shows each URL holds the
+// credentials and each call is still refused, so the row can see one printed. Captures
+// legion.git-remote/<case>.
 func TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule(t *testing.T) {
 	const user, password = "not-a-secret-user", "not-a-secret-password"
 	credentials := user + ":" + password + "@"
@@ -27,23 +29,27 @@ func TestAGitRemoteTheGhWrapperCannotReadIsNamedThroughTheRule(t *testing.T) {
 			}, false)
 		}
 	}
-	spaced := "https://" + credentials + "github.com/acme/wid gets" + query
-	fromGit := func(t *testing.T) error {
-		repository := t.TempDir()
-		fixture := fixturegit.Isolated(t, t.TempDir())
-		fixture.Run(repository, append([]string{"git"}, fixturegit.InitWorkTree("", "")[1:]...)...)
-		fixture.Run(repository, "git", "remote", "add", "origin", spaced)
-		t.Chdir(repository)
-		_, err := readGitRemotes()
-		return err
+	fromGit := func(url string) func(*testing.T) error {
+		return func(t *testing.T) error {
+			repository := t.TempDir()
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			fixture.Run(repository, append([]string{"git"}, fixturegit.InitWorkTree("", "")[1:]...)...)
+			fixture.Run(repository, "git", "remote", "add", "origin", url)
+			t.Chdir(repository)
+			_, err := readGitRemotes()
+			return err
+		}
 	}
+	spaced := "https://" + credentials + "github.com/acme/wid gets" + query
+	secondURL := "https://example.com/x https://" + credentials + "github.com/evilown/y" + query
 	cases := []struct {
 		name, url string
 		call      func(*testing.T) error
 	}{
 		{"url-line", "https://" + credentials + "github.com/acme" + query, nil},
 		{"ssh-elsewhere", "ssh://" + credentials + "gitlab.example/acme/widgets" + query, nil},
-		{"remote-v-line", spaced, fromGit},
+		{"remote-v-line", spaced, fromGit(spaced)},
+		{"remote-v-second-url", secondURL, fromGit(secondURL)},
 	}
 	for i := range cases {
 		if cases[i].call == nil {
