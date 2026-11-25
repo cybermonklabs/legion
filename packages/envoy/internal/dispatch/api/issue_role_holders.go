@@ -196,9 +196,9 @@ const maxRoleHolderSessionBytes = 256
 // The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
 // body does not name, then inserts the pairs that are not stored yet. A pair that changed is
 // deleted before the insert, so the insert meets neither key of the table, and a pair that did not
-// change keeps its recorded_at. The insert writes daemon_proven, whether the credential is the
-// daemon's own, on each pair the body names, the pairs it keeps included, with the setting on or
-// off. The answer does not carry the mark.
+// change keeps its recorded_at. The delete statement writes daemon_proven, whether the credential
+// is the daemon's own, on each stored pair the body keeps, and the insert writes it on each pair it
+// adds, with the setting on or off. The answer does not carry the mark.
 //
 // The body is checked whole before the transaction opens: each role is one of the six, once, and
 // each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
