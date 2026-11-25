@@ -343,6 +343,7 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 // it neither creates the child's architect claim nor waits on its backoff for one, its tree
 // running or not.
 func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	var logged testlog.Buffer
 	// The outbox reads the news under the design-gate steps the daemon gates, as the daemon wires

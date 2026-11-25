@@ -134,6 +134,7 @@ func (r *reparentRig) told() map[string][]string {
 // now (R18 of dispatch://INFRA-3320), each the same words, naming the old and the new parent and
 // what goes on. A second event under the same parent tells nobody again.
 func TestAReparentTellsTheOwnOldAndNewArchitectOnce(t *testing.T) {
+	t.Parallel()
 	client := &reparentDispatch{}
 	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress", Labels: []string{"design"}}
 	rig := newReparentRig(t, client)
@@ -173,6 +174,7 @@ func TestAReparentTellsTheOwnOldAndNewArchitectOnce(t *testing.T) {
 // earlier entry either. A notice of an earlier run is what is not delivered, which
 // TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing holds.
 func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client := &reparentDispatch{}
 	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress", Labels: []string{"design"}}
@@ -233,6 +235,7 @@ func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T)
 // that approval (dispatch://INFRA-3320, R1 and R2). Where any of those fails, the words name no
 // such path.
 func TestAReparentNoticeNamesR1sPathUnderAnApprovedParent(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 	person := dispatch.Actor{Kind: "user", ID: "alice"}
 	session := dispatch.Actor{Kind: "session", ID: "session-architect"}
@@ -284,6 +287,7 @@ func TestAReparentNoticeNamesR1sPathUnderAnApprovedParent(t *testing.T) {
 // release's first boot, names no run: it still decodes, and its read is told as R18 says, the old
 // parent read from the record (workflow's reparentRead).
 func TestAReparentSeedOfTheReleaseBeforeStillDecodesAndIsTold(t *testing.T) {
+	t.Parallel()
 	client := &reparentDispatch{}
 	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress"}
 	rig := newReparentRig(t, client)

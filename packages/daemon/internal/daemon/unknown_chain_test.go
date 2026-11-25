@@ -19,6 +19,7 @@ import (
 // the list it stands in. Each architect's call on an issue of such a chain - sign_off,
 // close_root, register_gate, release_children and rerun_child - is refused CHAIN_UNKNOWN.
 func TestAnUnknownChainStartsNothingAndRefusesCallsAndSignOff(t *testing.T) {
+	t.Parallel()
 	const (
 		missingTodo, missingAdmitted = "CHAIN-10", "CHAIN-12"
 		loopA, loopB                 = "CHAIN-20", "CHAIN-21"

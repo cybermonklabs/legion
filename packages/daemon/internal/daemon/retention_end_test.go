@@ -22,6 +22,7 @@ import (
 // Negative control, run when this was written: with the executor retiring suspended claims alone,
 // the failed claim stays failed and the row waits on it.
 func TestARetentionEndRetiresTheIssuesFailedClaimsWithItsSuspendedOnes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	retained := time.Now().Add(-time.Minute)

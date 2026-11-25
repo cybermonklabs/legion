@@ -345,6 +345,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 // serves the route answers each call R24's options make, which the client reads, with its
 // parent-status rule off and again on (readEachStatusChangeAnswer).
 func TestTheStatusChangeClientReadsEachAnswerOfTheRealDispatch(t *testing.T) {
+	t.Parallel()
 	ruleOff := startScratchDispatchOn(t, scratchDispatchOptions{env: []string{parentStatusRule + "=off"}})
 	if !servesStatusChange(t, ruleOff.base) {
 		issue := createScratchDispatchIssue(t, ruleOff.base)

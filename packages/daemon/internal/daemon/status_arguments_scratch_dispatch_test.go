@@ -76,6 +76,7 @@ func refusedWith(t *testing.T, status int, body []byte, code string, names ...st
 }
 
 func TestSetStatusTakesAChildrenArgument(t *testing.T) {
+	t.Parallel()
 	for _, rule := range []string{"on", "off"} {
 		t.Run("rule "+rule, func(t *testing.T) {
 			r := statusArgumentsRig(t, rule)
@@ -122,6 +123,7 @@ func TestSetStatusTakesAChildrenArgument(t *testing.T) {
 }
 
 func TestATodoUnderAParentNotInWorkTakesAParentArgument(t *testing.T) {
+	t.Parallel()
 	for _, rule := range []string{"on", "off"} {
 		t.Run("rule "+rule, func(t *testing.T) {
 			r := statusArgumentsRig(t, rule)
@@ -159,6 +161,7 @@ func TestATodoUnderAParentNotInWorkTakesAParentArgument(t *testing.T) {
 }
 
 func TestReleaseChildrenRefusesAnIssueWhoseParentStaysOutOfWork(t *testing.T) {
+	t.Parallel()
 	for _, rule := range []string{"on", "off"} {
 		t.Run("rule "+rule, func(t *testing.T) {
 			r := statusArgumentsRig(t, rule)

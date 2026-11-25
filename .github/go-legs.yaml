@@ -122,6 +122,7 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/record/fencetest
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
   # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon alone in leg 1;
   # the four others in leg 2, whose time is internal/launcher's.

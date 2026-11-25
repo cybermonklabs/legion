@@ -22,6 +22,7 @@ import (
 // every event of the issue is dropped as the consumer delivers it (dropConsumedEvent), the todo's
 // echo included, so nothing but the write's answer can have recorded it.
 func TestControllerSetStatusTodoAdmitsAnUnrecordedLabelledIssue(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 2)
 	const title = "Harbour crane telemetry"
 	var dropped, droppedTodo atomic.Int32

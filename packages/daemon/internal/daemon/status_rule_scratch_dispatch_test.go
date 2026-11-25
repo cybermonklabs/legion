@@ -21,6 +21,7 @@ import (
 // calls (rerun_child, set_status, release_children) are queued by the API's own
 // change of those routes, whose cases are written with it.
 func TestADaemonStatusWriteNeverBreaksTheRule(t *testing.T) {
+	t.Parallel()
 	for _, rule := range []string{"on", "off"} {
 		t.Run("rule "+rule, func(t *testing.T) {
 			r := newStopReturnRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t), env: []string{parentStatusRule + "=" + rule}}, 3)
