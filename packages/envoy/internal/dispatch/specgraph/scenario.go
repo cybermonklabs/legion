@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
@@ -115,8 +117,8 @@ const (
 //     the graph is judged only at a deploy, and a check of the graph reads unknown there when
 //     graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
-//     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
-//     directory that no subject reads;
+//     it of at most notes.MaxFileSize bytes, which Parse reads and Validate judges with no problem,
+//     as `spec-check tree` does, and no directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
 //     sets its files, a tree of one path or more, each a repository path with a content label that
 //     has a letter or a digit;
@@ -149,8 +151,10 @@ const (
 //     approved spec, needs naming units of the file; with none, no wait is read;
 //   - want.txt (optional), which ReadScenario does not read.
 //
-// A JSON null is refused at each place of each file (decodeJSON), and so is each file that holds
-// more than fileBound bytes, 16 MiB, which is read no further.
+// A JSON null is refused at each place of each file (decodeJSON), and so is each JSON file that
+// holds more than fileBound bytes, 16 MiB, and each spec file that holds more than
+// notes.MaxFileSize, 1 MiB, the bound past which `spec-check tree` and Dispatch's importer refuse a
+// spec file; such a file is read no further.
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
 	entries, err := fs.ReadDir(fsys, ".")
@@ -237,8 +241,9 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
-// parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, each
+// at most notes.MaxFileSize bytes, the bound of `spec-check tree` and of Dispatch's importer, parses
+// them and judges the tree by Validate, and refuses the first problem of Parse, or else of
 // Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
 	trees := map[string]Tree{}
@@ -270,7 +275,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
 				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
 			}
-			if files[entry.Name()], err = readFile(fsys, name); err != nil {
+			if files[entry.Name()], err = readFile(fsys, name, notes.MaxFileSize); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}
 			}
 		}
@@ -439,7 +444,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 
 // readJSON decodes the file name into v with decodeJSON, in the form form.
 func readJSON(fsys fs.FS, name string, v any, form string) error {
-	content, err := readFile(fsys, name)
+	content, err := readFile(fsys, name, fileBound)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
@@ -449,14 +454,14 @@ func readJSON(fsys fs.FS, name string, v any, form string) error {
 	return nil
 }
 
-// readFile is the file name of fsys, at most fileBound bytes of it (readBounded).
-func readFile(fsys fs.FS, name string) ([]byte, error) {
+// readFile is the file name of fsys, at most bound bytes of it (readBounded).
+func readFile(fsys fs.FS, name string, bound int) ([]byte, error) {
 	f, err := fsys.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return readBounded(f)
+	return readBounded(f, bound)
 }
 
 // scenarioFault is the fault of the file name, the format filled with args.

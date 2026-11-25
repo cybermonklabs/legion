@@ -100,29 +100,29 @@ func nullPlace(data []byte) (place string, null bool, err error) {
 // decodeJSONFrom reads r, at most fileBound bytes of it (readBounded), and decodes it with
 // decodeJSON.
 func decodeJSONFrom(r io.Reader, v any, form string) error {
-	data, err := readBounded(r)
+	data, err := readBounded(r, fileBound)
 	if err != nil {
 		return err
 	}
 	return decodeJSON(data, v, form)
 }
 
-// fileBound is the most bytes of one file that the package reads: a JSON file of a format
-// (decodeJSONFrom, so approved.json, history.json and ties.json, and each other JSON file of a
-// scenario) and a spec file of a scenario. 16 MiB is far above any such file, and a file over it is
-// refused, before any of it is decoded or parsed, so that a file which grew past any use cannot
-// take the memory of the process.
+// fileBound is the most bytes of one JSON file of a format that the package reads (decodeJSONFrom,
+// so approved.json, history.json and ties.json, and each other JSON file of a scenario). 16 MiB is
+// far above any such file, and a file over it is refused, before any of it is decoded, so that a
+// file which grew past any use cannot take the memory of the process. A spec file of a scenario has
+// the bound of a spec file instead, notes.MaxFileSize (readScenarioFiles).
 const fileBound = 16 << 20
 
-// readBounded is all of r, or an error that names fileBound where r holds more than it, read up to
-// one byte past the bound.
-func readBounded(r io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, fileBound+1))
+// readBounded is all of r, or an error that names bound where r holds more than bound bytes, read
+// up to one byte past the bound.
+func readBounded(r io.Reader, bound int) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, int64(bound)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > fileBound {
-		return nil, fmt.Errorf("it holds more than %d bytes, the most that the reader reads of a file", fileBound)
+	if len(data) > bound {
+		return nil, fmt.Errorf("it holds more than %d bytes, the most that the reader reads of such a file", bound)
 	}
 	return data, nil
 }
