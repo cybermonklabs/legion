@@ -582,7 +582,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	response, err := c.do(route, false, func() (*http.Request, error) {
 		return c.newRequest(ctx, http.MethodPost, route, "/v1/interests/unsubscribe", bytes.NewReader(body))
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: %s: %w", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
 	if err != nil {
 		return nil, err
@@ -827,12 +827,16 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.
 // route names the read in each error this returns, without query's selector, so the same read
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable).
+// both: no listener answered it (unreachable). Its text names the failure as redact.Cause prints
+// it, which for a request whose query Call does not print is the failure's class alone, and the
+// failure itself is wrapped, not formatted, as a send's is (sendTransportError): the class reads
+// a caller's cancel as "the request failed" and its deadline as "timed out", so errors.Is on the
+// chain is how a caller tells what ended the call.
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
 		return c.newRequest(ctx, http.MethodGet, "GET "+route, route+query, nil)
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: GET %s: %w", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
 }
 

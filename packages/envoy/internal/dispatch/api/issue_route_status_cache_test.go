@@ -2,10 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,12 +242,14 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 // client's window instead, whatever the machine's speed, and the error says which ended it: the
 // fetch's own context (listRouteRoster) takes its deadline before the call begins and the window
 // starts with the call, so the call's context is the sooner of the two, net/http sets no deadline
-// of its own and its error says "context deadline exceeded"; a call the window ended says
-// "Client.Timeout exceeded" (net/http's setRequestCancel). Whether a later read asked again is
-// read off the stored answer, not off the listener's count of calls: a read that asked would have
-// stored a silence of its own, sent later, while a call a loaded machine sends past the half-second
-// bound reaches the listener late or not at all, so a count read after the read returns can miss
-// it.
+// of its own and the error its *url.Error wraps is context.DeadlineExceeded itself; a call the
+// window ended wraps net/http's own timeout type instead (net/http's setRequestCancel), which
+// errors.Is reads as context.DeadlineExceeded too. The chain is read, not the text: the listener
+// client prints a call's failure by its class (redact.Cause), "timed out" for either. Whether a
+// later read asked again is read off the stored answer, not off the listener's count of calls: a
+// read that asked would have stored a silence of its own, sent later, while a call a loaded machine
+// sends past the half-second bound reaches the listener late or not at all, so a count read after
+// the read returns can miss it.
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
 	t.Parallel()
 	const bound = 500 * time.Millisecond
@@ -258,7 +261,7 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
 	}
-	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(roster.err.Error(), "Client.Timeout exceeded") {
+	if call := (*url.Error)(nil); !errors.As(roster.err, &call) || call.Err != context.DeadlineExceeded {
 		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window", roster.err, bound, context.DeadlineExceeded)
 	}
 	sent, _ := storedRosterTimes(t, served)
@@ -357,8 +360,9 @@ func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 
 // A shutdown ends a fetch in flight: it runs on the server's lifetime, so a read waiting on a
 // listener that hangs returns unknown once the lifetime ends, not when the fetch's bound (a minute
-// here) runs out. What ended the fetch is in the answer's error: the lifetime's cancel, where the
-// fetch's bound or the client's window would each read as a deadline.
+// here) runs out. What ended the fetch is in the answer's error chain: the lifetime's cancel, where
+// the fetch's bound or the client's window would each be a deadline. The chain is read, not the
+// text, which names a cancel by its class alone, "the request failed" (redact.Cause).
 func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	t.Parallel()
 	lifetime, shutdown := context.WithCancel(t.Context())
@@ -373,7 +377,7 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	if roster.answered {
 		t.Fatal("a read answered a roster after the shutdown")
 	}
-	if roster.err == nil || !strings.Contains(roster.err.Error(), context.Canceled.Error()) {
+	if !errors.Is(roster.err, context.Canceled) {
 		t.Fatalf("the read's fetch ended with %v, want the shutdown's %v: a fetch the shutdown did not end ran out of a bound instead", roster.err, context.Canceled)
 	}
 }
