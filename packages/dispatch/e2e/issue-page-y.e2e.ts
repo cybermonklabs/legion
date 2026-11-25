@@ -18,6 +18,7 @@ import {
 import { parseDispatchReference, shortForm } from "../web/src/features/refs/routes";
 import { getArtifact } from "./api";
 import { countDocumentSockets } from "./editor";
+import { nextFrames } from "./frames";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { PLANNER_TITLE } from "./issue-layout-seed-support";
 import { gotoIssue, issuePage, issueRead, phase, presetChooser, presetCount } from "./issue-page";
@@ -368,6 +369,26 @@ function checkUnder(page: Page, statement: string, check: string): Locator {
   return verificationCheck(page, check).and(
     verificationCard(page, statement).locator("[data-verification-check]")
   );
+}
+
+/**
+ * Brings `row` into view as a reader's scroll does: through the band just below the view, where
+ * the page measures words it may cut at six lines. A view that drew such a cut would measure it
+ * (`NodeRow.tsx`'s `useClamp`) only as a row mounts in view, or while the row stands within one
+ * screen of the view but wholly outside it; a row already in view keeps its length. A long row
+ * that mounts screens down, as on a phone, and that Playwright's scroll jumps straight into view
+ * is never measured, so it would be drawn whole even with the cut put back. So the row first
+ * stands half a screen below the view's bottom for two frames, where the measurer reads it, and
+ * only then comes into view.
+ */
+async function scrollInAsReader(page: Page, row: Locator): Promise<void> {
+  await row.evaluate((element) => {
+    const top = element.getBoundingClientRect().top + window.scrollY;
+    window.scrollTo(0, Math.max(0, top - 1.5 * window.innerHeight));
+  });
+  await nextFrames(page);
+  await row.scrollIntoViewIfNeeded();
+  await nextFrames(page);
 }
 
 // c-write. On the seed's first comment thread, `f` reaches Write a criterion and Enter aims the
@@ -1065,7 +1086,12 @@ test("a node is edited in place in each filter", async ({ browser }) => {
 });
 
 // The statement and the check that serves it each draw all 200 words at the project's width,
-// without needing a control to open their text.
+// without needing a control to open their text: each is as tall as its words, draws no
+// `CONTROL_LABELS.read_more`, and draws every word written. The height is read first: `innerText`
+// reads every word of words cut short, so only the height tells a cut from words drawn whole.
+// Each row is brought into view as a reader scrolls to it (`scrollInAsReader`), through the band
+// below the view where a cut is measured: on a phone the long rows mount screens down, and a jump
+// straight into view would leave a cut put back unmeasured, so the row could not fail.
 // SLOW(>=2s): seeds the whole issue, appends two blocks and waits for them to be indexed before
 // opening Verification.
 test("the Verification view draws a long statement and a long check whole @phone", async ({
@@ -1082,19 +1108,24 @@ test("the Verification view draws a long statement and a long check whole @phone
       [check, longCheck, "the check"],
     ] as const) {
       const words = rowWords(row);
-      await expect(words).toBeVisible();
-      await expect(words, `${what} is drawn whole`).toHaveText(seeded.words, {
-        useInnerText: true,
-      });
+      // The words are drawn before the height is read: `toContainText` reads every word of a
+      // row's words, cut or not, so it waits for the drawing alone.
+      await expect(words, `${what} draws none of its words`).toContainText(
+        seeded.words.split(" ").at(-1) ?? seeded.words
+      );
+      await scrollInAsReader(page, row);
       expect(
         await words.evaluate(
           (element) => element.scrollHeight - element.getBoundingClientRect().height
         ),
-        `${what} is drawn shorter than its words`
+        `${what} is drawn whole`
       ).toBeLessThanOrEqual(1);
       await expect(rowMore(row), `${what} draws a ${CONTROL_LABELS.read_more} control`).toHaveCount(
         0
       );
+      await expect(words, `${what} does not draw every word written`).toHaveText(seeded.words, {
+        useInnerText: true,
+      });
     }
   });
 });
