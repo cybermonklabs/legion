@@ -14285,6 +14285,9 @@
             },
             "type": "array"
           },
+          "projects_hidden": {
+            "type": "boolean"
+          },
           "revoked_at": {
             "format": "date-time",
             "type": [
@@ -18525,6 +18528,15 @@
           "name": {
             "type": "string"
           },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -19134,6 +19146,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "projects_hidden": {
+            "type": "boolean"
           },
           "revoked_at": {
             "format": "date-time",
@@ -29785,6 +29800,15 @@
       },
       "UpdateAgentTokenScopesInput": {
         "properties": {
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
           "scopes": {
             "items": {
               "type": "string"

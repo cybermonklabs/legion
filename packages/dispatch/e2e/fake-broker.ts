@@ -224,6 +224,11 @@ const server = Bun.serve({
   port: harnessPorts().fakeBroker.port,
   async fetch(request) {
     const url = new URL(request.url);
+    // `GET /v1/settings`: this broker takes the approver fields, as the broker of this release does;
+    // `decide` reads the approver and ignores the rest.
+    if (request.method === "GET" && url.pathname === "/v1/settings") {
+      return Response.json({ approver_fields: true });
+    }
     // The broker's own row shape names no approver: it lists one approver's requests. It lists
     // only the states the caller asks for (Dispatch asks for both), every seeded row when it names
     // none, and never a dismissed row; the pending rows come before the expired ones, as

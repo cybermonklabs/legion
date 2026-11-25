@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  The Dispatch HTTP API document says what a restricted member may do on
+  `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve` and `.../{id}/deny`: decide
+  a machine login of their own, at their browser alone; on `GET /api/v1/machine-logins` and
+  `POST /api/v1/machine-logins/{id}/revoke`: list and revoke their own machine logins, at their
+  browser alone; and which refusal each of their tokens gets there. It also says that taking a
+  restricted member off a project's access list records that Dispatch owes the secrets broker the
+  revocation of their machine logins, that their approve meanwhile is
+  409 MACHINE_LOGIN_REVOCATION_OWED, and that a second approve of theirs while one is at the
+  broker is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT. `DELETE /api/v1/projects/{key}/access/people/{email}`
+  says that a removal that owes nothing holds up no approval of the person's, and that one that
+  finds a restricted member on the list only once it holds the project's lock is
+  409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or another removal of theirs is in progress.
+time: 2026-11-20T10:37:34Z
+custom:
+    Issue: restricted-agent-tokens-named

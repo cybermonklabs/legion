@@ -1,0 +1,26 @@
+-- pgmigrate:non-transactional
+-- 20261119020200_agent_tokens_canonical_owner.up.sql — the index a read of one address's personal
+-- tokens takes.
+--
+-- Every reader that finds an address's tokens compares the stored owner in the form people.email
+-- holds, canonical_login(owner) (migration 20261117000831), which agent_tokens_owner_created_at
+-- (0017), on the owner as stored, cannot serve. Each such read was a scan of agent_tokens. That
+-- cost nothing that mattered while only a sign-in that replaced or first recorded an account ran
+-- one (store.revokeAddressTokensSQL, store.otherAccountsSQL), but the account binding reads the
+-- address's tokens on every check of a personal token that records no account and was made after
+-- the address's recording (store.MintedWhileRefusedLiveSQL, in api.tokenAccountReplaced, which
+-- api.personalTokenActor runs on each request, and the mint's and an approve's re-reads), and the
+-- binding's catch-up reads them again (store.CatchUpAccountBinding). This index lets each of those
+-- read only the address's own tokens; api.TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens
+-- holds the request's statement to it.
+--
+-- canonical_login is immutable, so the index may use it, and a statement that spells the same
+-- expression can read through it. No constraint and no later migration depends on it.
+--
+-- It is built concurrently, outside the runner's transaction: agent_tokens takes a write on every
+-- mint and every token's first use in a minute (last_used_at), and a plain build holds SHARE on
+-- it, which blocks every one of those writes, for as long as one read of the table takes. A failed
+-- concurrent build leaves an INVALID index of this name, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on the next attempt.
+create index concurrently if not exists agent_tokens_canonical_owner
+    on agent_tokens (canonical_login(owner));

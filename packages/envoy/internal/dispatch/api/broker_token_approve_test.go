@@ -127,3 +127,51 @@ func TestNoBrokerTokenGetsApprove(t *testing.T) {
 		})
 	}
 }
+
+// TestABrokerTokenGrantedApproveStillMintsAndDecidesNothing: the scope gate is not the only thing
+// that keeps a broker token from minting and deciding. Here a person-scoped broker token is given
+// approve beside person (brokerPersonScopes, the grant TestNoBrokerTokenGetsApprove fails on), so
+// the gate lets it through to the mint, the approve and the deny; each handler still refuses it,
+// 403 OAUTH_SCOPE_REQUIRED naming approve, before anything reaches the secrets broker or writes a
+// token (refuseUnboundCredential): the re-checks those handlers make once a body has arrived have
+// no arm for a broker token. It changes a package variable, so it does not run in parallel.
+//
+// Control: refuseUnboundCredential answering nil. The mint then writes a token (201) and the
+// approve and the deny reach the secrets broker.
+func TestABrokerTokenGrantedApproveStillMintsAndDecidesNothing(t *testing.T) {
+	granted := brokerPersonScopes
+	brokerPersonScopes = []string{model.ScopePerson, model.ScopeApprove}
+	t.Cleanup(func() { brokerPersonScopes = granted })
+	credentials, rig := newCredentialRelayRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-person-scoped-token-granted-approve"
+	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
+	const name = "minted by a broker token granted approve"
+	for _, c := range []struct{ what, method, path, body string }{
+		{"the approve", http.MethodPost, "/api/v1/credential-requests/request-1/approve", `{}`},
+		{"the deny", http.MethodPost, "/api/v1/credential-requests/request-1/deny", `{}`},
+		{"the mint", http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"` + name + `"}`},
+	} {
+		before := credentials.calls
+		response := rig.serve(caller.presenting(t, c.method, c.path, token, json.RawMessage(c.body)))
+		refusal := decodeBody[refusalAnswer](t, response)
+		if response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired ||
+			!strings.Contains(refusal.Error, "a broker-issued token never mints a token or decides a credential request") {
+			t.Errorf("%s by a broker token granted approve = %d %s, want 403 %s from the handler's own refusal",
+				c.what, response.Code, response.Body.String(), codeScopeRequired)
+		}
+		if challenge := response.Header().Get("WWW-Authenticate"); challenge != insufficientScopeChallenge(model.ScopeApprove) {
+			t.Errorf("%s by a broker token granted approve carried the challenge %q, want %q", c.what, challenge, insufficientScopeChallenge(model.ScopeApprove))
+		}
+		if reached := credentials.calls - before; reached != 0 {
+			t.Errorf("%s by a broker token granted approve reached the secrets broker %d times, want none", c.what, reached)
+		}
+	}
+	var minted int
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from agent_tokens where name = $1`, name).Scan(&minted); err != nil {
+		t.Fatal(err)
+	}
+	if minted != 0 {
+		t.Errorf("the mint by a broker token granted approve wrote %d token rows, want none", minted)
+	}
+}

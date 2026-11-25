@@ -3547,6 +3547,7 @@ export interface components {
       name: string;
       prefix: string;
       projects?: string[];
+      projects_hidden?: boolean;
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -4528,6 +4529,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
+      projects?: null | string[];
       scopes?: null | string[];
     };
     CreateArtifactReviewInput: {
@@ -4645,6 +4647,7 @@ export interface components {
       name: string;
       prefix: string;
       projects?: string[];
+      projects_hidden?: boolean;
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -7075,6 +7078,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
+      projects?: null | string[];
       scopes: null | string[];
     };
     UpdateDeliverySessionGroupInput: {

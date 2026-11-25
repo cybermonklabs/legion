@@ -324,16 +324,20 @@ type ActorOrigin struct {
 // AgentToken is the safely displayable metadata for a human-owned agent token. Scopes is the
 // OAuth scopes the token holds, the set its bearer may act within. Projects is the list of
 // projects it may use, sorted, and absent for a token that lists none, which uses the public
-// projects its person sees.
+// projects its person sees. An answer cuts Projects to what its reader sees, and ProjectsHidden
+// tells the person's own browser that the cut removed some, so a token whose every project is
+// hidden from them is not read as one that lists none. It is absent for every other reader, and
+// whenever nothing was cut.
 type AgentToken struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	Scopes     []string   `json:"scopes"`
-	Projects   []string   `json:"projects,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Prefix         string     `json:"prefix"`
+	Scopes         []string   `json:"scopes"`
+	Projects       []string   `json:"projects,omitempty"`
+	ProjectsHidden bool       `json:"projects_hidden,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+	RevokedAt      *time.Time `json:"revoked_at"`
 }
 
 // Anchor identifies a document mark at a particular named version.

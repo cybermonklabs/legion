@@ -81,8 +81,10 @@ func TestPendingSendsBearerApproverAndBothStates(t *testing.T) {
 }
 
 // Approve and Deny send exactly the Decision Dispatch built — the approver and, for a machine
-// login, the code — as the broker's strict decideBody reads it; a decision with no code carries
-// no code field at all.
+// login, the code, and for an approve the approving Google account when Dispatch knows it and the
+// session generation its check read — as the broker's strict decideBody reads it; a decision with
+// no code carries no code field at all, one with no account no account fields, and one with no
+// generation no generation field.
 func TestDecisionsSendBearerPathAndTheApproverDispatchNames(t *testing.T) {
 	code := "ABCD-1234"
 	for _, tc := range []struct {
@@ -92,6 +94,22 @@ func TestDecisionsSendBearerPathAndTheApproverDispatchNames(t *testing.T) {
 		{"approve", "/v1/credential-requests/req-1/approve", `{"approver":"sjawhar"}`, func(c *Client) (json.RawMessage, error) {
 			return c.Approve(context.Background(), "req-1", Decision{Approver: "sjawhar"})
 		}},
+		{"approve naming the approving account", "/v1/credential-requests/req-1/approve",
+			`{"approver":"sjawhar","code":"ABCD-1234","approver_issuer":"https://accounts.google.com","approver_subject":"1234"}`,
+			func(c *Client) (json.RawMessage, error) {
+				return c.Approve(context.Background(), "req-1", Decision{Approver: "sjawhar", Code: &code, ApproverIssuer: "https://accounts.google.com", ApproverSubject: "1234"})
+			}},
+		{"approve carrying the session generation its check read", "/v1/credential-requests/req-1/approve",
+			`{"approver":"sjawhar","code":"ABCD-1234","approver_session_generation":0}`,
+			func(c *Client) (json.RawMessage, error) {
+				return c.Approve(context.Background(), "req-1", Decision{Approver: "sjawhar", Code: &code, ApproverSessionGeneration: new(int64(0))})
+			}},
+		{"approve naming the account and carrying the generation", "/v1/credential-requests/req-1/approve",
+			`{"approver":"sjawhar","code":"ABCD-1234","approver_issuer":"https://accounts.google.com","approver_subject":"1234","approver_session_generation":7}`,
+			func(c *Client) (json.RawMessage, error) {
+				return c.Approve(context.Background(), "req-1", Decision{Approver: "sjawhar", Code: &code, ApproverIssuer: "https://accounts.google.com", ApproverSubject: "1234",
+					ApproverSessionGeneration: new(int64(7))})
+			}},
 		{"deny with code", "/v1/credential-requests/req-1/deny", `{"approver":"sjawhar","code":"ABCD-1234"}`, func(c *Client) (json.RawMessage, error) {
 			return c.Deny(context.Background(), "req-1", Decision{Approver: "sjawhar", Code: &code})
 		}},
