@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -147,16 +146,9 @@ func readLive(conn *websocket.Conn, nonce, since int64, now func() time.Time, on
 	}
 }
 
-// liveSocketURL is the ws:// (or wss://) URL of Dispatch's GET /ws/live, from its http(s) base.
-func liveSocketURL(dispatch string) (string, error) {
-	if rest, ok := strings.CutPrefix(dispatch, "http://"); ok {
-		return "ws://" + rest + "/ws/live", nil
-	}
-	if rest, ok := strings.CutPrefix(dispatch, "https://"); ok {
-		return "wss://" + rest + "/ws/live", nil
-	}
-	return "", fmt.Errorf("the Dispatch URL %s is neither http:// nor https://", redactURL(dispatch))
-}
+// liveSocketURL is the ws:// (or wss://) URL of Dispatch's GET /ws/live, joined onto its http(s)
+// URL (joinSocketURL).
+func liveSocketURL(dispatch string) (string, error) { return joinSocketURL(dispatch, "/ws/live") }
 
 // liveSummary times the dashboard streams' event frames that arrived in the window, on either
 // dashboard stream (probeDashboard).
