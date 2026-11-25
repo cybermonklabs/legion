@@ -29,7 +29,7 @@
 import { readFileSync, realpathSync } from "node:fs"
 import { dirname, relative } from "node:path"
 import ts from "typescript"
-import { NAMED_BEFORE_GUARD_MS } from "./row-deadline"
+import { NAMED_BEFORE_GUARD_MS, untilTheGuard } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 export interface WaitSite {
@@ -693,9 +693,12 @@ function scanWaitSites(
  * Every wait site of `modules` (`scanWaitSites`), found by this file run as a program, in a
  * process of its own: the scan is seconds of synchronous TypeScript work, which no limit of the
  * caller's could end on the caller's own thread. `rowLimitMs` is the calling row's limit. The
- * process is killed `NAMED_BEFORE_GUARD_MS` before it, and the promise then fails, naming the
- * scan, before Bun's own limit ends the row. The caller's process holds that deadline: a caller
- * killed first leaves the scan to end by itself.
+ * process is killed `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start as Bun counts
+ * the limit (`untilTheGuard`; the calling file runs `rowStarted` in a `beforeEach`), so the
+ * promise fails, naming the scan, before Bun's own limit ends the row, however long the row took
+ * before the spawn. The caller's process holds that deadline: a caller killed first leaves the
+ * scan to end by itself. What the scan writes to stderr reaches the caller's stderr, as it did when
+ * the scan ran in the caller's process.
  */
 export async function waitSites(
   modules: readonly string[],
@@ -704,14 +707,16 @@ export async function waitSites(
   maxBoundMs: number,
   rowLimitMs: number,
 ): Promise<WaitSite[]> {
-  const killAtMs = rowLimitMs - NAMED_BEFORE_GUARD_MS
+  // At least 1 ms: Bun 1.4.4 reads a spawn's `timeout: 0` as no timeout at all, and the row's
+  // time can be spent before the spawn.
+  const deadlineMs = Math.max(1, Math.floor(untilTheGuard(rowLimitMs)))
   const started = performance.now()
   const scan = Bun.spawn(["bun", import.meta.path], {
     env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE },
     stdin: new TextEncoder().encode(JSON.stringify({ modules, root, tsconfig, maxBoundMs })),
     stdout: "pipe",
     stderr: "pipe",
-    timeout: killAtMs,
+    timeout: deadlineMs,
     killSignal: "SIGKILL",
   })
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -722,10 +727,11 @@ export async function waitSites(
   if (exitCode !== 0 || scan.signalCode !== null) {
     throw new Error(
       `the wait-site scan ended after ${Math.round(performance.now() - started)} ms, exit ` +
-        `${exitCode}, signal ${scan.signalCode} (a scan still running at ${killAtMs} ms, ` +
-        `${NAMED_BEFORE_GUARD_MS} ms before the row's limit, is killed with SIGKILL): ${stderr}`,
+        `${exitCode}, signal ${scan.signalCode}; its deadline was ${deadlineMs} ms after its ` +
+        `start, where a SIGKILL ends it ${NAMED_BEFORE_GUARD_MS} ms before the row's limit: ${stderr}`,
     )
   }
+  if (stderr !== "") process.stderr.write(stderr)
   return JSON.parse(stdout)
 }
 
