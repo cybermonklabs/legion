@@ -38,6 +38,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
+  `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it runs a compiled set itself (`RuleSet.Check`) or hands one to the daemon's branch create.
+  Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
+  It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
