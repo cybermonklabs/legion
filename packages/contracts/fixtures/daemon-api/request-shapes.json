@@ -3569,11 +3569,13 @@
       "bootToken",
       "claimToken",
       "generation",
+      "httpStatus",
       "message",
       "outcome",
       "secret",
       "sequence",
-      "sessionId"
+      "sessionId",
+      "unprompted"
     ]
   },
   {
@@ -3611,6 +3613,27 @@
       "summary",
       "verdict",
       "wakeAt"
+    ]
+  },
+  {
+    "contract": 259,
+    "route": "POST /legion/v1/intake/discard",
+    "fieldPaths": [
+      "consumer",
+      "giveUp",
+      "grantId",
+      "reason",
+      "throughSeq"
+    ]
+  },
+  {
+    "contract": 259,
+    "route": "POST /legion/v1/intake/replay",
+    "fieldPaths": [
+      "consumer",
+      "giveUp",
+      "grantId",
+      "throughSeq"
     ]
   },
   {
