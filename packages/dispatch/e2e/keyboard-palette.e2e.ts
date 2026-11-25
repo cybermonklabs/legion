@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { SEARCH_RESULT_KINDS } from "@legion/contracts";
 
+import type { Result } from "../web/src/api/paths";
 import type { SearchResponse } from "../web/src/api/types";
 import { groupResults, optionId } from "../web/src/features/search/search-model";
 import {
@@ -11,18 +12,11 @@ import {
   seedPickerList,
   shownAgentRows,
 } from "./agents";
-import {
-  createIssue,
-  createProject,
-  getIssue,
-  listProjects,
-  paletteSearch,
-  patchIssue,
-} from "./api";
+import { createIssue, createProject, getIssue, listProjects, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { keyedSearchWord } from "./search";
 import { resetDatabase } from "./seed";
-import { expect, type Locator, rowKey, rowSessionId, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,8 +26,8 @@ import { asUser } from "./users";
  * recording's would be. What the palette draws over one fixed answer - its listing, its focus,
  * the addresses its rows open, the way the list fits a window, and where the highlight goes over
  * the hits one search answered - is in `keyboard-palette.stub.e2e.ts`. What a search answers is
- * the server's over every project of the stack, so a row here reads that answer at its start
- * and holds the bar to it (`expectAnswer`).
+ * the server's over every project of the stack, so a row here takes the answer the page itself
+ * received (`pageAnswer`) and holds the bar to it (`expectAnswer`).
  */
 
 /** The bar's hits: every option a search result draws, whose id is `optionId`'s, and none of the
@@ -49,10 +43,10 @@ function hitOptions(dialog: Locator): Locator {
  *  (`groupResults`, the bar's own grouping, web/src/features/search/search-model.ts) - and
  *  `No results for "<words>"` where the answer holds none. Search reads every project of the
  *  stack, so which items match and how they rank is the server's over whatever the stack holds,
- *  other rows' items among them: a row reads the answer at its start, by the request the page
- *  makes (`paletteSearch`), and holds the page to it. Where the highlight goes over one answer,
- *  and what Enter then opens or runs, is the browser's, which `keyboard-palette.stub.e2e.ts`
- *  reads over the answer its row's own seeding makes. */
+ *  other rows' items among them: a row takes the answer the page itself received
+ *  (`pageAnswer`) and holds the page to it. Where the highlight goes over one answer, and what
+ *  Enter then opens or runs, is the browser's, which `keyboard-palette.stub.e2e.ts` reads over
+ *  the answer its row's own seeding makes. */
 async function expectAnswer(dialog: Locator, words: string, answer: SearchResponse): Promise<void> {
   const drawn = groupResults(answer.results ?? []).flatMap((group) => group.results.map(optionId));
   await expect
@@ -61,6 +55,25 @@ async function expectAnswer(dialog: Locator, words: string, answer: SearchRespon
   await expect(dialog.getByText(`No results for "${words}"`)).toHaveCount(
     drawn.length === 0 ? 1 : 0
   );
+}
+
+/** The answer the bar's list ends on for `words`: the whole search the page makes once the
+ *  reader stops typing, by meaning as well as by words, which is the one request for them that
+ *  carries no `keywords_only` (`useTieredSearch`, web/src/features/search/useTieredSearch.ts).
+ *  Take it before the words are typed. A row holds the bar to this answer rather than to one it
+ *  read itself: the server's ranking of the items other rows wrote can move between two reads
+ *  with no write of the row's between them, and another row's issue, `LAYW2GX3-2`, stood seventh
+ *  in an answer read at a row's start and first in the page's (nightly 45541644067). */
+async function pageAnswer(page: Page, words: string): Promise<SearchResponse> {
+  const answered = await page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/v1/search/results" &&
+      url.searchParams.get("q") === words &&
+      !url.searchParams.has("keywords_only")
+    );
+  });
+  return (await answered.json()) as Result<"/api/v1/search/results", "get">;
 }
 
 /** No project of the stack has a key or a name holding `words`. The bar lists every project whose
@@ -83,9 +96,6 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Palette actions" });
-  // What the search answers for `priority p2` below is the server's over every project of the
-  // stack, where another row's items may hold `priority`; nothing this row writes holds it.
-  const priorityAnswer = await paletteSearch("priority p2", core);
   const context = await asUser(browser, "alice");
 
   try {
@@ -171,16 +181,18 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
+    const priorityAnswer = pageAnswer(page, "priority p2");
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
     // `priority p2` sits inside the label rather than starting it, so the row is offered among
-    // the hits the server answered at the row's start: none over an emptied database, and other
-    // rows' items where the stack holds them. That the row is then left unhighlighted, so Enter
-    // alone runs nothing once an answer with no hits is in, is the browser's reading of that
-    // answer, and `keyboard-palette.stub.e2e.ts` reads it over this row's own seeding. The write
-    // the row runs is the server's, so the row is chosen by name, as Reopen is above.
-    await expectAnswer(dialog, "priority p2", priorityAnswer);
+    // the hits the server answered the page: none over an emptied database, and other rows'
+    // items where the stack holds them, since nothing this row writes holds `priority`. That the
+    // row is then left unhighlighted, so Enter alone runs nothing once an answer with no hits is
+    // in, is the browser's reading of that answer, and `keyboard-palette.stub.e2e.ts` reads it
+    // over this row's own seeding. The write the row runs is the server's, so the row is chosen
+    // by name, as Reopen is above.
+    await expectAnswer(dialog, "priority p2", await priorityAnswer);
     await setP2.click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveValue("2");
@@ -226,9 +238,6 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
   const title = `${keyedSearchWord("Astrolabe", core)} issue calibration`;
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title });
-  // What the search answers for `issue` below is the server's over every project of the stack,
-  // where other rows' items hold the word too.
-  const issueAnswer = await paletteSearch("issue", core);
   const context = await asUser(browser, "alice");
 
   try {
@@ -259,14 +268,14 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 
-    // The same query under `$mod+k` lists the hits the server answered for `issue` at the row's
-    // start: this row's own issue over an emptied database, and beside it every other item of the
-    // stack that holds the word, ranked as the server ranks them, below any project whose key or
-    // name holds it. No action here starts with `issue`, so the ones that hold it further in
-    // (`Close issue` among them) sit below the hits, and Enter, which opens the row heading the
-    // list, closes nothing. That the head is this row's own issue, highlighted, and that Enter
-    // opens it, is the browser's reading of an answer that ranks that issue first and names no
-    // project, and `keyboard-palette.stub.e2e.ts` reads it over this row's own seeding.
+    // The same query under `$mod+k` lists the hits the server answered the page for `issue`
+    // (`pageAnswer`): this row's own issue, and beside it every other item of the stack that
+    // holds the word, ranked as the server ranks them, below any project whose key or name holds
+    // it. No action here starts with `issue`, so the ones that hold it further in (`Close issue`
+    // among them) sit below the hits, and Enter, which opens the row heading the list, closes
+    // nothing. That the head is this row's own issue, highlighted, and that Enter opens it, is
+    // the browser's reading of an answer that ranks that issue first and names no project, and
+    // `keyboard-palette.stub.e2e.ts` reads it over this row's own seeding.
     const statusWrites: string[] = [];
     page.on("request", (request) => {
       if (
@@ -278,8 +287,9 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     });
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
+    const issueAnswer = pageAnswer(page, "issue");
     await input.fill("issue");
-    await expectAnswer(dialog, "issue", issueAnswer);
+    await expectAnswer(dialog, "issue", await issueAnswer);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
     await expect(dialog.getByRole("option").last()).toHaveAttribute("id", /^search-option-action-/);
     await input.press("Enter");
@@ -297,13 +307,6 @@ test("a query that holds a card move further in moves no card on Enter", async (
   // Two cards in one column, so `Move card down` from the first one has somewhere to go.
   const first = await createIssue({ project: core, title: "Board query one" });
   const second = await createIssue({ project: core, title: "Board query two" });
-  // What the search answers for each query below is the server's over every project of the
-  // stack, where another row's items may hold `status` or `next`; nothing this row writes does.
-  const answers = {
-    down: await paletteSearch("down", core),
-    next: await paletteSearch("next", core),
-    status: await paletteSearch("status", core),
-  };
   const context = await asUser(browser, "alice");
 
   try {
@@ -329,20 +332,22 @@ test("a query that holds a card move further in moves no card on Enter", async (
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
     // Each query sits inside a move's label without starting it: the move is offered, beside the
-    // hits the server answered for the query at the row's start - none over an emptied database,
-    // and other rows' items where the stack holds them. `down` has no searchable term, so the
-    // server answers no hits for it. That only an arrow can highlight the move, so Enter after an
-    // answer with no hits moves nothing, is the browser's reading of that answer, and
-    // `keyboard-palette.stub.e2e.ts` reads it over this row's own two cards.
+    // hits the server answered the page for the query (`pageAnswer`) - none over an emptied
+    // database, and other rows' items where the stack holds them, since nothing this row writes
+    // holds `status` or `next`. `down` has no searchable term, so the server answers no hits for
+    // it. That only an arrow can highlight the move, so Enter after an answer with no hits moves
+    // nothing, is the browser's reading of that answer, and `keyboard-palette.stub.e2e.ts` reads
+    // it over this row's own two cards.
     for (const [query, move] of [
       ["status", "Move card to the next status"],
       ["down", "Move card down"],
     ] as const) {
       await page.keyboard.press("Control+k");
+      const answer = pageAnswer(page, query);
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
-      await expectAnswer(dialog, query, answers[query]);
+      await expectAnswer(dialog, query, await answer);
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
       await expect(card).toBeFocused();
@@ -360,6 +365,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await route.continue();
     });
     await page.keyboard.press("Control+k");
+    const nextAnswer = pageAnswer(page, "next");
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
     await expect(nextMove).toHaveCount(1);
@@ -374,7 +380,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
     await expect(input).not.toHaveAttribute("aria-activedescendant");
     release.resolve();
     await expect(dialog.getByText("Searching…")).toHaveCount(0);
-    await expectAnswer(dialog, "next", answers.next);
+    await expectAnswer(dialog, "next", await nextAnswer);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(card).toBeFocused();

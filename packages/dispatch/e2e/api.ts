@@ -632,19 +632,6 @@ export function search(query: string, options: ApiOptions = {}) {
   return get("/api/v1/search", { query: { q: query } }, options);
 }
 
-/** `GET /api/v1/search/results` as the palette asks it on a project's or an issue's page once
- *  the reader stops typing (`useTieredSearch`, web/src/features/search/useTieredSearch.ts): the
- *  whole search, with a bare issue number read in `numberProject`, the project of the page. Its
- *  answer is the one the palette's list ends on, so a row that holds the palette's hits to the
- *  server's own answer reads that answer here, by the request the page makes. */
-export function paletteSearch(query: string, numberProject: string, options: ApiOptions = {}) {
-  return get(
-    "/api/v1/search/results",
-    { query: { number_project: numberProject, q: query } },
-    options
-  );
-}
-
 /** `GET /api/v1/me/answers`: the caller's own answers and ask replies, newest first, one page. */
 export function listMyAnswers(
   page: Query<"/api/v1/me/answers", "get"> = {},
