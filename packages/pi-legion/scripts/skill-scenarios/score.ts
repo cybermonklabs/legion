@@ -908,21 +908,29 @@ export function ownRun(calls: readonly StandInCall[], result: RunResult): boolea
  *   git diff … <sha> …        a diff with the commit at one end, a range (`<a>..<sha>`) too
  *   git log -p … <sha> …      the log's patches through the commit (`-p`, `-u` or `--patch`)
  *   git cat-file … <sha> …    the commit's object
+ *   jj show|diff … <sha> …    the same, as jj reads them, the pane's own tool (`jj diff -r <sha>`)
+ *   jj file show … <sha> …    one file of the commit
+ *   jj log -p … <sha> …       the log's patches through the commit (`-p`, `--patch` or `--git`)
  *   gh pr diff …              the pull request's diff
  *   gh api …/commits/<sha>    the commit's files and patches, as GitHub's REST answers them
  *   gh api …/pulls/<n>/files  the pull request's files, each with its patch
  * git's own options may stand before its subcommand (`-C <dir>`, `-c <name>=<value>`,
- * `--no-pager`, `-P`). Each git form and the commits route name the commit by a SHA prefix of
- * seven digits or more (namesCommit); `gh pr diff` and the files route read the pull request at
- * whatever head it stands, and name no commit. */
+ * `--no-pager`, `-P`), and jj's (`-R <dir>`, `--repository <dir>`, `--no-pager`,
+ * `--ignore-working-copy`, `--color <when>`). Each git and jj form and the commits route name the
+ * commit by a SHA prefix of seven digits or more (namesCommit), so a jj change id, which is no
+ * hexadecimal, names none; `gh pr diff` and the files route read the pull request at whatever
+ * head it stands, and name no commit. */
 const GIT_READ =
   /\bgit(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|-P))*\s+(show|diff|log|cat-file)\b([^;&|\n]*)/g;
+const JJ_READ =
+  /\bjj(?:\s+(?:-R\s+\S+|--repository\s+\S+|--no-pager|--ignore-working-copy|--color(?:=|\s+)\S+))*\s+(show|diff|log|file\s+show)\b([^;&|\n]*)/g;
 const LOG_PATCH = /(?:^|\s)(?:-p|-u|--patch)(?=\s|$)/;
+const JJ_LOG_PATCH = /(?:^|\s)(?:-p|--patch|--git)(?=\s|$)/;
 const GH_PR_DIFF = /\bgh\s+pr\s+diff\b/;
 const GH_COMMIT = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/commits\/([0-9a-f]{7,40})\b/g;
 const GH_PR_FILES = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/pulls\/\d+\/files\b/;
 /** Whether the session read the commit `sha` (Verification v47's k2 `accept` (a)): a read, in its
- * transcript, of the commit's diff, its files or its patch, in one of the forms GIT_READ,
+ * transcript, of the commit's diff, its files or its patch, in one of the forms GIT_READ, JJ_READ,
  * GH_PR_DIFF, GH_COMMIT and GH_PR_FILES name. */
 export function readsCommit(entries: SessionEntry[], sha: string): boolean {
   return toolCalls(entries).some(({ tool, command }) => {
@@ -930,8 +938,15 @@ export function readsCommit(entries: SessionEntry[], sha: string): boolean {
     if (GH_PR_DIFF.test(command) || GH_PR_FILES.test(command)) return true;
     if ([...command.matchAll(GH_COMMIT)].some(([, named = ""]) => sha.startsWith(named)))
       return true;
-    return [...command.matchAll(GIT_READ)].some(
-      ([, verb, rest = ""]) => (verb !== "log" || LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
+    return (
+      [...command.matchAll(GIT_READ)].some(
+        ([, verb, rest = ""]) =>
+          (verb !== "log" || LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
+      ) ||
+      [...command.matchAll(JJ_READ)].some(
+        ([, verb, rest = ""]) =>
+          (verb !== "log" || JJ_LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
+      )
     );
   });
 }

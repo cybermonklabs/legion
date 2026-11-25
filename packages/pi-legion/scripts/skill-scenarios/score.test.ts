@@ -11705,9 +11705,10 @@ test("an own run is the recording role's bun greet.ts Ada in a tree at the resul
   });
 });
 
-// Catches: a read of the commit that counts any git or gh call, or only one of the forms the
-// scorer's rule names: git show, diff, log -p and cat-file of the commit by a SHA prefix, gh pr
-// diff, and gh api's commits route and pull-request files route.
+// Catches: a read of the commit that counts any git, jj or gh call, or only one of the forms the
+// scorer's rule names: git and jj show, diff, log -p and file show of the commit by a SHA prefix
+// (jj is the pane's own tool: a real accept run read the commit with `jj diff -r <sha> --git`),
+// git cat-file, gh pr diff, and gh api's commits route and pull-request files route.
 test("a session reads the commit in each form the rule names, and in no other", () => {
   const reads = (command: string) => readsCommit([...header, bash(command)], head);
   expect(
@@ -11719,6 +11720,13 @@ test("a session reads the commit in each form the rule names, and in no other", 
         `git log -1 ${head.slice(0, 12)}`,
         `git cat-file -p ${head}`,
         `git show ${head.slice(0, 12)}:docs/cli.md | head -5`,
+        `jj -R "$WS" diff -r ${head.slice(0, 12)} --git`,
+        `jj --no-pager show ${head}`,
+        `jj file show -r ${head.slice(0, 12)} docs/cli.md`,
+        `jj log -p -r ${head.slice(0, 12)}`,
+        `jj log -r ${head.slice(0, 12)} --no-graph -T description`,
+        "jj diff -r @-",
+        `jj diff -r ${head.slice(0, 6)}`,
         "git show HEAD",
         `git show ${head.slice(0, 6)}`,
         `git show ${"7".repeat(12)}`,
@@ -11737,6 +11745,13 @@ test("a session reads the commit in each form the rule names, and in no other", 
     [`git log -1 ${head.slice(0, 12)}`]: false,
     [`git cat-file -p ${head}`]: true,
     [`git show ${head.slice(0, 12)}:docs/cli.md | head -5`]: true,
+    [`jj -R "$WS" diff -r ${head.slice(0, 12)} --git`]: true,
+    [`jj --no-pager show ${head}`]: true,
+    [`jj file show -r ${head.slice(0, 12)} docs/cli.md`]: true,
+    [`jj log -p -r ${head.slice(0, 12)}`]: true,
+    [`jj log -r ${head.slice(0, 12)} --no-graph -T description`]: false,
+    "jj diff -r @-": false,
+    [`jj diff -r ${head.slice(0, 6)}`]: false,
     "git show HEAD": false,
     [`git show ${head.slice(0, 6)}`]: false,
     [`git show ${"7".repeat(12)}`]: false,
