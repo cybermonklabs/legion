@@ -112,17 +112,26 @@ type Config struct {
 	// one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
-	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
-	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
-	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
-	// issue on to its task's next step (accepting, in the default steps); and, by the gate
-	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
-	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line) and a
-	// base push of an issue in a phase after implementing on that line, each of which can turn the
-	// head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
-	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
-	// is the API-only daemon and a test that drives the reads itself.
+	// ReadMergeState is asked, on the commit of a fact of one pull request that owes a read of
+	// GitHub's merge state (askMergeState, by mergeStateOwed), to read it for the pull
+	// request's head: a fact that leaves a review round waiting on GitHub's answer, which is what
+	// moves an approved issue on to its task's next step (accepting, in the default steps); and, by
+	// the gate classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
+	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line), which can
+	// turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon answers it
+	// with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which is the
+	// API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
+	// ReadBaseMergeStates is asked, on the commit of a push to base of repo (basePush), to read
+	// GitHub's merge state for each pull request on that base the push owes a read, by issue: the
+	// same reasons askMergeState reads a fact of one pull request by (mergeStateOwed:
+	// classify.MergeStateReadOwed's base-push reason, a phase after implementing on the task's
+	// line, or a review round waiting on GitHub), named
+	// all at once, so that one push makes one batch of reads of its base rather than one read of
+	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
+	// requests each, asked for by number). issues is
+	// never empty. Nil asks for none, as ReadMergeState's nil does.
+	ReadBaseMergeStates func(repo, base string, issues []string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
 	// in internal/daemon), which paces every wake the daemon causes together — the role processes
@@ -698,15 +707,15 @@ func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue reco
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
-// parent, label, sequence, the status Dispatch showed and the Dispatch chain its preparation
-// read (Ancestry), with the recorded status kept. It writes nothing, so a caller that gives the
-// issue a phase of its own puts the two in one row (releaseHeldRoot).
+// priority, parent, label, sequence, the status Dispatch showed and the Dispatch chain its
+// preparation read (Ancestry), with the recorded status kept. It writes nothing, so a caller that
+// gives the issue a phase of its own puts the two in one row (releaseHeldRoot).
 func (e *Engine) observedIssue(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (record.Issue, error) {
 	ancestry, err := e.Ancestry(ctx, tx, issue, fact.Ancestry)
 	if err != nil {
 		return issue, err
 	}
-	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), fact.Seq
+	issue.Title, issue.Rank, issue.Priority, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, fact.Priority, record.ParentOf(fact.Parent), fact.Seq
 	issue.HandedOver, issue.DispatchStatus, issue.Ancestry = fact.HandedOver, fact.Status, ancestry
 	return issue, nil
 }
@@ -827,11 +836,13 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
 // brought: admission's promotion of a stranded child (ReenterChild) and Adopt's entry of a queued
-// root's todo members.
+// root's todo members. It is a fact the daemon builds from its own record, so it keeps the stored
+// priority by copying it: a fact built from what Dispatch sent carries Dispatch's, null included,
+// and replaces it.
 func RecordedFact(issue record.Issue) intake.DispatchIssue {
 	fact := intake.DispatchIssue{
 		Key: issue.Key, Seq: issue.LastDispatchSeq, Status: issue.Status, Title: issue.Title,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
+		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
 	}
 	if issue.Parent != nil {
 		fact.Parent = *issue.Parent
@@ -922,7 +933,7 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
-		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
+		Generation: generation, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.WriteIssue(ctx, tx, child); err != nil {
 		return err
@@ -1393,12 +1404,11 @@ const deathReasonCut = "… (cut)"
 
 // deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
 // line breaks between two pieces of its text written as " / " and any at either end dropped, then
-// quoted and cut as quoteBounded writes it. For a run of refused turns the sentence holds the
-// provider's message as the role's own plugin posted it (supervise's refusalCause, api's
-// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
-// record's `detail` keep it whole (noticeFailure). The sentence is cut at runtime.PodEndRunes
-// runes before its line breaks are written, so no more of a mebibyte is read than the bound
-// keeps.
+// quoted and cut as quoteBounded writes it. A failure an earlier daemon wrote for a run of refused
+// turns holds the provider's message as the role's own plugin posted it (the turn-outcome route),
+// which can run to a mebibyte over many lines; the claim and a failure record's `detail` keep it
+// whole (noticeFailure). The sentence is cut at runtime.PodEndRunes runes before its line breaks
+// are written, so no more of a mebibyte is read than the bound keeps.
 func deathSentence(sentence string) string {
 	cut := false
 	if at := runeOffset(sentence, runtime.PodEndRunes); at < len(sentence) {
@@ -2233,8 +2243,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
-// none — a claim the provider refused out of its budget takes a new session all the same, which
-// the claim's own retry decides (supervise's freshSession).
+// none, and resumes the recorded session, whatever the claim's run of refused turns (supervise's
+// freshSession).
 //
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,
 // which is the architect's own words where its retry named any.

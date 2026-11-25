@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1151,7 +1152,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	repository := t.TempDir()
 	t.Chdir(repository)
-	if remotes, err := readGitRemotes(); err != nil || remotes != nil {
+	if remotes, err := readGitRemotes(context.Background()); err != nil || remotes != nil {
 		t.Errorf("readGitRemotes outside a git repository = %v, %v; want none", remotes, err)
 	}
 	// One home for every fixture of this test: each command reads the repository it is given and
@@ -1175,7 +1176,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		// credential a GIT_ variable planted back after the guard could name.
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/pushed.git", push: true},
@@ -1221,7 +1222,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 	// git config writes no key without a value, so that line is written into the repository's
 	// configuration file itself.
 	appendTo(t, filepath.Join(repository, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
-	remotes, err := readGitRemotes()
+	remotes, err := readGitRemotes(context.Background())
 	want := []ghRemote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/widgets.git", push: true},
@@ -1270,7 +1271,7 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 				// environment is its own too, for the reason the test above gives.
 				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
-			if remotes, err := readGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
+			if remotes, err := readGitRemotes(context.Background()); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("readGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
 			}
 		})
@@ -2978,17 +2979,17 @@ func requireGhStartedIgnoringHangup(t *testing.T, path string) {
 const hangupBit = uint64(1) << (syscall.SIGHUP - 1)
 
 // requireHangupIgnored fails the row unless process pid ignores SIGHUP and has no handler for it,
-// as /proc/<pid>/status reports; when names the moment. A process whose status cannot be read, or
-// whose masks do not parse, fails the row too: the row then has no answer, not a clean one.
-//
-// A kernel that reports neither mask line has no source of the answer: gVisor's
-// release-20260803.0 is one, whose /proc/<pid>/stat also gives 0 for the masks of a process that
-// ignores a signal, and no other interface reports another process's disposition. There the row
-// follows the daemon's rule for a test this machine cannot run (internal/launcher's
-// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runners report the masks and a runner
-// that reports none is broken; anywhere else it skips, naming why.
+// as /proc/<pid>/status reports; when names the moment. It first reads that this kernel's status
+// records both masks, and records what a process does with a signal there
+// (testkernel.RequireSignalMasks): gVisor's release-20260803.0 records neither, its
+// /proc/<pid>/stat gives 0 for the masks of a process that ignores a signal, and no other interface
+// reports another process's disposition, so where the kernel has no such record the row follows
+// the daemon's rule for a test this machine cannot run, skipping by name outside CI and failing
+// under GITHUB_ACTIONS. A process whose status cannot be read, lacks a line the probe found, or
+// holds a mask that does not parse, fails the row too: the row then has no answer, not a clean one.
 func requireHangupIgnored(t *testing.T, pid int, when string) {
 	t.Helper()
+	testkernel.RequireSignalMasks(t, "SigIgn", "SigCgt")
 	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		t.Fatalf("read the signal masks of `legion gh` (pid %d) %s: %v", pid, when, err)
@@ -2996,14 +2997,8 @@ func requireHangupIgnored(t *testing.T, pid int, when string) {
 	ignored, ignoredOK := statusSignalMask(t, status, "SigIgn")
 	caught, caughtOK := statusSignalMask(t, status, "SigCgt")
 	switch {
-	case !ignoredOK && !caughtOK:
-		reason := "this kernel's /proc/<pid>/status reports no signal masks (gVisor's release-20260803.0 is one), so nothing reports whether `legion gh` ignores SIGHUP or holds a handler for it"
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			t.Fatalf("%s: CI's runners report them, so this runner is broken", reason)
-		}
-		t.Skip(reason)
 	case !ignoredOK || !caughtOK:
-		t.Fatalf("the status of `legion gh` (pid %d) %s holds one of SigIgn and SigCgt and not the other:\n%s", pid, when, status)
+		t.Fatalf("the status of `legion gh` (pid %d) %s lacks SigIgn or SigCgt, which this kernel's probe found in a shell's:\n%s", pid, when, status)
 	case caught&hangupBit != 0:
 		t.Fatalf("`legion gh` has a handler for SIGHUP %s (SigCgt %#x): the handler takes the hangup, and may end `legion gh` or forward it to gh at any later moment", when, caught)
 	case ignored&hangupBit == 0:

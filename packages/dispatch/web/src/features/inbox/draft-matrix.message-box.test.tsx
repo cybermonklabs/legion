@@ -60,6 +60,7 @@ import {
   REFUSAL,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type {
@@ -85,6 +86,7 @@ function issueMessage(id: string, issueKey: string): Message {
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: issueKey,

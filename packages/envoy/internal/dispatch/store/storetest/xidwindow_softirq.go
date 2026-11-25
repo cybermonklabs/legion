@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A kernel that does not account interrupt time apart (CONFIG_IRQ_TIME_ACCOUNTING not set, or set
@@ -114,7 +116,7 @@ var xidInterruptTimeCharged = xidReadInterruptTimeCharged
 func XidChargeInterruptTime(t testing.TB) {
 	t.Helper()
 	xidInterruptTimeCharged = func() bool { return true }
-	t.Cleanup(func() { xidInterruptTimeCharged = xidReadInterruptTimeCharged })
+	testcleanup.Add(t, func() { xidInterruptTimeCharged = xidReadInterruptTimeCharged })
 }
 
 // xidSoftirqReading is one reading of the softirq counts of the CPU a held thread is pinned to

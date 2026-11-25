@@ -1383,7 +1383,20 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
-		Groups:    groupReader,
+		// BROKER_GITHUB_APP_FIELD=off: the github_app field an agent-secrets of a release before
+		// --target sends is refused 400 GITHUB_APP_FIELD_REMOVED rather than answered. Unset, it
+		// is answered for the requesters and the secrets below, and for nothing else.
+		GitHubAppFieldOff: cfg.GitHubAppFieldOff,
+		// BROKER_GITHUB_APP_FIELD_REQUESTERS: the registered services and people that field is
+		// answered for, separated by commas or spaces. Unset, the broker answers no service at
+		// all, and a person asking for their own App is answered whatever it names, so a
+		// deployment's own value is what turns the answer on for its pods.
+		GitHubAppFieldRequesters: cfg.GitHubAppFieldRequesters,
+		// BROKER_GITHUB_APP_FIELD_SECRETS: the stored github-app secrets that field hands over
+		// outside the airlock, separated by commas or spaces. Unset, the broker names none, so
+		// it answers the field for no secret at all.
+		GitHubAppFieldSecrets: cfg.GitHubAppFieldSecrets,
+		Groups:                groupReader,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	m.Chain.Groups = groupReader
@@ -1677,8 +1690,9 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 // together. Both trades that mint one come through here — a machine's own, which carries its
 // fleet's service and no person, and a person's sign-in on such a machine, which carries that
 // person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, which the exchange answers
-// invalid_grant.
+// another live credential holds is oauth.ErrMachineKeyTaken, and a key a live read token is bound
+// to (enroll.ErrKeyBindsReadToken) is oauth.ErrMachineKeyBindsReadToken; the exchange answers
+// each invalid_grant with a hint of its own.
 func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
 		tx, ok := oauthstore.TxFrom(ctx)
@@ -1695,8 +1709,11 @@ func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 			JWK:          cred.JWK,
 			Expires:      cred.Expires,
 		})
-		if store.IsUniqueViolation(err) {
+		if enroll.KeyHeld(err) {
 			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
+		}
+		if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
 		}
 		if err != nil {
 			return "", err
