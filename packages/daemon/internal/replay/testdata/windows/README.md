@@ -35,7 +35,10 @@ This file gives the conventions every window is written and worked by, once: the
 ## What a directory holds
 
 - `window.json`, `log.jsonl` and `events/<KEY>.jsonl` (and `merges/<owner>__<name>.jsonl` in `clock-far-from-now` and `conflict-from-fitted-rate`, which hold base-branch commits), in the format of `window.go`: `ReadWindow` checks each input against the sha256 `files` records.
-  After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl` where the window has that directory.
+  A window that holds a record of R11's signals holds its inputs too, each optional: `launcher/log.jsonl` (`{time, pod, text}`, the launcher's lines, in `signal-crosses-with-no-event` and `no-crossing-due`), `signals/provider.jsonl`, `signals/memory.jsonl`, `queue/<owner>__<name>.jsonl` and `settings/events.jsonl`.
+  Its `window.json` names each signal's spans in `signals` (`{"kills": [{"from", "to"}]}`), and may give `defaultAssignee` and the P0 bound's changes in `p0Bounds` (`[{"at", "bound"}]`, in `p0-at-its-bound`).
+  `replay.md`'s "The records of the signals" gives each file's form.
+  After an edit of an input, write its new hash into `files`: `sha256sum log.jsonl events/*.jsonl`, adding `merges/*.jsonl` and each signal input where the window has them.
   `TestFixtureWindows` reads every window with `ReadWindow` before it replays it (it needs `LEGION_TEST_PG_DSN`), and `TestTheFixtureWindowsCoverK1` reads each window of k1's list without a database, so a hash that differs fails them.
 
 - `README.md`: the window's issues, what happens, what changes under each rule it names, and every

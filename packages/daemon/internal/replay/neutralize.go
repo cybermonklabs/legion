@@ -2,6 +2,7 @@ package replay
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -79,10 +80,16 @@ type NeutralMap struct {
 // already in a documentation range; each person's login and email; each uuid and document
 // digest; each link outside this repository; each label but Legion's, component and priority;
 // and the free text of Dispatch's events (titles, summaries, reasons, questions, answers, bodies)
-// to numbered neutral text. It changes values alone: every member, JSON type and list length of
-// every line is the record's, so the neutral window is read by the same readers. The daemon's
-// msgs, document names, ranks, statuses and times are kept, and so are the daemon's own words in
-// its lines, their names renamed. It writes the map to cfg.Map and returns it. It refuses a map
+// to numbered neutral text. The inputs of the signals are renamed by the same rules: a pod's name
+// and a pull request's branch have their keys and the logins of the window's people renamed
+// (renameLogins), the launcher's lines and the pods' memory the names their shapes show, the
+// merge queue's events their GitHub accounts (login, numeric id, node id and links) and the
+// repository of their file, the project's settings events as Dispatch's events (a token's name
+// and a source's last error among them), and the default assignee as a person. It changes values
+// alone: every member, JSON type and list length of every line is the record's, so the neutral
+// window is read by the same readers. The daemon's msgs, document names, ranks, statuses and times
+// are kept, and so are the daemon's own words in its lines, their names renamed. It writes the map
+// to cfg.Map and returns it. It refuses a map
 // inside cfg.Out or already there, an Out that is In or holds files, a deny word that is part of
 // withheld, the word every deny word is replaced with, whose replacement would put it back, a
 // window holding more IPv4 addresses than the documentation ranges hold, and a neutral window that
@@ -113,6 +120,9 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 			n.register(merge.Branch, field{source: sourceMerges, key: "branch"})
 		}
 	}
+	for _, repo := range slices.Sorted(maps.Keys(w.Queue)) {
+		n.addRepo(repo)
+	}
 	n.number(w.Project)
 
 	out := w
@@ -142,6 +152,35 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 			renamed[i] = merge
 		}
 		out.Merges[n.repo(repo)] = renamed
+	}
+	// An input of the signals the window does not hold stays missing (out holds w's nil).
+	if w.Settings != nil {
+		if out.Settings, err = n.rewriteAll(parsed.settings, sourceEvent); err != nil {
+			return NeutralMap{}, err
+		}
+	}
+	if w.Launcher != nil {
+		if out.Launcher, err = rewriteTyped[LauncherLine](n, parsed.launcher); err != nil {
+			return NeutralMap{}, err
+		}
+	}
+	if w.Memory != nil {
+		if out.Memory, err = rewriteTyped[MemorySample](n, parsed.memory); err != nil {
+			return NeutralMap{}, err
+		}
+	}
+	if w.Provider != nil {
+		if out.Provider, err = rewriteTyped[ProviderMinute](n, parsed.provider); err != nil {
+			return NeutralMap{}, err
+		}
+	}
+	if w.Queue != nil {
+		out.Queue = make(map[string][]json.RawMessage, len(w.Queue))
+		for _, repo := range slices.Sorted(maps.Keys(parsed.queue)) {
+			if out.Queue[n.repo(repo)], err = n.rewriteAll(parsed.queue[repo], sourceQueue); err != nil {
+				return NeutralMap{}, err
+			}
+		}
 	}
 	if n.err != nil {
 		return NeutralMap{}, n.err
@@ -234,7 +273,8 @@ func writeNeutralMap(file string, m NeutralMap) error {
 }
 
 // source is which input of a window a value is read from, which decides what some of its members
-// name: a reason in a Dispatch event is a person's text, in a daemon line the daemon's words.
+// name: a reason in a Dispatch event is a person's text, in a daemon line the daemon's words. A
+// settings event is a Dispatch event, and is read as one.
 type source int
 
 const (
@@ -242,6 +282,13 @@ const (
 	sourceLog
 	sourceEvent
 	sourceMerges
+	// sourceRecord is the signals' records whose words are their writers' own: the launcher's
+	// lines, the pods' memory and the provider's minutes, every name in which is found by its
+	// shape, as in the daemon's lines.
+	sourceRecord
+	// sourceQueue is the merge queue's events as GitHub serves them, whose actors are GitHub's
+	// accounts.
+	sourceQueue
 )
 
 // field is where a string stands in a line: its input, the name of the member it is the value of
@@ -257,42 +304,78 @@ type field struct {
 // parsedWindow is a window's inputs and window.json as ordered JSON values (decodeOrdered), each
 // in the order the neutralizer reads them, so the numbering of names is the same on every run.
 type parsedWindow struct {
-	header any
-	log    []any
-	events map[string][]any
+	header                     any
+	log                        []any
+	events                     map[string][]any
+	settings                   []any
+	launcher, memory, provider []any
+	queue                      map[string][]any
 }
 
-// parseWindow is w as ordered JSON values. window.json is w's own fields as Write writes them.
+// parseWindow is w as ordered JSON values. window.json is w's own fields as Write writes them, and
+// each input of the signals the window holds its lines as Write writes them.
 func parseWindow(w Window) (parsedWindow, error) {
 	header, err := json.Marshal(w)
 	if err != nil {
 		return parsedWindow{}, err
 	}
-	p := parsedWindow{events: make(map[string][]any, len(w.Events))}
+	p := parsedWindow{events: make(map[string][]any, len(w.Events)), queue: make(map[string][]any, len(w.Queue))}
 	if p.header, err = decodeOrdered(header); err != nil {
 		return parsedWindow{}, err
 	}
-	for i, line := range w.Log {
-		value, err := decodeOrdered(line)
-		if err != nil {
-			return parsedWindow{}, fmt.Errorf("log line %d: %w", i+1, err)
-		}
-		p.log = append(p.log, value)
+	if p.log, err = decodeAll(w.Log, "log line"); err != nil {
+		return parsedWindow{}, err
 	}
 	for key, events := range w.Events {
-		for i, event := range events {
-			value, err := decodeOrdered(event)
-			if err != nil {
-				return parsedWindow{}, fmt.Errorf("event %d of %s: %w", i+1, key, err)
-			}
-			p.events[key] = append(p.events[key], value)
+		if p.events[key], err = decodeAll(events, "event of "+key); err != nil {
+			return parsedWindow{}, err
+		}
+	}
+	if p.settings, err = decodeAll(w.Settings, "settings event"); err != nil {
+		return parsedWindow{}, err
+	}
+	for _, input := range []struct {
+		into  *[]any
+		what  string
+		lines func() ([]json.RawMessage, error)
+	}{
+		{&p.launcher, "launcher line", func() ([]json.RawMessage, error) { return marshalLines(w.Launcher) }},
+		{&p.memory, "memory sample", func() ([]json.RawMessage, error) { return marshalLines(w.Memory) }},
+		{&p.provider, "provider minute", func() ([]json.RawMessage, error) { return marshalLines(w.Provider) }},
+	} {
+		lines, err := input.lines()
+		if err == nil {
+			*input.into, err = decodeAll(lines, input.what)
+		}
+		if err != nil {
+			return parsedWindow{}, err
+		}
+	}
+	for repo, lines := range w.Queue {
+		if p.queue[repo], err = decodeAll(lines, "queue line of "+repo); err != nil {
+			return parsedWindow{}, err
 		}
 	}
 	return p, nil
 }
 
+// decodeAll is each of lines as an ordered JSON value, a line that does not read named as the
+// what of its place.
+func decodeAll(lines []json.RawMessage, what string) ([]any, error) {
+	values := make([]any, 0, len(lines))
+	for i, line := range lines {
+		value, err := decodeOrdered(line)
+		if err != nil {
+			return nil, fmt.Errorf("%s %d: %w", what, i+1, err)
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
 // visit hands each value of p to do with its input, window.json first, then the log in its order,
-// then each issue's events by key.
+// then each issue's events by key, then the settings events, the launcher's lines, the pods'
+// memory and the provider's minutes, each in its order, and each repository's queue by repository.
 func (p parsedWindow) visit(do func(v any, from source)) {
 	do(p.header, sourceWindow)
 	for _, line := range p.log {
@@ -304,6 +387,35 @@ func (p parsedWindow) visit(do func(v any, from source)) {
 			do(event, sourceEvent)
 		}
 	}
+	for _, event := range p.settings {
+		do(event, sourceEvent)
+	}
+	for _, line := range slices.Concat(p.launcher, p.memory, p.provider) {
+		do(line, sourceRecord)
+	}
+	for _, repo := range slices.Sorted(maps.Keys(p.queue)) {
+		for _, line := range p.queue[repo] {
+			do(line, sourceQueue)
+		}
+	}
+}
+
+// rewriteTyped is values, lines of one of the signals' records (sourceRecord), rewritten and read
+// back as T.
+func rewriteTyped[T any](n *neutralizer, values []any) ([]T, error) {
+	lines, err := n.rewriteAll(values, sourceRecord)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(lines))
+	for i, line := range lines {
+		var value T
+		if err := json.Unmarshal(line, &value); err != nil {
+			return nil, fmt.Errorf("replay: neutralize: read the neutral line %d back: %w", i+1, err)
+		}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 // neutralizer renames the names of one window (Neutralize): a first walk over every value
@@ -324,6 +436,9 @@ type neutralizer struct {
 	// values is every string the first walk met outside a person's text, which collectKeys reads
 	// for keys and collectAddresses for documentation addresses once every project is registered.
 	values []string
+	// logins is every person's login the first walk met (a Dispatch login that is no email, a
+	// GitHub account's), which a pod's name or a pull request's branch can spell (renameLogins).
+	logins map[string]bool
 	// names is the matcher of every name a string can hold anywhere (rename), built by number.
 	names *regexp.Regexp
 	// counters is the next number of each kind of neutral name.
@@ -342,7 +457,7 @@ const withheld = "withheld"
 // that withheld holds, in any case: such a word's replacement would hold the word again, and the
 // check of the bytes written (checkWritten) would refuse every window that holds it.
 func newNeutralizer(cfg NeutralizeConfig) (*neutralizer, error) {
-	n := &neutralizer{project: cfg.Project, keys: make(map[string]map[int]bool), counters: make(map[string]int),
+	n := &neutralizer{project: cfg.Project, keys: make(map[string]map[int]bool), logins: make(map[string]bool), counters: make(map[string]int),
 		documented: make(map[netip.Addr]bool), m: NeutralMap{
 			Projects: map[string]string{}, Keys: map[string]string{}, Repos: map[string]string{}, People: map[string]string{},
 			Sessions: map[string]string{}, Titles: map[string]string{}, Machines: map[string]string{}, Hosts: map[string]string{},
@@ -408,14 +523,22 @@ var (
 	// keptMembers are members whose value is a word of the daemon's or of Dispatch's, which a
 	// replay reads as written, or a value with no name in it: never renamed.
 	keptMembers = map[string]bool{"msg": true, "level": true, "time": true, "type": true, "name": true, "slug": true,
-		"rank": true, "changed": true, "lines": true, "rule": true, "commit": true, "collector": true}
+		"rank": true, "changed": true, "lines": true, "rule": true, "commit": true, "collector": true, "minute": true}
 	// freeTextMembers are members of a Dispatch event whose value is text a person or an agent
-	// wrote: each value becomes numbered neutral text.
+	// wrote, or Dispatch's own text that quotes their names (a settings source's last error):
+	// each value becomes numbered neutral text.
 	freeTextMembers = map[string]bool{"title": true, "summary": true, "reason": true, "question": true, "text": true,
-		"body": true, "description": true, "label": true, "selected": true, "note": true, "message": true, "comment": true}
+		"body": true, "description": true, "label": true, "selected": true, "note": true, "message": true, "comment": true,
+		"last_error": true}
 	// personMembers are members of a Dispatch event whose value is a person's login or email.
 	personMembers = map[string]bool{"assignee": true, "user": true, "login": true, "thread_logins": true, "asked_of": true,
 		"asked_of_by": true}
+	// repoMembers are members whose value is a repository as owner/name: an issue's, the one
+	// Dispatch resolved for it, and the one a repository's mapping was renamed to.
+	repoMembers = map[string]bool{"repo": true, "resolved_repo": true, "renamed_to": true}
+	// spelledMembers are members whose value can spell a person's login and an issue key: a pod's
+	// name and a pull request's branch (renameLogins).
+	spelledMembers = map[string]bool{"pod": true, "branch": true, "head_ref": true, "base_ref": true}
 )
 
 // walk reads v under f: registering its projects, keys and repositories where rewrite is false,
@@ -462,6 +585,11 @@ func (n *neutralizer) walk(v any, f field, rewrite bool) any {
 			return n.visit(value, f)
 		}
 		n.register(value, f)
+	case json.Number:
+		// A GitHub account's numeric id names the account as its login does.
+		if rewrite && f.source == sourceQueue && f.parent == "actor" && f.key == "id" {
+			return json.Number(n.named(n.m.IDs, "github-id", "github:"+value.String(), func(i int) string { return strconv.Itoa(i) }))
+		}
 	}
 	return v
 }
@@ -486,17 +614,21 @@ func numberFollowsKey(object jsonObject) {
 	}
 }
 
-// register takes from s, standing at f, the projects, keys and repositories the first walk
+// register takes from s, standing at f, the projects, keys, repositories and logins the first walk
 // registers: a project member's value, a value that is one issue key, a repository member's value,
-// the repository of a workspace or of a link to GitHub, and the window's events' keys.
+// the repository of a workspace or of a link to GitHub, the window's events' keys, and a person's
+// login that is no email, in a Dispatch event or as a GitHub account's login in the merge queue.
 func (n *neutralizer) register(s string, f field) {
 	switch {
 	case f.key == "project":
 		n.addProject(s)
 	case f.source == sourceEvent && freeTextMembers[f.key]:
 		return
-	case f.key == "repo" || f.key == "resolved_repo":
+	case repoMembers[f.key]:
 		n.addRepo(s)
+	case !strings.Contains(s, "@") && ((f.source == sourceEvent && (personMembers[f.key] || (f.key == "id" && f.kind == "user"))) ||
+		(f.source == sourceQueue && f.key == "login")):
+		n.logins[s] = true
 	}
 	if match := workspacePath.FindStringSubmatch(s); match != nil {
 		n.addRepo(match[1])
@@ -654,8 +786,18 @@ func (n *neutralizer) byMember(s string, f field) string {
 	switch {
 	case f.key == "project":
 		return n.projectName(s)
+	case spelledMembers[f.key]:
+		return n.renameLogins(n.rename(s))
 	case f.source == sourceLog:
 		return n.rename(s)
+	case f.source == sourceWindow && f.key == "defaultAssignee":
+		return n.person(s)
+	case f.source == sourceQueue && f.key == "login":
+		return n.person(s)
+	case f.source == sourceQueue && f.parent == "actor" && f.key == "node_id":
+		return n.named(n.m.IDs, "github-node", s, func(i int) string { return fmt.Sprintf("node-%d", i) })
+	case f.source == sourceEvent && f.key == "token_name":
+		return n.named(n.m.Names, "token", s, func(i int) string { return fmt.Sprintf("token-%d", i) })
 	case f.source == sourceEvent && freeTextMembers[f.key]:
 		return n.named(n.m.Text, "text", s, func(i int) string { return fmt.Sprintf("text %d", i) })
 	case f.source == sourceEvent && (personMembers[f.key] || (f.key == "id" && f.kind == "user")):
@@ -690,7 +832,7 @@ func (n *neutralizer) byMember(s string, f field) string {
 		return n.named(n.m.Hosts, "host", s, func(i int) string { return fmt.Sprintf("host-%d", i) })
 	case f.key == "cwd":
 		return n.workdir(s)
-	case f.key == "repo" || f.key == "resolved_repo":
+	case repoMembers[f.key]:
 		return n.repo(s)
 	case f.key == "url":
 		return n.link(s)
@@ -757,6 +899,41 @@ func (n *neutralizer) rename(s string) string {
 	}
 	out.WriteString(s[last:])
 	return out.String()
+}
+
+// renameLogins is s, a pod's name or a pull request's branch, with each person's login it spells
+// renamed to that person's neutral login: a login the window names elsewhere (logins), standing
+// in s between characters that are no letter or digit, the longest first, so a login inside a
+// longer one is not renamed in its place.
+func (n *neutralizer) renameLogins(s string) string {
+	logins := slices.SortedFunc(maps.Keys(n.logins), func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
+	for _, login := range logins {
+		var out strings.Builder
+		last := 0
+		for from := 0; ; {
+			i := strings.Index(s[from:], login)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(login)
+			if bounded(s, start, end) {
+				out.WriteString(s[last:start])
+				out.WriteString(n.person(login))
+				last = end
+			}
+			from = end
+		}
+		out.WriteString(s[last:])
+		s = out.String()
+	}
+	return s
+}
+
+// bounded says whether s[start:end] stands between characters of s that are no letter or digit,
+// or s's ends.
+func bounded(s string, start, end int) bool {
+	word := func(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' }
+	return (start == 0 || !word(s[start-1])) && (end == len(s) || !word(s[end]))
 }
 
 // named is the neutral name of s in names, made with neutral from the next number of kind where

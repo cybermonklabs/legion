@@ -25,25 +25,57 @@ import (
 const WindowFormat = 1
 
 // The files of a window, by their names relative to its directory. window.json is the window
-// itself; the other three hold the inputs it names in its files map.
+// itself; the others hold the inputs it names in its files map.
 const (
-	windowFile = "window.json"
-	logFile    = "log.jsonl"
-	eventsDir  = "events"
-	mergesDir  = "merges"
+	windowFile   = "window.json"
+	logFile      = "log.jsonl"
+	eventsDir    = "events"
+	mergesDir    = "merges"
+	providerFile = "signals/provider.jsonl"
+	memoryFile   = "signals/memory.jsonl"
+	launcherFile = "launcher/log.jsonl"
+	queueDir     = "queue"
+	settingsFile = "settings/events.jsonl"
 )
+
+// The signals of R11, each by the name a window's signals map gives its record under.
+const (
+	SignalIdle      = "idle"
+	SignalQueue     = "queue"
+	SignalProvider  = "provider"
+	SignalKills     = "kills"
+	SignalApprovals = "approvals"
+)
+
+// windowSignals is every signal a window's signals map may name.
+var windowSignals = []string{SignalIdle, SignalQueue, SignalProvider, SignalKills, SignalApprovals}
 
 // Window is one recorded window of a daemon's project: what the daemon was told and what it said
 // over [From, To), read from a directory (ReadWindow) and written to one (Write). window.json
-// holds every field with a JSON name; the inputs it names in Files are the three kinds of file
-// beside it, held here as read:
+// holds every field with a JSON name; the inputs it names in Files are the files beside it, held
+// here as read:
 //
 //   - log.jsonl, the daemon's structured lines, one JSON object per line, exactly as its JSON
 //     handler writes them on stderr (time, level, msg and the attributes), in the order written;
 //   - events/<KEY>.jsonl, each issue's Dispatch events, one raw event per line, oldest first,
 //     exactly as Dispatch's issue event log serves them (the shape intake.DecodeDispatchEvent
 //     reads);
-//   - merges/<owner>__<repo>.jsonl, the first-parent commits of a repository's base branches.
+//   - merges/<owner>__<repo>.jsonl, the first-parent commits of a repository's base branches;
+//
+// and the inputs of R11's signals, each optional:
+//
+//   - signals/provider.jsonl, the deployment's record of the model provider, one ProviderMinute a
+//     minute;
+//   - launcher/log.jsonl, the launcher's lines of the project's issue pods (LauncherLine), whose
+//     memory guard lines are the record of its kills;
+//   - signals/memory.jsonl, the pods' memory, one MemorySample a minute for each pod;
+//   - queue/<owner>__<repo>.jsonl, the merge queue's events of the repository's pull requests,
+//     each the timeline event as GitHub serves it with its pull request's number (ParseQueueLine);
+//   - settings/events.jsonl, the project's own settings events of Dispatch's event log, verbatim,
+//     in the log's order (ParseSettingsEvent).
+//
+// A window with none of the signals' inputs, as every window collected before them, holds no
+// record of any signal (Recorded).
 //
 // A window is the record a replay runs from (RunConfig.Window) and the record a scorecard is read
 // from (Score), so both read the same bytes, and the hash of each input in Files is what says
@@ -67,6 +99,10 @@ type Window struct {
 	After Duration `json:"after,omitempty"`
 	// Caps is the admission cap the daemon ran with, each from its At on.
 	Caps []CapAt `json:"caps"`
+	// P0Bounds is R10's bound on the slots P0 work may hold, each from its At on, as the daemon's
+	// line of each change of the bound gives it; none where the window holds no such line, and
+	// window.json then names none.
+	P0Bounds []BoundAt `json:"p0Bounds,omitempty"`
 	// Parts says which release, commit and slot rule the daemon ran over each part of the window.
 	Parts []Part `json:"parts"`
 	// TickInterval is the deployment's controller_wake_interval: the period of the tick passes.
@@ -95,6 +131,13 @@ type Window struct {
 	// Files is the sha256, as lower-case hex, of every input file, by its path relative to the
 	// window's directory, written with forward slashes.
 	Files map[string]string `json:"files"`
+	// DefaultAssignee is the project's default assignee in Dispatch at the start of the inputs'
+	// reach where no settings event before that start names it, as the deployment gave it: a
+	// pod's credential cannot read the value, and the value a migration filled has no event.
+	DefaultAssignee string `json:"defaultAssignee,omitempty"`
+	// Signals is, for each signal of R11 the window holds a record of, the spans it holds one in,
+	// in time order; a signal it names no span of has no record anywhere in the window (Q4).
+	Signals map[string][]Span `json:"signals,omitempty"`
 
 	// Log is log.jsonl's lines, in the file's order.
 	Log []json.RawMessage `json:"-"`
@@ -102,6 +145,44 @@ type Window struct {
 	Events map[string][]json.RawMessage `json:"-"`
 	// Merges is each merges file's commits, by repository as owner/repo.
 	Merges map[string][]Merge `json:"-"`
+	// Provider is signals/provider.jsonl's minutes, Launcher launcher/log.jsonl's lines, Memory
+	// signals/memory.jsonl's samples and Settings settings/events.jsonl's events, each in its
+	// file's order and nil where the window holds no such file; Queue is each queue file's lines,
+	// by repository as owner/repo. An input held empty is a file with no line: a record that
+	// holds nothing, which is not a missing record.
+	Provider []ProviderMinute             `json:"-"`
+	Launcher []LauncherLine               `json:"-"`
+	Memory   []MemorySample               `json:"-"`
+	Queue    map[string][]json.RawMessage `json:"-"`
+	Settings []json.RawMessage            `json:"-"`
+}
+
+// Recorded says whether w holds a record of signal at at: whether at is in one of the spans its
+// signals map gives that signal.
+func (w Window) Recorded(signal string, at time.Time) bool {
+	for _, span := range w.Signals[signal] {
+		if span.Holds(at) {
+			return true
+		}
+	}
+	return false
+}
+
+// Span is the time span [From, To).
+type Span struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+// Holds says whether at is in s.
+func (s Span) Holds(at time.Time) bool {
+	return !at.Before(s.From) && at.Before(s.To)
+}
+
+// BoundAt is R10's bound on the slots P0 work may hold, from At on.
+type BoundAt struct {
+	At    time.Time `json:"at"`
+	Bound int       `json:"bound"`
 }
 
 // End is where w's inputs end: To, plus the run-out where w holds one (After). A replay runs to it,
@@ -180,8 +261,9 @@ func readWindowHead(dir string) (Window, error) {
 // ReadWindow reads the window in dir: window.json (readWindowHead), then every input its Files
 // names, each checked against its sha256 before it is read. It refuses a window of another format,
 // an input that is missing or whose hash differs, a name in Files that is no input of the format, a
-// line of an input that is not one JSON object, and an input file in dir that Files does not name,
-// since nothing would check it. Other files of dir — a fixture's README.md and expect.json — are no
+// line of an input that is not one JSON object or not of that input's form, an input file in dir
+// that Files does not name, since nothing would check it, and a record of the signals no reader
+// could trust (checkSignals). Other files of dir — a fixture's README.md and expect.json — are no
 // part of the window and are not read.
 func ReadWindow(dir string) (Window, error) {
 	w, err := readWindowHead(dir)
@@ -207,6 +289,10 @@ func ReadWindow(dir string) (Window, error) {
 		if err != nil {
 			return Window{}, fmt.Errorf("read the window in %s: %s: %w", dir, name, err)
 		}
+		// refuse names the line of the input that does not read.
+		refuse := func(i int, err error) (Window, error) {
+			return Window{}, fmt.Errorf("read the window in %s: %s line %d: %w", dir, name, i+1, err)
+		}
 		switch kind {
 		case logFile:
 			w.Log = lines
@@ -217,11 +303,61 @@ func ReadWindow(dir string) (Window, error) {
 			for i, line := range lines {
 				var merge Merge
 				if err := json.Unmarshal(line, &merge); err != nil {
-					return Window{}, fmt.Errorf("read the window in %s: %s line %d: %w", dir, name, i+1, err)
+					return refuse(i, err)
 				}
 				merges = append(merges, merge)
 			}
 			w.Merges[key] = merges
+		case providerFile:
+			w.Provider = make([]ProviderMinute, 0, len(lines))
+			for i, line := range lines {
+				minute, err := ParseProviderMinute(line)
+				if err != nil {
+					return refuse(i, err)
+				}
+				w.Provider = append(w.Provider, minute)
+			}
+		case launcherFile:
+			w.Launcher = make([]LauncherLine, 0, len(lines))
+			for i, line := range lines {
+				var launched LauncherLine
+				if err := decodeStrict(line, &launched); err != nil {
+					return refuse(i, err)
+				}
+				if err := launched.check(); err != nil {
+					return refuse(i, err)
+				}
+				w.Launcher = append(w.Launcher, launched)
+			}
+		case memoryFile:
+			w.Memory = make([]MemorySample, 0, len(lines))
+			for i, line := range lines {
+				var sample MemorySample
+				if err := decodeStrict(line, &sample); err != nil {
+					return refuse(i, err)
+				}
+				if err := sample.check(); err != nil {
+					return refuse(i, err)
+				}
+				w.Memory = append(w.Memory, sample)
+			}
+		case queueDir:
+			for i, line := range lines {
+				if _, err := ParseQueueLine(line); err != nil {
+					return refuse(i, err)
+				}
+			}
+			if w.Queue == nil {
+				w.Queue = make(map[string][]json.RawMessage)
+			}
+			w.Queue[key] = append([]json.RawMessage{}, lines...)
+		case settingsFile:
+			for i, line := range lines {
+				if _, err := ParseSettingsEvent(line); err != nil {
+					return refuse(i, err)
+				}
+			}
+			w.Settings = append([]json.RawMessage{}, lines...)
 		}
 	}
 	present, err := inputFiles(dir)
@@ -233,16 +369,67 @@ func ReadWindow(dir string) (Window, error) {
 			return Window{}, fmt.Errorf("read the window in %s: %s is an input file window.json does not name, so nothing checks it", dir, name)
 		}
 	}
+	if err := w.checkSignals(); err != nil {
+		return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
+	}
 	return w, nil
+}
+
+// checkSignals refuses a record of the signals no reader could trust: a signal the signals map
+// names that is none of R11's, a span that is empty, spans of one signal out of order or
+// overlapping, a record of the kills with no launcher log, of the provider with no provider
+// record or of the queue with no queue file, and a P0 bound below zero. Its refusal names the
+// files by the names window.json gives them.
+func (w Window) checkSignals() error {
+	for _, signal := range slices.Sorted(maps.Keys(w.Signals)) {
+		if !slices.Contains(windowSignals, signal) {
+			return fmt.Errorf("window.json names a record of %q, which is no signal of R11 (%s)", signal, strings.Join(windowSignals, ", "))
+		}
+		for i, span := range w.Signals[signal] {
+			if !span.From.Before(span.To) {
+				return fmt.Errorf("the record of %s holds the empty span [%s, %s)", signal, stamp(span.From), stamp(span.To))
+			}
+			if previous := w.Signals[signal][max(i-1, 0)]; i > 0 && span.From.Before(previous.To) {
+				return fmt.Errorf("the record of %s holds spans out of order or overlapping: [%s, %s) then [%s, %s)", signal,
+					stamp(previous.From), stamp(previous.To), stamp(span.From), stamp(span.To))
+			}
+		}
+	}
+	needs := map[string]bool{SignalKills: w.Launcher != nil, SignalProvider: w.Provider != nil, SignalQueue: w.Queue != nil}
+	inputs := map[string]string{SignalKills: launcherFile, SignalProvider: providerFile, SignalQueue: "queue file"}
+	for _, signal := range []string{SignalKills, SignalProvider, SignalQueue} {
+		if len(w.Signals[signal]) > 0 && !needs[signal] {
+			return fmt.Errorf("window.json names a record of %s, and the window holds no %s", signal, inputs[signal])
+		}
+	}
+	for _, bound := range w.P0Bounds {
+		if bound.Bound < 0 {
+			return fmt.Errorf("the P0 bound %d from %s is below zero", bound.Bound, stamp(bound.At))
+		}
+	}
+	return nil
+}
+
+// decodeStrict decodes line into into, refusing a member into has no field for.
+func decodeStrict(line []byte, into any) error {
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(into)
 }
 
 // Write writes w into dir, which it creates where it is missing: each input, then window.json,
 // whose Files it fills with the sha256 of every input it wrote and whose Format it sets. Each
-// line is written compact on a line of its own. dir is meant to be empty: an input file already
-// there that w does not hold is left in place, and ReadWindow then refuses the window for it.
+// line is written compact on a line of its own. An input of the signals is written where w holds
+// it, as a file with no line where w holds it empty. dir is meant to be empty: an input file
+// already there that w does not hold is left in place, and ReadWindow then refuses the window for
+// it. A record of the signals ReadWindow would refuse (checkSignals) is refused before anything is
+// written.
 func (w Window) Write(dir string) error {
 	w.Format = WindowFormat
 	w.Files = make(map[string]string)
+	if err := w.checkSignals(); err != nil {
+		return fmt.Errorf("write the window to %s: %w", dir, err)
+	}
 	write := func(name string, lines []json.RawMessage) error {
 		var data bytes.Buffer
 		for i, line := range lines {
@@ -278,15 +465,41 @@ func (w Window) Write(dir string) error {
 		if !ok {
 			return fmt.Errorf("write the window to %s: merges of %q, which is no owner/repo", dir, repo)
 		}
-		lines := make([]json.RawMessage, 0, len(w.Merges[repo]))
-		for _, merge := range w.Merges[repo] {
-			line, err := json.Marshal(merge)
-			if err != nil {
-				return fmt.Errorf("write the window to %s: %w", dir, err)
-			}
-			lines = append(lines, line)
+		lines, err := marshalLines(w.Merges[repo])
+		if err != nil {
+			return fmt.Errorf("write the window to %s: %w", dir, err)
 		}
 		if err := write(path.Join(mergesDir, owner+"__"+name+".jsonl"), lines); err != nil {
+			return fmt.Errorf("write the window to %s: %w", dir, err)
+		}
+	}
+	for _, input := range []struct {
+		name  string
+		held  bool
+		lines func() ([]json.RawMessage, error)
+	}{
+		{providerFile, w.Provider != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Provider) }},
+		{launcherFile, w.Launcher != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Launcher) }},
+		{memoryFile, w.Memory != nil, func() ([]json.RawMessage, error) { return marshalLines(w.Memory) }},
+		{settingsFile, w.Settings != nil, func() ([]json.RawMessage, error) { return w.Settings, nil }},
+	} {
+		if !input.held {
+			continue
+		}
+		lines, err := input.lines()
+		if err == nil {
+			err = write(input.name, lines)
+		}
+		if err != nil {
+			return fmt.Errorf("write the window to %s: %w", dir, err)
+		}
+	}
+	for _, repo := range slices.Sorted(maps.Keys(w.Queue)) {
+		owner, name, ok := splitRepo(repo)
+		if !ok {
+			return fmt.Errorf("write the window to %s: a merge queue of %q, which is no owner/repo", dir, repo)
+		}
+		if err := write(path.Join(queueDir, owner+"__"+name+".jsonl"), w.Queue[repo]); err != nil {
 			return fmt.Errorf("write the window to %s: %w", dir, err)
 		}
 	}
@@ -300,6 +513,19 @@ func (w Window) Write(dir string) error {
 	return nil
 }
 
+// marshalLines is each of values as a JSON line.
+func marshalLines[T any](values []T) ([]json.RawMessage, error) {
+	lines := make([]json.RawMessage, 0, len(values))
+	for _, value := range values {
+		line, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
 // splitRepo is repo, a repository as owner/name, split into its owner and name, and whether it is
 // one: an owner and a name, neither empty, the name with no slash and the owner with no "__", which
 // a merges file's name (<owner>__<name>.jsonl) joins them with.
@@ -308,15 +534,17 @@ func splitRepo(repo string) (owner, name string, ok bool) {
 	return owner, name, ok && owner != "" && name != "" && !strings.Contains(name, "/") && !strings.Contains(owner, "__")
 }
 
-// inputOf is which input of the format name is — logFile, eventsDir or mergesDir — and the key
-// it holds: the issue key of an events file, owner/repo of a merges file, "" for the log. A name
-// that is not clean, relative and slash-separated, or that names no input, is refused.
+// inputOf is which input of the format name is — logFile, eventsDir, mergesDir, providerFile,
+// launcherFile, memoryFile, queueDir or settingsFile — and the key it holds: the issue key of an
+// events file, owner/repo of a merges or a queue file, "" for the others. A name that is not clean,
+// relative and slash-separated, or that names no input, is refused.
 func inputOf(name string) (kind, key string, err error) {
 	if name == "" || path.IsAbs(name) || path.Clean(name) != name || strings.Contains(name, "\\") {
 		return "", "", fmt.Errorf("window.json names the file %q, which is no clean relative path", name)
 	}
-	if name == logFile {
-		return logFile, "", nil
+	switch name {
+	case logFile, providerFile, launcherFile, memoryFile, settingsFile:
+		return name, "", nil
 	}
 	dir, file := path.Split(name)
 	base, jsonl := strings.CutSuffix(file, ".jsonl")
@@ -324,17 +552,20 @@ func inputOf(name string) (kind, key string, err error) {
 	case !jsonl:
 	case dir == eventsDir+"/" && claim.IsIssueKey(base):
 		return eventsDir, base, nil
-	case dir == mergesDir+"/":
+	case dir == mergesDir+"/" || dir == queueDir+"/":
 		if owner, repo, ok := strings.Cut(base, "__"); ok && owner != "" && repo != "" {
-			return mergesDir, owner + "/" + repo, nil
+			return strings.TrimSuffix(dir, "/"), owner + "/" + repo, nil
 		}
 	}
 	return "", "", fmt.Errorf("window.json names the file %q, which is no input of the window's format", name)
 }
 
+// inputDirs is every directory of a window's format that holds input files.
+var inputDirs = []string{eventsDir, mergesDir, path.Dir(providerFile), path.Dir(launcherFile), queueDir, path.Dir(settingsFile)}
+
 // inputFiles is every input file dir holds, by its name relative to dir: log.jsonl where it is
-// there, and every entry of events/ and merges/. A directory of the format that is missing holds
-// none.
+// there, and every entry of the format's directories (inputDirs). A directory of the format that
+// is missing holds none.
 func inputFiles(dir string) ([]string, error) {
 	var names []string
 	if _, err := os.Stat(filepath.Join(dir, logFile)); err == nil {
@@ -342,7 +573,7 @@ func inputFiles(dir string) ([]string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	for _, sub := range []string{eventsDir, mergesDir} {
+	for _, sub := range inputDirs {
 		entries, err := os.ReadDir(filepath.Join(dir, sub))
 		if errors.Is(err, os.ErrNotExist) {
 			continue

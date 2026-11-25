@@ -63,6 +63,22 @@ A recorded window is a directory.
 | `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
 | `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads. |
+| `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
+| `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
+| `signals/memory.jsonl` | The memory of each of the project's issue pods, one line a minute for each pod. |
+| `queue/<owner>__<name>.jsonl` | The merge queue's events of the repository's pull requests. |
+| `settings/events.jsonl` | The project's settings events of Dispatch's event log. |
+
+The last five files hold the records of R11's signals, and each is optional.
+`window.json` also holds, only where the window has them:
+
+- `p0Bounds`: the P0 bound from each change on, `{at, bound}`, as the daemon's line of each change of the bound gives it.
+
+- `defaultAssignee`: the project's default assignee in Dispatch at the start of the reach, as the deployment gave it.
+  A pod's credential cannot read that setting, and a value that a migration filled has no event, so the deployment gives it where no settings event before the reach names one.
+
+- `signals`: for each signal (`idle`, `queue`, `provider`, `kills`, `approvals`), the spans `{from, to}` in which the window holds a record of it, in time order.
+  A window holds no record of a signal outside its spans, and a window that names no span of a signal, as every window collected before these records, holds no record of it at all.
 
 The tool reads these kinds of daemon line:
 
@@ -92,16 +108,44 @@ A window that names no `after` has no run-out.
 
 Every command reads a window only if each input file has the sha256 that `window.json` gives for it.
 A window that holds an input file that `window.json` does not name is refused too.
+So is a window whose `signals` name a signal that is none of the five, an empty span, spans of one signal out of order or overlapping, or a record of the kills, the provider or the queue with no file of that record.
+
+### The records of the signals
+
+Each line of each file is one JSON object.
+
+- `signals/provider.jsonl`: `{minute, uncached, limit, limit_source, limit_scope, own, provider}`, exactly as the deployment's provider-record script writes it, one line for each minute from `minute`.
+  `uncached` is the project's uncached input tokens in the minute, kept as written.
+  It can be below zero in a minute where the provider's series counts the cached tokens a minute after their input; the model that reads the record decides what to do with such a minute.
+  `limit` is the limit in force: the latest value observed at or before the minute, and `null` before the first observation, where the provider's signal has no record.
+  `limit_source` names where that value was observed, as the script names it: a refusal's line in the deployment's log, or a change recorded in Dispatch (`dispatch`).
+  `limit_scope` names what the limit covers, as the script writes it: `Claude` for the project's limit over all its Claude models, a model's id for that model's own limit, and `null` where the observation names no one scope.
+  `own` counts the refusals that the project's own limit gave in the minute, and `provider` those that the provider gave.
+
+- `launcher/log.jsonl`: `{time, pod, text}`, each line of the launcher of one of the project's issue pods, its text verbatim.
+  A line whose text starts `launcher: memory guard: ended` records one kill.
+
+- `signals/memory.jsonl`: `{minute, pod, bytes}`, the memory that a pod's roles container used in the minute.
+  Where the record gives a pod's evictable and non-evictable memory as two series, `bytes` is their sum, and a minute with one of them counts that one.
+
+- `queue/<owner>__<name>.jsonl`: `{pullRequest, item}`, each timeline event of a pull request of the kinds `added_to_merge_queue`, `removed_from_merge_queue` and `merged`, exactly as GitHub's REST timeline serves it, with the pull request's number beside it.
+
+- `settings/events.jsonl`: each of the project's events of Dispatch's event log whose type starts `settings.`, `settings.project_default_assignee.updated` among them, verbatim, in the log's order.
+  The events before the reach are there too, since the last of them sets what holds at its start.
 
 ## Collect a window
 
 1. Get the daemon's log lines for the reach, the span and the run-out.
 
-2. Run `legion replay collect`.
+2. Get the deployment's records of the signals that you hold, for the same reach.
 
-3. Run `legion replay collect-merges` once for each base branch.
+3. Run `legion replay collect`.
 
-4. For test data that this repository keeps, run `legion replay neutralize`.
+4. Run `legion replay collect-merges` once for each base branch.
+
+5. Run `legion replay collect-queue` once for each repository of the project's pull requests.
+
+6. For test data that this repository keeps, run `legion replay neutralize`.
 
 ### Get the daemon's log lines
 
@@ -149,11 +193,36 @@ gcloud logging read '<daemon filter> AND timestamp>="2026-09-28T00:00:00Z" AND t
 The `jq` step keeps only the two members that `collect` reads, so the file holds no name of your cluster.
 A log store keeps lines for a limited time, 30 days by default in Cloud Logging, so collect a window before the oldest day of its reach expires.
 
+### Get the records of the signals
+
+`collect` reads the deployment's records of R11's signals in the same reach as the lines, and keeps each one's lines from `--from` less `--before` to `--to` plus `--after`.
+Each is optional: a window collected without one holds no record of its signal.
+
+- `--provider <file>` names the record of the model provider, one line a minute in the form of `signals/provider.jsonl`, gzipped or not.
+  The deployment's provider-record script writes it from its export of the project's per-minute series.
+  The window holds a record of the provider's signal in each run of minutes that has a limit in force.
+
+- `--launcher-log <file or directory>` names the launcher's lines of the project's issue pods, given once for each file or directory.
+  `collect` reads rows `{timestamp, pod, text}` as an export writes them, Cloud Logging entries with `timestamp`, `resource.labels.pod_name` and `textPayload` as `gcloud logging read --format=json` writes them, and a window's own lines, as JSON lines or one JSON array, gzipped or not.
+  It keeps a line that two files hold once, and writes each as `{time, pod, text}`.
+  The window then holds a record of the kills over the whole reach, so give it the lines of the whole reach.
+
+- `--memory <file or directory>` names the pods' memory series, given once for each file or directory: rows `{minute, pod, memory_type, bytes}`, or a window's own `{minute, pod, bytes}`.
+  `collect` sums each pod's series in each minute.
+
+- `--default-assignee <login>` gives the project's default assignee at the start of the reach.
+  Give it where no settings event before the reach names the default assignee.
+
 ### Run `collect`
 
 `collect` reads from Dispatch the events of each issue that the lines name.
 It also reads the events of each blocker, parent and child that those events name, in any project.
+It lists every issue of the project, of every status, a page at a time (`GET /api/v1/issues?project=<KEY>&limit=&offset=`), and reads the events of each one too, so that the approvals signal reads every ask of the project.
 It reads each issue from its first event up to `--to` plus `--after`.
+It pages Dispatch's whole event log (`GET /api/v1/events/log`) from its first event to `--to` plus `--after`, and keeps the project's settings events.
+A settings event before the reach sets the value at the reach's start, so the read starts at the log's first event; on 2026-11-25 the whole log took 1,148 pages of 1,000 events and about five minutes.
+An issue of the project that the event log names and the listing missed, as a listing read a page at a time can, is read too.
+Every read is a `GET`, and a read that Dispatch refuses for now (429, a 5xx, or no answer) is tried again with a growing wait.
 Set `DISPATCH_URL` to your Dispatch server.
 The token comes from the file that `--dispatch-token-file` names, else from the file that `DISPATCH_TOKEN_FILE` names, else from `DISPATCH_TOKEN`.
 `collect` never prints the token.
@@ -164,13 +233,18 @@ legion replay collect \
   --project ACME \
   --from 2026-10-05T00:00:00Z --to 2026-10-08T00:00:00Z --before 168h \
   --log daemon-export.json --log daemon.log \
+  --provider provider.jsonl --launcher-log launcher/ --memory memory/ \
   --dispatch-token-file <token file> \
   --part 2026-10-05T00:00:00Z,2026-10-08T00:00:00Z,<release>,<commit>,main \
   --out windows/acme-2026-10-05
 ```
 
 It prints the number of daemon lines that it read and that it kept, the lines that it read twice, the lines that were no daemon line, and the issues whose events it read.
+It prints the issues that the project's listing holds, the settings events, and the lines of each record of the signals that it kept.
 It names each issue that Dispatch does not have.
+
+The window holds a record of the idle share over the whole reach, from the daemon's lines.
+It holds a record of the approvals from the moment the project's default assignee is known: from the reach's start where `--default-assignee` gives it or a settings event before the reach sets it, else from the first settings event in the reach that sets it.
 
 | Flag | What it gives |
 | --- | --- |
@@ -179,6 +253,10 @@ It names each issue that Dispatch does not have.
 | `--before <duration>` | How far before `--from` the inputs reach, so that the tool can rebuild the state at `--from` (required). |
 | `--after <duration>` | The run-out: how far after `--to` the inputs reach, so that a replay runs the work that the record shows after `--to` (none by default). |
 | `--log <file or directory>` | A file, or a directory of files, of the daemon's lines, given once for each (required). |
+| `--provider <file>` | The deployment's record of the model provider. |
+| `--launcher-log <file or directory>` | A file, or a directory of files, of the launcher's lines of the project's issue pods, given once for each. |
+| `--memory <file or directory>` | A file, or a directory of files, of the pods' memory series, given once for each. |
+| `--default-assignee <login>` | The project's default assignee at the start of the reach, where no settings event before the reach names it. |
 | `--out <dir>` | The directory that the window goes to, which must be missing or empty (required). |
 | `--dispatch-token-file <file>` | The file that holds the Dispatch token. |
 | `--concurrency <n>` | How many issues `collect` reads from Dispatch at once (8 by default). |
@@ -238,6 +316,32 @@ The draw reads that number to leave a stretch's own merge out of its count.
 | `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default). |
 | `--out <dir>` | The directory of the window that `collect` wrote (required). |
 
+### Add the merge queue of each repository
+
+The queue signal reads how long the project's pull requests wait in the merge queue.
+`collect-queue` reads, with `GET` alone, the timeline of each pull request of `--repo` that belongs to the project's issues (`GET /repos/<owner>/<name>/issues/<n>/timeline`, every page by its Link header).
+A pull request belongs to them where an `issue.pull_request_attribution_changed` event of an issue of the project moves it, or where a line of the window's log names it (`pullRequest`) for an issue whose repository, as its events give it, is `--repo`.
+It writes each timeline event of the kinds `added_to_merge_queue`, `removed_from_merge_queue` and `merged`, exactly as GitHub serves it, with its pull request's number, into the window as `queue/<owner>__<name>.jsonl`.
+It writes the file's new sha256 into `window.json`, with a record of the queue signal over the window's reach and run-out.
+It names each pull request that a line names for an issue whose repository the window does not give, and reads none of them.
+A read that GitHub refuses for now is tried again with a growing wait, and a read that fails writes nothing.
+
+```sh
+legion replay collect-queue \
+  --repo <owner>/<name> \
+  --github-token-env GITHUB_TOKEN \
+  --out windows/acme-2026-10-05
+```
+
+Run it once for each repository of the project's pull requests.
+
+| Flag | What it gives |
+| --- | --- |
+| `--repo <owner>/<name>` | The repository (required). |
+| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-queue` never prints (required). |
+| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default). |
+| `--out <dir>` | The directory of the window that `collect` wrote (required). |
+
 ### Neutralize a window for test data
 
 This repository is public, so a window that it keeps as test data holds no private name.
@@ -247,6 +351,10 @@ It renames each repository but cybermonklabs/legion, each actor's id, each sessi
 The title of a Legion role's session keeps its role and takes the neutral key of its issue, so the trace reads the same claim from the neutral window.
 It renames each host name and machine name, each IP address but a loopback, unspecified or documentation address, and each uuid, link, label and digest.
 It also renames the free text of Dispatch's events.
+It renames the records of the signals by the same rules.
+It renames the issue keys and the people's logins that a pod's name or a pull request's branch spells.
+It renames the GitHub accounts of the merge queue's events: each login, numeric id, node id and link.
+It renames the project's settings events as Dispatch's events, a token's name and a settings source's last error among them, and the default assignee as a person.
 It keeps every member, JSON type and list length, and the daemon's msgs, ranks, statuses and times.
 The window's own project becomes `--project`, and each other project becomes `OTHERA`, `OTHERB` and so on.
 

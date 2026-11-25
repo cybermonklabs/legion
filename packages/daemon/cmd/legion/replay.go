@@ -18,7 +18,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/replay"
@@ -27,15 +26,16 @@ import (
 // newReplayCommand is `legion replay`, a developer's tool rather than an operator's: it replays a
 // recorded window of a daemon's project through the daemon's own admission pass under a named
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
-// lived through. Its commands collect a window (collect, collect-merges), neutralize one for the
-// repository's test data (neutralize), replay one (run), read the measures of a window's record
-// (scorecard), check the replay against the record (validate) and against a recorded change of
-// the rule (forecast), compare the rules on two windows (compare) and name the rules a replay can
-// run (rules). None of them reaches a daemon.
+// lived through. Its commands collect a window (collect, collect-merges, collect-queue), neutralize
+// one for the repository's test data (neutralize), replay one (run), read the measures of a
+// window's record (scorecard), check the replay against the record (validate) and against a
+// recorded change of the rule (forecast), compare the rules on two windows (compare) and name the
+// rules a replay can run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
 		newReplayCollectMergesCommand(stdout, stderr),
+		newReplayCollectQueueCommand(stdout, stderr),
 		newReplayNeutralizeCommand(stdout, stderr),
 		newReplayRunCommand(stdout, stderr),
 		newReplayScorecardCommand(stdout, stderr),
@@ -58,8 +58,21 @@ once.
 
 The events of every issue those lines name, and of every blocker, parent and child those
 issues' events name, in any project, are read from Dispatch (DISPATCH_URL) from each issue's
-first event up to --to + --after, with GET alone. The token is the file --dispatch-token-file
-names, else the file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is never printed.
+first event up to --to + --after, with GET alone, and so are those of every issue of the
+project, which collect lists (GET /api/v1/issues?project=, a page at a time, every status). The
+project's settings events (settings.project_default_assignee.updated among them) are read from
+Dispatch's whole event log (GET /api/v1/events/log), from its first event to --to + --after,
+since an event before the reach sets what holds at its start. The token is the file
+--dispatch-token-file names, else the file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is
+never printed.
+
+The deployment's records of the signals, each optional, are read in the same reach: --provider,
+the model provider's record, one line a minute; --launcher-log, the launcher's lines of the
+project's issue pods (an export's {timestamp, pod, text} rows or a Cloud Logging read of
+{timestamp, resource.labels.pod_name, textPayload} entries), whose memory guard lines are the
+record of its kills; --memory, the pods' memory ({minute, pod, memory_type, bytes} rows, each
+pod's series summed a minute). --default-assignee is the project's default assignee at the
+reach's start, where no settings event before it names one.
 
 --after is the window's run-out: a replay runs on past --to through it, so the work the record
 shows after --to runs where the replay moves it, and every measure reads [--from, --to) alone.
@@ -67,8 +80,9 @@ shows after --to runs where the replay moves it, and every measure reads [--from
 window.json records the project, the span, --before, --after, the cap of each change the slot
 lines and the daemon's start lines show, the line kinds the log holds, the deployment's settings
 (the flags below, each defaulting to the daemon's own default), the parts of the span (--part),
-the collector's commit (--collector, else the binary's own) and the sha256 of every file. Run
-collect-merges next for each base branch.`
+the collector's commit (--collector, else the binary's own), the default assignee, the spans
+each signal has a record in and the sha256 of every file. Run collect-merges next for each base
+branch, and collect-queue for each repository.`
 
 // newReplayCollectCommand is `legion replay collect` (replay.Collect).
 func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -86,6 +100,10 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 	before := flags.Duration("before", 0, "how far before --from the inputs reach, so the state at --from can be rebuilt (required)")
 	after := flags.Duration("after", 0, "the run-out: how far past --to the inputs reach, so a replay runs the work recorded after --to")
 	logs := flags.StringArray("log", nil, "a file or a directory of files of the daemon's lines; repeat for more (required)")
+	provider := flags.String("provider", "", "the file of the deployment's record of the model provider, one line a minute")
+	launcherLogs := flags.StringArray("launcher-log", nil, "a file or a directory of files of the launcher's lines of the project's issue pods; repeat for more")
+	memory := flags.StringArray("memory", nil, "a file or a directory of files of the pods' memory series; repeat for more")
+	defaultAssignee := flags.String("default-assignee", "", "the project's default assignee at the start of the reach, where no settings event before it names one")
 	out := flags.String("out", "", "the directory the window is written to, missing or empty (required)")
 	tokenFile := flags.String("dispatch-token-file", "", "the file holding the Dispatch token (else DISPATCH_TOKEN_FILE, else DISPATCH_TOKEN)")
 	concurrency := flags.Int("concurrency", replay.DefaultConcurrency, "how many issues are read from Dispatch at once")
@@ -140,7 +158,8 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 		}
 		collected, err := replay.Collect(ctx, replay.CollectConfig{
 			Project: *project, From: span[0], To: span[1], Before: *before, After: *after, Logs: *logs,
-			Dispatch: dispatch.New(base, token), Concurrency: *concurrency, Parts: windowParts, Collector: commit, Out: *out,
+			Provider: *provider, LauncherLogs: *launcherLogs, Memory: *memory, DefaultAssignee: *defaultAssignee,
+			Dispatch: replay.NewDispatchReader(base, token), Concurrency: *concurrency, Parts: windowParts, Collector: commit, Out: *out,
 			Settings: replay.Settings{TickInterval: *tick, GateSteps: steps, Linger: *linger, ReviewRoundCap: *rounds,
 				StalledTreeNotice: *stalled, WorkerSilence: *silence, WorkerBackground: *background},
 		})
@@ -151,6 +170,8 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 		w := collected.Window
 		fmt.Fprintf(stdout, "legion replay collect: wrote %s: %d of %d daemon lines kept (%d kinds, %d read twice), %d lines that are no daemon line, the events of %d issues\n",
 			*out, collected.Kept, collected.Read, len(w.Lines), collected.Duplicates, collected.NotLines, len(w.Events))
+		fmt.Fprintf(stdout, "legion replay collect: %d issues of %s listed, %d settings events, %d provider minutes, %d launcher lines, %d memory samples\n",
+			collected.ProjectIssues, *project, collected.SettingsEvents, len(w.Provider), len(w.Launcher), len(w.Memory))
 		if len(collected.Missing) > 0 {
 			fmt.Fprintf(stdout, "legion replay collect: Dispatch has no issue %s\n", strings.Join(collected.Missing, ", "))
 		}
@@ -213,6 +234,54 @@ pull requests name.`,
 	return cmd
 }
 
+// newReplayCollectQueueCommand is `legion replay collect-queue` (replay.CollectQueue).
+func newReplayCollectQueueCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "collect-queue --repo <owner/name> --github-token-env <VAR> --out <dir>",
+		Short: "add the merge queue events of a repository's pull requests of the window's issues, read from GitHub, to a collected window",
+		Long: `Read the timeline of each pull request of --repo that the window's Dispatch events attribute to
+an issue of its project (issue.pull_request_attribution_changed) or that a line of its log names
+(pullRequest) for an issue whose repository, as its events give it, is --repo, with GET alone
+(GET /repos/<owner>/<name>/issues/<n>/timeline, every page), and write their events of the kinds
+added_to_merge_queue, removed_from_merge_queue and merged, exactly as GitHub serves them, each
+with its pull request's number, into the window collect wrote in --out as
+queue/<owner>__<name>.jsonl, with window.json's digest of the file and a record of the queue
+signal over the window's reach written again. A pull request a line names for an issue whose
+repository the window does not give is named, and not read. The token is read from the
+environment variable --github-token-env names, and is never printed. Run it once for each
+repository of the project's issues.`,
+		Args: noArguments,
+	}
+	flags := cmd.Flags()
+	repo := flags.String("repo", "", "the repository as owner/name (required)")
+	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required)")
+	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
+	out := flags.String("out", "", "the directory of the window collect wrote (required)")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if missing := missingFlag(cmd, "repo", "github-token-env", "out"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		token := strings.TrimSpace(os.Getenv(*tokenEnv))
+		if token == "" {
+			fmt.Fprintf(stderr, "legion replay collect-queue: the environment variable %s holds no token\n", *tokenEnv)
+			return 1
+		}
+		queued, err := replay.CollectQueue(ctx, replay.QueueConfig{Repo: *repo, Token: token, API: *api, Window: *out})
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay collect-queue: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "legion replay collect-queue: wrote %d merge queue events of %d pull requests of %s into %s\n",
+			queued.Lines, len(queued.PullRequests), *repo, *out)
+		if len(queued.NoRepo) > 0 {
+			fmt.Fprintf(stdout, "legion replay collect-queue: the log names the pull requests %v of issues whose repository the window does not give; none of them is read\n",
+				queued.NoRepo)
+		}
+		return 0
+	})
+	return cmd
+}
+
 // newReplayNeutralizeCommand is `legion replay neutralize` (replay.Neutralize).
 func newReplayNeutralizeCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
@@ -224,10 +293,13 @@ one, each repository but cybermonklabs/legion, each actor's and session's id, ea
 title, each person's login and email, each host name and machine name, each IPv4 and IPv6
 address but a loopback, unspecified or documentation one, which becomes an address of the
 documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32), each uuid,
-link, label and digest, and the free text of Dispatch's events. Every member, JSON type and list
-length is kept, and so are the daemon's msgs, ranks, statuses and times. The window's own project
-becomes --project, every other OTHERA, OTHERB, …. A window holding more IPv4 addresses than those
-ranges hold is refused.
+link, label and digest, and the free text of Dispatch's events. The keys and the people's logins
+that a pod's name or a pull request's branch spells are renamed, the GitHub accounts of the merge
+queue's events (login, numeric id, node id, links), the project's settings events as Dispatch's
+events are, and the default assignee as a person. Every member, JSON type and list length is
+kept, and so are the daemon's msgs, ranks, statuses and times. The window's own project becomes
+--project, every other OTHERA, OTHERB, …. A window holding more IPv4 addresses than those ranges
+hold is refused.
 
 The map of every name replaced is written to --map, which must be outside --out and not there
 yet: it holds every private name, so it is never committed. --deny names a word no file may

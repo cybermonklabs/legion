@@ -1181,6 +1181,9 @@ type DispatchEvent struct {
 	// claim that names no actor, and an issue.claimed that names none, show no claim.
 	Claim      string
 	ClaimShown bool
+	// Attribution is an issue.pull_request_attribution_changed event's move of a pull request,
+	// which collect-queue reads a project's pull requests from; nil for an event of another type.
+	Attribution *DispatchAttribution
 }
 
 // eventClaim reads the claim of an event's payload by the daemon's decoder's own reading
@@ -1245,7 +1248,8 @@ type DispatchHandoff struct {
 // (GET /api/v1/issues/<KEY>/events, the shape intake.DecodeDispatchEvent reads), of any project.
 // It refuses an event that is not one JSON object, that lacks its id, seq, issue_key, type, actor
 // or created_at, or whose payload lacks a field its type's part reads: an issue event's status, a
-// verdict's artifact_id and version, an ask's id, a handoff's handoff_id, phase and version. An
+// verdict's artifact_id and version, an ask's id, a handoff's handoff_id, phase and version, a
+// pull request attribution's repo and number. An
 // issue event's changed, blocked_by, parent, rank, labels and priority are read where it carries
 // them, as intake reads them, since an event retained from an older Dispatch lacks some; a field
 // present with another JSON type is refused all the same. A priority outside Dispatch's levels 0
@@ -1385,6 +1389,28 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 			return refuse(errors.New("its payload has no handoff_id, phase or version"))
 		}
 		parsed.Handoff = &DispatchHandoff{ID: *payload.ID, Phase: *payload.Phase, Version: *payload.Version}
+	case attributionEvent:
+		var payload struct {
+			Repo   *string `json:"repo"`
+			Number *int    `json:"number"`
+			From   *string `json:"from"`
+			To     *string `json:"to"`
+			Source string  `json:"source"`
+		}
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return refuse(err)
+		}
+		if payload.Repo == nil || payload.Number == nil {
+			return refuse(errors.New("its payload has no repo or number"))
+		}
+		attribution := &DispatchAttribution{Repo: *payload.Repo, Number: *payload.Number, Source: payload.Source}
+		if payload.From != nil {
+			attribution.From = *payload.From
+		}
+		if payload.To != nil {
+			attribution.To = *payload.To
+		}
+		parsed.Attribution = attribution
 	}
 	return parsed, nil
 }

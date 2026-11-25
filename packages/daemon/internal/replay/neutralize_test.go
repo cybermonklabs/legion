@@ -55,13 +55,23 @@ func privateEvent(t *testing.T, id, seq int64, key, project, kind string, at tim
 	return event
 }
 
-// privateWindow writes, into a directory of the test's own, a window of the project NIMBUS whose
-// every input holds private-looking names: NIMBUS-412, a child of NIMBUS-400, waits on ORION-77
-// of another project; its implementer's claim failed with the daemon's words naming a tailnet
-// host and privateWord; a person requested changes on the root's document, which the daemon's
-// gate line names by the same uuid; the root's architect asked a question from its workspace; and
-// the window's merges are of the private repository, one merging pull request 88, and of this one.
+// privateWindow writes privateRecord into a directory of the test's own.
 func privateWindow(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := privateRecord(t).Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// privateRecord is a window of the project NIMBUS whose every input holds private-looking names:
+// NIMBUS-412, a child of NIMBUS-400, waits on ORION-77 of another project; its implementer's claim
+// failed with the daemon's words naming a tailnet host and privateWord; a person requested
+// changes on the root's document, which the daemon's gate line names by the same uuid; the root's
+// architect asked a question from its workspace; and the window's merges are of the private
+// repository, one merging pull request 88, and of this one.
+func privateRecord(t *testing.T) Window {
 	t.Helper()
 	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
 	token := privateToken
@@ -147,11 +157,7 @@ func privateWindow(t *testing.T) string {
 		kinds[parsed.Head().Msg] = true
 	}
 	w.Lines = slices.Sorted(maps.Keys(kinds))
-	dir := filepath.Join(t.TempDir(), "private")
-	if err := w.Write(dir); err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return w
 }
 
 // shapeOf is the shape of the JSON value raw: every member's name in order, every list's length and
@@ -447,6 +453,134 @@ func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
 			t.Errorf("the refused neutralization left %s: %v", path, err)
 		}
 	}
+}
+
+// The signals' inputs are renamed as every other input is: a pod name's project and issue key
+// in the launcher's lines and the pods' memory, as a claim token's are; a host in the launcher's
+// own words; the repository of a queue file; a GitHub account in the merge queue's events, its
+// login as the person's login and its numeric id, node id and links; the project, the people, the
+// sessions, the repositories, the token's name and the free text of the project's settings
+// events; a person's login and an issue key in a pull request's branch; and the default assignee.
+// The provider's minutes hold no name, and keep their values. So no file of the neutral window
+// holds a private name, every line of an input keeps its shape, and each name is the one it
+// becomes in the other inputs.
+func TestNeutralizeRenamesTheSignalInputs(t *testing.T) {
+	w := privateRecord(t)
+	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
+	pod := "legion-nimbus-nimbus-412"
+	limit, source := int64(6000000), "gateway-log"
+	w.DefaultAssignee = privateEmail
+	w.Signals = map[string][]Span{SignalKills: {{From: at(0), To: at(30)}}, SignalQueue: {{From: at(0), To: at(30)}}}
+	w.Launcher = []LauncherLine{
+		{Time: at(3), Pod: pod, Text: `launcher: memory guard: ended pid=9 role=implementer size=1 reading=2 counter=3 shmem=0 limit=4 executable="node"`},
+		{Time: at(4), Pod: pod, Text: "launcher: memory guard: report unsent sequence=1 pid=9 reason=dial tcp: lookup " + privateHost + ": no such host; the next connection carries it"},
+	}
+	w.Memory = []MemorySample{{Minute: at(3), Pod: pod, Bytes: 4096}}
+	w.Provider = []ProviderMinute{{Minute: at(3), Uncached: 7, Limit: &limit, LimitSource: &source, Own: 1}}
+	w.Queue = map[string][]json.RawMessage{privateRepo: {json.RawMessage(`{"pullRequest":88,"item":{"id":5,"event":"added_to_merge_queue",` +
+		`"actor":{"login":"` + privateLogin + `","id":4242,"node_id":"U_hush4242","avatar_url":"https://avatars.githubusercontent.com/u/4242?v=4",` +
+		`"url":"https://api.github.com/users/` + privateLogin + `","html_url":"https://github.com/` + privateLogin + `","type":"User"},` +
+		`"commit_id":null,"created_at":"2026-03-02T10:05:00Z"}}`)}}
+	person := map[string]any{"kind": "user", "id": privateEmail, "act": map[string]any{"session": privateSession, "token_id": privateAsk,
+		"token_name": "hush-laptop-token", "scopes": []string{"person"}}}
+	w.Settings = []json.RawMessage{
+		privateSettings(t, 21, "settings.project_default_assignee.updated", at(1), person,
+			map[string]any{"project": "NIMBUS", "assignee": privateEmail, "thread_logins": []string{privateEmail}}),
+		privateSettings(t, 22, "settings.architecture_source.updated", at(2), person, map[string]any{"deleted": false, "source": map[string]any{
+			"repo": privateRepo, "branch": privateLogin + "/nimbus-412-keys", "project": "NIMBUS", "created_by": map[string]any{"id": privateEmail, "kind": "user"},
+			"last_error": "the app is not installed on " + privateRepo}}),
+		privateSettings(t, 23, "settings.repo_project.updated", at(3), map[string]any{"kind": "session", "id": privateSession},
+			map[string]any{"deleted": false, "mapping": map[string]any{"repo": privateRepo, "project": "NIMBUS", "renamed_to": "hushcorp/vault-next"}}),
+	}
+	in := filepath.Join(t.TempDir(), "private")
+	if err := w.Write(in); err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	out := filepath.Join(scratch, "neutral")
+	names, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: filepath.Join(scratch, "map.json"), Deny: []string{privateWord}})
+	if err != nil {
+		t.Fatalf("Neutralize: %v", err)
+	}
+	assertNoneHeld(t, out, append(slices.Clone(privateNames), "/u/4242", "laptop"), true)
+	neutral, err := ReadWindow(out)
+	if err != nil {
+		t.Fatalf("ReadWindow of the neutral window: %v", err)
+	}
+
+	child, email, login := names.Keys["NIMBUS-412"], names.People[privateEmail], names.People[privateLogin]
+	if child != "ACME-2" || email == "" || login == "" {
+		t.Fatalf("NIMBUS-412, the email and the login became %q, %q and %q", child, email, login)
+	}
+	neutralPod := "legion-acme-acme-2"
+	if len(neutral.Launcher) != 2 || neutral.Launcher[0].Pod != neutralPod || neutral.Launcher[1].Pod != neutralPod ||
+		neutral.Launcher[0].Text != w.Launcher[0].Text || !neutral.Launcher[0].Time.Equal(w.Launcher[0].Time) ||
+		neutral.Launcher[1].Text != "launcher: memory guard: report unsent sequence=1 pid=9 reason=dial tcp: lookup "+names.Hosts[privateHost]+
+			": no such host; the next connection carries it" {
+		t.Errorf("the launcher's lines became %s, want each of pod %s, its text kept but the host's name, %s", describeReading(neutral.Launcher),
+			neutralPod, names.Hosts[privateHost])
+	}
+	if want := []MemorySample{{Minute: at(3), Pod: neutralPod, Bytes: 4096}}; !sameReading(neutral.Memory, want) {
+		t.Errorf("the pods' memory became %s, want %s", describeReading(neutral.Memory), describeReading(want))
+	}
+	if !sameReading(neutral.Provider, w.Provider) {
+		t.Errorf("the provider's minutes became %s, want them as recorded, %s", describeReading(neutral.Provider), describeReading(w.Provider))
+	}
+	if neutral.DefaultAssignee != email || !sameSignals(neutral.Signals, w.Signals) {
+		t.Errorf("the default assignee became %q and the signals %v; want %q and the record's spans", neutral.DefaultAssignee, neutral.Signals, email)
+	}
+	queue := neutral.Queue["acme/repo-1"]
+	if len(neutral.Queue) != 1 || len(queue) != 1 {
+		t.Fatalf("the neutral window holds the queues %v, want acme/repo-1's line", neutral.Queue)
+	}
+	if !reflect.DeepEqual(shapeOf(t, queue[0]), shapeOf(t, w.Queue[privateRepo][0])) {
+		t.Errorf("the queue's line is\n  %s\nwhose shape differs from the record's\n  %s", queue[0], w.Queue[privateRepo][0])
+	}
+	if event, err := ParseQueueLine(queue[0]); err != nil || event.Actor != login || event.PullRequest != 88 || event.Event != "added_to_merge_queue" {
+		t.Errorf("the queue's line reads as %+v (%v), want pull request 88 added to the queue by %s", event, err, login)
+	}
+	for i, event := range w.Settings {
+		if !reflect.DeepEqual(shapeOf(t, neutral.Settings[i]), shapeOf(t, event)) {
+			t.Errorf("settings event %d is\n  %s\nwhose shape differs from the record's\n  %s", i+1, neutral.Settings[i], event)
+		}
+	}
+	assignee, err := ParseSettingsEvent(neutral.Settings[0])
+	if err != nil {
+		t.Fatalf("the neutral default assignee event does not read: %v", err)
+	}
+	for _, check := range []struct {
+		what      string
+		got, want any
+	}{
+		{"the default assignee event's project", assignee.Project, "ACME"},
+		{"the default assignee event's assignee", assignee.DefaultAssignee, email},
+		{"the default assignee event's actor", assignee.Actor.ID, email},
+		{"the thread's login", pick(t, neutral.Settings[0], "payload", "thread_logins", 0), email},
+		{"the token's session", pick(t, neutral.Settings[0], "actor", "act", "session"), names.IDs[privateSession]},
+		{"the token's name", pick(t, neutral.Settings[0], "actor", "act", "token_name"), names.Names["hush-laptop-token"]},
+		{"the architecture source's repository", pick(t, neutral.Settings[1], "payload", "source", "repo"), "acme/repo-1"},
+		{"the architecture source's branch", pick(t, neutral.Settings[1], "payload", "source", "branch"), login + "/acme-2-keys"},
+		{"the architecture source's error", pick(t, neutral.Settings[1], "payload", "source", "last_error"), names.Text["the app is not installed on "+privateRepo]},
+		{"the mapping's session", pick(t, neutral.Settings[2], "actor", "id"), names.IDs[privateSession]},
+		{"the mapping's new name", pick(t, neutral.Settings[2], "payload", "mapping", "renamed_to"), names.Repos["hushcorp/vault-next"]},
+		{"the queue actor's links", pick(t, queue[0], "item", "actor", "url"), names.Links["https://api.github.com/users/"+privateLogin]},
+		{"the queue actor's id", pick(t, queue[0], "item", "actor", "id"), 1.0},
+	} {
+		if !reflect.DeepEqual(check.got, check.want) || check.want == "" || check.want == nil {
+			t.Errorf("%s is %v, want %v", check.what, check.got, check.want)
+		}
+	}
+}
+
+// privateSettings is one settings event of the project NIMBUS as Dispatch's event log serves it.
+func privateSettings(t *testing.T, id int64, kind string, at time.Time, actor, payload map[string]any) json.RawMessage {
+	t.Helper()
+	event, err := json.Marshal(map[string]any{"id": id, "issue_key": nil, "artifact_id": nil, "project": "NIMBUS", "seq": id, "type": kind,
+		"actor": actor, "notify": false, "created_at": at, "payload": payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
 }
 
 // A deny word that is part of the word every deny word is replaced with (withheld), in any case,
