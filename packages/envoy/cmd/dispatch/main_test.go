@@ -274,6 +274,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 	t.Parallel()
 	const lead = "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: "
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
+	const domainNeedsGoogle = "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be https://accounts.google.com, since only Google's tokens carry hd"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
 	with := func(base, overrides map[string]string) map[string]string {
 		values := map[string]string{}
@@ -298,12 +299,9 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_DOMAIN set, DISPATCH_SIGNIN_CLIENT_SECRET missing"},
 		{"an issuer and a client with no secret, group or domain", with(noSignIn, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_CLIENT_ID": "dispatch-client"}),
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
-		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be https://accounts.google.com, since only Google's tokens carry hd"},
-		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be https://accounts.google.com, since only Google's tokens carry hd"},
-		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER to be https://accounts.google.com, since only Google's tokens carry hd"},
+		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}), domainNeedsGoogle},
+		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}), domainNeedsGoogle},
+		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}), domainNeedsGoogle},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
 			"DISPATCH_SIGNIN_GROUP is a Cognito pool's group, and a token from https://accounts.google.com carries none; set DISPATCH_SIGNIN_DOMAIN instead"},
 	} {
