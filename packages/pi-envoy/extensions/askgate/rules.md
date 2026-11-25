@@ -35,25 +35,30 @@ judgment the agent can make is not a question. A question about a credential,
 grant or permission that only the person can give, such as a token in their
 name, a role only they can assign or an approval in a console only they
 administer, needs their authority: it is a question for them and passes these
-gates, however small. (Whether the ask shows that only they can give it is
-access 7.) These shapes fail it:
+gates, however small. (Whether the transcript shows that only they can give
+it is access 7.) These shapes fail it:
 
 1. **The whole ask is a click on a pull request** — approve, review, or
    merge a PR, such as "the only step left is your approval", "it needs
    your approval and nothing more", or `Done`/`Can't` under "Merge the two
-   open pull requests". Agents approve and merge a pull request that an
-   agent identity may approve.
-   The person is not a step in that merge.
+   open pull requests". Agents approve and merge pull requests.
+   The person is not a step in a merge.
    `blocker` when `kind` is `action`. (Not this: a real risk question about
    *whether* to merge on the evidence in hand — "merge now on the test
    results, or wait a week in staging" — that is their risk appetite and passes. Not
    this: an ask whose main action is their own — rotate their keys, log in, tap
    the key — with a PR to look at mentioned alongside; that passes whole. Not
-   this: an approval that the repository's rules require of the person and
-   that no agent identity can give, such as a required code owner's review
-   when the ask says that the person is the only code owner. Asked as that one
-   act — what it is, what the merge changes, how to give it, `Done`/`Can't`
-   and no recommendation — it passes.)
+   this: a review that the repository's CODEOWNERS file requires from the
+   person on a path the pull request changes, where that file names no agent
+   identity as a code owner of the path, and the transcript shows the agent's
+   read of it. That ask passes. It need not say why it needs the person, and
+   it does not tell them that they own the path: the CODEOWNERS read belongs
+   in the transcript, not in the ask. A rewrite you send adds no such sentence
+   either. For an ask for such a review whose transcript shows no CODEOWNERS
+   read, the fix you give is to read the file before the ask, and to resend
+   the ask unchanged when the read meets this case; it never adds to the ask a
+   sentence about who owns the path. A merge is never this case. Every other
+   click on a pull request stays under this rule.)
 2. **A chore the agent could run with a credential it already holds**: the
    ask hands the person a command that runs under a credential the ask itself
    names as the agent's — an `aws …` command under a named profile (the
@@ -336,12 +341,13 @@ We invented these examples. Each one shows a shape that passes.
   large." with options `Include them` / `Leave them out`. The link reaches
   the person's words, and the cost bears on the choice: passes, 10, 12 and
   13 included.
-- "The repository's rules require a code owner's review before the pull
-  request that adds the retry button merges, and you are its only code
-  owner, so no agent identity can give it… The merge adds the retry button
-  to the export page. Approve it on the pull request's review page." with
-  `Done`/`Can't` and no recommendation. An approval only the person can
-  give, asked as that one act: passes.
+- "Please give the code owner's review of the pull request that adds the
+  retry button, at head 7c1e0b2… The merge adds the retry button to the
+  export page. Approve it on the pull request's review page." with
+  `Done`/`Can't` and no recommendation, and the transcript shows the
+  agent's read of CODEOWNERS, which gives the path to the person and to no
+  agent identity. An act only the person can do, asked as that one act:
+  passes authority 1 and needs no recommendation.
 
 ## Asks that fail — examples
 
@@ -349,9 +355,8 @@ We invented these examples. Each one shows a shape that fails, and the
 failure it shows.
 
 - "Approve the pull request that adds the retry button… The only step left
-  is your approval." `Done`/`Can't` → authority 1, `blocker`. The ask names
-  no rule that needs the person's own review, so the agents approve and
-  merge it, and the person is not a step in that.
+  is your approval." `Done`/`Can't` → authority 1, `blocker`. Agents
+  approve and merge pull requests, and the person is not a step in that.
 - "Your approval is needed to turn on versioning for the test bucket…
   Command: `AWS_PROFILE=test aws s3api put-bucket-versioning …`" →
   authority 2, `blocker`. The command runs under a profile the ask names
