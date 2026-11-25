@@ -309,6 +309,24 @@ A parent that was committed before the start of the listing shows a branch that 
 A parent that was committed later is a commit that the listing lacks, so the walk would lose the history before that parent.
 `collect-merges` refuses such a walk with an error that names the last commit walked and the parent, each with its time, and writes nothing.
 
+A read that GitHub refuses for now, with a 5xx or no answer, is tried again with a growing wait of about a minute in all.
+A read that GitHub's rate limit refuses is tried again after the wait that GitHub names, as [GitHub's REST documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) asks.
+That is a 429, or a 403 that carries `x-ratelimit-remaining: 0` or a `retry-after`, or whose message names the secondary rate limit.
+A `retry-after` of N seconds waits N seconds.
+A spent primary limit, with `x-ratelimit-remaining: 0`, waits until the time in `x-ratelimit-reset` and 5 seconds more.
+A secondary limit that names no wait waits one minute, then 2, 4, 8 and 16 minutes.
+Any other 403, such as a refusal of permission, fails the read at once.
+Before each wait, `collect-merges` prints one line to stderr that names the page, GitHub's answer, the wait, the time that the wait ends, and which wait of the read it is:
+
+```text
+replay: GitHub's rate limit refused GET https://api.github.com/repos/acme/widgets/commits?per_page=100&sha=main&since=2026-09-27T00%3A00%3A00Z (GitHub answered 403 Forbidden: {"message":"API rate limit exceeded for installation ID 1."}); waiting 22m5s, until 2026-10-05T11:28:05Z, wait 1 of at most 5 for this read
+```
+
+One wait lasts at most 65 minutes: an hour, the window of GitHub's primary limit, and a margin.
+One read waits at most 5 times.
+A read whose wait would last longer, or that GitHub still refuses after its fifth wait, fails with an error that names the time that GitHub gives to try again, and nothing is written.
+Run the command again after that time.
+
 ```sh
 legion replay collect-merges \
   --repo <owner>/<name> --branch main \
@@ -344,7 +362,8 @@ Of the window, it holds in memory only the pull requests that the log and the ev
 It writes only that file and `window.json`, each to a temporary file that it renames into place.
 Every other file of the window stays as it was.
 It names each pull request that a line names for an issue whose repository the window does not give, and reads none of them.
-A read that GitHub refuses for now is tried again with a growing wait, and a read that fails writes nothing.
+It waits out GitHub's rate limit as `collect-merges` does, with the same bounds and the same line on stderr ([Add the merges of each base branch](#add-the-merges-of-each-base-branch)).
+A read that fails writes nothing.
 
 ```sh
 legion replay collect-queue \

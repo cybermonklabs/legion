@@ -3,7 +3,9 @@ package replay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -13,9 +15,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // The span the tests of collect-merges's walk read acme/widgets's main over: the first six hours
@@ -299,5 +304,274 @@ func TestCollectMergesListsFromADayBeforeTheSpanWithNoUntil(t *testing.T) {
 	if query := target.Query(); query.Get("sha") != "main" || query.Get("since") != "2026-11-19T00:00:00Z" ||
 		query.Get("per_page") != "100" || query.Has("until") {
 		t.Errorf("collect-merges listed %s, want sha=main, since=2026-11-19T00:00:00Z and per_page=100, with no until", run.requests[0].Target)
+	}
+}
+
+// stubAnswer is one answer limitStub gives: its status, the headers it carries and its body.
+type stubAnswer struct {
+	status int
+	header map[string]string
+	body   string
+}
+
+// limitStub serves answers to the requests it is sent, one a request in order and the last again
+// for every request after it, and the requests it served.
+func limitStub(t *testing.T, answers ...stubAnswer) (*httptest.Server, *stubRequests) {
+	t.Helper()
+	requests := &stubRequests{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.add(r)
+		answer := answers[min(len(requests.all()), len(answers))-1]
+		for name, value := range answer.header {
+			w.Header().Set(name, value)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(answer.status)
+		io.WriteString(w, answer.body)
+	}))
+	t.Cleanup(server.Close)
+	return server, requests
+}
+
+// limitRead is one read of acme/widgets's commit listing through the reader both collect-merges
+// and collect-queue read GitHub with, against limitStub: the pages it read, its error, each wait it
+// made, recorded rather than slept, and the requests the stub served.
+type limitRead struct {
+	pages    [][]byte
+	err      error
+	waits    []time.Duration
+	requests []stubRequest
+}
+
+// readThroughLimits reads acme/widgets's commit listing from limitStub serving answers. A wait
+// past the twentieth ends the read, so a reader that waits without end fails rather than hangs.
+func readThroughLimits(t *testing.T, answers ...stubAnswer) limitRead {
+	t.Helper()
+	server, seen := limitStub(t, answers...)
+	api, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read limitRead
+	reader := githubReader{api: api, token: stubGitHubToken, client: server.Client(), wait: func(_ context.Context, d time.Duration) error {
+		read.waits = append(read.waits, d)
+		if len(read.waits) > 20 {
+			return errors.New("the test ends a read that waits a twenty-first time")
+		}
+		return nil
+	}}
+	read.pages, read.err = reader.pages(context.Background(), api.JoinPath("repos", "acme", "widgets", "commits"))
+	read.requests = seen.all()
+	return read
+}
+
+// The answers GitHub gives the tests of its rate limit: a listing's empty page; the message of a
+// spent primary limit, which GitHub answers 403 or 429 with x-ratelimit-remaining 0; the message
+// of the secondary limit; and a permission refusal, a 403 that is no rate limit.
+var (
+	emptyPage      = stubAnswer{status: http.StatusOK, body: "[]"}
+	primarySpent   = `{"message":"API rate limit exceeded for installation ID 1.","status":"403"}`
+	secondaryLimit = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","status":"403"}`
+	notPermitted   = `{"message":"Resource not accessible by integration","status":"403"}`
+)
+
+// spentUntil is GitHub's answer when the primary rate limit is spent until reset: a 403 with
+// x-ratelimit-remaining 0 and x-ratelimit-reset at reset, in epoch seconds.
+func spentUntil(reset time.Time) stubAnswer {
+	return stubAnswer{status: http.StatusForbidden, body: primarySpent, header: map[string]string{
+		"X-RateLimit-Limit": "15000", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10)}}
+}
+
+// GitHub's primary rate limit answers 403 with x-ratelimit-remaining 0, and a read is not tried
+// again before x-ratelimit-reset (GitHub's "Exceeding the rate limit"). A listing refused so with
+// a reset 20 minutes ahead is read again after one wait, which ends after the reset and within
+// ten seconds of it, and the second request is answered. It fails where the 403 is the answer at
+// once, as a refusal that is no rate limit is, or where the wait ends before the reset.
+func TestGitHubReaderWaitsOutAPrimaryRateLimitUntilItsReset(t *testing.T) {
+	before := time.Now()
+	reset := before.Add(20 * time.Minute).Truncate(time.Second)
+	read := readThroughLimits(t, spentUntil(reset), emptyPage)
+	after := time.Now()
+	if read.err != nil {
+		t.Fatalf("the read refused with %v, want it read again after the reset", read.err)
+	}
+	if len(read.waits) != 1 || before.Add(read.waits[0]).Before(reset) || after.Add(read.waits[0]).After(reset.Add(10*time.Second)) {
+		t.Errorf("the read waited %v, want one wait that ends after the reset at %s and within ten seconds of it",
+			read.waits, reset.UTC().Format(time.RFC3339))
+	}
+	if len(read.requests) != 2 || len(read.pages) != 1 {
+		t.Errorf("the read sent %v and read %d pages, want two requests and the one page", read.requests, len(read.pages))
+	}
+}
+
+// A rate limit's retry-after names the seconds to wait (GitHub's "Exceeding the rate limit"): a
+// 429 asking for 7 seconds is waited 7 seconds, once, and the read is answered after it. It fails
+// where the 429 is tried again after the first wait of a read GitHub refuses for now, a second.
+func TestGitHubReaderWaitsTheSecondsARetryAfterNames(t *testing.T) {
+	limited := stubAnswer{status: http.StatusTooManyRequests, body: secondaryLimit, header: map[string]string{"Retry-After": "7"}}
+	read := readThroughLimits(t, limited, emptyPage)
+	if read.err != nil {
+		t.Fatalf("the read refused with %v, want it read again after the retry-after", read.err)
+	}
+	if !slices.Equal(read.waits, []time.Duration{7 * time.Second}) {
+		t.Errorf("the read waited %v, want one wait of 7s, the retry-after", read.waits)
+	}
+	if len(read.requests) != 2 {
+		t.Errorf("the read sent %v, want two requests", read.requests)
+	}
+}
+
+// A 403 is a rate limit's only where GitHub says so. A permission refusal, whether it carries no
+// rate-limit header or the primary limit's calls left, as every answer of GitHub's does, is the
+// read's answer at once: no wait and no second request. Beside it, a 403 with the same calls left
+// and neither retry-after nor a remaining of 0, whose message names the secondary limit, is waited
+// a minute, the least GitHub asks, and read again. It fails where a permission refusal is waited
+// out, or where the secondary limit's 403 is taken for a refusal.
+func TestGitHubReaderRefusesAForbiddenThatIsNoRateLimitAtOnce(t *testing.T) {
+	callsLeft := map[string]string{"X-RateLimit-Limit": "15000", "X-RateLimit-Remaining": "14671", "X-RateLimit-Reset": "1795000000"}
+	for _, tc := range []struct {
+		name    string
+		answer  stubAnswer
+		refused bool
+		waits   []time.Duration
+	}{
+		{name: "a permission refusal with no rate-limit header", answer: stubAnswer{status: http.StatusForbidden, body: notPermitted}, refused: true},
+		{name: "a permission refusal with calls left", answer: stubAnswer{status: http.StatusForbidden, body: notPermitted, header: callsLeft}, refused: true},
+		{name: "the secondary limit named by its message alone", answer: stubAnswer{status: http.StatusForbidden, body: secondaryLimit, header: callsLeft},
+			waits: []time.Duration{time.Minute}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			read := readThroughLimits(t, tc.answer, emptyPage)
+			switch {
+			case tc.refused && (read.err == nil || !strings.Contains(read.err.Error(), "403") || !strings.Contains(read.err.Error(), "Resource not accessible")):
+				t.Errorf("the read answered %v, want GitHub's 403 and its message", read.err)
+			case !tc.refused && read.err != nil:
+				t.Errorf("the read refused with %v, want it read again after its wait", read.err)
+			}
+			if !slices.Equal(read.waits, tc.waits) {
+				t.Errorf("the read waited %v, want %v", read.waits, tc.waits)
+			}
+			if want := 1 + len(tc.waits); len(read.requests) != want {
+				t.Errorf("the read sent %v, want %d requests", read.requests, want)
+			}
+		})
+	}
+}
+
+// One wait is bounded: a time to try again further ahead than an hour and five minutes, the
+// primary limit's window and a margin, is refused at once, with no wait, naming that time, so the
+// operator knows when to run the collector again: a reset two hours ahead, and a retry-after of
+// two hours. It fails where the read waits for it, or refuses without naming the time.
+func TestGitHubReaderRefusesAWaitPastTheLongest(t *testing.T) {
+	before := time.Now()
+	reset := before.Add(2 * time.Hour).Truncate(time.Second)
+	for _, tc := range []struct {
+		name   string
+		answer stubAnswer
+		names  func(after time.Time) []string
+	}{
+		{name: "a reset two hours ahead", answer: spentUntil(reset),
+			names: func(time.Time) []string { return []string{reset.UTC().Format(time.RFC3339)} }},
+		{name: "a retry-after of two hours", answer: stubAnswer{status: http.StatusTooManyRequests, body: secondaryLimit, header: map[string]string{"Retry-After": "7200"}},
+			names: func(after time.Time) []string {
+				var times []string
+				for at := before.Add(2 * time.Hour).Truncate(time.Second); !at.After(after.Add(2 * time.Hour)); at = at.Add(time.Second) {
+					times = append(times, at.UTC().Format(time.RFC3339))
+				}
+				return times
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			read := readThroughLimits(t, tc.answer, emptyPage)
+			times := tc.names(time.Now())
+			if read.err == nil || !slices.ContainsFunc(times, func(at string) bool { return strings.Contains(read.err.Error(), at) }) {
+				t.Errorf("the read answered %v, want a refusal naming the time GitHub names, one of %v", read.err, times)
+			}
+			if len(read.waits) != 0 || len(read.requests) != 1 {
+				t.Errorf("the read waited %v and sent %v, want no wait and one request", read.waits, read.requests)
+			}
+		})
+	}
+}
+
+// The waits of one read are bounded (GitHub's "throw an error after a specific number of
+// retries"): a listing GitHub's secondary limit refuses on every request, with a 403 that names the
+// limit in its message alone, is waited a minute, then two, four, eight and sixteen, five waits
+// growing as GitHub asks, and is refused at the sixth refusal, naming GitHub's message. It fails
+// where the read is refused at once, waits a constant time, or waits on.
+func TestGitHubReaderRefusesARateLimitPastItsLastWait(t *testing.T) {
+	read := readThroughLimits(t, stubAnswer{status: http.StatusForbidden, body: secondaryLimit})
+	if read.err == nil || !strings.Contains(read.err.Error(), "secondary rate limit") {
+		t.Errorf("the read answered %v, want a refusal naming GitHub's message", read.err)
+	}
+	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute}
+	if !slices.Equal(read.waits, want) {
+		t.Errorf("the read waited %v, want %v", read.waits, want)
+	}
+	if len(read.requests) != len(want)+1 {
+		t.Errorf("the read sent %d requests, want %d, one after each wait", len(read.requests), len(want)+1)
+	}
+}
+
+// Each wait for GitHub's rate limit is told on stderr as it begins, so an operator sees why the
+// collector is quiet: one line naming the page, GitHub's answer, the wait, the time it ends, the
+// reset and rateLimitMargin after it, and which of the read's waits it is. It fails where a wait
+// is made untold.
+func TestGitHubReaderTellsEachRateLimitWaitOnStderr(t *testing.T) {
+	reset := time.Now().Add(20 * time.Minute).Truncate(time.Second)
+	server, _ := limitStub(t, spentUntil(reset), emptyPage)
+	api, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var told strings.Builder
+	reader := githubReader{api: api, token: stubGitHubToken, client: server.Client(), wait: noWait, stderr: &told}
+	if _, err := reader.pages(context.Background(), api.JoinPath("repos", "acme", "widgets", "commits")); err != nil {
+		t.Fatalf("the read refused with %v, want it read again after the reset", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(told.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stderr holds %q, want one line for the one wait", told.String())
+	}
+	for _, part := range []string{"GET " + server.URL + "/repos/acme/widgets/commits", "403 Forbidden", "API rate limit exceeded",
+		"until " + reset.Add(rateLimitMargin).UTC().Format(time.RFC3339), "wait 1 of at most 5"} {
+		if !strings.Contains(lines[0], part) {
+			t.Errorf("stderr tells the wait as %q, which does not name %q", lines[0], part)
+		}
+	}
+}
+
+// The read's context ends a wait for GitHub's rate limit at once: a read whose context is
+// cancelled as it begins to wait out a reset 20 minutes ahead on a timer (backoff.Sleep) ends with
+// the cancellation, and sends no second request. It fails where the wait outlasts the context, or
+// where the read is tried again after it.
+func TestGitHubReaderEndsARateLimitWaitWithItsContext(t *testing.T) {
+	server, seen := limitStub(t, spentUntil(time.Now().Add(20*time.Minute)), emptyPage)
+	api, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader := githubReader{api: api, token: stubGitHubToken, client: server.Client(), stderr: io.Discard,
+		wait: func(ctx context.Context, d time.Duration) error {
+			cancel()
+			return backoff.Sleep(ctx, d)
+		}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := reader.pages(ctx, api.JoinPath("repos", "acme", "widgets", "commits"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the read answered %v, want the cancellation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read still waits ten seconds after its context was cancelled")
+	}
+	if requests := seen.all(); len(requests) != 1 {
+		t.Errorf("the read sent %v, want the one request before the wait", requests)
 	}
 }

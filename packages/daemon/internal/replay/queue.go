@@ -58,8 +58,10 @@ type QueueCollected struct {
 // /repos/<owner>/<name>/issues/<n>/timeline, every page by its Link header) and keeps the events of
 // the kinds added_to_merge_queue, removed_from_merge_queue and merged, exactly as GitHub serves
 // them, with the pull request's number (ParseQueueTimeline), the pull requests in ascending order.
-// It sends GET alone, each read GitHub refuses for now (429, a 5xx, no answer) tried again with a
-// growing wait, and writes nothing where a read fails.
+// It sends GET alone: a read GitHub refuses for now (a 5xx, no answer) is tried again with a
+// growing wait, and one GitHub's rate limit refuses is tried again after the wait GitHub names,
+// each such wait told on stderr and bounded (githubReader.read). It writes nothing where a read
+// fails.
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
 // refuses, before any read of GitHub. Of the window it holds its window.json and what names the

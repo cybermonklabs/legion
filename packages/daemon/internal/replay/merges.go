@@ -10,13 +10,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
 
 // DefaultGitHubAPI is GitHub's REST API, which collect-merges reads where its caller names no
@@ -74,9 +77,10 @@ type MergesConfig struct {
 // time, and nothing is written.
 // Each commit keeps the pull request it merged (Merge.PR) where the first line of its message ends
 // with GitHub's squash suffix ` (#<n>)`, and none where it does not, so the conflict draw can leave
-// a stretch's own merge out of its count. It sends GET alone, each read GitHub refuses for now
-// (429, a 5xx, no answer) tried again with a growing wait. It returns the branch's commits as
-// written, oldest first.
+// a stretch's own merge out of its count. It sends GET alone: a read GitHub refuses for now (a 5xx,
+// no answer) is tried again with a growing wait, and one GitHub's rate limit refuses is tried again
+// after the wait GitHub names, each such wait told on stderr and bounded (githubReader.read). It
+// returns the branch's commits as written, oldest first.
 //
 // It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
 // refuses, before any read of GitHub. Of the window it holds its window.json and the lines of
@@ -160,12 +164,14 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	return merges, nil
 }
 
-// githubReader reads GitHub's REST API with a token: the pages of one listing, and a commit.
+// githubReader reads GitHub's REST API with a token: the pages of one listing, and a commit. It
+// waits with wait, and tells each wait for GitHub's rate limit on stderr, os.Stderr where nil.
 type githubReader struct {
 	api    *url.URL
 	token  string
 	client *http.Client
 	wait   func(ctx context.Context, d time.Duration) error
+	stderr io.Writer
 }
 
 // nextPage is the next page's URL in a Link header GitHub writes on a listing's page.
@@ -182,12 +188,7 @@ func (r githubReader) pages(ctx context.Context, first *url.URL) ([][]byte, erro
 		if next.Scheme != r.api.Scheme || next.Host != r.api.Host {
 			return nil, fmt.Errorf("the next page is at %s://%s, not at the API's %s://%s", next.Scheme, next.Host, r.api.Scheme, r.api.Host)
 		}
-		var body []byte
-		var link string
-		err := retry(ctx, r.wait, retryableGitHub, func() (err error) {
-			body, link, err = r.get(ctx, next)
-			return err
-		})
+		body, link, err := r.read(ctx, next)
 		if err != nil {
 			return nil, err
 		}
@@ -205,11 +206,7 @@ func (r githubReader) pages(ctx context.Context, first *url.URL) ([][]byte, erro
 // committed reads one commit (GET /repos/<owner>/<name>/commits/<sha>) and returns its
 // committer's time. An answer that is not a commit with its committer's time is refused.
 func (r githubReader) committed(ctx context.Context, commit *url.URL) (time.Time, error) {
-	var body []byte
-	err := retry(ctx, r.wait, retryableGitHub, func() (err error) {
-		body, _, err = r.get(ctx, commit)
-		return err
-	})
+	body, _, err := r.read(ctx, commit)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -227,6 +224,60 @@ func (r githubReader) committed(ctx context.Context, commit *url.URL) (time.Time
 		return time.Time{}, errors.New("GitHub's answer is a commit without its committer's time")
 	}
 	return read.Commit.Committer.Date, nil
+}
+
+// The bounds of the waits for GitHub's rate limit (githubReader.read). rateLimitLongestWait bounds
+// one wait: an hour, the window of GitHub's primary limit, so that no reset is further ahead, and
+// five minutes more for rateLimitMargin and a clock a little behind GitHub's. A time to try again
+// past it is refused, naming that time, so the operator runs the collector again then rather than
+// leave it quiet for longer. rateLimitWaits bounds the waits of one read, as GitHub asks ("throw an
+// error after a specific number of retries"): a secondary limit that names no time is waited a
+// minute, then two, four, eight and sixteen, 31 minutes in all, and a primary limit waited out to
+// its reset leaves four waits for a budget that a client sharing it spends again at once.
+// rateLimitMargin is how long after x-ratelimit-reset, a whole second, the read is tried again.
+const (
+	rateLimitLongestWait = 65 * time.Minute
+	rateLimitWaits       = 5
+	rateLimitMargin      = 5 * time.Second
+)
+
+// read reads one page as get does. A read GitHub refuses for now (retryableGitHub) is tried again
+// with a growing wait (retry). A read GitHub's rate limit refuses is tried again after the wait
+// GitHub names (rateLimitWait), each wait told on stderr with the time it ends, at most
+// rateLimitWaits times: a wait past rateLimitLongestWait, or a refusal after the last wait, is the
+// read's refusal, naming the time GitHub names to try again. The context's end ends a wait at once.
+func (r githubReader) read(ctx context.Context, page *url.URL) ([]byte, string, error) {
+	for waited := 0; ; waited++ {
+		var body []byte
+		var link string
+		err := retry(ctx, r.wait, retryableGitHub, func() (err error) {
+			body, link, err = r.get(ctx, page)
+			return err
+		})
+		var refusal *githubRefusal
+		if !errors.As(err, &refusal) || !refusal.limited {
+			return body, link, err
+		}
+		now := time.Now()
+		at, wait := refusal.rateLimitWait(now, waited)
+		switch {
+		case waited == rateLimitWaits:
+			return nil, "", fmt.Errorf("GitHub's rate limit refuses the read again after %d waits, the most one read makes, and names %s to try again: %w",
+				rateLimitWaits, at.UTC().Format(time.RFC3339), err)
+		case wait > rateLimitLongestWait:
+			return nil, "", fmt.Errorf("GitHub's rate limit refuses the read until %s, %s from now, past the %s one wait lasts at most: %w",
+				at.UTC().Format(time.RFC3339), at.Sub(now).Round(time.Second), rateLimitLongestWait, err)
+		}
+		stderr := r.stderr
+		if stderr == nil {
+			stderr = os.Stderr
+		}
+		fmt.Fprintf(stderr, "replay: GitHub's rate limit refused GET %s (%v); waiting %s, until %s, wait %d of at most %d for this read\n",
+			page.Redacted(), err, wait.Round(time.Second), now.Add(wait).UTC().Format(time.RFC3339), waited+1, rateLimitWaits)
+		if err := r.wait(ctx, wait); err != nil {
+			return nil, "", err
+		}
+	}
 }
 
 // get reads one page: its body and its Link header.
@@ -248,20 +299,51 @@ func (r githubReader) get(ctx context.Context, page *url.URL) ([]byte, string, e
 		return nil, "", &githubUnanswered{err: err}
 	}
 	if response.StatusCode/100 != 2 {
-		return nil, "", &githubRefusal{status: response.StatusCode, body: string(bytes.TrimSpace(body[:min(len(body), 300)]))}
+		header := response.Header
+		return nil, "", &githubRefusal{status: response.StatusCode, body: string(bytes.TrimSpace(body[:min(len(body), 300)])),
+			limited: githubrest.RateLimited(response, body), limit: githubrest.LimitHeaders{RetryAfter: header.Get("Retry-After"),
+				Limit: header.Get("X-RateLimit-Limit"), Remaining: header.Get("X-RateLimit-Remaining"), Reset: header.Get("X-RateLimit-Reset"),
+				Resource: header.Get("X-RateLimit-Resource")}}
 	}
 	return body, response.Header.Get("Link"), nil
 }
 
-// githubRefusal is a page GitHub answered with a status other than 2xx, and the start of what it
-// said.
+// githubRefusal is a page GitHub answered with a status other than 2xx: the status, the start of
+// what GitHub said, whether its rate limit refused the page, as the daemon reads every answer of
+// GitHub's (githubrest.RateLimited: a 429, or a 403 with x-ratelimit-remaining 0, a retry-after or
+// a message naming the secondary limit), and the rate-limit headers GitHub sent with it.
 type githubRefusal struct {
-	status int
-	body   string
+	status  int
+	body    string
+	limited bool
+	limit   githubrest.LimitHeaders
 }
 
 func (e *githubRefusal) Error() string {
 	return fmt.Sprintf("GitHub answered %d %s: %s", e.status, http.StatusText(e.status), e.body)
+}
+
+// rateLimitWait is when GitHub's rate limit, which refused a read after waited waits for it, lets
+// the read be tried again, and how long from now to wait for it, as GitHub's REST documentation
+// says (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api,
+// "Exceeding the rate limit"): a retry-after of N seconds, N seconds from now, a day at most so
+// that no header wraps the duration; else, with x-ratelimit-remaining 0, the x-ratelimit-reset
+// epoch second, waited to rateLimitMargin past it; else a minute, doubled for each wait before,
+// for a secondary limit that names no time or a reset already past on this host's clock. It reads
+// the headers in githubrest.LimitHeaders.WaitAt's order but holds no wait to an hour, since a time
+// past rateLimitLongestWait is the read's refusal (githubReader.read).
+func (e *githubRefusal) rateLimitWait(now time.Time, waited int) (time.Time, time.Duration) {
+	if seconds, err := strconv.ParseInt(e.limit.RetryAfter, 10, 64); err == nil && seconds > 0 {
+		wait := time.Duration(min(seconds, int64(24*time.Hour/time.Second))) * time.Second
+		return now.Add(wait), wait
+	}
+	if reset, err := strconv.ParseInt(e.limit.Reset, 10, 64); err == nil && e.limit.Remaining == "0" {
+		if at := time.Unix(reset, 0); at.After(now) {
+			return at, at.Add(rateLimitMargin).Sub(now)
+		}
+	}
+	wait := time.Minute << waited
+	return now.Add(wait), wait
 }
 
 // githubUnanswered is a page GitHub gave no whole answer to.
@@ -270,14 +352,15 @@ type githubUnanswered struct{ err error }
 func (e *githubUnanswered) Error() string { return "GitHub gave no answer: " + e.err.Error() }
 func (e *githubUnanswered) Unwrap() error { return e.err }
 
-// retryableGitHub says whether GitHub refused a read for now: it answered 429 or a 5xx, or gave no
-// whole answer, the client's own timeout among them (net/http reports it as a deadline exceeded).
-// A read the caller cancelled is no refusal of GitHub's, and is not tried again; a caller's
-// deadline that passed ends the wait before the next attempt (retry).
+// retryableGitHub says whether GitHub refused a read for now: it answered a 5xx, or gave no whole
+// answer, the client's own timeout among them (net/http reports it as a deadline exceeded). A
+// refusal of GitHub's rate limit, a 429 among them, is tried again after the wait GitHub names
+// instead (githubReader.read). A read the caller cancelled is no refusal of GitHub's, and is not
+// tried again; a caller's deadline that passed ends the wait before the next attempt (retry).
 func retryableGitHub(err error) bool {
 	var refusal *githubRefusal
 	if errors.As(err, &refusal) {
-		return refusal.status == http.StatusTooManyRequests || refusal.status >= 500
+		return !refusal.limited && refusal.status >= 500
 	}
 	var unanswered *githubUnanswered
 	return errors.As(err, &unanswered) && !errors.Is(err, context.Canceled)
