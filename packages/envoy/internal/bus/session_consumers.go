@@ -167,8 +167,9 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
-	// logger is the logger the connection was opened with (ConnectSessionConsumers),
-	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
+	// logger is the logger the connection was opened with (ConnectSessionConsumers), the client's
+	// own where that was nil (sessionConsumersOn): where create and recordResumeFloorAt write
+	// their lines.
 	logger *slog.Logger
 	// pendingMu guards pending and createFault.
 	pendingMu sync.Mutex
@@ -245,7 +246,11 @@ func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger 
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
-		logger:            cmp.Or(logger, client.log()),
+		// A caller that names no logger gets the client's, so the consumers' lines and the
+		// connection's go to one place: a caller that gave the client WithLogger gets that, and
+		// one that gave it none gets the client's fallback, which writes where slog.Default()
+		// points at each line.
+		logger: cmp.Or(logger, client.log()),
 	}
 }
 

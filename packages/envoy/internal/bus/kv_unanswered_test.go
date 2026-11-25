@@ -547,7 +547,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, true, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -573,7 +573,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, false, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
@@ -594,7 +594,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(0)
-	if _, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, true, startSendsAgain); err != nil {
+	if _, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 

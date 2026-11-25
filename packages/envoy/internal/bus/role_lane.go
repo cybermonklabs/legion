@@ -58,6 +58,9 @@ var errRoleLaneRefused = errors.New("bus: NATS refused the role-lane subscriptio
 // would.
 func ConnectRoleLane(urls []string, machineID string, handler nats.MsgHandler, options ...ConnectOption) (*Client, string, error) {
 	queues := []string{RoleLaneQueue, ListenerQueue(machineID)}
+	// The options are read once here: openRoleLane reads them again for the client it builds, and
+	// the refusal below is logged before there is a client to read a logger from.
+	logger := parseConnectOptions(options).logger
 	client, err := openRoleLane(urls, RoleLaneQueue, handler, options)
 	if err == nil {
 		client.coreQueues = queues
@@ -67,7 +70,7 @@ func ConnectRoleLane(urls []string, machineID string, handler nats.MsgHandler, o
 		return nil, "", err
 	}
 	queue := ListenerQueue(machineID)
-	parseConnectOptions(options).logger.Warn("envoy role lane: the NATS user may not subscribe in the shared queue group; subscribing in the machine's",
+	logger.Warn("envoy role lane: the NATS user may not subscribe in the shared queue group; subscribing in the machine's",
 		slog.String("refused_queue", RoleLaneQueue),
 		slog.String("queue", queue),
 		slog.String("error", err.Error()))

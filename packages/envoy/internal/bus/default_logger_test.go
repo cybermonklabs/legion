@@ -37,6 +37,11 @@ func TestAClientBuiltWithoutALoggerWritesWhereTheDefaultPointsAtEachLine(t *test
 // default in force when it is written is dropped, as slog.Default() would have dropped it. The row
 // sets a WARN-level default and hands an INFO record straight to the handler, the call Enabled
 // would have let through under an earlier default. Serial: it sets the process's default logger.
+// Serial: it swaps the process default, which is the thing under test. It stays because it
+// catches a real regression and the other rows cannot: a handler that forwards to slog.Default()
+// but reads Enabled on itself, or on the default it was built over, takes a record the current
+// default would drop. followsDefault reads the target handler once per record and asks that
+// handler, and this row fails the moment it stops doing so.
 func TestTheDefaultFollowingHandlerDropsARecordTheCurrentDefaultDoesNotTake(t *testing.T) {
 	var logs logtest.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))

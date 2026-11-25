@@ -116,8 +116,8 @@ func namedRequest(request string, err error) error {
 // listener's start, which a signal ends at once, runs under no other; the legion agent registry's
 // retry passes the retry's context, and the webhook redelivery sweep the context of its pass.
 //
-// Its lines, the WARNs of its waits and of a request it sends again, go to the logger of the
-// client that owns conn, and to slog.Default() when no client owns it (loggerOwning).
+// Its lines, the WARNs of its waits and of a request it sends again, go where the client that owns
+// conn writes, and where slog.Default() points at each line when no client owns it (loggerOwning).
 func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	return ensureKeyValue(ctx, loggerOwning(conn), startHangGuard, conn, js, config)
 }
@@ -243,7 +243,7 @@ func ensureKeyValue(ctx context.Context, logger *slog.Logger, guard time.Duratio
 	if err != nil {
 		return KeyValue{}, err
 	}
-	handle, err := wrapKeyValue(ctx, logger, conn, kv, created, startSendsAgain)
+	handle, err := wrapKeyValue(ctx, conn, kv, created, startSendsAgain)
 	if err == nil && created && (config.Replicas > 1 || createdElsewhere) {
 		// A create of more than one copy can be answered before the bucket's stream has a leader:
 		// the first send of it is answered at the stream's first leader election, but a send made
