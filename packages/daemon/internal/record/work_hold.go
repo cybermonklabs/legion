@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -135,6 +136,36 @@ func (s *Postgres) WorkHeldTrees(ctx context.Context, tx pgx.Tx, project string)
 		return nil, fmt.Errorf("list the trees of %s holding a claim the work hold stopped: %w", project, err)
 	}
 	return trees, nil
+}
+
+// StoredClaim is one claim as the store holds it on an issue (Store.StoredClaims): its token and
+// the role it is on.
+type StoredClaim struct {
+	Token claim.Token
+	Role  claim.Role
+}
+
+func (s *Postgres) StoredClaims(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]StoredClaim, error) {
+	claims := map[string][]StoredClaim{}
+	if len(issues) == 0 {
+		return claims, nil
+	}
+	rows, err := tx.Query(ctx, `select issue, token, role from claims where issue = any($1) order by issue, token`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of %d issues: %w", len(issues), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var issue, token, role string
+		if err := rows.Scan(&issue, &token, &role); err != nil {
+			return nil, fmt.Errorf("read the claims of %d issues: %w", len(issues), err)
+		}
+		claims[issue] = append(claims[issue], StoredClaim{Token: claim.Token(token), Role: claim.Role(role)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of %d issues: %w", len(issues), err)
+	}
+	return claims, nil
 }
 
 // scanWorkHold reads one row of standingColumns or openedColumns. opened_at is null on a hold that

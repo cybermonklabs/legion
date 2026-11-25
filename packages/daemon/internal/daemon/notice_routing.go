@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // noticeSummary is the one-line message a notice is published with, "<kind> on <issue>": the
@@ -58,17 +59,33 @@ type noticeRoute struct {
 	issues  map[string]record.Issue
 }
 
-// treeSnapshot is one read of a notice's tree: its route, and the fence, the tree's unfinished
-// notices written before the row, oldest first. The owner walk, the fence, and the linger check
-// all see this one state, so a reparent committing meanwhile cannot show them half of itself.
+// treeSnapshot is one read of a notice's tree: its route, the fence, the tree's unfinished notices
+// written before the row, oldest first, and whether the tree holds its work (holdsWork: the
+// deployment's hold is `work` and the tree's standing design gate stands closed,
+// record.TreeGate.Standing). The owner walk, the fence, the linger check and the work hold's wait
+// of a notice of the owner's acceptance all see this one state, so a reparent or a move of the
+// issue committing meanwhile cannot show them half of itself.
 type treeSnapshot struct {
 	noticeRoute
-	earlier []record.OutboxRow
+	earlier   []record.OutboxRow
+	holdsWork bool
+}
+
+// heldForTheOwner is whether the work hold holds notice, of issue: the tree holds its work, and the
+// notice tells issue's architect that issue waits in its own acceptance
+// (workflow.TellsOwnersAcceptance). No architect is told to start its own acceptance, the owner's
+// place, while the hold stands: the notice waits, and every later notice of the architect passes
+// it (earlierNoticeFor).
+func (tree treeSnapshot) heldForTheOwner(issue record.Issue, notice record.Notice) bool {
+	return tree.holdsWork && workflow.TellsOwnersAcceptance(issue, notice)
 }
 
 // readNoticeTree reads row's tree in one repeatable-read transaction: that the row is still in the
-// outbox under its lease, row's issue and the tree's route (readNoticeRoute), then the fence. A row
-// deleted under its lease is errNoticeRowGone, and a notice it cannot route is errNoticeUnroutable.
+// outbox under its lease, row's issue and the tree's route (readNoticeRoute), the fence, and, under
+// `work`, the tree's standing design gate, the live gate every fence of the hold reads
+// (treeGate), read here in the same snapshot as the issue whose phase the hold's wait reads. A
+// row deleted under its lease is errNoticeRowGone, and a notice it cannot route is
+// errNoticeUnroutable.
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (record.Issue, treeSnapshot, error) {
 	var issue record.Issue
 	var tree treeSnapshot
@@ -83,7 +100,14 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (reco
 		if issue, tree.noticeRoute, err = r.readNoticeRoute(ctx, tx, row.Issue, map[string]noticeRoute{}); err != nil {
 			return err
 		}
-		tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID)
+		if tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID); err != nil {
+			return err
+		}
+		if !r.holdIsWork() {
+			return nil
+		}
+		gate, err := r.treeGateTx(ctx, tx, tree.root.Key)
+		_, tree.holdsWork = gate.Standing()
 		return err
 	}); err != nil {
 		return record.Issue{}, treeSnapshot{}, fmt.Errorf("read the tree of notice row %d: %w", row.ID, err)
@@ -135,7 +159,9 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // earlier notice's architect is resolved again rather than recorded when it was held, since a
 // sub-architect can start or end while it waits, and by the rule its own publish follows
 // (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// holds back no later notice; it finishes on its own attempt (notice). Nor does an earlier row the
+// work hold holds (heldForTheOwner): it waits for the gate's opening, which can be days, and every
+// other notice of its architect goes meanwhile.
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -154,7 +180,7 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 			continue
 		}
 		issue, ok := tree.issues[other.Issue]
-		if !ok {
+		if !ok || tree.heldForTheOwner(issue, notice) {
 			continue
 		}
 		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {

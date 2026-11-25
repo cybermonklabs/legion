@@ -50,6 +50,10 @@ import (
 const holdSentence = "The deployment holds the tree's work until every gated step stands open again: no phase " +
 	"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
 
+// architectCloseEnding ends the close message under `work` to an architect, which the hold stops
+// not (decision 14). It is written out here, never read from the code under test.
+const architectCloseEnding = "Your own work goes on, and a step that you report starts nothing until every gated step stands open again."
+
 // holdGrace is how long after the close message reached a claim its turn is cut (spec step 3).
 const holdGrace = 2 * time.Minute
 
@@ -673,13 +677,74 @@ func heldAtTheClose(t *testing.T) *workHoldRig {
 	return r
 }
 
+// stoppedTaskAtTheClose is a tree under `work` walking the plan `implementer tester`, whose task a
+// its owner stopped at step 2 before the close at version 4 has just closed the gate: the root's
+// architect is at work, and its implementer, released before the close, is the one worker the
+// close stops, its stop queued and not made yet. The stop of the task stopped the tester's step
+// (the daemon's own stop, which stands above the hold's), so a later version of the plan that
+// restarts the task at step 1 starts the implementer alone.
+func stoppedTaskAtTheClose(t *testing.T) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.released(claim.RoleImplementer)
+	r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning, "implementer", "tester")
+	r.stopTask()
+	r.close(4)
+	return r
+}
+
+// heldParentAtTheClose is a tree under `work` walking the plan `implementer reviewer`, its root
+// held before its retro for ownersChild, still implementing beneath it, when the close at version
+// 4 has just closed the gate: the root's architect is at work, and its implementer, released
+// before the close, is the one worker the close stops, its stop queued and not made yet. The
+// child's leave is the last one beneath the root, which starts the root's retro
+// (workflow's releaseHeldParents).
+func heldParentAtTheClose(t *testing.T) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Reviewing, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.released(claim.RoleImplementer)
+	r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning, "implementer", "reviewer")
+	held, parent := r.issue(), r.tree.key
+	held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+	r.inTx(func(tx pgx.Tx) error {
+		if err := r.records.PutIssue(r.ctx, tx, held); err != nil {
+			return err
+		}
+		return r.records.PutIssue(r.ctx, tx, record.Issue{Key: ownersChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: r.tree.project, Tree: r.tree.key, Parent: &parent, Title: "a child still at work", Phase: phase.Implementing, Generation: 1,
+			Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 3})
+	})
+	r.close(4)
+	return r
+}
+
+// cutoverMergerAtTheClose is a tree in merging under `work` whose merger the `awaiting_merge`
+// cutover left released, level with the entry its phases row names, that row holding the READY
+// head its completion named (workflow's cutoverMergerRepair), when the close at version 4 has just
+// closed the gate: the close's message to the released merger, which wakes it, is queued and not
+// run yet. Admission passes over a released claim level with its entry, so only the repair starts
+// it.
+func cutoverMergerAtTheClose(t *testing.T) *workHoldRig {
+	t.Helper()
+	r := mergingWithAReleasedMerger(t, config.HoldWork)
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleMerger, Claim: r.token(claim.RoleMerger),
+			HandoffCommit: "head1"})
+	})
+	r.close(4)
+	return r
+}
+
 // I3: every writer of a start row or a wake of a phase worker the plan lists, driven against a
 // tree under the hold, starts no turn while the gate is closed, and each runs once the gate opens:
 // the role it was for is started, once, with the one task the opening gives it, and nothing it
 // wrote is left waiting. A writer acts after the close's stops were made, or where it says so
 // before them (early), in the window in which the hold's stop of a released worker is queued and
 // not made yet. The released merger's wake for the close message, the one start the closed gate
-// lets through, is TestWorkHoldWakesAReleasedMerger's.
+// lets through, is TestWorkHoldWakesAReleasedMerger's; a writer whose tree holds a released merger
+// counts that wake (woken).
 func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 	type writer struct {
 		name  string
@@ -696,6 +761,15 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		// left are the rows the writer queued that wait for the gate, by kind, which must all have
 		// run once it opens.
 		left []record.OutboxKind
+		// rig is the tree the writer acts in, heldAtTheClose where it is nil, and held is every
+		// phase worker of it the hold stops and its opening starts, the tester and the implementer
+		// where rig is nil.
+		rig  func(t *testing.T) *workHoldRig
+		held []claim.Role
+		// woken is how often the close's message launched each of held before the hold stopped it:
+		// once for a released merger, which wake readies, tells and stops after an early act.
+		woken int
+		wake  func(r *workHoldRig)
 	}
 	writers := []writer{
 		{name: "a transition (a move back), and the hook prompt it fires", act: func(r *workHoldRig) {
@@ -773,10 +847,48 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 				awaitDrained(r.t, r.sup, r.token(role), "the pause's resume")
 			}
 		}},
+		{name: "a later version of the plan that restarts a stopped task at its first step", rig: stoppedTaskAtTheClose,
+			held: []claim.Role{claim.RoleImplementer}, starts: claim.RoleImplementer, act: func(r *workHoldRig) {
+				r.apply("plan-3", r.laterPlan("implementer", "tester"))
+			}},
+		{name: "the retro of a held parent, which the leave of the last issue beneath it starts", rig: heldParentAtTheClose,
+			held: []claim.Role{claim.RoleImplementer}, starts: claim.RoleImplementer, act: func(r *workHoldRig) {
+				r.apply("child-done", intake.DispatchIssue{Key: ownersChild, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated",
+					Status: "done", Title: "a child still at work", Parent: r.tree.key, Rank: "V"})
+			}},
+		{name: "the silence repair", writesNone: claim.RoleTester, act: func(r *workHoldRig) {
+			r.apply("silent", intake.WorkerSilent{Issue: r.tree.key, Role: claim.RoleTester, Generation: 1,
+				LastStep: r.clock.Now().Add(-time.Hour), Bound: 30 * time.Minute})
+		}},
+		{name: "a news-only start", act: func(r *workHoldRig) {
+			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing, News: true})
+		}},
+		{name: "the resume of an idle release the outbox cancelled", act: func(r *workHoldRig) {
+			resume, err := r.runner.releaseResume(r.tree.key, r.tree.key)(claim.RoleImplementer, 1)
+			if err != nil {
+				r.t.Fatalf("build the cancelled release's resume: %v", err)
+			}
+			enqueueOutbox(r.t, r.pool, r.records, record.OutboxRow{Kind: record.OutboxKind(resume.Kind), Issue: r.tree.key,
+				Payload: resume.Payload, NextAt: r.clock.Now()})
+		}},
+		{name: "the cutover's repair of a merger it left released", early: true, rig: cutoverMergerAtTheClose,
+			held: []claim.Role{claim.RoleMerger}, woken: 1, starts: claim.RoleMerger, act: func(r *workHoldRig) {
+				r.apply("cutover", intake.CutoverMergerRepair{})
+			}, wake: func(r *workHoldRig) {
+				wakeTheMerger(r)
+				r.runOnce()
+				if fired := r.clock.fire(holdGrace); fired != 1 {
+					r.t.Fatalf("fired %d timers at the 2 minutes, want the woken merger's stop's one", fired)
+				}
+			}},
 	}
 	for _, w := range writers {
 		t.Run(w.name, func(t *testing.T) {
-			r := heldAtTheClose(t)
+			rig, held := heldAtTheClose, []claim.Role{claim.RoleTester, claim.RoleImplementer}
+			if w.rig != nil {
+				rig, held = w.rig, w.held
+			}
+			r := rig(t)
 			act := func() {
 				t.Helper()
 				since := r.newestRow()
@@ -793,13 +905,16 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			if w.early {
 				act()
 			}
+			if w.wake != nil {
+				w.wake(r)
+			}
 			r.drain()
 			if !w.early {
 				act()
 				r.drain()
 			}
-			for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
-				r.wantHeld(role, 0, "while the gate is closed")
+			for _, role := range held {
+				r.wantHeld(role, w.woken, "while the gate is closed")
 			}
 			for _, kind := range w.left {
 				if got := r.rows(kind, "", ""); got != 1 {
@@ -810,8 +925,8 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			r.approve(4, 12)
 			r.drain()
 			opening := r.opening(4, 4)
-			for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
-				if got := r.launches(role); got != 1 {
+			for _, role := range held {
+				if got := r.launches(role) - w.woken; got != 1 {
 					t.Fatalf("the runtime started the %s %d times once the gate opened, want once", role, got)
 				}
 				c := r.machine(role).Claim()
@@ -838,7 +953,7 @@ func TestWorkHoldStartsAnArchitect(t *testing.T) {
 	r.live(claim.RoleArchitect)
 	r.close(4)
 	r.drain()
-	want := r.closedSentence(4) + " " + holdSentence + " Your own work goes on."
+	want := r.closedSentence(4) + " " + holdSentence + " " + architectCloseEnding
 	if got := r.published(claim.RoleArchitect); len(got) != 1 || got[0] != want {
 		t.Fatalf("the architect was told %q, want the close for an architect, %q", got, want)
 	}
@@ -2621,7 +2736,7 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 
 		// The opening sends the architect a notice of the approval on its topic too, so the
 		// role messages are read apart from it: the opening is told, and the close never is.
-		closed := r.closedSentence(4) + " " + holdSentence + " Your own work goes on."
+		closed := r.closedSentence(4) + " " + holdSentence + " " + architectCloseEnding
 		told := r.published(claim.RoleArchitect)
 		opened := false
 		for _, message := range told {

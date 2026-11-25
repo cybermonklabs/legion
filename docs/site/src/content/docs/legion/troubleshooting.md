@@ -513,7 +513,7 @@ The pause's resume then relaunches the worker, the worker gets the close message
 A released merger was woken for the message first, so that it could take
 its pull request out of GitHub's merge queue. A released worker that is not a merger got no message:
 the hold took it over at once. The architects go on, and their close message ends
-`Your own work goes on.`
+`Your own work goes on, and a step that you report starts nothing until every gated step stands open again.`
 
 - `legion state --json` shows `why.state` `held` on each issue at a phase worker's phase, and
   `why.reason` names the version that closed the gate: `Its phase is <phase>, and the work hold

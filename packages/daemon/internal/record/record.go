@@ -2303,6 +2303,12 @@ type Store interface {
 	// workHoldBooted), which reads nothing more of a tree outside it. project is the Dispatch
 	// project key the issue records carry.
 	WorkHeldTrees(ctx context.Context, tx pgx.Tx, project string) (map[string]struct{}, error)
+	// StoredClaims is the token and the role of every claim the store holds on issues, by issue,
+	// each issue's in token order, in one read whatever the number of issues: the claims of the
+	// members of a tree the work hold tells, stops and starts (workflow's treeClaims), which reads
+	// the claims of every role a member's plan names and not those of one list of roles alone.
+	// An issue the store holds no claim of has no entry.
+	StoredClaims(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]StoredClaim, error)
 	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
 	// generation of tree, that the issue's own first phase waits for the Dispatch children under
 	// it, and reports whether this call is the telling. That architect is the root's own for a

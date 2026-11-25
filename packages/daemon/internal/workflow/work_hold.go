@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -54,9 +55,10 @@ var (
 
 const (
 	// workerCloseEnd ends the close message to a phase worker, and architectCloseEnd the one to an
-	// architect, whom the hold does not stop.
+	// architect, whom the hold does not stop: its own work goes on, and what it reports (a
+	// sign-off, a move back) is recorded while the start that report makes waits for the opening.
 	workerCloseEnd    = "End your turn now."
-	architectCloseEnd = "Your own work goes on."
+	architectCloseEnd = "Your own work goes on, and a step that you report starts nothing until every gated step stands open again."
 	// holdStoppedSentence and checkTurnSentence frame today's open message in the opening task.
 	holdStoppedSentence = "The work hold stopped your turn."
 	checkTurnSentence   = "Check what your turn already did: a tool call may not have finished."
@@ -162,6 +164,41 @@ func lastOpening(hold *record.WorkHold, root record.Issue) *record.WorkHold {
 	return hold
 }
 
+// workHoldStands is whether the work hold of issue's tree stands in the record (record.WorkHold):
+// a hold of the tree root's generation that no opening has ended. The close writes it in the
+// transaction that closes the gate under `work`, and the opening ends it in the transaction that
+// opens the gate, so a reader of the record in a fact's transaction reads the hold as that fact
+// moves it; under `merge` no close writes one. A tree root the record does not hold has no hold.
+func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (bool, error) {
+	root := &issue
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		var err error
+		if root, err = store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
+			return false, err
+		}
+	}
+	hold, err := store.TreeWorkHold(ctx, tx, issue.Tree)
+	if err != nil {
+		return false, err
+	}
+	hold = lastOpening(hold, *root)
+	return hold != nil && hold.Standing(), nil
+}
+
+// TellsOwnersAcceptance is whether notice, of issue as the record holds it now, tells issue's
+// architect that issue waits in its own acceptance, the owner's place: a phase-finished notice of
+// an issue that stands in accepting. In this release accepting is always the owner's place, the
+// step `acceptance:owner` of a plan and the accepting of today's line that an issue with no plan
+// rows walks (plan.Supported takes acceptance with the key owner alone), and the phase-finished
+// notice of the step before it is what tells the architect to accept (prompts/go/architect-common.md).
+// Under `work` the outbox holds such a notice while the tree's standing gate is closed, and lets
+// every later notice of the architect pass it (internal/daemon's deliverNotice and
+// earlierNoticeFor). The notice is read against the issue at each attempt, so one whose issue has
+// left accepting since, by the architect's own sign-off or move back, tells nothing of the kind.
+func TellsOwnersAcceptance(issue record.Issue, notice record.Notice) bool {
+	return notice.Kind == "phase-finished" && issue.Phase == phase.Accepting
+}
+
 // holdReason is the reason a stop of the hold logs on the claim it stops.
 func holdReason(hold record.WorkHold) string {
 	return fmt.Sprintf("the work hold: version %d of the %s document (%s) of %s closed the design gate",
@@ -195,12 +232,19 @@ func (c treeClaim) live() bool {
 	return c.run.Claim != nil && !supervise.IsGone(c.run.Claim.State)
 }
 
-// treeClaims reads every role of every member of root's tree that is in the workflow
-// (record.InWorkflow), members by key and roles in claim.Roles's order, the architect first, with
-// the role's queued rows and claim at the member's generation, in batches (RoleRuns). A member
-// out of the workflow is left out, a closed one whose production check a role looks at among
-// them: the hold holds no work of an issue that has left the workflow. A role whose token cannot
-// be built is logged and left out, as tellGateMoved leaves such a holder untold.
+// treeClaims reads the claims of every member of root's tree that is in the workflow
+// (record.InWorkflow), members by key: each role of claim.Roles, in that order, the architect
+// first, and then each other claim the store holds of the member whose role is a worker role
+// (claim.IsPhaseWorker), in token order (record.Store.StoredClaims), with the role's queued rows
+// and claim at the member's generation, in batches (RoleRuns). A role of claim.Roles is read
+// whether or not the store holds a claim of it, since a start under way or a holder owed news can
+// have none yet (workHoldClose, heldOpeningMessage). A stored claim is read by the token and role
+// the store holds it under, so the hold tells, stops and starts every worker claim of a member,
+// not the roles of one list alone: every role but the architect's and the controller's, idle claims
+// of finished steps among them. A member out of the workflow is left out, a closed one whose
+// production check a role looks at among them: the hold holds no work of an issue that has left
+// the workflow. A role of claim.Roles whose token cannot be built is logged and left out, as
+// tellGateMoved leaves such a holder untold.
 func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) ([]treeClaim, error) {
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
@@ -210,11 +254,18 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 	if err != nil {
 		return nil, err
 	}
+	members = slices.DeleteFunc(members, func(member record.Issue) bool { return !record.InWorkflow(member) })
+	keys := make([]string, len(members))
+	for i, member := range members {
+		keys[i] = member.Key
+	}
+	stored, err := e.store.StoredClaims(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
 	var claims []treeClaim
 	for _, member := range members {
-		if !record.InWorkflow(member) {
-			continue
-		}
+		listed := make(map[claim.Token]bool, len(claim.Roles))
 		for _, role := range claim.Roles {
 			token, err := claim.NewToken(project, member.Key, role)
 			if err != nil {
@@ -223,6 +274,12 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 				continue
 			}
 			claims = append(claims, treeClaim{issue: member, role: role, token: token})
+			listed[token] = true
+		}
+		for _, held := range stored[member.Key] {
+			if claim.IsPhaseWorker(held.Role) && !listed[held.Token] {
+				claims = append(claims, treeClaim{issue: member, role: held.Role, token: held.Token})
+			}
 		}
 	}
 	for batch := range slices.Chunk(claims, strandedRoleRunBatchSize) {
@@ -247,7 +304,8 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 // does to it:
 //
 //   - every live architect, the root's and each member's own, the close and "Your own work goes
-//     on.": the hold stops no architect;
+//     on, and a step that you report starts nothing until every gated step stands open again.":
+//     the hold stops no architect;
 //   - every live phase worker that is not a merger (planner, implementer, tester, reviewer), idle
 //     claims of a finished phase among them, the close and "End your turn now.", carrying its stop
 //     (record.RoleMessage.Stop), which the outbox posts once the message reached the claim, with
@@ -380,7 +438,9 @@ type gateOpening struct {
 // At the gate's opening (opened, nil at the boot's end, which opens no gate) each holder is told
 // the opening once, as under `merge` (heldOpening): a holder the hold did not stop by
 // openingDelivery, live or not, a claim the hold stopped by the task that starts it, and a child's
-// architect that holds a member owed news by that news (settleChildArchitectOpenings).
+// architect that holds a member owed news by that news (settleChildArchitectOpenings). Each
+// architect whose member stands in its owner's acceptance is told that the acceptance is its own
+// (tellOwnersAcceptance), which nothing told it while the hold stood.
 //
 // It takes the tree's work_holds row for update before it reads the tree's claims
 // (record.Store.LockWorkHold), and the transaction deletes the row, keeps it as the record of the
@@ -435,7 +495,79 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 		e.logOnCommit(ctx, "workflow: the opening is owed to each holder owed news, and the task carrying their news tells it",
 			"tree", root.Tree, "step", string(opened.step), "version", opened.version, "holders", opening.byNews)
 	}
+	if err := e.tellOwnersAcceptance(ctx, tx, root); err != nil {
+		return err
+	}
 	return e.endWorkHold(ctx, tx, root, claims, ended, closing, locked != nil)
+}
+
+// tellOwnersAcceptance tells, at the end of the work hold of root's tree, the architect of each
+// member that stands in its owner's acceptance, in the workflow, that the acceptance is its own:
+// it queues again the phase-finished notice that moved the member there (ownersAcceptanceNotice),
+// which the outbox routes to the architect that owns the member now. While the hold stood, no
+// notice and no catch-up asked an architect for its own acceptance (TellsOwnersAcceptance,
+// QueueCatchUp), so an architect launched again during the hold with a session that lost what it
+// read before would otherwise learn of it from nothing. A member with a phase-finished notice
+// still waiting in the outbox is told by that notice, which goes once the gate is open, and gets
+// no second. An architect that knew already reads the notice again, which tells it nothing new.
+func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
+	if err != nil {
+		return err
+	}
+	byKey := record.TreeByKey(members)
+	accepting := slices.DeleteFunc(members, func(member record.Issue) bool {
+		return member.Phase != phase.Accepting || !record.InWorkflow(member)
+	})
+	if len(accepting) == 0 {
+		return nil
+	}
+	waiting, err := e.store.EarlierNotices(ctx, tx, root.Tree, math.MaxInt64)
+	if err != nil {
+		return err
+	}
+	told := map[string]bool{}
+	for _, row := range waiting {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			continue
+		}
+		if notice, ok := payload.(record.Notice); ok && TellsOwnersAcceptance(byKey[row.Issue], notice) {
+			told[row.Issue] = true
+		}
+	}
+	for _, member := range accepting {
+		if told[member.Key] {
+			continue
+		}
+		notice, err := e.ownersAcceptanceNotice(ctx, tx, member)
+		if err != nil {
+			return err
+		}
+		if err := e.notice(ctx, tx, member.Key, notice); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the work hold's end tells the architect of a member in its owner's acceptance that the acceptance is its own",
+			"issue", member.Key, "tree", root.Tree, "role", notice.Role)
+	}
+	return nil
+}
+
+// ownersAcceptanceNotice is the phase-finished notice that moved issue, standing in its owner's
+// acceptance, there: the notice of the step before the acceptance on its walk (acceptedRole, the
+// review on today's line), with the handoff that step's phases row keeps, as the move wrote it
+// (noticeFor).
+func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Notice, error) {
+	role, err := e.acceptedRole(ctx, tx, issue)
+	if err != nil {
+		return record.Notice{}, err
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
+		return record.Notice{}, err
+	}
+	return record.Notice{Kind: "phase-finished", Role: role, Phase: builtinDeployment.Roles[string(role)].Phase,
+		Summary: row.Summary, Verdict: row.Verdict}, nil
 }
 
 // heldOpening is what the work hold's opening decides each claim's opening by: the opened

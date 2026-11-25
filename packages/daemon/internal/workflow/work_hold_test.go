@@ -82,9 +82,10 @@ func (w holdWords) workerClose(version int) string {
 	return w.closed(version) + " " + workHoldWords + " End your turn now."
 }
 
-// architectClose is the close message under `work` to an architect (spec step 2).
+// architectClose is the close message under `work` to an architect (spec step 2, decision 14).
 func (w holdWords) architectClose(version int) string {
-	return w.closed(version) + " " + workHoldWords + " Your own work goes on."
+	return w.closed(version) + " " + workHoldWords +
+		" Your own work goes on, and a step that you report starts nothing until every gated step stands open again."
 }
 
 // opening is the sentences the one task of the opening starts with: the
@@ -664,8 +665,8 @@ func TestWorkHoldStopsEveryPhaseWorkerOfTheTree(t *testing.T) {
 }
 
 // H9: no architect is stopped. The root's architect and a child's own are told the close with the
-// architect's ending, "Your own work goes on.", and carry no stop; no suspend row names an
-// architect.
+// architect's ending, "Your own work goes on, and a step that you report starts nothing until every
+// gated step stands open again.", and carry no stop; no suspend row names an architect.
 func TestWorkHoldStopsNoArchitect(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)

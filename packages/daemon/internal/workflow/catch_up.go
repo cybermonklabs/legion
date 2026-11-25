@@ -126,6 +126,14 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
+//
+// The reason names the issues waiting in accepting for this architect's acceptance
+// (acceptanceWaits), the one thing a catch-up leaves the architect to start, except while the work
+// hold of the tree stands (workHoldStands, the record a close under `work` writes): then no
+// architect is told to start its own acceptance (the owner's place), and the catch-up says the rest
+// as ever. Nothing else of it names that acceptance: its issues state each issue's phase and
+// status, and no field asks for a step. The gate can close after this, before the outbox delivers
+// the row, so the outbox asks again then (CatchUpWithoutAcceptance).
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
 	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
 	if err != nil {
@@ -152,7 +160,13 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
-		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
+		held, err := workHoldStands(ctx, tx, store, issue)
+		if err != nil {
+			return err
+		}
+		if !held {
+			reason += acceptanceWaits(awaiting)
+		}
 	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
@@ -164,6 +178,37 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+}
+
+// acceptanceWaitsLead and acceptanceWaitsTail are the two fixed parts of the clause of a
+// catch-up's reason that names the issues waiting in accepting for its architect's acceptance
+// (acceptanceWaits), by which CatchUpWithoutAcceptance finds it.
+const (
+	acceptanceWaitsLead = "; in accepting, waiting for your acceptance, which no worker gives: "
+	acceptanceWaitsTail = " (read the evidence, then sign_off or request_backward_move)"
+)
+
+// acceptanceWaits is the clause of a catch-up's reason that names awaiting, the keys of the issues
+// waiting in accepting for its architect's acceptance (awaitingAcceptance).
+func acceptanceWaits(awaiting []string) string {
+	return acceptanceWaitsLead + strings.Join(awaiting, ", ") + acceptanceWaitsTail
+}
+
+// CatchUpWithoutAcceptance is reason, the reason of a catch-up (QueueCatchUp), without the clause
+// that asks its architect to accept the issues waiting in accepting (acceptanceWaits), and reason
+// itself where it holds no such clause. The outbox delivers a catch-up so while the tree's standing
+// gate stands closed under `work` (internal/daemon's deliverNotice), for a catch-up composed before
+// the gate closed: no architect is told to start its own acceptance while the work hold stands.
+func CatchUpWithoutAcceptance(reason string) string {
+	lead := strings.Index(reason, acceptanceWaitsLead)
+	if lead < 0 {
+		return reason
+	}
+	tail := strings.Index(reason[lead:], acceptanceWaitsTail)
+	if tail < 0 {
+		return reason
+	}
+	return reason[:lead] + reason[lead+tail+len(acceptanceWaitsTail):]
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a

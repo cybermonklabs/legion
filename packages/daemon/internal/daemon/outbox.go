@@ -1944,6 +1944,13 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect)
 		return nil
 	}
+	// While the tree holds its work (`work`, its standing gate closed), no architect is told to
+	// start its own acceptance: a catch-up composed before the gate closed goes without the
+	// clause that names the issues waiting for it in accepting (workflow.CatchUpWithoutAcceptance),
+	// read again at each attempt from this attempt's gate.
+	if tree.holdsWork && payload.CatchUp != nil {
+		payload.Reason = workflow.CatchUpWithoutAcceptance(payload.Reason)
+	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
@@ -1952,6 +1959,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "state", held.State, "stopping", held.Stopping)
 		return nil
+	}
+	// The phase-finished notice that tells the architect its issue waits in its own acceptance
+	// (workflow.TellsOwnersAcceptance) waits while the tree holds its work, before any wake of a
+	// released architect, as a routine wait: the gate's opening ends it, and the attempt after the
+	// opening reads the issue's step again and publishes the notice. Every later notice of the
+	// architect passes it meanwhile (earlierNoticeFor).
+	if tree.heldForTheOwner(issue, payload) {
+		return routineWaiting{err: wait.Errorf("%s's notice row %d (%s of %s) waits for the work hold of %s to end: no architect is told to start its own acceptance while the tree's design gate is closed",
+			architect, row.ID, payload.Kind, row.Issue, tree.root.Key)}
 	}
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
