@@ -108,11 +108,17 @@ type FieldOfAny<T, K extends PropertyKey> = T extends unknown
 /**
  * A refusal's body as a client reads it before its `code` says which refusal it holds: every
  * field any refusal of any route carries (`DispatchRefusal`, generated from the route table),
- * each optional and typed as what the refusals that carry it hold there. It declares no field
- * of its own, so a refusal body a route grows or changes reaches it by regeneration.
+ * each optional and typed as what the refusals that carry it hold there, so a refusal body a
+ * route grows or changes reaches it by regeneration. It declares one field of its own, `hint`:
+ * where to look next, which Dispatch adds to one answer only, the router's own to a path no
+ * route serves (`404 NOT_FOUND`, "no route for …", the router's `staticHandler`), which says that
+ * `GET /api/v1` lists every route. No route of the table answers it, so no generated type holds
+ * it.
  */
 export type DispatchServiceErrorShape = {
   readonly [K in KeyOfAny<DispatchRefusal>]?: FieldOfAny<DispatchRefusal, K>;
+} & {
+  readonly hint?: string;
 };
 
 /**
