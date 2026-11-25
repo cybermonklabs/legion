@@ -158,7 +158,7 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 	// The other process speaks this build's protocol: its index clears the mark beside the
 	// version, as the fence's own statement does.
 	tick := raceAnotherBlockIndex(t, database, service, notes,
-		`update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`)
+		refs.RevisionFenceStatement, notes, 1, refs.BlockIndexMarkingRule)
 
 	if tick.Documents != 0 || tick.Unindexed != 1 || tick.OwedTexts != 1 {
 		t.Fatalf("pass = %#v, want the notes left owed, unindexed by this drain", tick)
@@ -195,7 +195,7 @@ func TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst(t *testing.T) {
 
 	// The other process speaks an older build's protocol: its index writes the version alone.
 	tick := raceAnotherBlockIndex(t, database, service, notes,
-		`update document_block_versions set version = 1 where artifact_id = $1`)
+		`update document_block_versions set version = 1 where artifact_id = $1`, notes)
 
 	if tick.Documents != 1 || tick.Unindexed != 0 || tick.OwedTexts != 0 {
 		t.Fatalf("pass = %#v, want the notes indexed and settled by this drain", tick)
@@ -213,8 +213,8 @@ func TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst(t *testing.T) {
 // index waits on it. The fleet holds one here: a server_processes row with no
 // owner_lock_protocol, as api.registerEarlierBuildProcess writes one. Once the drain has owed the
 // document its block index and waits on that row, the other process records its index with
-// record ($1 the document) and commits, and the drain's pass goes on. It answers the drain's tick.
-func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service, document, record string) RefsFormsTick {
+// record and its arguments and commits, and the drain's pass goes on. It answers the drain's tick.
+func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service, document, record string, arguments ...any) RefsFormsTick {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
@@ -229,6 +229,10 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 	defer other.Rollback(ctx)
 	if _, err := other.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update`); err != nil {
 		t.Fatalf("take the document's owner row as the other process's block index does: %v", err)
+	}
+	var blocker int32
+	if err := other.QueryRow(ctx, `select pg_backend_pid()`).Scan(&blocker); err != nil {
+		t.Fatalf("read the other index's backend: %v", err)
 	}
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)
@@ -246,8 +250,9 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `
 			select (select version is null from document_block_versions where artifact_id = $1),
-			       (select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock')
-		`, document).Scan(&owedIndex, &waiting); err != nil {
+			       (select count(*) from pg_stat_activity where datname = current_database()
+			          and $2 = any(pg_blocking_pids(pid)))
+		`, document, blocker).Scan(&owedIndex, &waiting); err != nil {
 			t.Fatalf("read the drain's progress: %v", err)
 		}
 		if owedIndex && waiting > 0 {
@@ -258,8 +263,12 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := other.Exec(ctx, record, document); err != nil {
+	written, err := other.Exec(ctx, record, arguments...)
+	if err != nil {
 		t.Fatalf("record the document indexed as the other process does: %v", err)
+	}
+	if written.RowsAffected() != 1 {
+		t.Fatalf("the other index recorded %d revisions, want one", written.RowsAffected())
 	}
 	if err := other.Commit(ctx); err != nil {
 		t.Fatalf("commit the other process's index: %v", err)
