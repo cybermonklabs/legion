@@ -96,7 +96,10 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	}
 	// deliverUnacked has sessionID's consumer deliver n messages, with one pull request of exactly
 	// that batch, and acks none of them, so the consumer's delivered sequence and its ack floor are
-	// apart by those n.
+	// apart by those n. The request waits (`expires`) rather than asking for what is there now
+	// (`no_wait`): the messages are stored on the stream a moment before, and a consumer that has
+	// not caught up with them yet answers a no-wait pull 404 `No Messages` at once, which failed
+	// this row under -race (CI run 45684085230, job 139453854470).
 	deliverUnacked := func(t *testing.T, sessionID string, n int) {
 		t.Helper()
 		name, ok := bus.SessionConsumerName(sessionID)
@@ -109,7 +112,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			t.Fatalf("subscribe the pull's inbox: %v", err)
 		}
 		defer func() { _ = sub.Unsubscribe() }()
-		request := fmt.Sprintf(`{"batch":%d,"no_wait":true}`, n)
+		request := fmt.Sprintf(`{"batch":%d,"expires":%d}`, n, (4 * time.Second).Nanoseconds())
 		if err := raw.PublishRequest("$JS.API.CONSUMER.MSG.NEXT."+bus.Stream+"."+name, inbox, []byte(request)); err != nil {
 			t.Fatalf("send the pull request of %s: %v", sessionID, err)
 		}

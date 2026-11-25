@@ -570,6 +570,7 @@ func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	}
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
+		grants["WebhookListener("+id+")"] = natsgrant.WebhookListener(id)
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
 		grants["Host("+id+")"] = natsgrant.Host(id)

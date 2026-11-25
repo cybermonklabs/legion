@@ -3,10 +3,11 @@ import * as fsPromises from "node:fs/promises"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import { createEnvoyClient, EnvoyApiError } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { modSocketPath } from "../hooks/mod-protocol"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import { LIVE_VIEW_READ_FAILED } from "../src/agent-stream-runner"
 import {
   type ChannelNotifier,
@@ -97,7 +98,7 @@ async function boundClaim() {
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: session,
     daemon: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: daemonContract(pkg, import.meta.dir),
       fetch: daemonFetch,
     }),
     clientInstanceID: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
