@@ -2138,6 +2138,31 @@ test("the Delivery page's facet parameters open the pull requests they name", as
   expect(await listed("session=__no_session__"), "?session=").toEqual([]);
   // ACME-1, the issue #1 is attributed to, is the window's one P0; #2 links no issue at all.
   expect(await listed("priority=0"), "?priority=").toEqual(["acme/widgets#1"]);
+  const knownChips = await chipNames(page.locator("main"));
+  expect(knownChips, "?priority=: the known value's chip").not.toEqual([]);
+  // A value that names no value of its facet is kept, as at the merge base (R5): Dispatch
+  // selects no pull request by it, so beside a known value the list is the one the known value
+  // alone lists, and alone it lists none. The control row draws its chip by its own word, so the
+  // reader can take it off.
+  expect(await listed("priority=P9&priority=0"), "?priority= beside an unknown value").toEqual([
+    "acme/widgets#1",
+  ]);
+  expect(
+    await chipNames(page.locator("main")),
+    "?priority= beside an unknown value: the control row's chips"
+  ).toEqual(["Remove Priority: P9 filter", ...knownChips]);
+  for (const [query, chip] of [
+    ["priority=P9", "Remove Priority: P9 filter"],
+    ["rework=constructor", "Remove Rework: constructor filter"],
+    ["deployed=bogus", "Remove Deployed: bogus filter"],
+  ] as const) {
+    // The count is the answer's for the address (`counted`), so the rows read after it are
+    // Dispatch's answer, not a table drawn before one came.
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list&${query}`);
+    await expect(page.getByText("0 PRs in current filter/window"), `?${query} alone`).toBeVisible();
+    await expect(page.locator("[data-pr-row]"), `?${query} alone`).toHaveCount(0);
+    expect(await chipNames(page.locator("main")), `?${query} alone: its chip`).toEqual([chip]);
+  }
   // ACME-1 carries no component, and #2 links no issue at all, so the server counts only the
   // attributed pull request under the placeholder.
   expect(await listed("component=__no_component__"), "?component=").toEqual(["acme/widgets#1"]);
@@ -7827,22 +7852,69 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         const windowSelect = listTrigger(header, "Window");
         await expect(clear, `${at}: the brush drew no clear brush window`).toBeVisible();
         await expect(page.getByTestId("delivery-chart")).toBeVisible();
-        // The page is drawn whole below the header, so it scrolls as far as the case needs: its
-        // height holds across two frames.
+        /** Marks the box the page scrolls in, as the reader's scroll finds it: from `xl` up the
+         *  page scrolls inside its own section where it overflows the window (main's #4631, the
+         *  section's `xl:overflow-y-auto` in DeliveryPage.tsx), else the document. Answers its
+         *  height, and whether it is the document. The reads below find the box by its mark. */
+        const markScrollBox = () =>
+          windowSelect.evaluate((node) => {
+            for (const marked of document.querySelectorAll("[data-case-scroller]")) {
+              marked.removeAttribute("data-case-scroller");
+            }
+            let scroller: Element = document.scrollingElement ?? document.documentElement;
+            for (let box = node.parentElement; box !== null; box = box.parentElement) {
+              const { overflowY } = getComputedStyle(box);
+              if (
+                (overflowY === "auto" || overflowY === "scroll") &&
+                box.scrollHeight > box.clientHeight
+              ) {
+                scroller = box;
+                break;
+              }
+            }
+            scroller.setAttribute("data-case-scroller", "");
+            return {
+              document: scroller === document.scrollingElement,
+              height: scroller.scrollHeight,
+            };
+          });
+        // The page is drawn whole below the header, so it scrolls as far as the case needs: the
+        // box it scrolls in, and that box's height, hold across two frames. The section overflows
+        // only once the chart below has drawn, so the box is found again each time.
         await expect
           .poll(async () => {
-            const height = await page.evaluate(() => document.documentElement.scrollHeight);
+            const was = await markScrollBox();
             await nextFrames(page);
-            return height === (await page.evaluate(() => document.documentElement.scrollHeight));
+            const now = await markScrollBox();
+            return was.document === now.document && was.height === now.height;
           })
           .toBe(true);
-        // The reader's own scroll: the select's foot 2 px above the window's top, the button on
-        // the line under it wholly in the window; or the select's top 24 px under the window's top.
+        // The reader's own scroll, of that box: the select's foot 2 px above the box's visible
+        // top, the button on the line under it wholly in sight; or the select's top 24 px under
+        // that top. Read with the window's own scroll, so that a hand-off that scrolls either one
+        // is caught at every width, as the row read the page before main's #4631.
         const before = await windowSelect.evaluate((node, out) => {
+          const scroller =
+            document.querySelector("[data-case-scroller]") ??
+            document.scrollingElement ??
+            document.documentElement;
+          const sightTop =
+            scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
           const box = node.getBoundingClientRect();
-          window.scrollTo(0, window.scrollY + (out ? box.bottom + 2 : box.top - 24));
-          return Math.round(window.scrollY);
+          scroller.scrollTop += out ? box.bottom - sightTop + 2 : box.top - sightTop - 24;
+          return {
+            box: Math.round(scroller.scrollTop),
+            document: scroller === document.scrollingElement,
+            window: Math.round(window.scrollY),
+          };
         }, placed === "out of sight");
+        /** The top of what the reader sees of the page: the marked scroll box's, or the window's. */
+        const sightTop = await page.evaluate(() => {
+          const scroller = document.querySelector("[data-case-scroller]");
+          return scroller === null || scroller === document.scrollingElement
+            ? 0
+            : Math.round(scroller.getBoundingClientRect().top);
+        });
         const select = await windowSelect.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
@@ -7854,11 +7926,11 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         });
         const selectAsPlaced =
           placed === "out of sight"
-            ? select.bottom < 0
-            : select.top >= 0 && select.bottom <= size.height;
-        if (!selectAsPlaced || button.top < 0 || button.bottom > size.height) {
+            ? select.bottom < sightTop
+            : select.top >= sightTop && select.bottom <= size.height;
+        if (!selectAsPlaced || button.top < sightTop || button.bottom > size.height) {
           wrong.push(
-            `${at}: the page could not be scrolled to the case (scrollY ${before}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
+            `${at}: the page could not be scrolled to the case (scroll box ${before.box}, scrollY ${before.window}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
           );
           continue;
         }
@@ -7879,32 +7951,43 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         // One read is the answer: every hand-off has run, and nothing else moves the focus.
         const holder = await focusHolder(page);
         // Read after the same hand-offs as the read above, so where the focus is is settled.
-        const landed = await page.evaluate(() => {
+        const landed = await page.evaluate((sightTop) => {
           const active = document.activeElement;
           const box = active?.getBoundingClientRect();
+          const scroller =
+            document.querySelector("[data-case-scroller]") ??
+            document.scrollingElement ??
+            document.documentElement;
           return {
             body: active === null || active === document.body,
             bottom: Math.round(box?.bottom ?? 0),
             meets:
               box !== undefined &&
-              box.bottom > 0 &&
+              box.bottom > sightTop &&
               box.top < window.innerHeight &&
               box.right > 0 &&
               box.left < window.innerWidth,
             ownStop:
               active instanceof HTMLElement && active.matches('main, [data-testid="main-content"]'),
-            scrollY: Math.round(window.scrollY),
+            scrolled: { box: Math.round(scroller.scrollTop), window: Math.round(window.scrollY) },
             top: Math.round(box?.top ?? 0),
           };
-        });
+        }, sightTop);
         // Read after the same hand-offs as the reads above, so where the focus is is settled.
         const onSelect = await windowSelect.evaluate((node) => node === document.activeElement);
-        const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scrollY ${before} -> ${landed.scrollY}`;
-        if (landed.scrollY !== before) {
-          wrong.push(`${at}: the page scrolled ${landed.scrollY - before} px, to ${where}`);
+        const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scroll box ${before.box} -> ${landed.scrolled.box}, scrollY ${before.window} -> ${landed.scrolled.window}`;
+        if (!before.document && landed.scrolled.box !== before.box) {
+          wrong.push(
+            `${at}: the page's scroll box scrolled ${landed.scrolled.box - before.box} px, to ${where}`
+          );
+        }
+        if (landed.scrolled.window !== before.window) {
+          wrong.push(
+            `${at}: the window scrolled ${landed.scrolled.window - before.window} px, to ${where}`
+          );
         }
         if (landed.body) {
-          wrong.push(`${at}: the focus is on the body, scrollY ${before} -> ${landed.scrollY}`);
+          wrong.push(`${at}: the focus is on the body, ${where}`);
         } else if (placed === "in sight" && !onSelect) {
           wrong.push(`${at}: the focus is on ${where}, not on the Window control`);
         } else if (!landed.ownStop && !landed.meets) {
@@ -8756,15 +8839,23 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing, at 1440 and 390 @f
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const list = page.getByTestId("inbox-list");
-  /** Where the window and the list's box stand and how far each can scroll, and, for a failure's
-   *  message, what holds the focus and its top. */
+  /** Where the window, the list's box and the reading column's box, where it is drawn, stand and
+   *  how far each can scroll, and, for a failure's message, what holds the focus and its top. */
   const standing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const column = document.querySelector<HTMLElement>('[data-testid="inbox-pane-scroller"]');
       const scroller = document.scrollingElement ?? document.documentElement;
       const scroll = {
         farthestTop: frame === null ? 0 : Math.round(frame.scrollHeight - frame.clientHeight),
         farthestY: Math.round(scroller.scrollHeight - scroller.clientHeight),
+        pane:
+          column === null
+            ? null
+            : {
+                farthest: Math.round(column.scrollHeight - column.clientHeight),
+                top: Math.round(column.scrollTop),
+              },
         scrollTop: Math.round(frame?.scrollTop ?? 0),
         scrollY: Math.round(window.scrollY),
       };
@@ -8806,16 +8897,24 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing, at 1440 and 390 @f
     const row = page.locator(`[data-inbox-row="${target}"]`);
     await row.locator("[data-inbox-dismiss]").focus();
     await nextFrames(page);
-    // One instant is the point: where the window and the list stand just before the press.
+    // One instant is the point: where the window, the list and the reading column stand just
+    // before the press.
     const before = await standing();
     await page.keyboard.press("Enter");
     await expect(row).toHaveCount(0);
     // A scroll lands over frames, so each box is read once it holds still.
     await settledScrollTop(list);
     await settledScrollTop(page);
-    // One read is the answer: both boxes hold still, and nothing else moves them.
+    // The reading column's box, where it was drawn before the press, is read once it holds still
+    // too: the Inbox's own hand-off can land in it at 1440.
+    if (before.pane !== null) await settledScrollTop(page.getByTestId("inbox-pane-scroller"));
+    // One read is the answer: every box holds still, and nothing else moves them.
     const now = await standing();
-    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})`;
+    const columnNumbers =
+      before.pane === null || now.pane === null
+        ? ""
+        : `, reading column scrollTop ${before.pane.top} -> ${now.pane.top} (farthest ${now.pane.farthest})`;
+    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})${columnNumbers}`;
     // A box the page clamped stands at its farthest scroll now, and stood farther before.
     const windowClamped = now.scrollY >= now.farthestY - 1 && before.scrollY > now.farthestY;
     const listClamped = now.scrollTop >= now.farthestTop - 1 && before.scrollTop > now.farthestTop;
@@ -8829,8 +8928,74 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing, at 1440 and 390 @f
         `${where}: after Enter on the first thread's Dismiss the list scrolled ${now.scrollTop - before.scrollTop} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
       );
     }
+    if (before.pane !== null && now.pane !== null) {
+      const columnClamped =
+        now.pane.top >= now.pane.farthest - 1 && before.pane.top > now.pane.farthest;
+      if (Math.abs(now.pane.top - before.pane.top) > 1 && !columnClamped) {
+        wrong.push(
+          `${where}: after Enter on the first thread's Dismiss the reading column scrolled ${now.pane.top - before.pane.top} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
+        );
+      }
+    }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// The row above reads the reading column's scroll at 1440, where its threads' replies are one
+// line: the column then cannot scroll, and that reading proves nothing. Here each reply is as tall
+// as forty paragraphs, so the column overflows the 900 px window, and the row fails where the
+// column cannot scroll. The same press takes away the focused Dismiss, so the same clause of the
+// `webkit` and `firefox` projects as the row above: the page-own focus row
+// (e2e/playwright.config.ts).
+test("a thread's Dismiss in the Inbox's list leaves a reading column that can scroll where it stood, at 1440 @firefox @webkit", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const issue = await createIssue({ project: "CORE", title: "Mirror lag with a long reply" });
+  const reply = Array.from({ length: 40 }, (_, line) => `Line ${line + 1} of the report.`).join(
+    "\n\n"
+  );
+  for (const word of ["first", "second", "third"]) {
+    await seedCommentThread(issue.key, `Is the ${word} mirror caught up?`, reply);
+  }
+  await page.goto("/");
+  const dismissable = page
+    .locator("[data-inbox-row]")
+    .filter({ has: page.locator("[data-inbox-dismiss]") });
+  await expect(dismissable.nth(2)).toBeVisible();
+  // One read of the order: the wait above found three thread rows drawn, newest first.
+  const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
+  const row = page.locator(`[data-inbox-row="${target}"]`);
+  await row.locator("[data-inbox-dismiss]").focus();
+  await nextFrames(page);
+  const column = page.getByTestId("inbox-pane-scroller");
+  /** Where the reading column stands and how far it can scroll. */
+  const standing = () =>
+    column.evaluate((box) => ({
+      farthest: Math.round(box.scrollHeight - box.clientHeight),
+      top: Math.round(box.scrollTop),
+    }));
+  // The column draws its thread's forty paragraphs over frames, so the row waits until the column
+  // can scroll and holds still; then one read is where it stands just before the press.
+  await expect
+    .poll(async () => (await standing()).farthest, {
+      message: "the reading column can scroll before the press",
+    })
+    .toBeGreaterThan(0);
+  await settledScrollTop(column);
+  const before = await standing();
+  await page.keyboard.press("Enter");
+  await expect(row).toHaveCount(0);
+  // A scroll lands over frames, so the column is read once it holds still.
+  await settledScrollTop(column);
+  const now = await standing();
+  // A column the page clamped stands at its farthest scroll now, and stood farther before.
+  const clamped = now.top >= now.farthest - 1 && before.top > now.farthest;
+  expect(
+    Math.abs(now.top - before.top) <= 1 || clamped,
+    `after Enter on the first thread's Dismiss the reading column scrolled from ${before.top} to ${now.top} px (farthest ${before.farthest} -> ${now.farthest})`
+  ).toBe(true);
 });
 
 /** Where the keyboard focus is, read once: the focused element's tag and name, whether it is the

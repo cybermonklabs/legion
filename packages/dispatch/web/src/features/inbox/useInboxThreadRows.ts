@@ -13,11 +13,14 @@ import { useMotionHold } from "./motion-hold";
 export interface InboxThreadRows {
   /** Whether `rows` are an answer of the read they are listed from, so a count taken over them
    *  counts what that read holds: false while that read is out, was refused with no answer before
-   *  it, or is not asked (until the sign-in read says the reader is a person). The Inbox waits for
-   *  the one read's `inbox` state before it draws its bar, but not for its `dismissed` state,
-   *  which the Dismissed view lists. Always where the list is narrowed to asks, which lists no
-   *  thread whatever the read says. A read that answered once keeps its answer through a later
-   *  refresh that fails. */
+   *  it, or is not asked (until the sign-in read says the reader is a person). A count over them is
+   *  drawn only once that read has answered. The Inbox waits for the one read's `inbox` state
+   *  before it draws its bar, but not for its `dismissed` state, which the Dismissed view lists.
+   *  In the Dismissed view the read is the pages read so far, which are the rows the list holds
+   *  and a filter narrows: it has answered once its first page is in, and a count counts those
+   *  pages while **Show more** has more to read. Always where the list is narrowed to asks, which
+   *  lists no thread whatever the read says. A read that answered once keeps its answer through a
+   *  later refresh that fails. */
   readonly answered: boolean;
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */

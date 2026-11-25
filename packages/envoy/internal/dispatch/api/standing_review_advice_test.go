@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -63,7 +62,7 @@ func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey stri
 // markdown into the live document the same way.
 func approveThenEditLive(t *testing.T, project string) (http.Handler, string, string, func(markdown string)) {
 	t.Helper()
-	handler, database, documents := settlingCarryDocuments(t, time.Hour)
+	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, project, "Edited live", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
 	editLive := func(markdown string) {

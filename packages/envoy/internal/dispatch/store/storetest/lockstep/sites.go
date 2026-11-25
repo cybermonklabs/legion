@@ -50,10 +50,15 @@ var storeWriteCallSites = map[string]string{
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it
-	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The comment path, which the comment route and the comment an issue write leaves share: the
+	// comment's node before the comments row that names it (queueCommentRow, through
+	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored). The comment
+	// route itself opens each mention's delivery attempt, its node before the row that names it
+	// (createCommentFor, through QueueNodes).
+	"api/comment_create.go#createCommentFor":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
@@ -251,12 +256,20 @@ var storeWriteCallSites = map[string]string{
 	// steps, and TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No
 	// lock-step test drives the rebuild, an edit or a restored wording: the test beside each runs its
 	// real code.
-	"refs/item_blocks.go#Queue":                        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"refs/reply_blocks.go#Queue":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"refs/rebuild.go#queue":                            "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
-	"refs/rebuild.go#replaceInTx":                      "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
-	"api/asks.go#editAsk":                              "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
-	"api/comment_actions.go#editComment":               "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	"refs/item_blocks.go#Queue":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/reply_blocks.go#Queue":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/rebuild.go#queue":              "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"refs/rebuild.go#replaceInTx":        "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"api/asks.go#editAsk":                "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	"api/comment_actions.go#editComment": "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	// A comment's delete and an issue message's edit and delete (api/comment_delete.go,
+	// api/message_corrections.go): the body's blocks re-indexed or taken out under the route's own
+	// event (QueueCaused), each pending send's attempt failed under its receipt (QueueAttempted)
+	// and, for an edit, the participation of each person the new text mentions (QueueToPerson). No
+	// lock-step test drives them: the api test beside each runs its real code.
+	"api/comment_delete.go#deleteComment":              "api#TestDeleteCommentFailsEachPendingMentionAttempt",
+	"api/message_corrections.go#deleteMessage":         "api#TestDeleteMessageFailsEachPendingSend",
+	"api/message_corrections.go#editMessage":           "api#TestMessageBlockIndexFollowsAnEditAndADelete",
 	"docs/approval_ask.go#rewriteApprovalAsk":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/decided_wording.go#restoreWordings":          "docs#TestARestorationRefusesAnAskAnsweredSinceItsPlan",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",

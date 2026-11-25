@@ -9,7 +9,9 @@ import {
 } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
+import { useMediaQuery } from "../features/shell/useDialog";
 import { spaceTaken } from "../features/shell/ViewportAnchor";
+import { useFootInset } from "../hooks/useFootInset";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
@@ -390,6 +392,12 @@ const BAR_BOX: Record<ControlSize, string> = {
   compact: "px-2 py-1",
 };
 
+/** Tailwind's `sm` itself: true exactly when the bar's `sm:` classes put it at the foot of the
+ *  screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
+ *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
+ *  switches with those classes at any default font size. */
+const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
+
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
  *  counts as the reader's own (`SelectionBar`): Escape there clears the selection the bar holds,
@@ -419,6 +427,13 @@ function DrawnBar({
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
+  // From `sm` up the bar sits at the foot of the screen, in the foot's page layer
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook holds
+  // its band, its box on the screen, and the floats keep clear of its controls. Below `sm` the
+  // bar sits under the header, at the top of the screen and not at its foot, so it counts nothing
+  // there.
+  const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
+  useFootInset(ref, atFoot, "page");
   // What inside the bar took the focus last, the bar's own element included, until the reader
   // moves the focus off it: a focus event bubbles up to the bar from every control in it.
   const focused = useRef<Element | null>(null);

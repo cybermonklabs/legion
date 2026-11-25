@@ -1801,8 +1801,8 @@ function failedAttempt(id: string, delivery: MessageDeliveryMode): MessageDelive
   };
 }
 
-/** The listed agents of the row running now (`agents`), with the Planner advertising steer beside
- *  its own capabilities. */
+/** The listed agents, with the Planner advertising steer beside its own capabilities: read as each
+ *  row runs, since `agents` is dated again before every row. */
 function steerCapableAgents() {
   return agents.map((candidate) =>
     candidate.session_id === "planner-session"

@@ -12,6 +12,7 @@ import { type ReactNode, useState } from "react";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { openList, rows as optionsOf, pickNamed } from "../__tests__/list-picks";
+import { endWindowScroll } from "../__tests__/scroll-box";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
 import { selectedCardBg } from "../theme/classes";
@@ -1082,6 +1083,8 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
   expect(places(flat)).toEqual(owned());
   expect(places(flat)[0]).toBe("2");
   scrollBoxTo(screen.getByTestId("flat-scroll"), 10_000);
+  // The scroll ends on the table's own timer: inside `act`, before the row reads on.
+  await endWindowScroll();
   expect(listed(flat)).toContain("d60");
   expect(places(flat)).toEqual(owned());
   expect(places(flat).at(-1)).toBe("61");

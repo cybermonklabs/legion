@@ -343,13 +343,9 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 		t.Fatalf("hold the document's lock: %v", err)
 	}
 	typeOver(t, alice, "before", "typed before the close")
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("alice's append never came to wait on the document's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	writeIssueClosed(t, taskB.store, "DOC-1", true)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, roomWait(t)); waiting < 2 {
-		t.Fatal("task A's close of its room never came to wait on the document's lock behind alice's append")
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 
 	foldHistoryPastRoom(t, holder, artifactID, head)
 	alicesRoom := taskA.srv.GetDoc(artifactID)

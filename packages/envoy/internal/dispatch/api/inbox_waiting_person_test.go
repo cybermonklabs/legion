@@ -514,7 +514,7 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 		moveServer, moveBackend := oneConnectionHandler(t, deps)
 		firstAnswer := make(chan *httptest.ResponseRecorder, 1)
 		go func() { firstAnswer <- first(firstServer) }()
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, firstBackend, firstAnswer, storeStepWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, firstBackend, firstAnswer); early {
 			t.Fatalf("the first write answered %d before it reached the hold: %s", answer.Code, answer.Body.String())
 		}
 		moveAnswer := make(chan *httptest.ResponseRecorder, 1)
@@ -522,7 +522,7 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 			moveAnswer <- dispatchRequest(t, moveServer, http.MethodPut, "/api/v1/projects/"+project+"/default-assignee",
 				map[string]any{"assignee": "bob"}, "alice")
 		}()
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, moveBackend, moveAnswer, storeStepWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, moveBackend, moveAnswer); early {
 			t.Fatalf("the move of the default answered %d while the first write, which read who the ask waits on, had not committed: %s", answer.Code, answer.Body.String())
 		}
 		if err := holder.Rollback(ctx); err != nil {

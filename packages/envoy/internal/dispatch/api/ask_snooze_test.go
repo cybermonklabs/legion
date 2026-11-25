@@ -440,7 +440,7 @@ func TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing(t *testing.T) {
 	server, backend := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- snooze(server, first) }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, backend, answered, storeStepWait); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, backend, answered); early {
 		t.Fatalf("the third snooze answered %d before the second committed: %s", answer.Code, answer.Body.String())
 	}
 	if err := holder.Commit(ctx); err != nil {

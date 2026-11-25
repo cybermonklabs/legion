@@ -47,6 +47,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { useNestedPanels } from "../../components/useNestedPanels";
+import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -1161,6 +1162,22 @@ function SelectionHeader({
   );
 }
 
+/**
+ * The page's sends and its broadcast composer, under the list and stuck to the foot of the
+ * page's scroll, in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers and the
+ * elements in each). On a narrow or short screen it has no box (`contents`), adds nothing, and the
+ * composer sticks by itself.
+ */
+function BroadcastFoot({ children }: { children: ReactNode }): ReactNode {
+  const footRef = useRef<HTMLDivElement>(null);
+  useFootInset(footRef, true, "page");
+  return (
+    <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents" ref={footRef}>
+      {children}
+    </div>
+  );
+}
+
 /** One item of the page's list: a group's heading, or a session's row under it. */
 type ListItem =
   | { kind: "group"; key: string; group: AgentGroup }
@@ -1735,7 +1752,7 @@ export function AgentsPage(): ReactNode {
           narrow or short screen only the composer sticks (the wrapper is `contents`), and the
           strip stays at the end of the list: the composer alone fills the screen's budget. */}
       {queue.rows.length === 0 && !showComposer ? null : (
-        <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents">
+        <BroadcastFoot>
           {queue.rows.length === 0 ? null : (
             <BroadcastSends
               className="narrow-or-short:mt-3"
@@ -1767,10 +1784,11 @@ export function AgentsPage(): ReactNode {
                 queue.enqueue(send);
                 composition.sent();
               }}
+              pageFoot
               selected={selected}
             />
           ) : null}
-        </div>
+        </BroadcastFoot>
       )}
       {/* A session the list does not hold has ended only when the list is current. */}
       {current ? <EndedAgentsWithReplies live={agents} /> : null}

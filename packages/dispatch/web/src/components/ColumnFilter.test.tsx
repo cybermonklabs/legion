@@ -11,6 +11,7 @@ import { type ReactNode, useState } from "react";
 
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
+import { optionNames } from "../__tests__/list-picks";
 import { ColumnFilter } from "./ColumnFilter";
 import type { ControlSize } from "./control-names";
 import { useDataTable } from "./DataTable";
@@ -51,8 +52,17 @@ const COUNTS: ReadonlyMap<string, number> = new Map([
   ["us", 1],
 ]);
 
-/** Each column's funnel as a table's header draws it, at `size` where one is given. */
-function Funnels({ size }: { size?: ControlSize }): ReactNode {
+/** Each column's funnel as a table's header draws it, at `size` where one is given, with the
+ *  column `open` names opened, and `counted` handed on where it is given. */
+function Funnels({
+  counted,
+  open,
+  size,
+}: {
+  counted?: boolean;
+  open?: string;
+  size?: ControlSize;
+}): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [grouping, setGrouping] = useState<GroupingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -79,11 +89,12 @@ function Funnels({ size }: { size?: ControlSize }): ReactNode {
     .map((column) => (
       <ColumnFilter
         column={column}
+        counted={counted}
         counts={COUNTS}
         key={column.id}
         noun={DEPLOY_NOUN}
         onOpenChange={() => undefined}
-        open={false}
+        open={column.id === open}
         size={size}
         unloaded={[]}
       />
@@ -112,6 +123,21 @@ test("the funnel keeps the 44 px target at every width at the comfortable size, 
     expect(drawn(SIZE_CSS)).toEqual([target, target]);
     const mouse = { minHeight: "32px", minWidth: "32px", padding: "4px 4px 4px 4px" };
     expect(drawn(`${SIZE_CSS}${MOUSE_CSS}`)).toEqual([mouse, mouse]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Delivery page's column filters, while the read for a new narrowing is out: the counts on
+// screen are the previous answer's, so nothing has counted the values yet. Each value is drawn
+// with no count beside it, never a 0, and the values those counts name are still offered.
+test("a value filter whose counts nothing has counted yet draws no count beside a value, and the counts once they are counted", () => {
+  const regions = () => optionNames(screen.getByRole("listbox", { name: "Region options" }));
+  const view = render(<Funnels counted={false} open="region" />);
+  try {
+    expect(regions()).toEqual(["eu", "us"]);
+    view.rerender(<Funnels counted open="region" />);
+    expect(regions()).toEqual(["eu, 1 deploy", "us, 1 deploy"]);
   } finally {
     view.unmount();
   }

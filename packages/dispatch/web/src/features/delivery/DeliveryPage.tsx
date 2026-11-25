@@ -44,15 +44,12 @@ import {
   type ColorFacet,
 } from "./lib/colorScale";
 import {
-  DEPLOYED_LABELS,
-  type DeployedFacet,
   FACET_KEYS,
   FACET_PARAMS,
   type FacetKey,
   type Filters,
+  ownEntry,
   PLACEHOLDER_LABELS,
-  REWORK_LABELS,
-  type ReworkFacet,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import {
@@ -204,21 +201,10 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const sortText = SORT_PARAM.read(searchParams, "sort");
   const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
-  // `?rework=` and `?deployed=` keep only the values their labels name, in the address's order,
-  // so an unknown one reaches neither the request nor a chip.
-  const filters: Filters = useMemo(
-    () => ({
-      ...arrayParams,
-      rework: arrayParams.rework.filter((value): value is ReworkFacet =>
-        Object.hasOwn(REWORK_LABELS, value)
-      ),
-      deployed: arrayParams.deployed.filter((value): value is DeployedFacet =>
-        Object.hasOwn(DEPLOYED_LABELS, value)
-      ),
-      search,
-    }),
-    [arrayParams, search]
-  );
+  // Every facet keeps every value the address names, one that names no value of the facet
+  // included: Dispatch selects no row by it, so `?priority=P9` alone lists none and beside a known
+  // value lists what the known one does, and the page draws it as a chip the reader can take off.
+  const filters: Filters = useMemo(() => ({ ...arrayParams, search }), [arrayParams, search]);
 
   const setState = useCallback(
     (next: DeliveryUrlState) => {
@@ -315,13 +301,20 @@ function LanesSwitch({
 }
 
 /** Coloured by Parent agent: which values get their own colour and lane, busiest first. The rest
- *  share one Other colour and lane; with none chosen, the colours and lanes are the facet's usual. */
+ *  share one Other colour and lane; with none chosen, the colours and lanes are the facet's usual.
+ *  A value's count is of every pull request of the window, with no facet or search applied
+ *  (`deliveryColorCounts` in Dispatch's `api/delivery.go`), so a facet or a search changes none.
+ *  It is drawn only while `counted` holds, the page's word that the answer on screen is the one
+ *  for the address: while a read is out the previous answer stays on screen, and where the
+ *  address names another window, its counts are the previous window's. */
 function OwnColourPicker({
+  counted,
   counts,
   groups,
   selected,
   onChange,
 }: {
+  counted: boolean;
   counts: Readonly<Record<string, number>>;
   groups: readonly DeliverySessionGroup[];
   selected: readonly string[];
@@ -329,10 +322,11 @@ function OwnColourPicker({
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const options = Object.keys(counts)
-    .filter((value) => !(value in PLACEHOLDER_LABELS))
+    .filter((value) => !Object.hasOwn(PLACEHOLDER_LABELS, value))
     .sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
   const state = selected.length === 0 ? "every value" : `${selected.length} chosen`;
-  const countOf = (value: string) => counts[value] ?? 0;
+  // A chosen agent comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) => ownEntry(counts, value) ?? 0;
   return (
     <MultiSelect
       emptyMessage="No matches."
@@ -340,8 +334,10 @@ function OwnColourPicker({
       onChange={onChange}
       onOpenChange={setOpen}
       open={open}
-      optionDetail={(value) => String(countOf(value))}
-      optionDetailLabel={(value) => `${countOf(value)} PR${countOf(value) === 1 ? "" : "s"}`}
+      optionDetail={counted ? (value) => String(countOf(value)) : undefined}
+      optionDetailLabel={
+        counted ? (value) => `${countOf(value)} PR${countOf(value) === 1 ? "" : "s"}` : undefined
+      }
       optionLabel={(value) => parentAgentLabel(value, groups)}
       options={[...new Set([...selected, ...options])]}
       searchLabel="Search parent agents…"
@@ -377,8 +373,10 @@ const facetTriggerClass = `flex w-full items-center justify-between rounded bord
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
  *  with its count, in the order `values` gives. A facet with no values in the window and nothing
- *  picked is not shown. Until an answer is in (`counts` undefined) a value is drawn with no count:
- *  nothing has been counted yet, and a 0 there would say the window holds no such pull request. */
+ *  picked is not shown. Until the answer for the address is in (`counts` undefined) a value is
+ *  drawn with no count: nothing has counted it yet, a 0 there would say the window holds no such
+ *  pull request, and the previous answer's count, kept on screen while the new read is out, would
+ *  be the last filter's. */
 function Facet({
   label,
   values,
@@ -402,7 +400,9 @@ function Facet({
   const options = [...new Set([...selected, ...values])];
   const state =
     selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
-  const countOf = (value: string) => counts?.[value] ?? 0;
+  // A selected value comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) =>
+    (counts === undefined ? undefined : ownEntry(counts, value)) ?? 0;
   return (
     <div className="w-full">
       <span className={facetLabelClass}>{label}</span>
@@ -450,26 +450,36 @@ function Facet({
  * comes off the header too.
  *
  * Each facet is counted by Dispatch with every other facet applied and its own ignored, so the
- * counts here are the answer's, never the page's. Under Parent agent's old place, **Edit
- * groups** opened the session-groups editor; it sits at the foot of this panel now, since that
- * facet is a column. The editor it opens stands under the bar, outside it.
+ * counts here are the answer's, never the page's. A value's count is drawn only while the answer
+ * on screen is the one for the window, filters and search the address names (`counted`): while a
+ * new read is out the previous answer stays on screen, and its counts would be the last filter's.
+ * Under Parent agent's old place, **Edit groups** opened the session-groups editor; it sits at
+ * the foot of this panel now, since that facet is a column. The editor it opens stands under the
+ * bar, outside it.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
  * the page has nothing else to show. A value is named in the words the answer gives it - an
  * issue's title, a group's or a component's name - only once there is an answer; until then it
- * reads as the address spells it. The panel then offers what is picked and Rework's and
- * Deployed's every verdict, each with no count beside it, since nothing has counted them, and no
- * **Edit groups**, whose editor edits the groups the answer lists.
+ * reads as the address spells it. The panel then draws no count beside a value, since nothing has
+ * counted them, and no **Edit groups**, whose editor edits the groups the answer lists, and what
+ * it offers depends on the view. On the Timeline it holds all nine facets, so it offers what is
+ * picked and Rework's and Deployed's every verdict. In the List it holds only the four facets that
+ * are no column; the five that are get their headers only once the list is drawn, with the
+ * answer, so until then a value the address picks in one of those comes off by its chip alone.
  */
 function DeliveryControls({
   columnsDrawn,
+  counted,
   data,
   filters,
   onFilters,
 }: {
   /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
   columnsDrawn: boolean;
+  /** Whether `data` is the answer for the window, filters and search the address names, the
+   *  page's own gate on its count. */
+  counted: boolean;
   /** The answer the panel counts and names values from; undefined until the first one. */
   data:
     | Pick<
@@ -517,13 +527,14 @@ function DeliveryControls({
   // issue has no title to read beside its key, so it reads as its key alone.
   const valueLabel = (key: FacetKey, value: string): string => {
     if (isColumnFacet(key)) {
-      if (data === undefined && key === "issue") return PLACEHOLDER_LABELS[value] ?? value;
+      if (data === undefined && key === "issue")
+        return ownEntry(PLACEHOLDER_LABELS, value) ?? value;
       return columnFacetValue(key, value, {
         issueTitles: data?.issue_titles ?? {},
         sessionGroups: data?.session_groups ?? [],
       });
     }
-    const placeholder = PLACEHOLDER_LABELS[value];
+    const placeholder = ownEntry(PLACEHOLDER_LABELS, value);
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
       const title = data?.components?.[value]?.title ?? value;
@@ -558,7 +569,7 @@ function DeliveryControls({
               {inPanel.map(({ key, label }) => (
                 <Facet
                   {...facetPanel(key)}
-                  counts={data === undefined ? undefined : countsOf(key)}
+                  counts={data === undefined || !counted ? undefined : countsOf(key)}
                   key={key}
                   label={label}
                   onChange={(next) => onFilters({ ...filters, [key]: next })}
@@ -720,10 +731,10 @@ export function DeliveryPage(): ReactNode {
     setFilters({
       ...state.filters,
       author: picked.get("author") ?? [],
-      deployed: (picked.get("deployed") ?? []) as DeployedFacet[],
+      deployed: picked.get("deployed") ?? [],
       issue: picked.get("issue") ?? [],
       parentAgent: picked.get("parentAgent") ?? [],
-      rework: (picked.get("rework") ?? []) as ReworkFacet[],
+      rework: picked.get("rework") ?? [],
     });
   };
   const setSorting: OnChangeFn<SortingState> = (update) => {
@@ -769,10 +780,16 @@ export function DeliveryPage(): ReactNode {
   // The count is the answer's for the filter and the window the address names, so it is drawn
   // only while the answer on screen is that one: not while a new filter's or a new window's read
   // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
-  // reader is typing waits out its debounce before it is asked for.
+  // reader is typing waits out its debounce before it is asked for. A value's count in the Filter
+  // panel, in the Own colour list and in a List column's header filter is drawn under the same
+  // gate.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
-    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
+    // From `xl` the page is the window's height and the chart takes what its header leaves, never
+    // less than its own `min-h-[28rem]`. Where the window is too short for both - 1280x800 and
+    // 1280x720 - the page scrolls inside this box, rather than spill past the shell, which made
+    // the document scroll on past it and took the shell's Navigation off the top of the screen.
+    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)] xl:overflow-y-auto">
       {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own. */}
       <header
         className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
@@ -877,6 +894,7 @@ export function DeliveryPage(): ReactNode {
               </div>
               {state.view.colorBy === "parentAgent" ? (
                 <OwnColourPicker
+                  counted={counted}
                   counts={data.color_counts?.parent_agent ?? {}}
                   groups={data.session_groups ?? []}
                   onChange={(agents) => setView({ ...state.view, agents })}
@@ -899,6 +917,7 @@ export function DeliveryPage(): ReactNode {
 
           <DeliveryControls
             columnsDrawn={state.view.mode === "list"}
+            counted={counted}
             data={data}
             filters={state.filters}
             onFilters={setFilters}
@@ -929,6 +948,7 @@ export function DeliveryPage(): ReactNode {
                     colorBy={state.view.colorBy}
                     colorScale={colorScale}
                     columnFilters={columnFilters}
+                    counted={counted}
                     facetCounts={data.facet_counts ?? {}}
                     issueTitles={data.issue_titles ?? {}}
                     onColumnFiltersChange={setColumnFilters}

@@ -100,7 +100,8 @@ var unreleasedVersionsBelowTheBackfill = []int{
 	20261117002006, 20261117002045, 20261117025900, 20261117025901, 20261117025902, 20261117025903,
 	20261117025904, 20261117025905, 20261117025906, 20261117025907, 20261117025908, 20261117025909,
 	20261117025910, 20261117093337, 20261117132340, 20261118161237, 20261119020700, 20261119020800,
-	20261119020900, 20261119021000, 20261120090000, 20261120090001, 20261120090002, 20261121034242,
+	20261119020900, 20261119021000, 20261120023712, 20261120090000, 20261120090001, 20261120090002,
+	20261120131444, 20261121034242, 20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -199,6 +200,7 @@ type storeType struct {
 // store, fails here. A pointer is listed by its target's type as that type stands at each read,
 // and a pointer whose rows name its node by the targets its attribute node holds at that read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	pool := database.Pool
@@ -238,6 +240,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every node
 // and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
+	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
 	database := openAtTheBackfill(t)
 	ctx := context.Background()

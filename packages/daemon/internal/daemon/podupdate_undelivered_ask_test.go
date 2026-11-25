@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -337,8 +338,9 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
-// while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
-// the row publishes while the relaunch holds the claim.
+// while the relaunch is held inside its Resume, and the wait for its answer gives up by name at the
+// test binary's deadline (testwait.Receive). On 74ab1cd3, which published with no lock held, the
+// row publishes while the relaunch holds the claim.
 func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
@@ -362,25 +364,15 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
 	go func() { _ = m.Handle(rig.worker(), gone) }()
-	select {
-	case <-inside:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the relaunch never reached its Resume")
-	}
+	testwait.Receive(t, "the relaunch to reach its Resume", inside)
 
 	ran := make(chan error, 1)
 	go func() { ran <- rig.lane.execute(rig.worker(), row) }()
-	select {
-	case err := <-ran:
-		if !errors.Is(err, wait.ErrWaiting) {
-			t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
-		}
-		t.Logf("the row waits: %v", err)
-	case <-time.After(10 * time.Second):
-		release()
-		<-ran
-		t.Fatal("the ask did not return while its claim's machine was inside a Resume; it waited on the lock")
+	err := testwait.Receive(t, "the ask's answer while its claim's machine is inside a Resume; a row that waits on the lock gives none", ran)
+	if !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
 	}
+	t.Logf("the row waits: %v", err)
 	if n := rig.deliveredTo(claim.RoleImplementer); n != 0 {
 		t.Fatalf("the ask was delivered %d times while the claim's lock was held, want none: the publish and its mark are one step under that lock", n)
 	}

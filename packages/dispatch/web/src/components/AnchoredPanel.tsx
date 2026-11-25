@@ -12,9 +12,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { hearPresses } from "../features/issue-page/focus-keeper";
 import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { inputMethodKey } from "../lib/input-method";
-import { focusableIn } from "./focus-place";
+import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
@@ -52,6 +53,80 @@ const EDGE: CSSProperties = {
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
 
+/** A top and a bottom, in the window. */
+interface Span {
+  readonly bottom: number;
+  readonly top: number;
+}
+
+/** The top and bottom, in the window, of what `box` shows of what it holds: inside its border
+ *  and above a horizontal scrollbar. */
+export function shownSpan(box: Element): Span {
+  const top = box.getBoundingClientRect().top + box.clientTop;
+  return { bottom: top + box.clientHeight, top };
+}
+
+/** Scrolls `box` the least that shows `span` whole in `shown`, the part of the window the box
+ *  shows what it holds in: up to `span`'s top where it starts above `shown`, down to its bottom
+ *  where it ends below, and not at all where it stands whole. It sets the box's own `scrollTop`
+ *  rather than call `scrollIntoView`, which scrolls the window too. A panel's rule for the
+ *  control the focus reaches in it (`scrollPanelToShow`) and the shared list's for the option
+ *  its arrows mark active and the one it opens on (`MultiSelect`'s `showOption`) all end here. */
+export function scrollToShow(box: Element, span: Span, shown: Span): void {
+  if (span.top < shown.top) box.scrollTop -= shown.top - span.top;
+  else if (span.bottom > shown.bottom) box.scrollTop += span.bottom - shown.bottom;
+}
+
+/** The part of `panel`'s shown span (`shownSpan`) that no sticky child of the panel covers: cut
+ *  at the bottom edge of a child stuck to its top and at the top edge of one stuck to its bottom,
+ *  as the shared list's text box and Clear foot are, the rows scrolling under both (`MultiSelect`,
+ *  whose arrows measure the same span). A sticky child that holds `control` cuts nothing: it
+ *  stands where it sticks however the panel scrolls. */
+function uncoveredSpan(panel: HTMLElement, control: Element): Span {
+  let { bottom, top } = shownSpan(panel);
+  for (const child of panel.children) {
+    if (child.contains(control)) continue;
+    const { bottom: stuckBottom, position, top: stuckTop } = getComputedStyle(child);
+    if (position !== "sticky") continue;
+    const box = child.getBoundingClientRect();
+    // A sticky box sticks to a side whose inset is set: `auto` in a browser, empty in happy-dom,
+    // is no side.
+    if (stuckTop !== "auto" && stuckTop !== "") top = Math.max(top, box.bottom);
+    else if (stuckBottom !== "auto" && stuckBottom !== "") bottom = Math.min(bottom, box.top);
+  }
+  return { bottom, top };
+}
+
+/**
+ * Scrolls `panel` the least that shows `control`, which has just taken the focus inside it, whole
+ * in the part of the panel's box that no sticky child of the panel covers (`uncoveredSpan`): up
+ * to that part's top edge where the control starts above it, down to its bottom edge where it ends
+ * below, and not at all where it stands whole. Chromium and WebKit scroll a control the focus
+ * reaches into view themselves; Firefox leaves one that is partly in sight cut at the box's edge
+ * (Remove Waiting on you filter in the Inbox's `+N more` panel, 19 px below it at 390x664). A row
+ * of the shared list that takes the focus under its text box or its Clear foot, as a screen
+ * reader's cursor puts it there, stands covered in every engine, since each counts the whole box
+ * as in view. Only the panel's box scrolls: this sets its `scrollTop` rather than call
+ * `scrollIntoView`, which scrolls the window too (`scrollToShow`).
+ *
+ * A control inside a box of its own that cuts it - a box inside the panel whose `overflow-y` clips
+ * (`CLIPPING_OVERFLOW`), as a scroll box's does - is shown as far as that box shows it: what the
+ * box cuts off is drawn nowhere, so no scroll of the panel can show it, and the panel scrolls the
+ * least that shows the drawn part whole. A control that box shows none of scrolls the panel
+ * nothing: no scroll of the panel shows it until the box itself scrolls to it.
+ */
+function scrollPanelToShow(panel: HTMLElement, control: Element): void {
+  let { bottom, top } = control.getBoundingClientRect();
+  for (let box = control.parentElement; box !== null && box !== panel; box = box.parentElement) {
+    if (CLIPPING_OVERFLOW[getComputedStyle(box).overflowY] !== true) continue;
+    const cut = shownSpan(box);
+    top = Math.max(top, cut.top);
+    bottom = Math.min(bottom, cut.bottom);
+  }
+  if (top > bottom) return;
+  scrollToShow(panel, { bottom, top }, uncoveredSpan(panel, control));
+}
+
 /** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
  *  last or first control, a pointer press outside it and its anchor, or its anchor gone from the
  *  page or drawn nowhere. A host whose next move depends on how the reader left - the Agents
@@ -86,6 +161,11 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  * too, but a press there is no press outside this panel: the reader picking a value is still in
  * the panel they picked it from. Escape and Tab stay each panel's own, so Escape in the inner
  * list closes that list alone.
+ *
+ * A control the focus reaches inside the panel stands whole in the part of the panel's box no
+ * sticky child of the panel covers, which scrolls the least that shows it, in every engine
+ * (`scrollPanelToShow`); a focus in a panel opened from inside this one is that panel's own, and
+ * scrolls this one nothing.
  *
  * The panel's element carries the keymap's `PANEL_ATTRIBUTE`, so a key pressed anywhere inside
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
@@ -242,14 +322,38 @@ export function AnchoredPanel({
       (focusableIn(panel)[0] ?? panel).focus();
     inside.current = panel?.contains(document.activeElement) === true;
     // Every move of the focus: onto one of the panel's two edges, which is answered here, or
-    // anywhere else, which is noted.
+    // anywhere else, which is noted, and which, on a control of the panel's own, shows that
+    // control whole in the panel's box (`scrollPanelToShow`) - unless a pointer press in the panel
+    // is down (`pressing`). That is read here rather than by a focus handler on the panel's
+    // element: React hands that handler the focus of a panel opened from inside this one too, as
+    // it carries an event through a portal along its own tree, while the page tells them apart,
+    // since the inner panel stands outside this one in the body.
+    //
+    // A pointer press focuses the control under it as the pointer goes down, in Chromium, Firefox
+    // and WebKit alike. A scroll then moves the control under the pointer before it comes up: on a
+    // chip of the Inbox's +N more panel cut 20 px by the panel's bottom at 390x664, the panel
+    // scrolled 24 px between the pointer's down and up in all three (builds Job
+    // infra-3135-probe1-8lssx). The reader pressed what they saw, so while a press in the panel is
+    // down no focus scrolls the panel, the press's own focus included. A focus by a key, or one a
+    // script hands on once the press is over - a press's own hand-off in the click that the
+    // pointer's up makes included - still shows its control whole, since the reader cannot see
+    // where it went. A press is the one `hearPresses` reads
+    // (`features/issue-page/focus-keeper.ts`), from its `pointerdown` in the panel: it ends at the
+    // `pointerup` once the press has moved the focus, or where it is of a button other than the
+    // primary one, which sends no click; else at its click, before the click's own handlers, so a
+    // touch, which focuses its control at the `mousedown` the browser makes after the finger has
+    // gone up, is still down then; and a press that sends no release ends at its `pointercancel`,
+    // its `dragend`, its `contextmenu` or the blur of the page's window.
+    let pressing = false;
     const followFocus = (event: FocusEvent) => {
       const target = event.target;
       const edge =
         target === startEdge.current ? "start" : target === endEdge.current ? "end" : undefined;
       const open = panelRef.current;
       if (edge === undefined) {
-        inside.current = target instanceof Node && open?.contains(target) === true;
+        const own = open !== null && target instanceof Element && open.contains(target);
+        inside.current = own;
+        if (own && target !== open && !pressing) scrollPanelToShow(open, target);
         return;
       }
       if (open === null) return;
@@ -306,10 +410,21 @@ export function AnchoredPanel({
     };
     document.addEventListener("focusin", followFocus, true);
     document.addEventListener("pointerdown", outside, true);
+    const stopPresses = hearPresses(
+      document,
+      (event) => {
+        pressing =
+          event.target instanceof Node && panelRef.current?.contains(event.target) === true;
+      },
+      () => {
+        pressing = false;
+      }
+    );
     document.addEventListener("keydown", dismissOnEscape, true);
     return () => {
       document.removeEventListener("focusin", followFocus, true);
       document.removeEventListener("pointerdown", outside, true);
+      stopPresses();
       document.removeEventListener("keydown", dismissOnEscape, true);
     };
   }, [anchorRef, inner]);

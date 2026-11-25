@@ -45,11 +45,12 @@ import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
+import { closestMatching, focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
@@ -380,7 +381,7 @@ export function IssueBoard({
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
     [matches, userState.data]
   );
-  const { error, moveCard, moveCardToLane } = useBoardMoves(project, labels, isVisible);
+  const { error, moveCard, moveCardToLane, question } = useBoardMoves(project, labels, isVisible);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
@@ -484,14 +485,20 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). The effect runs on the `columns`/`boardLanes` render - the
-  // announcement's own render comes first, before the query observer has notified, and would
-  // focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
+  // move that ends without placing it takes no focus later. The effect runs on the
+  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
+  // observer has notified, and would focus the doomed node. It moves the focus only while the
+  // focus stands where the move's press left it (`from`): on the card the press moved, or on the
+  // body that card's going left it on. A move the rule's dry run checks first places the card only
+  // once the dry run answers, and a reader who has moved the focus on by then - a key to another
+  // card, a Tab, a click - keeps it where they put it.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
     status: IssueStatus;
     laneId: string | null;
+    from: Element | null;
   } | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
@@ -507,6 +514,9 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    const { from } = pending;
+    const stands = document.activeElement === from || (!from?.isConnected && focusOnDocument());
+    if (!stands) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -570,24 +580,36 @@ export function IssueBoard({
     if (target === undefined) {
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
+    // Each move function tells `placed` (its `onPlaced`) once it has placed the card in the cache:
+    // in the call itself, before its request goes out, or, for a move the rule's question checks
+    // first, after the dry run or a choice of the question. So the announcement reads the
+    // optimistic position - the one the user sees - and, after a choice, each other issue it
+    // moved is already in its cell, so the count holds them. A move that ends without placing
+    // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    // Where the press left the focus: the card it moves (`focusAfterMove`).
+    const from = document.activeElement;
+    /** Says where the card stands now - its position and count in the visible cell, the one the
+     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
+     *  board has drawn it there (`focusAfterMove`). */
+    const placed = () => {
+      const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
+        (issue) =>
+          issue.status === target.status &&
+          isVisible(issue) &&
+          (lane === undefined || issue.priority === lane)
+      );
+      const position = column.findIndex((issue) => issue.key === key);
+      if (position !== -1) {
+        setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+      }
+      focusAfterMove.current = { from, key, laneId, status: target.status };
+    };
     if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex);
+      void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
     } else {
-      void moveCard(key, target.status, target.insertionIndex);
+      void moveCard(key, target.status, target.insertionIndex, placed);
     }
-    // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
-      (issue) =>
-        issue.status === target.status &&
-        isVisible(issue) &&
-        (lane === undefined || issue.priority === lane)
-    );
-    const position = column.findIndex((issue) => issue.key === key);
-    setAnnouncement(announceMove(key, target.status, position + 1, column.length));
-    focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */
@@ -770,99 +792,91 @@ export function IssueBoard({
       <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
     </>
   );
-  if (issues.isPending) {
-    return (
-      <>
-        {controls}
-        <LoadingSkeleton label="Loading board" />
-      </>
-    );
-  }
-  if (issues.isError) {
-    return (
-      <>
-        {controls}
-        <p className={textSecondaryOnSurface}>Could not load board.</p>
-      </>
-    );
-  }
-
+  // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
+  // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
+  // and its answer ends the move that holds every later read of the list.
+  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  const body = issues.isPending ? (
+    <LoadingSkeleton label="Loading board" />
+  ) : issues.isError ? (
+    <p className={textSecondaryOnSurface}>Could not load board.</p>
+  ) : (
+    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+      {error === undefined ? null : (
+        <div
+          aria-live="assertive"
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+        {announcement}
+      </p>
+      {issues.data.length === 0 ? (
+        // The active query is the label-filtered list, so an empty answer under a label filter
+        // means "nothing matches", not "empty project" - the same copy the List shows.
+        labels.length === 0 ? (
+          <EmptyState label="Empty project board" message="No issues in this project." />
+        ) : (
+          <EmptyState label="No matching project issues" message="No issues match these filters." />
+        )
+      ) : (
+        <DndContext
+          accessibility={{
+            screenReaderInstructions: {
+              draggable:
+                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+            },
+          }}
+          collisionDetection={boardCollisionDetection}
+          onDragCancel={landCard}
+          onDragEnd={onDragEnd}
+          onDragStart={liftCard}
+          sensors={sensors}
+        >
+          {lanes ? (
+            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+              {boardLanes.map((boardLane) => (
+                <BoardLaneRow
+                  boardLane={boardLane}
+                  dragging={dragging}
+                  isCollapsed={isCollapsed}
+                  key={laneKey(boardLane.lane)}
+                  userState={userState.data}
+                />
+              ))}
+            </div>
+          ) : (
+            <div
+              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-testid="board-scroll-container"
+            >
+              <div className="flex w-max items-stretch gap-4">
+                {columns.map((column) =>
+                  isCollapsed(column.status) ? (
+                    <CollapsedColumn column={column} key={column.status} />
+                  ) : (
+                    <BoardColumnView
+                      column={column}
+                      key={column.status}
+                      userState={userState.data}
+                    />
+                  )
+                )}
+              </div>
+            </div>
+          )}
+        </DndContext>
+      )}
+    </section>
+  );
   return (
     <>
+      {questionDialog}
       {controls}
-      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-        {error === undefined ? null : (
-          <div
-            aria-live="assertive"
-            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-          {announcement}
-        </p>
-        {issues.data.length === 0 ? (
-          // The active query is the label-filtered list, so an empty answer under a label filter
-          // means "nothing matches", not "empty project" - the same copy the List shows.
-          labels.length === 0 ? (
-            <EmptyState label="Empty project board" message="No issues in this project." />
-          ) : (
-            <EmptyState
-              label="No matching project issues"
-              message="No issues match these filters."
-            />
-          )
-        ) : (
-          <DndContext
-            accessibility={{
-              screenReaderInstructions: {
-                draggable:
-                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-              },
-            }}
-            collisionDetection={boardCollisionDetection}
-            onDragCancel={landCard}
-            onDragEnd={onDragEnd}
-            onDragStart={liftCard}
-            sensors={sensors}
-          >
-            {lanes ? (
-              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-                {boardLanes.map((boardLane) => (
-                  <BoardLaneRow
-                    boardLane={boardLane}
-                    dragging={dragging}
-                    isCollapsed={isCollapsed}
-                    key={laneKey(boardLane.lane)}
-                    userState={userState.data}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div
-                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-                data-testid="board-scroll-container"
-              >
-                <div className="flex w-max items-stretch gap-4">
-                  {columns.map((column) =>
-                    isCollapsed(column.status) ? (
-                      <CollapsedColumn column={column} key={column.status} />
-                    ) : (
-                      <BoardColumnView
-                        column={column}
-                        key={column.status}
-                        userState={userState.data}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            )}
-          </DndContext>
-        )}
-      </section>
+      {body}
     </>
   );
 }

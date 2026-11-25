@@ -8,12 +8,25 @@
 // machine is broker-credential-signins.test.ts's; a pod session whose registration has not landed
 // is broker-credential-registration.test.ts's.
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
+import {
+  signedIn,
+  stubIssuer,
+  thumbprintOf,
+  writeSignIn,
+} from "@legion/cipher-client/test/sign-ins";
+import {
+  FORM_AS_OF,
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_SCOPE,
+  SCOPE_READ,
+  SUBJECT_TOKEN_TYPE_PERSON,
+} from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { consumerDelivery } from "../../test/subscribe-answer";
-import { brokerCredential, forgetBrokerSession } from "../broker-credential";
+import { brokerCredential, brokerTokenFor, forgetBrokerSession } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
@@ -130,6 +143,234 @@ test("a DISPATCH_TOKEN_BROKER that is neither 1 nor unset is refused", () => {
   expect(resolution.enabled === false && resolution.error).not.toContain('"true"');
 });
 
+/** The Dispatch `env` resolves for a caller acting as `session`, which must be on. */
+function dispatchOf(env: DispatchEnvironment, session: string): DispatchClient {
+  const resolution = dispatchSettings(env, noFile(env), { session });
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+  expect(resolution.credential.scheme).toBe("DPoP");
+  return new DispatchClient(resolution.url, resolution.credential);
+}
+
+/** The error `env` turns Dispatch off with; Dispatch on fails the test. */
+function offError(env: DispatchEnvironment): string {
+  const resolution = dispatchSettings(env, noFile(env), { session: "session-one" });
+  if (resolution.enabled) throw new Error("Dispatch is on");
+  return resolution.error ?? `no error, the notice: ${resolution.notice}`;
+}
+
+test("DISPATCH_TOKEN_BROKER_READ=1 makes the Dispatch trade ask for scope read", async () => {
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const env = { ...podEnvironment(broker.url, dispatch.url), DISPATCH_TOKEN_BROKER_READ: "1" };
+
+  await dispatchOf(env, "example-reader-session").listAllIssues({});
+
+  expect(broker.trades).toHaveLength(1);
+  expect(broker.trades[0]?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(broker.trades[0]?.form.has(FORM_AS_OF)).toBe(false);
+  expect(broker.trades[0]?.form.get("session")).toBe("example-reader-session");
+  // The pod proves a key this process made, so its read trade sends no holder proof.
+  expect(broker.trades[0]?.holder).toBe("");
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[0]?.token}`,
+  ]);
+});
+
+test("DISPATCH_TOKEN_BROKER_AS_OF beside it asks for that cut", async () => {
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const env = podEnvironment(broker.url, dispatch.url);
+  const cuts = ["2026-11-19T08:30:00Z", "2026-11-19T09:30:00.123456+01:00"];
+  for (const [at, cut] of cuts.entries()) {
+    await dispatchOf(
+      { ...env, DISPATCH_TOKEN_BROKER_READ: "1", DISPATCH_TOKEN_BROKER_AS_OF: ` ${cut} ` },
+      `session-${at}`
+    ).listAllIssues({});
+  }
+  // Sent as written, trimmed: the broker reads the time, and its clock alone says it has passed.
+  expect(
+    broker.trades.map((trade) => [trade.form.get(FORM_SCOPE), trade.form.get(FORM_AS_OF)])
+  ).toEqual(cuts.map((cut) => [SCOPE_READ, cut]));
+});
+
+test("the read settings take the broker route and read no DISPATCH_TOKEN", async () => {
+  // The shell holds a writing bearer too, in a variable and in the person's own envoy.json for
+  // the very server it reads: under the read settings neither is ever sent.
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const env = {
+    ...podEnvironment(broker.url, dispatch.url),
+    DISPATCH_TOKEN: PERSON_TOKEN,
+    DISPATCH_TOKEN_BROKER_READ: "1",
+  };
+  const config = personalFile(env, dispatch.url, PERSON_TOKEN);
+  const resolution = dispatchSettings(env, config, { session: "session-one" });
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+  expect(resolution.credential.scheme).toBe("DPoP");
+  await new DispatchClient(resolution.url, resolution.credential).listAllIssues({});
+  expect(broker.trades.map((trade) => trade.form.get(FORM_SCOPE))).toEqual([SCOPE_READ]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[0]?.token}`,
+  ]);
+  expect(JSON.stringify(dispatch.asked)).not.toContain(PERSON_TOKEN);
+
+  // With nothing to trade, Dispatch is off rather than written with the bearer the shell holds.
+  const noBroker = dispatchSettings({ ...env, AGENT_SECRETS_URL: "" }, config);
+  expect(noBroker.enabled).toBe(false);
+  expect(noBroker.enabled === false && noBroker.error).toContain(
+    "DISPATCH_TOKEN_BROKER_READ is set, so this session's Dispatch credential is traded at the secrets broker"
+  );
+  expect(noBroker.enabled === false && noBroker.error).toContain(
+    "AGENT_SECRETS_URL names no secrets broker"
+  );
+});
+
+test("a cut without DISPATCH_TOKEN_BROKER_READ=1 turns Dispatch off naming both settings", () => {
+  // A bearer that would write: the cut is a mistake, never a reason to fall back on it.
+  const env = {
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
+    DISPATCH_TOKEN: PERSON_TOKEN,
+    DISPATCH_TOKEN_BROKER_AS_OF: "2026-11-19T08:30:00Z",
+  };
+  for (const broken of [env, { ...env, DISPATCH_TOKEN_BROKER: "1" }]) {
+    const error = offError(broken);
+    expect(error).toContain("DISPATCH_TOKEN_BROKER_AS_OF");
+    expect(error).toContain("DISPATCH_TOKEN_BROKER_READ=1");
+  }
+});
+
+test("DISPATCH_TOKEN_BROKER_READ other than 1 turns Dispatch off naming it", () => {
+  const env = {
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
+    DISPATCH_TOKEN: "written",
+  };
+  for (const value of ["true", "0", "yes", "read"]) {
+    const error = offError({ ...env, DISPATCH_TOKEN_BROKER_READ: value });
+    expect(error).toContain("DISPATCH_TOKEN_BROKER_READ takes 1");
+    // Its value is not quoted, which a token pasted into the wrong variable would be.
+    expect(error).not.toContain(`"${value}"`);
+    expect(error).not.toContain(`'${value}'`);
+  }
+  // Unset or blank, it reads as off, and the bearer is the credential.
+  const blank = dispatchSettings({ ...env, DISPATCH_TOKEN_BROKER_READ: "  " }, noFile(env));
+  expect(blank.enabled && blank.credential.scheme).toBe("Bearer");
+});
+
+test("a cut that is not RFC 3339, or is the zero time, turns Dispatch off naming it", () => {
+  const env = {
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
+    DISPATCH_TOKEN_BROKER_READ: "1",
+  };
+  for (const cut of [
+    "yesterday",
+    "2026-11-19",
+    "2026-11-19T08:30:00",
+    "2026-11-19 08:30:00Z",
+    "2026-11-19t08:30:00z",
+    "2026-11-19T08:30:00.1234567Z",
+    "2026-11-19T08:30Z",
+    "2026-02-30T08:30:00Z",
+    "2026-13-01T08:30:00Z",
+    "2026-11-19T24:00:00Z",
+    "2026-11-19T08:60:00Z",
+    "2026-11-19T08:30:00+0100",
+    "1763541000",
+    // The zero time, which the broker takes for no cut at all, so it refuses it, under any offset.
+    "0001-01-01T00:00:00Z",
+    "0001-01-01T00:00:00.000000Z",
+    "0001-01-01T01:00:00+01:00",
+  ]) {
+    const error = offError({ ...env, DISPATCH_TOKEN_BROKER_AS_OF: cut });
+    expect(error, cut).toContain("DISPATCH_TOKEN_BROKER_AS_OF is not an RFC 3339 time");
+    expect(error, cut).not.toContain(cut);
+  }
+  // A second after it is a cut, as the broker takes it.
+  const second = dispatchSettings(
+    { ...env, DISPATCH_TOKEN_BROKER_AS_OF: "0001-01-01T00:00:01Z" },
+    noFile(env),
+    { session: "session-one" }
+  );
+  expect(second.enabled).toBe(true);
+});
+
+test("the Envoy listener's and NATS's trades ask for no scope under the read settings", async () => {
+  // Both refuse a read-only token, and a session's inbound messages must keep working, so they
+  // keep the session's shared client while Dispatch's credential is a client of its own.
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const cut = "2026-11-19T08:30:00Z";
+  const env = {
+    ...podEnvironment(broker.url, dispatch.url),
+    DISPATCH_TOKEN_BROKER_READ: "1",
+    DISPATCH_TOKEN_BROKER_AS_OF: cut,
+  };
+  await dispatchOf(env, "session-one").listAllIssues({});
+  const envoy = envoySettings(env, noFile(env), { nats: false, session: "session-one" });
+  if (!envoy.enabled) throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`);
+  const listener = await envoy.credential?.headers("GET", `${dispatch.url}/v1/interests/a`);
+  const nats = await brokerTokenFor(env, "session-one")();
+  // Dispatch's again: its own client answers out of the token it holds.
+  await dispatchOf(env, "session-one").listAllIssues({});
+
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get("session"),
+      trade.form.get(FORM_SCOPE),
+      trade.form.get(FORM_AS_OF),
+    ])
+  ).toEqual([
+    ["session-one", SCOPE_READ, cut],
+    ["session-one", null, null],
+  ]);
+  expect(listener?.Authorization).toBe(`DPoP ${broker.trades[1]?.token}`);
+  expect(nats.token.accessToken).toBe(broker.trades[1]?.token);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[0]?.token}`,
+  ]);
+});
+
+test("a person's trade under the read setting sends no launcher_credential", async () => {
+  const broker = stubBroker(600);
+  const dispatch = stubDispatch();
+  const clientId = "example-device-client";
+  const issuer = await stubIssuer({ clientId, person: "ada@example.com" });
+  servers.push(issuer);
+  const record = await signedIn("ada@example.com", { client_id: clientId });
+  const signins = path.join(tempDir(), "signins");
+  await writeSignIn(signins, record);
+  const secret = path.join(tempDir(), "client-secret");
+  writeFileSync(secret, `secret-${crypto.randomUUID()}\n`, { mode: 0o600 });
+  const env = {
+    ...podEnvironment(broker.url, dispatch.url),
+    AGENT_SECRETS_SIGNIN_DIR: signins,
+    AGENT_SECRETS_SIGNIN_ISSUER: issuer.url,
+    AGENT_SECRETS_SIGNIN_CLIENT_ID: clientId,
+    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: secret,
+    DISPATCH_TOKEN_BROKER_READ: "1",
+  };
+
+  await dispatchOf(env, "session-one").listAllIssues({});
+
+  const [trade] = broker.trades;
+  expect(broker.trades).toHaveLength(1);
+  expect(trade?.form.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_PERSON);
+  expect(trade?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  // Absent, a read trade's launcher_credential reads as declined, and a person's trade may not
+  // send `false`.
+  expect(trade?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
+  // The token is bound to the holder's key, and Dispatch's proof is signed with it, never with
+  // the box key the sign-in is proved by.
+  const [holderJwk, dispatchJwk] = [trade?.holder, dispatch.asked[0]?.proof].map(
+    (proof) =>
+      JSON.parse(Buffer.from((proof ?? "").split(".")[0] ?? "", "base64url").toString("utf8"))
+        .jwk as JsonWebKey
+  );
+  if (dispatchJwk === undefined) throw new Error("Dispatch was sent no proof");
+  expect(dispatchJwk).toEqual(holderJwk);
+  expect(await thumbprintOf(dispatchJwk)).not.toBe(record.thumbprint);
+});
+
 test("with no bearer at all, the session's credential is its own identity traded at the broker", async () => {
   const broker = stubBroker(600);
   const dispatch = stubDispatch();
@@ -162,8 +403,9 @@ test("with no bearer at all, the session's credential is its own identity traded
 });
 
 test("a session past its token's life trades again, with nothing restarted", async () => {
-  // One second of life is the broker's own minimum (BROKER_ACCESS_TOKEN_SECONDS), so every
-  // request after the first is inside the renewal window.
+  // One second of life is the broker's own minimum (BROKER_ACCESS_TOKEN_SECONDS). The client holds
+  // a token until its renewal (`renewalAt`), half its life for a token this short, so the clock
+  // moves a whole life on between the two requests: the second finds the token lapsed.
   const broker = stubBroker(1);
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
@@ -172,7 +414,12 @@ test("a session past its token's life trades again, with nothing restarted", asy
   const client = new DispatchClient(resolution.url, resolution.credential);
 
   await client.listAllIssues({});
-  await client.listAllIssues({});
+  setSystemTime(new Date(Date.now() + 1_000));
+  try {
+    await client.listAllIssues({});
+  } finally {
+    setSystemTime();
+  }
 
   expect(broker.trades.length).toBe(2);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([

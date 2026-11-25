@@ -1,10 +1,11 @@
 import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 
 import type { Agent, MessageDeliveryMode } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   card,
@@ -58,6 +59,7 @@ export function BroadcastComposer({
   onBody,
   onDelivery,
   onSend,
+  pageFoot = false,
   selected,
   onDeselect,
 }: {
@@ -75,6 +77,10 @@ export function BroadcastComposer({
   onDelivery: (delivery: MessageDeliveryMode) => void;
   onDeselect: (sessionID: string) => void;
   onSend: (send: BroadcastSend) => void;
+  /** Registers this section in the foot's page layer (`useFootInset`), for the Agents page's narrow
+   *  and short screens where `BroadcastFoot` has no box (`contents`). Elsewhere - the Inbox's
+   *  compose dialog - the composer is not a page foot. */
+  pageFoot?: boolean;
   selected: ReadonlySet<string>;
 }): ReactNode {
   const { plan } = composed;
@@ -111,6 +117,13 @@ export function BroadcastComposer({
   // line on screen shows it), so a refusal naming agents names them as `AgentName` does.
   const refusal = sendState.refusal === null ? null : sendState.refusal.map(text.part).join("");
   const noticeId = useId();
+  // On a narrow or short screen this section is what sticks to the foot of the page's scroll
+  // (`BroadcastFoot` has no box there), in the foot's page layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). Elsewhere on the Agents page that wrapper holds
+  // it and sticks instead, and the wrapper's band holds the section's, so the section's band
+  // changes no inset and no ceiling there: it registers on every screen while `pageFoot` is set.
+  const sectionRef = useRef<HTMLElement>(null);
+  useFootInset(sectionRef, pageFoot, "page");
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
   // so it takes about a third of a phone screen: the heading on one line, the recipients in one
@@ -128,6 +141,7 @@ export function BroadcastComposer({
     <section
       aria-label="Broadcast"
       className={`max-h-[50vh] overflow-y-auto rounded-xl border p-3 narrow-or-short:sticky narrow-or-short:bottom-0 narrow-or-short:z-10 narrow-or-short:mt-3 narrow-or-short:grid narrow-or-short:grid-cols-[auto_minmax(0,1fr)_auto] narrow-or-short:items-center narrow-or-short:gap-2 short:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${card} ${borderDefault}`}
+      ref={sectionRef}
     >
       <h2
         className={`text-sm font-semibold narrow-or-short:col-span-full narrow-or-short:truncate short:col-span-1 ${textPrimaryOnCanvas}`}

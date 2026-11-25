@@ -1,10 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for; nor has it one for a key marked as an input method's, at keyCode 229.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
 import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { disarm } from "../__tests__/armed-press";
 import { realClock } from "../__tests__/fake-clock";
 import { frameAndTasks, nextFrame } from "../__tests__/frames";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
@@ -646,10 +647,12 @@ test("a component's hand-off for a control taken away with a control before it l
  *  checkbox where `box` asks for one - the Agents page's select-all while no row matches - and
  *  the line itself only while `shown` (by default). With `list`, a list one of its buttons opened
  *  is drawn as well, outside the line in a portal on the page's body, holding the text box named
- *  Search, as the shared list draws its own (`MultiSelect`). */
+ *  Search, as the shared list draws its own (`MultiSelect`). `fallback` names the control the line
+ *  falls back to (`useFocusPlace`), else none. */
 interface ArmedLineProps {
   readonly box?: boolean;
   readonly disabled?: readonly string[];
+  readonly fallback?: () => HTMLElement | null;
   readonly held?: readonly string[];
   readonly labels: readonly string[];
   readonly list?: boolean;
@@ -663,7 +666,7 @@ function ArmedLine(props: ArmedLineProps): ReactNode {
   const line = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     (element) => (line.current?.contains(element) ? line.current : null),
-    () => null
+    () => props.fallback?.() ?? null
   );
   const { box = false, disabled = [], held = [], labels, list = false, shown = true } = props;
   const buttons = labels.map((label) =>
@@ -739,13 +742,6 @@ function armedLineIn(
 function clickPress(control: HTMLElement): void {
   control.focus();
   fireEvent.click(control);
-}
-
-/** Ends a press still armed as a case ends, as the reader's next pointer press on the page does,
- *  so that none outlives its case into the next one: a case that installs the fake clock would
- *  run that press's end on it, which is not that case's to move. */
-function disarm(): void {
-  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
 }
 
 /** Runs `body` with the page's main content in the document, holding one button per label, and
@@ -1356,4 +1352,172 @@ test("a second press on the control a pick's write holds leaves the pick the cau
     "a second Enter on the held Snooze": "After",
     "nothing after the pick": "After",
   });
+});
+
+/** The project List's section (`IssuesTable`): a root that arms the hand-off at its own presses
+ *  (`armOnPress`), around two components that hand their own focus off and arm it at their own
+ *  roots (`ArmedLine`): the selection bar's line of `bar` buttons, and the table's body, whose
+ *  one row draws Start next, `held` while the bar's write is out (`perform`). */
+function ArmedSection(props: {
+  readonly bar: readonly string[];
+  readonly held: boolean;
+}): ReactNode {
+  return createElement(
+    "section",
+    ARM_ON_PRESS,
+    createElement(ArmedLine, { labels: props.bar }),
+    createElement(ArmedLine, { held: props.held ? ["Start next"] : [], labels: ["Start next"] })
+  );
+}
+
+// (dt) Armed by a press in one component whose write holds a control of another inside the same
+// root: the project List's selection bar's Take out of epic, whose run holds every row's Start
+// next, in the table's body, a root no press had reached by the arm. A double click on the held
+// Start next - in WebKit, which leaves the focus on the bar's button - takes nothing but its hold,
+// though its first click is the first press the body's root hears: the bar's press stays the
+// cause, and the write's answer that takes Take out of epic away hands the focus to the control
+// now at its place, as it does with no click.
+test("a double click on a control the press's write holds, in a root inside the press's own that first hears a press after the arm, leaves the press the cause", async () => {
+  const bar = ["Before", "Take out of epic", "After"];
+  const acts: Readonly<Record<string, (start: HTMLElement) => void>> = {
+    "a double click on the held Start next": (start) => {
+      pointerPress(start);
+      pointerPress(start);
+    },
+    "nothing after the press": () => undefined,
+  };
+  const landed: Record<string, string | null> = {};
+  for (const [named, actAgain] of Object.entries(acts)) {
+    landed[named] = await inMain([], async (main) => {
+      const host = document.createElement("div");
+      main.append(host);
+      const view = render(createElement(ArmedSection, { bar, held: false }), { container: host });
+      try {
+        clickPress(view.getByRole("button", { name: "Take out of epic" }));
+        // The run the press starts holds every row's Start next, and what answers it.
+        view.rerender(createElement(ArmedSection, { bar, held: true }));
+        const answered = holdHandOff();
+        actAgain(view.getByRole("button", { name: "Start next" }));
+        for (const _ of [0, 1, 2]) await frameAndTasks();
+        // The writes land, and their answer takes Take out of epic away with the selection.
+        view.rerender(createElement(ArmedSection, { bar: ["Before", "After"], held: false }));
+        answered();
+        return landing();
+      } finally {
+        view.unmount();
+        host.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({
+    "a double click on the held Start next": "After",
+    "nothing after the press": "After",
+  });
+});
+
+// (du) Armed, and the press's commit takes away the line with its control - its container gone,
+// as a slot of the search bar's control row goes with its only control - inside a dialog, while
+// the line's fallback stands out of the reader's sight. The focus goes, with no scroll, to the own
+// stop of the region the control stood in as it took the focus: the dialog. A container that has
+// left the page has no dialog or main content around it to say its region, and the page's main
+// content behind the dialog is not where the reader was.
+test("an armed press whose commit takes away its container in a dialog, with the fallback out of sight, lands on the dialog's own stop, not the page's main content", async () => {
+  withMain(() => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-label", "Search bar");
+    document.body.append(dialog);
+    try {
+      // The fallback stands 500 px above the window's top, out of the reader's sight.
+      const trigger = windowSelectIn(dialog, -500);
+      const fallback = () => trigger;
+      const line = armedLineIn(dialog, { fallback, labels: ["Mark all read"] });
+      try {
+        clickPress(line.button("Mark all read"));
+        const recorded = recordMoves();
+        try {
+          line.redraw({ fallback, labels: [], shown: false });
+        } finally {
+          recorded.restore();
+        }
+        expect({ landed: landing(), moves: recorded.moves }).toEqual({
+          landed: "Search bar",
+          moves: [{ move: "focus", of: "Search bar", options: { preventScroll: true } }],
+        });
+      } finally {
+        line.remove();
+      }
+    } finally {
+      disarm();
+      dialog.remove();
+    }
+  });
+});
+
+/** The two Enters a text field can be sent: the reader's own, and the one that ends an input
+ *  method's composition, which Safari sends after the composition's end, unmarked - `isComposing`
+ *  false - with keyCode 229 (`inputMethodKey`). */
+const ENTERS = {
+  "a plain Enter": { key: "Enter" },
+  "an input method's Enter": { isComposing: false, key: "Enter", keyCode: 229 },
+} as const;
+
+// (dv) Armed, and an input method's Enter comes in a text field while the press is live. It
+// commits what the reader was composing and acts on nothing of the page's, so it is no act of the
+// reader's (`isPress`): the press stays live, and its commit that takes the control away hands the
+// focus to the control now at its place. A plain Enter in the same field is the reader's next act:
+// it ends the press, and the loss leaves the focus on the page.
+test("an input method's Enter in a text field, at keyCode 229, leaves an armed press live, where a plain Enter ends it", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const [named, enter] of Object.entries(ENTERS)) {
+    landed[named] = await inMain([], async (main) => {
+      const field = controlOf("text");
+      field.setAttribute("aria-label", "Title");
+      main.append(field);
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        // user-event has no form for this key: it cannot mark a key as an input method's.
+        fireEvent.keyDown(field, enter);
+        line.redraw({ labels: ["One", "Three"] });
+        return landing();
+      } finally {
+        line.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({ "a plain Enter": "the page", "an input method's Enter": "Three" });
+});
+
+// (dw) An input method's Enter in a text box at a component's root arms nothing (`armOnPress`):
+// it commits what the reader was composing into the box and presses nothing. A plain Enter there
+// arms the hand-off, as a list's text box picks its active row at it (`MultiSelect`).
+test("an input method's Enter at keyCode 229 arms a component's hand-off at its root nowhere, where a plain Enter arms it", async () => {
+  const armed: Record<string, boolean> = {};
+  await inMain([], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const view = render(
+      createElement(
+        "div",
+        { onKeyDownCapture: armOnPress },
+        createElement("input", { "aria-label": "Name", type: "text" })
+      ),
+      { container: host }
+    );
+    try {
+      const name = view.getByRole("textbox", { name: "Name" });
+      for (const [named, enter] of Object.entries(ENTERS)) {
+        disarm();
+        name.focus();
+        // user-event has no form for this key: it cannot mark a key as an input method's.
+        fireEvent.keyDown(name, enter);
+        armed[named] = causedByReader(name);
+      }
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(armed).toEqual({ "a plain Enter": true, "an input method's Enter": false });
 });

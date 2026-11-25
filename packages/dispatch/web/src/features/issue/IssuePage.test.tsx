@@ -2692,10 +2692,13 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
-    // While the write is in flight the control is disabled: no second close can be queued.
-    expect(
-      (screen.getByRole("button", { name: "Close issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    // While the write is in flight the control is held (`heldPress`), never disabled, so it keeps
+    // the focus: a second press queues no second close.
+    const close = screen.getByRole("button", { name: "Close issue" });
+    expect(close).toHaveAttribute("aria-disabled", "true");
+    const closes = patchIssue.mock.calls.length;
+    await user.click(close);
+    expect(patchIssue.mock.calls.length).toBe(closes);
     await act(async () => {
       closeSave.resolve({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
       await closeSave.promise;
@@ -2711,9 +2714,11 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
-    expect(
-      (screen.getByRole("button", { name: "Reopen issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    const reopen = screen.getByRole("button", { name: "Reopen issue" });
+    expect(reopen).toHaveAttribute("aria-disabled", "true");
+    const reopens = patchIssue.mock.calls.length;
+    await user.click(reopen);
+    expect(patchIssue.mock.calls.length).toBe(reopens);
     await act(async () => {
       reopenSave.resolve({ ...issue, status: "backlog" });
       await reopenSave.promise;

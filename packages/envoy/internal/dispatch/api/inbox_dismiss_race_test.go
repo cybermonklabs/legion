@@ -375,9 +375,7 @@ func TestDismissLeavesAThreadRepliedToWhileItRan(t *testing.T) {
 			held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answered <- postInboxDismiss(t, seed.handler, "alice", body) }()
-			if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
-				t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
-			}
+			storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared)
 			row.write(t, seed)
 			held.release()
 			dismissRanAndLeftTheThread(t, seed, <-answered, row.dismissed, row.thread(seed), row.mark(t, seed))
@@ -433,13 +431,10 @@ func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second)
-	if dismissing == 0 {
-		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
-	}
+	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared)
 	replying := holdSessionReply(t, database, seed.agentReply)
 	held.release()
-	if answer, early := storetest.WaitForQueuedBehind(t, replying.tx, dismissing, answered, 10*time.Second); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, replying.tx, dismissing, answered); early {
 		t.Fatalf("the dismiss answered %d %s without ever waiting at the agent thread's root, so its check read a snapshot the reply is not in",
 			answer.Code, answer.Body.String())
 	}
@@ -469,17 +464,13 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 	held := holdGateThread(t, database, seed.document)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the caller's rows, which it locks after the agent thread's root")
-	}
+	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	// Five seconds, where the dismiss's statement_timeout allows it ten at the gate: a reply that
-	// has not queued by then is this row's red, and waiting the full ten would spend the dismiss's
-	// own allowance on it and answer 500 instead.
-	if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
-		t.Fatalf("%d transactions queued behind the gate row, want the dismiss and the reply waiting at the root it holds", waiting)
-	}
+	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
+	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
+	// the gate), which answers 500.
+	storetest.WaitForLockWaiters(t, held.tx, 2)
 	held.release()
 
 	response := <-answered
@@ -519,13 +510,12 @@ func TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther(t *test
 		held := holdGateThread(t, database, seed.document)
 		answered := make(chan *httptest.ResponseRecorder, 1)
 		go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-		if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads, 10*time.Second) == 0 {
+		if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads) == 0 {
 			t.Fatal("the dismiss never queued on the caller's rows, which it locks after the agent thread's root")
 		}
 		replied := make(chan *httptest.ResponseRecorder, 1)
 		go func() { replied <- postAgentMessage(t, handler, "s1", replyBody(seed), "alice") }()
-		// Five seconds, where the dismiss's statement_timeout allows it ten at the gate.
-		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2); waiting < 2 {
 			t.Fatalf("%d transactions queued behind the gate row, want the dismiss and alice's reply waiting at the root it holds", waiting)
 		}
 		held.release()
@@ -552,12 +542,12 @@ func TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther(t *test
 			`select 1 from messages where id = $1 for update`, seed.agentReply)
 		replied := make(chan *httptest.ResponseRecorder, 1)
 		go func() { replied <- postAgentMessage(t, handler, "s1", replyBody(seed), "alice") }()
-		if waiting := storetest.WaitForLockWaiters(t, held.tx, 1, 10*time.Second); waiting < 1 {
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 1); waiting < 1 {
 			t.Fatal("alice's reply never queued at the session reply it answers, which its insert takes after the root")
 		}
 		answered := make(chan *httptest.ResponseRecorder, 1)
 		go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2); waiting < 2 {
 			t.Fatalf("%d transactions queued behind the gate row, want alice's reply and the dismiss waiting at the root it holds", waiting)
 		}
 		held.release()
@@ -632,9 +622,7 @@ func TestDismissLeavesAnAgentThreadWhoseOlderReplyCommitsAtItsRoot(t *testing.T)
 	replying := holdSessionReply(t, database, seed.agentReply)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, replying.tx, inboxDismissLockAgentRoots, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued at the agent thread's root, which the reply in flight holds")
-	}
+	storetest.WaitForStatementBehind(t, database, replying.tx, inboxDismissLockAgentRoots)
 	replying.commit(t)
 
 	dismissChangedNothingAndLeftTheThread(t, handler, <-answered, seed.agent,
@@ -669,16 +657,12 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 	held := holdGateThread(t, database, seed.document)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the caller's rows, which it locks after the agent thread's root")
-	}
+	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	written := writeAgentReplyBehind(replying.tx, seed.agentReply, "session", "s1", stamp)
-	// Five seconds, where the dismiss's statement_timeout allows it ten at the gate: a reply that
-	// has not queued by then is this row's red, and waiting the full ten would spend the dismiss's
-	// own allowance on it and answer 500 instead.
-	if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
-		t.Fatalf("%d transactions queued behind the gate row, want the dismiss and the reply waiting at the root it holds", waiting)
-	}
+	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
+	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
+	// the gate), which answers 500.
+	storetest.WaitForLockWaiters(t, held.tx, 2)
 	held.release()
 
 	response := <-answered
@@ -717,9 +701,7 @@ func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *test
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
-	}
+	storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared)
 	writeThreadReply(t, writing.tx, seed.firstIssue, seed.first, "session", "s1", stamp)
 	writing.commit(t)
 	held.release()
@@ -751,9 +733,7 @@ func TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites(t *testing.T) {
 	writeThreadReply(t, writing.tx, seed.firstIssue, seed.first, "session", "s1", databaseNow(t, writing.tx))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, writing.tx, inboxReadLockThreads, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the caller's row, which the comment's own trigger holds")
-	}
+	storetest.WaitForStatementBehind(t, database, writing.tx, inboxReadLockThreads)
 	writing.commit(t)
 
 	dismissRanAndLeftTheThread(t, seed, <-answered, 1, seed.first,
@@ -793,9 +773,7 @@ func TestDismissLeavesAnAgentThreadWhoseInterleavedRepliesInvertTheirStamps(t *t
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, replying.tx, inboxDismissLockAgentRoots, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued at the agent thread's root, which the reply in flight holds")
-	}
+	storetest.WaitForStatementBehind(t, database, replying.tx, inboxDismissLockAgentRoots)
 	replying.commit(t)
 
 	dismissChangedNothingAndLeftTheThread(t, handler, <-answered, seed.agent,

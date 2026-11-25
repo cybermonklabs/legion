@@ -367,7 +367,8 @@ const parallelProjects = [
   // List's view hands the focus to the row now at their place, whose bar and rows the action
   // takes away, its row that Unpin on a pinned agent keeps the keyboard focus on a control in
   // sight, whose row the unpin moves to its new place, its row that a thread's Dismiss in the
-  // Inbox's list scrolls nothing, whose row the Dismiss takes away, its five rows that a control
+  // Inbox's list scrolls nothing, and its row that the same Dismiss at 1440 leaves a reading
+  // column that can scroll where it stood, whose row the Dismiss takes away, its five rows that a control
   // held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog, a
   // references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
   // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
@@ -475,11 +476,11 @@ const parallelProjects = [
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
-  // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
-  // takes away, its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, its row that Change answer opens the answer form with its first choice whole in
-  // the window, whose button takes itself away, and its scrolling-table row, whose focused row a
-  // scroll takes away.
+  // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
+  // for it, from its page-own focus row to its row that offline, Take out of epic hands the focus
+  // to the marked row's checkbox, and its scrolling-table row, whose focused row a scroll takes
+  // away. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
+  // this clause.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
   // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
   // outside it, close it and leave the next key to the page, as above `webkit`.

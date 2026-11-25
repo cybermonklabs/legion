@@ -1,5 +1,7 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
+import { CONTROL, controlIn } from "../../components/control-names";
+import { pressArmed, pressMadeIn } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 import { PANEL_ATTRIBUTE } from "./keymap";
 
@@ -49,6 +51,14 @@ interface Snapshot extends AnchorRow, Place {
   windowTop: number | null;
 }
 
+/** The page's control row (`components/ControlRow.tsx`) a press of the reader's is live in, on a
+ *  control of that row or at its root (`pressMadeIn`), and the row's top, in viewport pixels,
+ *  immediately before the commit: the reader's place in that press's commit (`pressedRow`). */
+interface PressedRow {
+  row: Element;
+  top: number;
+}
+
 /** What the reader can see of the rows, top and bottom, in viewport pixels. */
 interface View {
   bottom: number;
@@ -79,13 +89,13 @@ export interface ViewportAnchorProps {
   group?: string;
   /** Attribute naming each row and carrying its id, e.g. `data-inbox-row`. */
   item: string;
-  /** Whether a press of the reader's is taking row `id` away from its place: a Dismiss, or a
-   *  write that moves the row into another group once it lands. The anchor does not hold the
-   *  current row in place against the going of such a row above it: the current row and the rows
-   *  after it move up by the whole space the row took, and the view does not scroll. It is asked
-   *  of the render that last drew the rows and of the render being committed alike, because a
-   *  write can stop naming its rows in the same commit that moves them. With no function, no row
-   *  is named. */
+  /** Whether a press of the reader's is taking row `id` away from its place: for example a
+   *  Dismiss, or a write that moves the row into another group once it lands. The anchor does not
+   *  hold the current row in place against the going of such a row above it: the current row and
+   *  the rows after it move up by the whole space the row took, and the view does not scroll. It
+   *  is asked of the render that last drew the rows and of the render being committed alike,
+   *  because a write can stop naming its rows in the same commit that moves them. With no
+   *  function, no row is named. */
   leaving?: (id: string) => boolean;
   label?: string;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
@@ -169,13 +179,14 @@ function focusedControl(): Element | null {
  * doing and sits outside the list only because it is `fixed`.
  *
  * One shift is not compensated: a row that a press of the reader's takes away from above the
- * current row (`leaving`: a Dismiss, or a snooze that moves its rows into another group), with
- * the heading of a group its going empties. The reader asked for that row to go, so the current
- * row and the rows after it move up by the whole space the row took, the part above the view's
- * top included: the view is not scrolled to hold them. Every other change of height above the
- * current row in the same commit, growing or shrinking, is compensated, so the place the row left
- * stays where it stood on screen: the Inbox's **Mark all read** goes with the last unread rows,
- * and below `sm` the header loses the line it stood on, so the view scrolls up by that line.
+ * current row (`leaving`: for example a Dismiss, or a snooze that moves its rows into another
+ * group), with the heading of a group its going empties. The reader asked for that row to go, so
+ * the current row and the rows after it move up by the whole space the row took, the part above
+ * the view's top included: the view is not scrolled to hold them. Every other change of height
+ * above the current row in the same commit, growing or shrinking, is compensated, so the place
+ * the row left stays where it stood on screen: the Inbox's **Mark all read** goes with the last
+ * unread rows, and below `sm` the header loses the line it stood on, so the view scrolls up by
+ * that line.
  * Where the press takes the current row itself away, as a thread's own Dismiss does, the row that
  * keeps its place once it has gone (`standInFor`) is held the same way: the row after it, which
  * moves up into its place, else the row before it. A current row that holds the focus and is left
@@ -192,6 +203,17 @@ function focusedControl(): Element | null {
  * press found it (`keepPlace`). A row that goes in the same commit without the reader's press,
  * by a live update or another device, is compensated as any other shift is, so the rows in view
  * do not jump under it.
+ *
+ * A press of the reader's in the page's control row (`components/ControlRow.tsx`), while that
+ * row stands outside the list in the box that scrolls it, makes the row their place for the
+ * commit, ahead of every row: a press live on a control of the row or at its root
+ * (`pressMadeIn`), wherever the focus is. The reader's place is the control they pressed, so the
+ * row is put back where it stood (`pressedRow`): the rows the press brings back into the list or
+ * takes out of it, and the list growing or shrinking under the row, move nothing above them, and
+ * the control the row hands the focus to as a chip goes stays where it stood. A change above the
+ * row in the same commit is made up for. A commit the reader did not make while the focus rests
+ * in that row, by a live update or another device, is made up for around the row they are on, as
+ * any other is.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -210,7 +232,11 @@ function focusedControl(): Element | null {
  * such a scroll drops it instead of being undone by it. `componentDidUpdate` then compensates
  * exactly once, before paint.
  */
-export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snapshot | null> {
+export class ViewportAnchor extends Component<
+  ViewportAnchorProps,
+  object,
+  Snapshot | PressedRow | null
+> {
   private root: HTMLElement | null = null;
   private hovered: HTMLElement | null = null;
   /** Set while the pointer left the hovered row for the hover card a reference in that row
@@ -658,22 +684,50 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (meets && !whole) focused.scrollIntoView({ block: "nearest" });
   }
 
-  getSnapshotBeforeUpdate(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
+  getSnapshotBeforeUpdate(
+    previousProps: Readonly<ViewportAnchorProps>
+  ): Snapshot | PressedRow | null {
     const snapshot = this.measure(previousProps);
     // A commit no press of the reader's takes rows away in is one the browser's own anchoring
-    // holds the view through, so a hold still pending from a press ends before it.
-    if (snapshot === null || (snapshot.leaving.length === 0 && !snapshot.selfLeaving)) {
+    // holds the view through, so a hold still pending from a press ends before it. A press in the
+    // control row takes no row away from above the place it keeps, which is that row.
+    if (
+      snapshot === null ||
+      "row" in snapshot ||
+      (snapshot.leaving.length === 0 && !snapshot.selfLeaving)
+    ) {
       this.releaseNativeAnchoring();
     }
     return snapshot;
   }
 
+  /** The page's control row (`components/ControlRow.tsx`) and its top, where a press of the
+   *  reader's is live on a control of that row or at its root (`pressMadeIn`), while the row stands
+   *  outside the list in the box that scrolls it - the first control row in that box; else null.
+   *  The press is read from the row rather than from the focus, which WebKit leaves on the body
+   *  after a click on a button. Measured in the Inbox at 390x664 with the window at 30 px: Enter on
+   *  the only chip, or on Clear filters, drew the threads the narrowing had left out above the row
+   *  nearest the list's centre, and holding that row scrolled the window to 1,269 px, which left
+   *  the Filter trigger the control row hands the focus to at -1,140 px, in Chromium, Firefox and
+   *  WebKit. The page is searched for the row only while a press is armed (`pressArmed`), so a
+   *  commit with none searches nothing. */
+  private pressedRow(): PressedRow | null {
+    const root = this.root;
+    if (root === null || !pressArmed()) return null;
+    const row = controlIn(this.scrollerElement() ?? document, CONTROL.controlRow);
+    if (row === null || root.contains(row) || !pressMadeIn(row)) return null;
+    return { row, top: row.getBoundingClientRect().top };
+  }
+
   /** The row the reader's hand is on and where it stands before the commit, with the rows a
    *  press of theirs takes away above it, the native anchoring held off where there are any and
-   *  where the press is taking that row itself away, and then the row that stands in for it. */
-  private measure(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
+   *  where the press is taking that row itself away, and then the row that stands in for it; or,
+   *  ahead of every row, the control row a press of theirs was made in (`pressedRow`). */
+  private measure(previousProps: Readonly<ViewportAnchorProps>): Snapshot | PressedRow | null {
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
+    const pressed = this.pressedRow();
+    if (pressed !== null) return pressed;
     const current = this.current();
     if (current === null) return null;
     const at = this.groupOf(current.row);
@@ -710,7 +764,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   componentDidUpdate(
     _previousProps: Readonly<ViewportAnchorProps>,
     _previousState: Readonly<object>,
-    snapshot: Snapshot | null
+    snapshot: Snapshot | PressedRow | null
   ): void {
     try {
       this.keepPlace(snapshot);
@@ -728,9 +782,13 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  a press took away while a dialog's scroll lock is on (`useDialog`), `overflow-anchor: none`
    *  on the root and the body notwithstanding, and moved the window 730 px up at 390 px when the
    *  Inbox's Decline dialog went with its row. */
-  private keepPlace(snapshot: Snapshot | null): void {
+  private keepPlace(snapshot: Snapshot | PressedRow | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
+    if ("row" in snapshot) {
+      this.keepPressedRow(snapshot);
+      return;
+    }
     const { windowTop } = snapshot;
     if (windowTop !== null && Math.abs(window.scrollY - windowTop) > 0.5) {
       this.scrollBy(windowTop - window.scrollY);
@@ -750,6 +808,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // The rows a press of the reader's took away moved this row up, and a focus in it must end
     // in the reader's sight.
     if (freed > 0 && snapshot.via === "focus") this.showFocused(element);
+  }
+
+  /** Puts the control row a press of the reader's was made in (`pressedRow`) back at its top once
+   *  the commit is in, so what the press changed below it moves nothing above it, and a change
+   *  above it is made up for. The place kept for the hand's row (`held`) is let go: the commit
+   *  moved that row with the list, as the press asked, and a resize after it must not put the row
+   *  back (`contentResized`). */
+  private keepPressedRow({ row, top }: PressedRow): void {
+    this.held = null;
+    if (!row.isConnected) return;
+    const delta = row.getBoundingClientRect().top - top;
+    if (delta !== 0) this.scrollBy(delta);
   }
 
   render(): ReactNode {

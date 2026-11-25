@@ -576,17 +576,23 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
   // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
   // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
-  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  // Dispatch token as files), and one Codex does not pass leaves the server without it. The read
+  // settings narrow the server's Dispatch trade, and the token files turn its Dispatch off, so
+  // the server must see those too.
   for (const name of [
     "AGENTBOX_HOST",
     "AGENT_SECRETS_MACHINE_AUDIENCE",
     "AGENT_SECRETS_MACHINE_IDENTITY",
     "AGENT_SECRETS_MACHINE_TOKEN_FILE",
     "AGENT_SECRETS_URL",
+    "DISPATCH_BROKER_DPOP_KEY_FILE",
+    "DISPATCH_BROKER_TOKEN_FILE",
     "DISPATCH_PUBLIC_URL",
     "DISPATCH_STATE_DIR",
     "DISPATCH_TOKEN",
     "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_BROKER_AS_OF",
+    "DISPATCH_TOKEN_BROKER_READ",
     "DISPATCH_TOKEN_FILE",
     "DISPATCH_URL",
     "ENVOY_CONFIG_FILE",

@@ -344,6 +344,9 @@ func ownDismissInventory(f *ownDismissFixture) []ownDismissRow {
 				return ownWrite{person: "alice", rootKind: graphstore.KindMessage, rootID: root.ID,
 					event: writeEventOf(t, f.database, "message.answered", answer.ID), agent: true}
 			}},
+		{name: "issue write's system comment", site: "api/comment_create.go#queueIssueComment Comment",
+			route:    "an issue write that leaves a comment of Dispatch's system actor (status change, parent status fix)",
+			undriven: "the author is the system actor parentStatusRuleActor, never a person, so the write is no person's own and calls no Own"},
 		{name: "backfill of an older message", site: "graphcensus/backfill_inbox.go#writeMessages Message", route: "dispatch backfill", undriven: backfill},
 		{name: "backfill of an older comment", site: "graphcensus/backfill_inbox.go#writeCommentPointers Comment", route: "dispatch backfill", undriven: backfill},
 		{name: "backfill of an older ask", site: "graphcensus/backfill_inbox_threads.go#writeAsksOwed Opened", route: "dispatch backfill", undriven: backfill},

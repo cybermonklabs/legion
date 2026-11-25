@@ -936,10 +936,10 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The writers of comments are held to the six commentsRowWriters names, each by the function
-// the scan reports its statement in: a seventh function that makes, unmakes or sets a projected
-// column of a comments row fails, even where a store write reaches it, and so does one of the
-// six the scan no longer finds there. The seed's is one of them, the one writer of comments
+// The writers of comments are held to the commentsRowWriters names, each by the function the
+// scan reports its statement in: another function that makes, unmakes or sets a projected column
+// of a comments row fails, even where a store write reaches it, and so does a name of the list
+// the scan no longer finds there. The seed's is one of them, the one writer of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
@@ -998,13 +998,14 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 
 // commentsRowWriters are the functions whose statements make or unmake a comments row or set a
 // column of it a tuple projects, by the file each is in and the function that issues the
-// statement, as the scan names a write: the comment create, the comment reply, the seed's
+// statement, as the scan names a write: the comment create's row, which the comment route and the
+// comment an issue write leaves both queue (queueCommentRow), the comment reply, the seed's
 // batches of comments, each beside the nodes the batch's rows project, the comment write of the
 // backfill and of the block-index tick (c-projection-write, Verification v108), and the backfill
 // of the pointers of a comment an older build wrote, which states them beside the row's
 // tuples_stored (graphcensus's writeCommentPointers).
 var commentsRowWriters = []string{
-	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
+	"packages/envoy/internal/dispatch/api/comment_create.go#api.queueCommentRow",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",

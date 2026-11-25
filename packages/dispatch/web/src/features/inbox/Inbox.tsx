@@ -1600,6 +1600,15 @@ function InboxBody({
     },
     [folded]
   );
+  /** The rows a press of the reader's on a band's fold toggle is folding shut, for the commit that
+   *  folds the band: the press takes them off the list, so the list's anchor frees their space
+   *  (`leaving` below) rather than hold the row at the list's centre against their going. Only
+   *  that press writes it - an address's `?item=` that opens a folded band (`openFoldedBand`)
+   *  takes no row away - and it is let go once the commit is in. */
+  const folding = useRef<ReadonlySet<string> | null>(null);
+  useLayoutEffect(() => {
+    folding.current = null;
+  });
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
   const agent = filter.agent;
@@ -2602,15 +2611,17 @@ function InboxBody({
             (row) => matchesOtherFields(row, field),
             viewer
           );
-          // A count is drawn only once every read whose rows it counts has answered, never as a
-          // count of the rows read so far. An ask kind of Type counts the asks this list holds,
-          // whose reads the Inbox waits for before it draws this bar at all (`useInboxAsks`), and
-          // the Dismissed view holds no ask, so that count stands in either view. A thread kind
-          // counts the threads of the view that is showing: the Dismissed view's come from the one
-          // read's `dismissed` state, which the bar does not wait for. Every other field counts
-          // asks and threads together. So while the threads' read is out or refused
-          // (`threads.answered`), the ask kinds keep their count and every other value is offered
-          // with no count, never a 0 or an asks-only count.
+          // A count is drawn only once the read of the rows it counts has answered. In the
+          // Dismissed view those rows are the pages read so far, the rows the list holds and a
+          // filter narrows, so a count there counts those pages while **Show more** has more to
+          // read. An ask kind of Type counts the asks this list holds, whose reads the Inbox waits
+          // for before it draws this bar at all (`useInboxAsks`), and the Dismissed view holds no
+          // ask, so that count stands in either view. A thread kind counts the threads of the view
+          // that is showing: the Dismissed view's come from the one read's `dismissed` state, which
+          // the bar does not wait for. Every other field counts asks and threads together. So
+          // while the threads' read is out or refused (`threads.answered`), the ask kinds keep
+          // their count and every other value is offered with no count, never a 0 or an asks-only
+          // count.
           const counted = (value: string) =>
             threads.answered ||
             (field === "type" && !(INBOX_THREAD_KINDS as readonly string[]).includes(value));
@@ -2656,9 +2667,9 @@ function InboxBody({
             return `${you ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`;
           }}
           optionDetailLabel={(value) => {
-            const you = value === viewer;
-            if (!threads.answered) return you ? "you" : undefined;
-            return `${you ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
+            // While the thread read is out, the detail as drawn names the row: "you" or none.
+            if (!threads.answered) return undefined;
+            return `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
           }}
           optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
           options={assigneeOptions}
@@ -3186,8 +3197,9 @@ function InboxBody({
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
   // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
   // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, and the rows an Assign to me, a hand-on, an answer, a decline, a question back or a
-  // reply lets go of, which then leave the list where the read no longer lists them there.
+  // them, the rows an Assign to me, a hand-on, an answer, a decline, a question back or a reply
+  // lets go of, which then leave the list where the read no longer lists them there, and the rows
+  // of a band the reader's press on its toggle folds shut (`folding`), in the commit that folds it.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -3209,7 +3221,8 @@ function InboxBody({
           snoozing.has(id) ||
           bulkSnoozing.has(id) ||
           askWriteOut(id) ||
-          replying.has(id)
+          replying.has(id) ||
+          folding.current?.has(id) === true
         }
         ref={viewport}
         rootRef={listRef}
@@ -3233,7 +3246,12 @@ function InboxBody({
                 group: band,
                 held: folded.has(band.key) ? 0 : band.rows.length - visible.length,
                 onShowMore: showMore,
-                onToggleFold: toggleFold,
+                // Folding a band shut takes the rows it draws off the list, as the reader asked:
+                // they are named to the anchor as leaving for the commit that folds it.
+                onToggleFold: (key) => {
+                  if (!folded.has(key)) folding.current = new Set(visible.map((row) => rowId(row)));
+                  toggleFold(key);
+                },
                 renderRow: (row) => renderRow(band.key, row),
                 rows: visible,
               })

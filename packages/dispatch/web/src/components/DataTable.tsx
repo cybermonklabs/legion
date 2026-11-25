@@ -376,6 +376,11 @@ export interface DataTableProps<Row> {
   readonly onOpenFilterChange: (id: string | undefined) => void;
   /** How many rows each value of the open filter's column would list. */
   readonly filterCounts: ReadonlyMap<string, number>;
+  /** Whether `filterCounts` counts the rows the reader's narrowing lists: false while it is the
+   *  previous answer's, kept on screen while the read for a new narrowing is out, and then the
+   *  shared filter draws no count beside a value (`ColumnFilter`'s `counted`). A table given none
+   *  counts. */
+  readonly filterCounted?: boolean;
   /** By column id, the filter values whose rows are not loaded yet, which say `load` rather
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
@@ -544,6 +549,7 @@ function TableHeaderCell<TData>({
 export function DataTable<Row>({
   empty,
   fillColumn,
+  filterCounted,
   filterCounts,
   filterUnloaded,
   label,
@@ -604,6 +610,7 @@ export function DataTable<Row>({
     (({ column, onOpenChange, open }) => (
       <ColumnFilter
         column={column}
+        counted={filterCounted}
         counts={column.id === openFilter ? filterCounts : EMPTY_COUNTS}
         noun={noun}
         onOpenChange={onOpenChange}

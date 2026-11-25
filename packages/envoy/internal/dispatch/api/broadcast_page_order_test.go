@@ -55,7 +55,7 @@ func TestBroadcastsNamingTheirRecipientsInOppositeOrdersBothCommit(t *testing.T)
 				"body": "Report in.", "delivery": "steer", "session_ids": order,
 			}, "alice")
 		}()
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, storeStepWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
 			t.Fatalf("the broadcast to %v answered %d without waiting on page %s: %s", order, answer.Code, first, answer.Body.String())
 		}
 	}

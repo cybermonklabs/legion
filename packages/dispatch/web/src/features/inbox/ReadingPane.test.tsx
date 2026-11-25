@@ -261,23 +261,6 @@ function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
   };
 }
 
-/** The Inbox's hand-on writes over `children`, as the Inbox provides them to every card it draws
- *  (`useAskHandOnWrites`), with each set of asks whose hand-on is out handed to `onOut` as it
- *  changes. */
-function HandOnWrites({
-  children,
-  onOut,
-}: {
-  children: ReactNode;
-  onOut: (out: ReadonlySet<string>) => void;
-}): ReactNode {
-  const writes = useAskHandOnWrites();
-  useEffect(() => {
-    onOut(writes.out);
-  }, [onOut, writes.out]);
-  return <AskHandOnWritesContext value={writes}>{children}</AskHandOnWritesContext>;
-}
-
 /** The decision block `ship_it` under the heading `rollout`, as the editor draws them. */
 const SHIP_IT_UNDER_ROLLOUT =
   '<h2 data-block-id="rollout">Rollout</h2>' +
@@ -301,6 +284,23 @@ function runtimeWith(
         ? fake.runtime.createEditor
         : createEditor(fake.runtime.createEditor),
   };
+}
+
+/** The Inbox's hand-on writes over `children`, as the Inbox provides them to every card it draws
+ *  (`useAskHandOnWrites`), with each set of asks whose hand-on is out handed to `onOut` as it
+ *  changes. */
+function HandOnWrites({
+  children,
+  onOut,
+}: {
+  children: ReactNode;
+  onOut: (out: ReadonlySet<string>) => void;
+}): ReactNode {
+  const writes = useAskHandOnWrites();
+  useEffect(() => {
+    onOut(writes.out);
+  }, [onOut, writes.out]);
+  return <AskHandOnWritesContext value={writes}>{children}</AskHandOnWritesContext>;
 }
 
 function renderPane({

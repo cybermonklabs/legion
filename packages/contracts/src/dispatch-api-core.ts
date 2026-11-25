@@ -48,6 +48,15 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
+/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
+ *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
+ *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
+ *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
+ *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
+ *  `ActorActSchema` keep `person` and `approve` alone. */
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
+export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
+
 /** The agent that made an act for the person it acts for: the session a broker-issued token
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.

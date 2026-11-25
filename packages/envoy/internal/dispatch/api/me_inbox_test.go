@@ -671,7 +671,7 @@ func meInboxAtTheHorizon(t *testing.T) {
 
 	// A comment written to them while a transaction holding an id is open is above the horizon
 	// the read answers, until that transaction ends.
-	release := holdClusterTransactionID(t, 30*time.Second)
+	release := holdClusterTransactionID(t)
 	held := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob writes while a transaction is open.", "reply_to": thread.ID}, "bob")
 	event := writeEventOf(t, database, "comment.created", held.ID)
 	during := readMeInboxAs(t, handler, person, nil)
