@@ -428,31 +428,40 @@ func ownerWrite(r repoRename, table string, evalIDs bool) repoRenameStep {
 	}
 }
 
-// ownerCollisions deletes each row of table under an owner key of the old name whose key, with the
-// new name for its repository, is the key of another row, as collisions does for a repo column.
-// The eval id of a row holds its owner key too (ownerWrite rewrites both), so the keys compare
-// the slug that follows it rather than the id.
-func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep {
+// ownerCollisions deletes each row of table under an owner key of the old name, in its column
+// owner, whose key, as the rename writes it, is the key of another row: a row under the renamed
+// owner key (ownerRenamed), or a row under another owner key of the old name that renames to the
+// same key and sorts first. The rename keeps what follows the repository in an owner key, its
+// sharers and its lists, so two owner keys of the old name rename to one key only where they hold
+// the old name in two spellings of case, which ownerNamed matches; two that differ in their
+// sharers or their lists, such as the plain key and a key that carries a list, rename to two
+// keys, and the rows of both stay. The eval id of a row holds its owner key too (ownerWrite
+// rewrites both), so the keys compare the slug that follows it rather than the id. The subquery
+// reads the table as the statement began, so of two rows under the old name that rename to one
+// key the one that sorts first stays for the write after this.
+func ownerCollisions(r repoRename, table, owner string, keys ...string) repoRenameStep {
 	same := ""
-	key := `'project_key', d.project_key`
+	key := `'` + owner + `', d.` + owner
 	for _, column := range keys {
 		if column == "eval_id" {
-			same += ` and substr(t.eval_id, length(t.project_key) + 1) = substr(d.eval_id, length(d.project_key) + 1)`
+			same += ` and substr(t.eval_id, length(t.` + owner + `) + 1) = substr(d.eval_id, length(d.` + owner + `) + 1)`
 		} else {
 			same += ` and t.` + column + ` = d.` + column
 		}
 		key += `, '` + column + `', d.` + column + `::text`
 	}
+	renamed := ownerRenamed(r, "d."+owner)
 	return repoRenameStep{
 		table:   table,
-		where:   ownerNamed(r, "project_key"),
+		where:   ownerNamed(r, owner),
 		deletes: true,
 		sql: `delete from ` + table + ` d
-			where ` + ownerNamed(r, "d.project_key") + `
+			where ` + ownerNamed(r, "d."+owner) + `
 			  and exists (
 				select 1 from ` + table + ` t
-				where (t.project_key = ` + ownerRenamed(r, "d.project_key") + `
-					or (` + ownerNamed(r, "t.project_key") + ` and t.project_key < d.project_key))` + same + `)
+				where (t.` + owner + ` = ` + renamed + `
+					or (` + ownerNamed(r, "t."+owner) + ` and ` + ownerRenamed(r, "t."+owner) + ` = ` + renamed + `
+						and t.` + owner + ` < d.` + owner + `))` + same + `)
 			returning jsonb_build_object(` + key + `)::text`,
 	}
 }
@@ -528,9 +537,20 @@ var repoRenameLines = []repoRenameLine{
 	// members and their owed days (evals.OwnerKey, migration 20261117100006): the key holds the
 	// repository's name, and so does the eval id of each row, so the pass rewrites both. A row
 	// under the new name already (a repository renamed to one that holds rows) is left, and the
-	// old name's row of the same key goes, as every other line's collision does. The day-row
-	// refresher writes the new name's rows again from their input, and the eval_days change each
-	// write logs wakes the views that read them.
+	// old name's row of the same key goes, as every other line's collision does. The rename keeps
+	// a key's sharers and lists, so two keys of the old name meet only where they hold it in two
+	// spellings of case, and one row of the two stays; the plain key and a key that carries a list
+	// rename to two keys, and the rows of both move (ownerCollisions). The day-row refresher
+	// writes the new name's rows again from their input, and the eval_days change each write logs
+	// wakes the views that read them.
+	//
+	// The keys themselves (eval_day_owners) take the new name first, under the same rule. The
+	// eval_days change trigger records the key of each row a statement writes or deletes
+	// (eval_days_change_log, 20261117100014), so a write of the day rows first would record each
+	// renamed key, and the line would then delete and log the owner row of every key it moves as
+	// a collision. The trigger records again, too, the old key of each day row the line moves or
+	// deletes, so after the day rows the line deletes each owner row of the old name whose renamed
+	// key stands, unlogged: keys the owner write counted already.
 	//
 	// The published defaults (eval_days_defaults) take the new name in the same transaction, so
 	// the refresher sees no move of a default and marks no cut stale itself. But a project's own
@@ -547,7 +567,14 @@ var repoRenameLines = []repoRenameLine{
 	{
 		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			var steps []repoRenameStep
+			steps := []repoRenameStep{
+				ownerCollisions(r, "eval_day_owners", "owner"),
+				{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
+					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
+						` where ` + ownerNamed(r, "owner"),
+				},
+			}
 			for _, one := range []struct {
 				table string
 				keys  []string
@@ -556,19 +583,13 @@ var repoRenameLines = []repoRenameLine{
 				{"eval_day_members", []string{"family", "deploy_repo", "row_key"}},
 				{"eval_days_owed", []string{"family", "day"}},
 			} {
-				steps = append(steps, ownerCollisions(r, one.table, one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+				steps = append(steps, ownerCollisions(r, one.table, "project_key", one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
 			}
 			return append(steps,
 				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), deletes: true,
+					table: "eval_day_owners", where: ownerNamed(r, "owner"),
 					sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
-						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)
-						returning jsonb_build_object('owner', d.owner)::text`,
-				},
-				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
-					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
-						` where ` + ownerNamed(r, "owner"),
+						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)`,
 				},
 				markRenamedCuts(r),
 				nameWrite(r, "eval_days_defaults", "repo"))

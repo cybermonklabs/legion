@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -508,6 +510,98 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 		if deleted[table] != count {
 			t.Errorf("logged %d deletions of %s, want %d (every table: %v)", deleted[table], table, count, deleted)
 		}
+	}
+}
+
+// renameOwnersSeed holds the rename pair sjawhar/legion to cybermonklabs/legion and no row of the
+// new name. Under owner keys of the old name it holds a day row of one eval, series and day under
+// the plain key and under a key that carries a list, and a day row of another series under each of
+// two spellings of the old name in a key with a sharer. Each of the four keys holds a member of
+// the same pull request and an owed day, and the eval_days change trigger records each in
+// eval_day_owners. Two spellings of the old name in a key with another sharer hold an owner row
+// and no day row, as a key whose rows are all gone keeps its row.
+const renameOwnersSeed = `
+	insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'INFRA', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		select owner, owner || '/deploy-frequency', series, '', '2026-11-03', true, n, n, 'test'
+		from (values (':sjawhar/legion|', 'deploys', 1), (':sjawhar/legion||INFRA>', 'deploys', 2),
+			(':SJawhar/Legion|INFRA', 'shared', 3), (':sjawhar/legion|INFRA', 'shared', 3)) as k(owner, series, n);
+	insert into eval_day_members (project_key, family, row_key, day)
+		select project_key, 'delivery', 'pull_request:sjawhar/legion#7', day from eval_days;
+	insert into eval_days_owed (project_key, family, day)
+		select project_key, 'delivery', day from eval_days;
+	insert into eval_day_owners (owner, repo, sharers) values
+		(':SJawhar/Legion|SMOKE', 'SJawhar/Legion', '{SMOKE}'),
+		(':sjawhar/legion|SMOKE', 'sjawhar/legion', '{SMOKE}');
+`
+
+// The rename writes the new name in the repository of an owner key and keeps its sharers and its
+// lists, so the plain key of the old name and a key that carries a list rename to two keys: the
+// day rows of one eval, series and day under each both stay, each under its renamed key and eval
+// id, and the pass deletes and logs neither, nor their members, owed days or owner rows. Two keys
+// that hold the old name in two spellings of case rename to one key, and of each of their rows one
+// stays, an owner row with no day row as much as a day row. The pass counts the rows it logs as
+// deleted. Red where the pass deletes a row of the old name wherever another row of the old name
+// with the same slug and other key columns has an owner key that sorts first, whatever the two
+// keys rename to: on a database that held no row of the new name, it deleted the conditional
+// key's rows as collisions of the plain key's. Red where the line writes the owner rows after the
+// day rows, whose change trigger records each renamed key first: the line deleted and logged the
+// owner row of every key it moved. And red where it deletes an owner row of the old name only for
+// a row of the new name: the two spellings of the key with no day row renamed to one owner, and
+// the line failed.
+func TestTheRenamePassKeepsTheRowsOfOwnerKeysThatRenameApart(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renameOwnersSeed)
+	logs := capturePassLogs(t)
+
+	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want no failure and nothing left", pass)
+	}
+	const keys = ":cybermonklabs/legion|, :cybermonklabs/legion|INFRA, :cybermonklabs/legion||INFRA>"
+	for query, want := range map[string]string{
+		`select string_agg(project_key || ' ' || eval_id || ' ' || series || ' ' || n, ', ' order by project_key collate "C") from eval_days`: ":cybermonklabs/legion| :cybermonklabs/legion|/deploy-frequency deploys 1, " +
+			":cybermonklabs/legion|INFRA :cybermonklabs/legion|INFRA/deploy-frequency shared 3, " +
+			":cybermonklabs/legion||INFRA> :cybermonklabs/legion||INFRA>/deploy-frequency deploys 2",
+		`select string_agg(project_key, ', ' order by project_key collate "C") from eval_day_members`: keys,
+		`select string_agg(project_key, ', ' order by project_key collate "C") from eval_days_owed`:   keys,
+		`select string_agg(owner || ' ' || repo, ', ' order by owner collate "C") from eval_day_owners`: ":cybermonklabs/legion| cybermonklabs/legion, " +
+			":cybermonklabs/legion|INFRA cybermonklabs/legion, :cybermonklabs/legion|SMOKE cybermonklabs/legion, " +
+			":cybermonklabs/legion||INFRA> cybermonklabs/legion",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	deletions := named(logs(), deletedLine)
+	if pass.Deleted != int64(len(deletions)) {
+		t.Errorf("the pass counted %d rows deleted and logged %d: %v", pass.Deleted, len(deletions), deletions)
+	}
+	deleted := map[string][]string{}
+	for _, record := range deletions {
+		var key struct {
+			ProjectKey string `json:"project_key"`
+			Owner      string `json:"owner"`
+		}
+		if text, _ := record["key"].(string); json.Unmarshal([]byte(text), &key) != nil {
+			t.Errorf("a deletion's line = %v, want the deleted row's key", record)
+		}
+		table, _ := record["table"].(string)
+		deleted[table] = append(deleted[table], strings.ToLower(key.ProjectKey+key.Owner))
+	}
+	for _, found := range deleted {
+		slices.Sort(found)
+	}
+	// Of each key held in two spellings, the row of the spelling that sorts second, in lower case.
+	want := map[string][]string{
+		"eval_days": {":sjawhar/legion|infra"}, "eval_day_members": {":sjawhar/legion|infra"}, "eval_days_owed": {":sjawhar/legion|infra"},
+		"eval_day_owners": {":sjawhar/legion|infra", ":sjawhar/legion|smoke"},
+	}
+	if !maps.EqualFunc(deleted, want, slices.Equal[[]string]) {
+		t.Errorf("logged deletions %v, want %v", deleted, want)
 	}
 }
 
