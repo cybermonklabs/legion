@@ -177,7 +177,10 @@ function plantLabel(
       JSON.stringify({ name: "@sjawhar/pi-legion", legion: { daemonApiVersion: contract } })
     );
   } else {
-    writeFileSync(path.join(plugin, "package.json"), JSON.stringify({ name: "@sjawhar/pi-legion" }));
+    writeFileSync(
+      path.join(plugin, "package.json"),
+      JSON.stringify({ name: "@sjawhar/pi-legion" })
+    );
     const fixtures = path.join(label, "packages", "contracts", "fixtures", "daemon-api");
     mkdirSync(path.join(fixtures, "contracts"), { recursive: true });
     writeFileSync(
@@ -185,7 +188,10 @@ function plantLabel(
       JSON.stringify(contract.released)
     );
     for (let entry = 0; entry < contract.entries; entry++) {
-      writeFileSync(path.join(fixtures, "contracts", `2026112500000${entry}_entry-${entry}.json`), "{}");
+      writeFileSync(
+        path.join(fixtures, "contracts", `2026112500000${entry}_entry-${entry}.json`),
+        "{}"
+      );
     }
     writeFileSync(path.join(fixtures, "contracts", "README.md"), "no entry\n");
   }
