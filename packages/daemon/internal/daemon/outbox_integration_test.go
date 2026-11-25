@@ -291,6 +291,9 @@ func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.Ste
 func (d *blockingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *blockingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *blockingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -493,6 +496,9 @@ func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.Ste
 func (d *refusingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *refusingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *refusingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -560,6 +566,9 @@ func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWr
 	return nil
 }
 func (d *boardDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *boardDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *boardDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {

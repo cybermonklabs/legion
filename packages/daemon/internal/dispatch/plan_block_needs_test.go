@@ -56,7 +56,7 @@ func TestAPlanDocumentHandsOnNoNeedsValueThatEchoesTheBearer(t *testing.T) {
 		}
 	})
 
-	document, err := New(server.URL, bearer).PlanDocument(context.Background(), "plan-1", 3)
+	document, err := New(server.URL, BearerTransport(bearer, nil)).PlanDocument(context.Background(), "plan-1", 3)
 
 	oauth2calltest.RequireNoPiece(t, "dispatch.answer-words/plan-block-needs", fmt.Sprintf("%+v %v", document, err), bearer)
 	if want := "typed block 2 of the document, a plan_task block, has value 2 of its needs holding a run of the credential"; err == nil || !strings.Contains(err.Error(), want) {

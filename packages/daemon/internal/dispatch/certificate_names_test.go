@@ -31,7 +31,7 @@ func TestACertificateFailureOfADispatchReadPrintsNoNameTheCertificateHolds(t *te
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			base, trusting := oauth2calltest.CertificateServer(t, c.fault)
-			client := New(base, "test-token")
+			client := New(base, BearerTransport("test-token", nil))
 			if c.trusted {
 				client.httpClient = trusting
 			}

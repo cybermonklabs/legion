@@ -19,7 +19,19 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		eventHeader
 		CreatedAt string
 	}
+	type callerTwin = struct {
+		Session string
+		Project string
+		Owner   *string
+	}
 	for _, h := range []oauth2calltest.Holder{
+		{
+			Name:     "dispatch.Caller",
+			Kind:     "fields",
+			Boxed:    Caller{Session: oauth2calltest.Said(oauth2calltest.Words), Project: oauth2calltest.Said(oauth2calltest.Words)},
+			Same:     callerTwin{Session: oauth2calltest.Words, Project: oauth2calltest.Words},
+			Exported: callerTwin{Session: oauth2calltest.Words, Project: oauth2calltest.Words},
+		},
 		{
 			Name:     "dispatch.Error",
 			Kind:     "fields",

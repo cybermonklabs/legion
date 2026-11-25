@@ -33,7 +33,8 @@ type dpopTransport struct {
 // carries no proof on the device authorization request.
 //
 // Only the public half of key ever leaves the process: the proof embeds the public JWK and
-// nothing else of the key, and each session makes its own key in its own process.
+// nothing else of the key, whether the key is one this process made, a person's box key or a pod
+// role's own agent-secrets key (MachineKey).
 //
 // A request that presents an access token under the DPoP scheme (Authorization: DPoP <token>) is a
 // request to a resource server, and its proof also carries ath, the base64url-encoded SHA-256 of

@@ -93,6 +93,10 @@ func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
 // for a decision made on what the answer says before anything of it prints.
 func Holds(a Answer, test func(body []byte) bool) bool { return redact.Holds(a, test) }
 
+// Echoes is redact.Echoes: whether text, words read from a's bytes that a caller hands on where no
+// print of the rule reads them, holds a run of a credential a's requests carried.
+func Echoes(a Answer, text string) bool { return redact.Echoes(a, text) }
+
 // ContainsFold is redact.ContainsFold: whether body holds phrase, lower-case ASCII, in whatever
 // case it is written.
 func ContainsFold(body []byte, phrase string) bool { return redact.ContainsFold(body, phrase) }

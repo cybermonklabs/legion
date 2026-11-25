@@ -29,7 +29,7 @@ func TestTheOutboxDecidesDispatchsCodeAsItCameBesideAWriteThatQuotesIt(t *testin
 			_, _ = w.Write([]byte(`{"code":"` + code + `","error":"Dispatch refused the write"}`))
 		}))
 		t.Cleanup(server.Close)
-		return dispatch.New(server.URL, githubtest.InstallationToken(t.Name())).PostMessage(context.Background(), "LEGION-9", message)
+		return dispatch.New(server.URL, dispatch.BearerTransport(githubtest.InstallationToken(t.Name()), nil)).PostMessage(context.Background(), "LEGION-9", message)
 	}
 	ends := func(kind record.OutboxKind) func(error) bool {
 		return func(err error) bool { return permanentRefusal(record.OutboxRow{Kind: kind}, err) }

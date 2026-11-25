@@ -1,0 +1,12 @@
+/* What the visual review paints over every `<time>` (e2e/visual.e2e.ts's `stylePath`; the long
+   comment above its mask list says why it is painted and not masked): a background in
+   Playwright's own mask colour and no visible words, so the time's box is in a baseline and its
+   text is not. The page draws it, so the page's own clipping clips it, as it clips the time. No
+   property here moves anything. A time's own classes set its colour, and lose to these rules:
+   Tailwind's utilities stand in a cascade layer, and a stylesheet in no layer, as this one is,
+   outranks every layered rule whatever its specificity. */
+time,
+time * {
+  background: #ff00ff;
+  color: transparent;
+}

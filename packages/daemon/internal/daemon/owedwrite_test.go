@@ -382,7 +382,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 		tokens[role.role] = token
 		claims = append(claims, supervise.Claim{
 			Token: token, Project: owedProject, Tree: owedIssue, Issue: owedIssue, Role: role.role,
-			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: role.state, PluginContract: api.DaemonAPIVersion(),
 			Session: "ses_" + string(role.role), SessionFile: "/sessions/" + string(role.role) + ".jsonl",
 			Locator: podUpdateLocator(token, owedIssue, owedPod),
 		})
@@ -425,7 +425,7 @@ func (r *owedWriteRig) boot() {
 		// The daemon's own write bound (daemon.go's Deps), so INFRA-1132's rows read the
 		// production path: the write bound counted from the connection, the queue's apart.
 		BoundWrite:     store.BoundAfterAcquire,
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)

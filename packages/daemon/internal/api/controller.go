@@ -147,16 +147,16 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller secret: legion controller start holds the plugin to another daemon API contract",
-			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		named := "names no daemon API contract"
 		if req.PluginContract != 0 {
 			named = fmt.Sprintf("holds the controller's pi-legion to daemon API contract %d", req.PluginContract)
 		}
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
 			"legion controller start %s; this daemon requires %d: run the legion built with this daemon",
-			named, DaemonAPIVersion))
+			named, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
@@ -323,11 +323,11 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
-	if req.PluginContract != DaemonAPIVersion {
+	if req.PluginContract != DaemonAPIVersion() {
 		s.log.Warn("api: refused a controller registration: its plugin speaks another daemon API contract",
-			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
+			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion())
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
-			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion))
+			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion()))
 		return
 	}
 	secret := rand.Text()
@@ -448,11 +448,11 @@ func controllerSessionRegistered(stored controller.Record, session, secret strin
 // whenever its recorded contract differs at all.
 func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request, stored controller.Record) bool {
 	if !s.controllerLaunched {
-		if stored.PluginContract == DaemonAPIVersion {
+		if stored.PluginContract == DaemonAPIVersion() {
 			return false
 		}
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
-		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion)
+		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion())
 		s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 		return true
 	}
@@ -466,7 +466,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	s.logStaleRefusal(r, "session", stored.Session, got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", refusal.Message)
 	return true
 }

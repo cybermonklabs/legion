@@ -48,7 +48,7 @@ func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+	events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 		writeJSON(t, w, []map[string]any{{"seq": 7, "type": "comment.created"}})
 	}))
 	defer stuck.Close()
-	if _, err := New(stuck.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
+	if _, err := New(stuck.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
 			}))
 			defer server.Close()
 
-			events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+			events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
 			var unread *EventLogError
 			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || events != nil {
 				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d", len(events), err, tc.seq)
