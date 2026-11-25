@@ -20,7 +20,7 @@ body: |-
     `verdict`. Migration `20261121074614_phase_verdict_gone` keeps `phases.verdict`, which a daemon
     of the release before reads and writes during the roll or after a rollback, and gives it the
     default `''`, since this release writes nothing to it (a later release drops it); it adds
-    `phases.states_serial` at 0 and strips `verdict` from each queued notice; its header holds the
+    the nullable `phases.states_serial` at 0 and strips `verdict` from each queued notice; its header holds the
     way back. Deploy envoy-dispatch before the daemon. The merge that closes an issue deletes its
     check states.
 time: 2026-11-21T09:43:58Z
