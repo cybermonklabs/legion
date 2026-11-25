@@ -9,7 +9,14 @@ import "testing"
 // client URL once it admits the service's own user (awaitSeed).
 func StartImageWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url string) {
 	t.Helper()
-	_, url = startImage(t, HubImage, CalloutConfig(keys, static...), []string{"-js"})
+	return StartImageWithCalloutOn(t, HubImage, keys, static...)
+}
+
+// StartImageWithCalloutOn is StartImageWithCallout on image, for a test that holds what each
+// server the deployment runs answers (HubImage and ClusteredHubImage).
+func StartImageWithCalloutOn(t testing.TB, image string, keys CalloutKeys, static ...StaticUser) (url string) {
+	t.Helper()
+	_, url = startImage(t, image, CalloutConfig(keys, static...), []string{"-js"})
 	awaitSeed(t, url, keys.ServiceSeed)
 	return url
 }

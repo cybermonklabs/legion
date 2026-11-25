@@ -4365,6 +4365,45 @@ on the server gets, key-value reads and watch updates included, such as the list
 `envoy_roles` and `envoy_sessions` watchers. A `gcp:NatsHub` user with `daemon: true` receives
 this set; its seed belongs to the daemon, not to a host or session.
 
+`natsgrant.WithinProjects` (`packages/envoy/natsgrant/projects.go`) holds a Legion daemon's grant
+to its projects. The NATS auth service uses it from #4197 on; until then it refuses a daemon entry
+held to projects. Its reply inboxes become the daemon account's own prefix
+(`natsgrant.InboxPrefix`) in place of `_INBOX.>`; its issue, role-exception and Legion lanes become
+those of its projects; and its consumer calls become the calls on its own
+`legion-go-<project>-<kind>` consumers, each create subject naming its one filter. It keeps every
+repository's GitHub events (`notifications.github.>`) whole, since a GitHub event is a message of
+no project, and gives each project one GitHub consumer, `legion-go-<project>-github`, on that whole
+family: the grant names no repository, and the daemon drops in its own process the events of a
+repository it does not work in. Each project's Dispatch probe,
+`legion-go-<project>-dispatch-probe`, is granted its create alone, on the project's issue events
+(`notifications.dispatch.issue.<project>.>`): the create's answer counts the project's events
+stored after a sequence, from which the daemon reads that its Dispatch consumer is idle with no
+stream-wide read, and the grant holds no info, pull, acknowledgement or delete of it. The held
+grant drops the stream's info and stored-message get. It refuses, naming the entry, any other
+stored-message read, a create that names no filter, a key-value bucket's call, `notifications.>`
+and any entry it does not know, and it refuses a grant whose publish or subscribe list would end
+empty. It keeps the deny lists. Only a daemon's grant can be held so: the listener's, Dispatch's
+and the measurement job's hold `notifications.>` or a bucket.
+The daemon's `ready` consumer reads the wake lane every daemon shares, where the listener also puts
+every project's role and agent wake reports. So a daemon is held to its projects only once it opens
+its consumers per project, every listener publishes each project's role and agent wakes on that
+project's own lane, each `legion-go-<project>-*` durable filters on its own kind's lane only
+(`-dispatch` and `-wake` on the project's own lane, `-ready` on the shared wake subject
+`notifications.legion.wake` itself, which carries only `listener_ready` once the second condition
+holds, `-github` on `notifications.github.>`), and no daemon on today's static grant is left to
+widen one again: the held grant's info, pull and acknowledgements name a consumer, not its filter,
+so it reads a wider durable whole.
+`natsgrant/projects_live_test.go`, under the `natslive` tag, checks the held grant on the hub's
+image behind a stand-in auth callout: `DaemonPermissions` receives another project's pulls on
+`_INBOX.>`, the held grant receives none through the consumers it opens with their own filters,
+and its GitHub consumer receives every repository's events, one only another project's issues
+resolve to among them. A pre-existing wide `legion-go-PUB-dispatch` is read whole through the held
+grant, PRIV's events among them, until it is narrowed in place to PUB's lane. On both servers the
+deployment runs, the VM hub's nats-server 2.15.1 and the clustered hub's 2.15.3, the held grant
+creates PUB's Dispatch probe and is answered PUB's count alone; the server refuses a create whose
+body asks for another filter; and the held grant is refused another project's probe, by name or by
+filter, and the probe's info, pull and delete.
+
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,

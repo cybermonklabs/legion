@@ -44,10 +44,10 @@ jobs:
     # of 15 is 21; after that step's 15 at most, the unit step's own timeout-minutes of 45 is 66
     # (its -timeout bounds each package, not the step, so the step has a limit of its own, and its
     # comment below says why 45); after that step's 45 at most, natslive's default 10, the bus
-    # matrix's own 5, the auth service's own 5, the edge grant's own 5 and the edge listener's own
-    # 10 (its relay socket's rows wait out a 30 s token twice and a consumer's 60 s ack wait) are
-    # 101, the integration step's 5 is less, and the callout check's own 6, after the seconds
-    # those two steps measure, is less too.
+    # matrix's own 5, the auth service's own 5, natsgrant's own 5 (a daemon's grant held to its
+    # projects, and the edge grant) and the edge listener's own 10 (its relay socket's rows wait
+    # out a 30 s token twice and a consumer's 60 s ack wait) are 101, the integration step's 5 is
+    # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
     timeout-minutes: 105
     services:
       postgres:
@@ -106,15 +106,17 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
-      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
-      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
-      # gives.
+      # Envoy on, testnats.ClusteredHubImage (nats:2.15.3), which natsgrant's rows that hold a
+      # grant on both servers the deployment runs start beside it, testnats.Image (nats:2.10),
+      # which only the tests of that server itself and of the listener's refusal of it start, and
+      # tests3.Image, pulled first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go ClusteredHubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -263,18 +265,23 @@ jobs:
       # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
       # image the hub runs lets a user with an empty publish allow list publish anywhere, the
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
-      # runs. natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
-      # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
-      # role message through a shared listener under its rendered grant, with no violation, and
-      # ends its start, naming its inbox prefix, under a grant without it; a role message of the
-      # edge reaches no holder of another project's role; and the relay socket's rows, most of the
-      # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
-      # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,
-      # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
-      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
-      # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
-      # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
-      # unit step's --module-except leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # runs. natsgrant has one of its own: a Legion daemon's grant held to its projects
+      # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
+      # receives no other project's message while today's grant, the control, does, and its
+      # Dispatch probe's create holds on the VM hub's 2.15.1 and the clustered hub's 2.15.3
+      # (testnats.ClusteredHubImage). natsgrant and
+      # cmd/listener have the edge listener's: the server refuses the edge's user a Dispatch event,
+      # and the edge listener starts, relays a send and is reached by a role message through a
+      # shared listener under its rendered grant, with no violation, and ends its start, naming its
+      # inbox prefix, under a grant without it; a role message of the edge reaches no holder of
+      # another project's role; and the relay socket's rows, most of the step's time, run two edge
+      # listeners and the real broker with 30 s tokens, and carry frames and receipts, refuse other
+      # sessions' subjects, and close the socket at a token's expiry, a revoke, a Reset, a person's
+      # removal, a changed answer and an unreachable broker. Each package runs only the tests its
+      # tag adds: `-tags natslive ./pkg` would re-run the package's untagged tests, which already
+      # run elsewhere - internal/testnats and natsgrant in the unit step above, and internal/bus
+      # and internal/cipher/natscallout in envoy-go-race, which the unit step's --module-except
+      # leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
       # which reads the names off the source at run time, and no test name is spelled here. Each
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.

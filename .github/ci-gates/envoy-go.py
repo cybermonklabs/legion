@@ -52,12 +52,13 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     ]),
     # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
     # test of internal/bus that needs a real server image, the auth service's check that the
-    # deployed server lets an empty allow list through, which its guard refuses, and the edge
-    # listener's grant and start under its rendered user. The rest
-    # of internal/testnats runs in the unit step; the rest of internal/bus and
+    # deployed server lets an empty allow list through, which its guard refuses, natsgrant's
+    # daemon grant held to its projects behind an auth callout on the hub's image, and the edge
+    # listener's grant and start under its rendered user. The rest of internal/testnats and
+    # natsgrant runs in the unit step; the rest of internal/bus and
     # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
     # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-    # per step, checks the testnats half alone.
+    # per step, checks the testnats and natsgrant half.
     pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
         (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
         (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),

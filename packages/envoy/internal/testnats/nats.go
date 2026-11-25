@@ -57,6 +57,13 @@ const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033
 // declaration and pull the image before their tests run; keep it a single-line string constant.
 const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
+// ClusteredHubImage is the NATS server image the clustered hub runs: ghcr.io/cybermonklabs/legion/ci,
+// the copy of nats:2.15.3-alpine (.github/ci-images.yaml), where HubImage is the VM hub's 2.15.1. A
+// test that holds a grant to what both servers the deployment runs answer starts it beside
+// HubImage. The envoy-go CI job reads this declaration and pulls the image before its tests run;
+// keep it a single-line string constant.
+const ClusteredHubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a"
+
 // Images are the NATS server images the real-server tests run Envoy on, each with the short name
 // its subtest takes: the hub's alone, since Envoy requires a server whose scan of a consumer's
 // stored messages reads every filter (natsversion), which nats:2.10 is not.

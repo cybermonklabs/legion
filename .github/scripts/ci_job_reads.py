@@ -657,7 +657,7 @@ grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
 go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
-# One call per package, never one union -run over the three: a name an untagged test of one
+# One call per package, never one union -run over the five: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
@@ -2253,7 +2253,7 @@ TAG_RUNS = [
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's and ./natsgrant's untagged tests",
            job_file("envoy-go")),
     # The natslive step is the merge-queue half of envoy-infra's old job, and the unit step that
     # runs the three packages' untagged tests went with the half a pull request runs.

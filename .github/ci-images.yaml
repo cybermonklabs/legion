@@ -98,6 +98,12 @@ images:
     tag: nats-2.15.1-alpine-2ae57dfb
     digest: sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6
 
+  # The NATS the clustered hub runs, nats-server 2.15.3: testnats.ClusteredHubImage, which the
+  # natsgrant rows that hold a grant on both servers the deployment runs start beside HubImage.
+  - upstream: docker.io/library/nats:2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
+    tag: nats-2.15.3-alpine-558394a2
+    digest: sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
+
   # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
   # a job inside a container cannot start a container it could reach, so
   # the `.github/docker/browser.Dockerfile#weed` stage copies /usr/bin/weed out of this image and
