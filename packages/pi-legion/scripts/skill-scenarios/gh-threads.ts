@@ -727,11 +727,13 @@ export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
  * `CHANGES_REQUESTED` (#4355), never `REVIEW_REQUIRED`.
  *
  * Where the rule's `require_last_push_approval` is true (last-push's base alone, rig.sh's
- * review_world; production's is false), an approval by `pusher`, the login that made the head's
+ * review_world; production's is false), an approval by `pusher()`, the login that made the head's
  * last push (rest-objects.ts's `pusherOf`), is not counted: "Whether the most recent reviewable
  * push must be approved by someone other than the person who pushed it" (the description of
  * `repository-rule-pull-request` in github/rest-api-description at rest-required.ts's
- * DESCRIPTION_COMMIT). A `pusher` of "", no account of the world, leaves every approval counted.
+ * DESCRIPTION_COMMIT). `pusher` is called there alone, so a base whose rule is false reads no
+ * pusher (no `git` process starts); a `pusher` of "", no account of the world, leaves every
+ * approval counted.
  *
  * The rule's `require_code_owner_review` asks no approval of its own in any world. GitHub's rule
  * is that "any pull request that modifies content with a code owner must be approved by that code
@@ -746,15 +748,17 @@ export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
 export function reviewDecisionOf(
   at: ThreadWorld,
   calls: readonly Recorded[],
-  pusher = ""
+  pusher: () => string = () => ""
 ): string | null {
   const latest = new Map<string, string>();
   for (const review of submittedReviews(at, calls))
     if (DECIDES.includes(review.state)) latest.set(review.login, review.state);
   if ([...latest.values()].includes("CHANGES_REQUESTED")) return "CHANGES_REQUESTED";
   const rule = ruleParameters(baseRules(at), "pull_request");
-  const lastPush = rule?.require_last_push_approval === true && pusher !== "";
-  const approvals = [...latest.keys()].filter((login) => !(lastPush && login === pusher)).length;
+  const lastPusher = rule?.require_last_push_approval === true ? pusher() : "";
+  const approvals = [...latest.keys()].filter(
+    (login) => !(lastPusher !== "" && login === lastPusher)
+  ).length;
   const required = numberOf(rule?.required_approving_review_count) ?? 0;
   if (required > 0) return approvals >= required ? "APPROVED" : "REVIEW_REQUIRED";
   return approvals > 0 ? "APPROVED" : null;
@@ -797,7 +801,7 @@ export function shownOpen(thread: Json): boolean {
  *   - `pull_request`: fewer approvals stand than it requires, or a change request stands
  *     (`reviewDecisionOf`, whose code owner review asks no approval of its own where no
  *     CODEOWNERS file names an owner, as in every world, and which counts no approval by
- *     `pusher`, the login that made the head's last push, where the rule asks the last push
+ *     `pusher()`, the login that made the head's last push, where the rule asks the last push
  *     approved by another); and, where it requires review threads resolved
  *     (`required_review_thread_resolution`), a thread is shown open (`shownOpen`). GitHub moves a
  *     head so protected from `BLOCKED` to `CLEAN` when the last such thread is resolved, and a
@@ -826,7 +830,7 @@ export function mergeStateOf(
   mergeStates: unknown,
   head: string,
   calls: readonly Recorded[],
-  pusher = ""
+  pusher: () => string = () => ""
 ): string {
   const own = mergeStateOn(mergeStates, head);
   const { world } = at;

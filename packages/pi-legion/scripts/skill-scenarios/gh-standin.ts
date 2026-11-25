@@ -1381,13 +1381,14 @@ const callerLogin = loginOf(threadWorld, role);
 /** What GitHub computes of the pull request at `head` from its base's rules, as GraphQL names it
  * (gh-threads.ts): its review decision (null for none), its merge state and whether it merges,
  * with the account that made the head's last push (rest-objects.ts's `pusherOf`), whose own
- * approval a base asking the last push approved by another counts for nothing. */
+ * approval a base asking the last push approved by another counts for nothing; that account is
+ * read only where the base asks it. */
 function pullStatus(head: string): {
   reviewDecision: string | null;
   mergeStateStatus: string;
   mergeable: string;
 } {
-  const pusher = pusherOf(`${run}`, head);
+  const pusher = () => pusherOf(`${run}`, head);
   const state = mergeStateOf(threadWorld, threads, fixtures.mergeStates, head, calls, pusher);
   return {
     reviewDecision: reviewDecisionOf(threadWorld, calls, pusher),

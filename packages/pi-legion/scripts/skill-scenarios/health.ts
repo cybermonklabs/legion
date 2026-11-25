@@ -1332,8 +1332,7 @@ export function unfinished(run: Pick<Run, "dir" | "scenario" | "label">): string
   const missing = roles[decisions.length];
   if (missing !== undefined)
     return `boot record: <run>/${BOOTED} neither boots nor skips the ${missing}; ${definition}`;
-  const identity = runIdentity(run.dir);
-  const runCase = typeof identity === "string" ? "" : identity.case;
+  const runCase = recordedCase(run.dir);
   for (const decision of decisions) {
     if (decision.kind !== "skip") continue;
     const declared = SKIPS[run.scenario]?.[runCase]?.[decision.role];
@@ -5141,8 +5140,7 @@ function withDaemon(
 export function untaken(
   run: Pick<Run, "dir" | "scenario" | "label" | "repos">
 ): string | undefined {
-  const identity = runIdentity(run.dir);
-  const runCase = typeof identity === "string" ? "" : identity.case;
+  const runCase = recordedCase(run.dir);
   return withDaemon(run, (daemon) => {
     const taken = takenCompletions(daemonLines(run.dir), run.scenario, runCase, daemon);
     return taken !== undefined && taken.count === 0
@@ -5380,6 +5378,13 @@ function systemGitconfigOf(dir: string): string | undefined {
 function batchOf(dir: string): string | undefined {
   const identity = runIdentity(dir);
   return typeof identity === "string" ? undefined : identity.batch;
+}
+/** The case the record of the run `dir` names (a run recorded before the names left the world
+ * names it in its directory's name: run-names.ts's `runIdentity`); "" for a run whose identity
+ * cannot be read. */
+function recordedCase(dir: string): string {
+  const identity = runIdentity(dir);
+  return typeof identity === "string" ? "" : identity.case;
 }
 
 /** Rule 23: the first other run of `runs` in the run's batch whose provenance records another

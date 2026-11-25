@@ -34,6 +34,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { labelCheckout, labelShapes } from "./daemon-pane";
 import { WORLD_PROJECT } from "./run-names";
+import type { RunResult } from "./score";
 import { GENERATION } from "./standin-record";
 import { runsStep, STEPS, stepEnd, stepRun, stepStart } from "./step-records";
 import { CHECK_COVERS, type CheckCovers, DOCS_FILE, WORLD_REPO, worldPlan } from "./world-issue";
@@ -323,31 +324,20 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
 
-/** One result of results.json, as `capture-results` writes it and score.ts's `Results` reads it:
- * the check it is of (its block id), the commit it names, the session and the role that recorded
- * it, its verdict, the text it observed (where a result that records an earlier pass as holding
- * gives its reason), and when Dispatch recorded it, which an agent's own run of the check is
- * ordered against. */
-interface CapturedResult {
-  check: string;
-  commit: string;
-  session: string;
-  role: string;
-  verdict: string;
-  observed: string;
-  at: string;
-}
-
 /** `capture-results <file> <run dir>`: every result recorded against a check of the run's issue,
  * the seeded passes among them, in the order `GET /api/v1/issues/{key}/results` answers them (each
  * check of the issue's Verification document in document order, each check's results as Dispatch
- * lists them), as results.json in <run dir>. */
+ * lists them), as results.json in <run dir>, each as score.ts's `RunResult` reads it: the check it
+ * is of (its block id), the commit it names, the session and the role that recorded it, its
+ * verdict, the text it observed (where a result that records an earlier pass as holding gives its
+ * reason), and when Dispatch recorded it, which an agent's own run of the check is ordered
+ * against. */
 export async function captureResults(file: string, runDir: string): Promise<void> {
   const { issue } = loadFixture(file);
   const read = await agentGet<IssueCheckResults>(
     `/api/v1/issues/${encodeURIComponent(issue)}/results`
   );
-  const results: CapturedResult[] = (read.checks ?? []).flatMap((check) =>
+  const results: RunResult[] = (read.checks ?? []).flatMap((check) =>
     (check.results ?? []).map((result) => ({
       check: result.check_block_id,
       commit: result.commit_sha,

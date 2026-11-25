@@ -944,8 +944,8 @@ function workerAnswer(dir: string): [string, unknown] {
 // read as the run's own text rather than as a thing a text may name; the testing reading k3's
 // crossing (b) asks never asked, or asked of no text of the run's; and an answer that is not the
 // judge's own copied into the run directory, where the scorer reads it by the text's id.
-test("a threads-closed run's three judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
-  const dir = workerRun("threads-closed-accept-head-1");
+test("a threads-closed crossing run's three judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
+  const dir = workerRun("threads-closed-crossing-head-1");
   const ran: Seen[] = [];
   await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
   const judge = (name: string) => ran.find((one) => path.basename(one.dir) === name);
@@ -990,7 +990,7 @@ test("a threads-closed run's three judges read its agents' texts, against the re
       readFileSync(path.join(judge(name)?.dir ?? "", `${name}.json`), "utf8")
     );
   // The scorer reads the testing judge's answer by the text's id, as it reads the accepts judge's.
-  const readings = workerReadings(dir, "threads-closed");
+  const readings = workerReadings(dir, "threads-closed", "crossing");
   expect({
     testing: readings.testing.get("message-1"),
     comment: readings.testing.get("comment-1")?.testing,
@@ -1023,4 +1023,46 @@ test("a reviewer-text-findings run runs no accepts or testing judge, and a run w
     names: JSON.parse(readFileSync(path.join(quiet, "names.json"), "utf8")),
     testing: JSON.parse(readFileSync(path.join(quiet, "testing.json"), "utf8")),
   }).toEqual({ ran: 0, accepts: { rows: [] }, names: { rows: [] }, testing: { rows: [] } });
+});
+
+// Catches: a judge started where the score of the run's case reads none of its answer, which
+// spends a model session (an `omp -p`) on nothing, and one left unstarted where the score reads it
+// (score.ts's `caseJudges`): threads-closed's correct reads no judge, code-defect the names judge
+// alone, accept the accepts and names judges, crossing all three, and reviewer-text-findings'
+// defect none. Each judge not started gets its answer file with no row, which the score takes as
+// covering only for a judge the case does not read.
+test("a worker run starts only the judges its case reads: none for correct, three for crossing", async () => {
+  const started: Record<string, string[]> = {};
+  const empty: Record<string, string[]> = {};
+  for (const name of [
+    "threads-closed-correct-head-3",
+    "threads-closed-code-defect-head-3",
+    "threads-closed-accept-head-3",
+    "threads-closed-crossing-head-3",
+    "reviewer-text-findings-defect-head-3",
+  ]) {
+    const dir = workerRun(name);
+    const ran: Seen[] = [];
+    await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
+    started[name] = ran.map((one) => path.basename(one.dir));
+    empty[name] = ["accepts", "names", "testing"].filter(
+      (judge) => JSON.parse(readFileSync(path.join(dir, `${judge}.json`), "utf8")).rows.length === 0
+    );
+  }
+  expect({ started, empty }).toEqual({
+    started: {
+      "threads-closed-correct-head-3": [],
+      "threads-closed-code-defect-head-3": ["names"],
+      "threads-closed-accept-head-3": ["accepts", "names"],
+      "threads-closed-crossing-head-3": ["accepts", "names", "testing"],
+      "reviewer-text-findings-defect-head-3": [],
+    },
+    empty: {
+      "threads-closed-correct-head-3": ["accepts", "names", "testing"],
+      "threads-closed-code-defect-head-3": ["accepts", "testing"],
+      "threads-closed-accept-head-3": ["testing"],
+      "threads-closed-crossing-head-3": [],
+      "reviewer-text-findings-defect-head-3": ["accepts", "names", "testing"],
+    },
+  });
 });

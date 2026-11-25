@@ -635,9 +635,10 @@ removes only the containers it started; `judge-omp` refuses a directory
 holding an earlier judge's `out.txt` or `judge-model.txt`, or the key directory beside it; a
 judge-profile build an earlier call left unready is refused until removed; `rig.sh judge`
 (`judge.ts`) refuses, before any judge starts, a run whose judge directories under
-`$SKILL_SCENARIOS_WORK/judging/<run>/` or whose answer files (`answers-<turn>.jsonl`, and
-`faults.json` to `shared-runs.json`) an earlier judging left, naming each, so a run is judged
-again once those are moved aside; and `seed.ts capture-spec` refuses a run directory that already
+`$SKILL_SCENARIOS_WORK/judging/<run>/` or whose answer files (`answers-<turn>.jsonl`; `faults.json`
+to `shared-runs.json` for a spec run; `accepts.json`, `names.json` and `testing.json` for a worker
+run) an earlier judging left, naming each, so a run is judged again once those are moved aside;
+and `seed.ts capture-spec` refuses a run directory that already
 holds what it writes (`spec.md`, `plan.md`, `documents/` and the rest). The one exception is the
 gateway key command's cached token, which a judge drops to mint one that outlives it. At
 `SKILL_SCENARIOS_PARALLEL=1` a run's exit also records what appeared at the top of the machine's
@@ -1105,9 +1106,11 @@ does not carry. The pull request also holds one open bot thread, and its base re
 conversation resolution, so its head stays `BLOCKED` after an approval and the issue stays in
 `reviewing`. Each row reports each term of its case (`terms=`), and how the message the score
 took named each finding (`toldBy=`: by its path, by a thread's node id, or by the names judge's
-reading, with the words it quoted, as Verification v47's rule 8 has a name read). The score is
-label-blind (the class search's "a branch on a label's name"): every run of a case is scored by
-that case's one rule, and each row also says whether the run's verdict was `REQUEST_CHANGES`
+reading, with the words it quoted, as Verification v47's rule 8 has a name read). `judge.ts` runs
+the names judge for `text-only` and `last-push` alone and no judge for `defect`, whose score reads
+none (`score.ts`'s `caseJudges`). The score is label-blind (the class search's "a branch on a
+label's name"): every run of a case is scored by that case's one rule, and each row also says
+whether the run's verdict was `REQUEST_CHANGES`
 (`requested=`). k1 and k3 read their `base` arms, the cost they measure, off the report's
 `requested` count for that arm (`scenario  label  requested`): at least 4 of the 5 `base` runs.
 The world must take the reviewer's completion in `defect` and `last-push`, whose round ends on
@@ -1161,8 +1164,11 @@ every world. Each row reports each term of its case (`terms=`), as Verification 
 and the judge's readings (rule 8) are read at the first term that needs one: whether a message
 accepts the commit (`accepts.json`), whether a text names the world's check, a file or an earlier
 result (`names.json`), and whether a message says that the issue goes back to testing
-(`testing.json`, a judge `judge.ts` runs for threads-closed alone). A commit named by a SHA
-prefix of 7 or more characters is the scorer's to read, never the judge's.
+(`testing.json`). `judge.ts` runs only the judges a case's terms read (`score.ts`'s
+`caseJudges`): the accepts and names judges for `accept`, all three for `crossing`, the names
+judge for `code-defect` and none for `correct`; a judge it does not run gets its answer file with
+no row. A commit named by a SHA prefix of 7 or more characters is the scorer's to read, never the
+judge's.
 
 - `accept` (k2): the reviewer's commit makes the sentence true (the CLI trims the spaces around
   the name) and rewords the example line, keeping its greeting; the workflow's comment is honest,

@@ -254,15 +254,17 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * threads-closed boots the implementer in `reviewing` (accept, correct and crossing, whose
  * reviewer pushed its own text commit and has not approved yet) or `accepting` (code-defect, whose
  * reviewer approved and pushed nothing), and then the reviewer in that phase where the case has
- * a second half (rig.sh's run_threads_closed, `SKIPS`). The world's seeds stand for each
- * role's completion of its round (seed-handoffs.ts: the implement record and the review record
- * are on those roles' rows, daemon-standin.ts's `HANDOFFS`), so a late completion of either is
- * one from a role whose row holds a completion, which a daemon of either shape refuses 409
- * HANDOFF_NOT_CURRENT_PHASE: the `refused` engine as it refuses every late one, the `recorded`
- * engine by `leftItsPhase`'s `row.Completed()`. That is the implementer's in either phase, and
- * the reviewer's once the round has moved the issue, or from its boot in `accepting`. Until the
- * stand-in read the seeded rows, a `recorded` daemon's stand-in took such a reviewer's first
- * completion 200 (3 of round 25's runs, in `accepting`), a success production gives none of.
+ * a second half (rig.sh's run_threads_closed, `SKIPS`). The world's seeds stand for a completion
+ * of each role (seed-handoffs.ts: the implement record, and the review record at the head the
+ * reviewer left, its own commit in accept, correct and crossing, where it has not approved, and
+ * the head it approved in code-defect, are on those roles' rows, daemon-standin.ts's `HANDOFFS`),
+ * so a late completion of either is one from a role whose row holds a completion, which a daemon
+ * of either shape refuses 409 HANDOFF_NOT_CURRENT_PHASE: the `refused` engine as it refuses every
+ * late one, the `recorded` engine by `leftItsPhase`'s `row.Completed()`. That is the
+ * implementer's in either phase, and the reviewer's once its review in correct has moved the
+ * issue, or from its boot in `accepting` in code-defect. Until the stand-in read the seeded rows,
+ * a `recorded` daemon's stand-in took such a reviewer's first completion 200 (3 of round 25's
+ * runs, in `accepting`), a success production gives none of.
  * The reviewer's completion in `reviewing` is of its own phase and is taken 200. Either role
  * may also be refused 403 HANDOFF_SESSION_MISMATCH: its seeded record was written by another
  * session than the one the agent registered (the seed's), so a completion naming it is one
@@ -394,8 +396,9 @@ function answered(
   return allows(byRole[role] ?? [], lines, index);
 }
 
-/** `read`, run at its first call alone, and its answer kept for every later one. */
-function once<T>(read: () => T): () => T {
+/** `read`, run at its first call alone, and its answer kept for every later one (the daemon
+ * reads here; score.ts's lazy judge readings). */
+export function once<T>(read: () => T): () => T {
   let kept: { readonly value: T } | undefined;
   return () => {
     kept ??= { value: read() };

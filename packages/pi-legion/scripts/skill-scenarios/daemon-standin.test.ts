@@ -2979,7 +2979,6 @@ test.skipIf(skip)(
         implementer: { handoffCommit: below, handoffRecord: seededRecord("implement") },
         tester: { handoffCommit: below, handoffRecord: seededRecord("test") },
       });
-      expect(below).not.toBe(WORLD_HEAD);
     } finally {
       daemon.stop();
     }

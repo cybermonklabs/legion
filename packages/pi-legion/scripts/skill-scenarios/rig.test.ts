@@ -7565,10 +7565,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       argv: () => ["api", `${REPO}/pulls/1001/commits`, "--jq", ".[-1].sha"],
       answers: (got, _, head) => expect(got).toMatchObject({ code: 0, out: head }),
     },
-    // Every world's pull request adds greet.ts: fixture_cli writes it (rig.sh:3289-3292) after
-    // fixture_first_commit made the base, and fixture_head_commit commits it on the issue branch
-    // (rig.sh:3399-3401), in tester_proof_world (rig.sh:2811-2814) and in round_world
-    // (rig.sh:2855-2859), which review_world (rig.sh:2888) and approved_world (rig.sh:2989) build on.
+    // Every world's pull request adds greet.ts: fixture_cli writes it after fixture_first_commit
+    // made the base, and fixture_head_commit commits it on the issue branch, in tester_proof_world
+    // and in round_world, which review_world and approved_world build on.
     "GET repos/{owner}/{repo}/pulls/{number}/files": {
       argv: () => ["api", `${REPO}/pulls/1001/files`, "--jq", '[.[].filename] | index("greet.ts")'],
       answers: (got) => expect(got).toMatchObject({ code: 0, out: expect.stringMatching(/^\d+$/) }),
@@ -12438,6 +12437,7 @@ await state(file, Number(turn), run);
           "threads-closed-accept-head-1": [0, 1],
           "threads-closed-code-defect-head-1": [0, 1],
           "threads-closed-correct-head-1": [0, 1, 2, 3],
+          "threads-closed-crossing-head-1": [0, 1],
         },
         changed: [],
       });
@@ -14178,12 +14178,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // production gives it: the pushed commit is the head k1 compares with, and no pass stands
     // there, since each pass's commit is another commit (results_comparison.go, commitStands,
     // through nothingReason, which takes the repository as readable once GitHub answered its
-    // default branch: delivery/branch.go, branchOf), so the carry rule reads the push's own diff.
-    // Nothing of the rig's seeds the head here: the run's head watcher stores it on the push
-    // (rig.sh's start_heads, head-watcher.ts), and the row waits only for its record to answer the
-    // push, as an agent's next call does. Without the watcher the read compares with the approved
-    // head and says a pass stands (measured 2026-11-16), which 3 of 20 recorded threads-closed
-    // implementers read.
+    // default branch: delivery/branch.go, branchOf). Nothing of the rig's seeds the head here: the
+    // run's head watcher stores it on the push (rig.sh's start_heads, head-watcher.ts), and the row
+    // waits only for its record to answer the push, as an agent's next call does. Catches: a
+    // missing watcher, with which the read compares with the head the world was built at, the
+    // reviewer's commit, so `comparedWith` names that old head and not the pushed one. No pass
+    // stands at either head, since the passes are seeded at the implementer's commit below both.
     test("correct after the implementer's push: k1 compares with the pushed head the watcher stored, and no pass stands there, as production answers", () => {
       const world = seededWorld("correct", true);
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));

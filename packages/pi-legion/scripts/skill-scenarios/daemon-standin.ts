@@ -749,7 +749,7 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
       number: PR,
       head,
       state: typeof held === "string" ? held : "OPEN",
-      mergeState: mergeStateOf(at, threads, mergeStates, head, calls, pusherOf(runDir, head)),
+      mergeState: mergeStateOf(at, threads, mergeStates, head, calls, () => pusherOf(runDir, head)),
       decision,
     },
     round: true,

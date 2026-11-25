@@ -4929,18 +4929,19 @@ skip_reason() {
 #                architect and the reviewer as the one route (score.ts's threadsClosed). So each
 #                half's `read_record` answers `accepting`, the architect's phase
 #                (packages/daemon/internal/workflow/engine.go, RoleFor).
-# Both roles' rounds already stand on their rows: the implementer's implementing round with its
+# Both roles' records already stand on their rows: the implementer's implementing round with its
 # commit and its record (worker_boot's COMPLETED, and the seeded implement record), and the
-# reviewer's review round with the review record seeded below, which the stand-in reads onto
-# the row. So the implementer's `handoff_complete` is refused 409 HANDOFF_NOT_CURRENT_PHASE in
-# either phase by either label's daemon, the one deliberate refusal, and so is the reviewer's
-# once the round has moved the issue, or from its boot in `accepting` (the engine's
-# `leftItsPhase` refuses a role whose row holds a completion). The reviewer's completion in
-# `reviewing` is of its own phase and is taken. A completion naming a seeded record is one
-# naming a record another session wrote, which the daemon's route refuses 403
-# HANDOFF_SESSION_MISMATCH: the agent writes its own. What each label's daemon may answer each
-# half here is completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the
-# score read.
+# reviewer's handoff, the review record seeded below at the head it left (its own commit in
+# accept, correct and crossing, where it has not approved; the head it approved in code-defect),
+# which the stand-in reads onto the row. So the implementer's `handoff_complete` is refused 409
+# HANDOFF_NOT_CURRENT_PHASE in either phase by either label's daemon, the one deliberate refusal,
+# and so is the reviewer's once its review has moved the issue (correct), or from its boot in
+# `accepting` (code-defect): the engine's `leftItsPhase` refuses a role whose row holds a
+# completion. The reviewer's completion in `reviewing` is of its own phase and is taken. A
+# completion naming a seeded record is one naming a record another session wrote, which the
+# daemon's route refuses 403 HANDOFF_SESSION_MISMATCH: the agent writes its own. What each label's
+# daemon may answer each half here is completion-answers.ts's ANSWERS["threads-closed"], which
+# `rig.sh health` and the score read.
 run_threads_closed() {
   local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head implemented open wake skip \
     changes phase=reviewing completed=implementer

@@ -16,9 +16,10 @@
 //     score.ts's sharedRuns lists). Writes faults.json, decisions.json, findings.json,
 //     checkable.json, questions.json, numbers.json, preamble.json, proposal.json and
 //     shared-runs.json into each run directory. For a run of a worker scenario (score.ts's
-//     JUDGED_SCENARIOS), the three judges of `judgeWorker`: accepts and names (Verification v47's
-//     rule 8) and testing (k3's `crossing` (b)). Writes accepts.json, names.json and testing.json
-//     into each run directory.
+//     JUDGED_SCENARIOS), the three judges of `judgeWorker`, accepts and names (Verification v47's
+//     rule 8) and testing (k3's `crossing` (b)), each only where the run's case reads its answer
+//     (score.ts's `caseJudges`). Writes accepts.json, names.json and testing.json into each run
+//     directory.
 //
 // <work> is the directory that holds the run's `runs/` directory, or the `archive/runs/` rig.sh
 // moves a run to once it has ended, as score.ts reads it (`workOfRuns`). Seeded asks
@@ -26,14 +27,14 @@
 //
 // judge.ts removes and replaces nothing an earlier judging left. Before any judge starts, it
 // refuses, naming each, a judge directory under <work>/judging/<run>/ or an answer file in the run
-// directory (answers-<turn>.jsonl, or the nine files of `run`) that is already there: a run is
-// judged again once those are moved aside.
+// directory (answers-<turn>.jsonl; the nine files of `run` for a spec run; accepts.json,
+// names.json and testing.json for a worker run) that is already there: a run is judged again once
+// those are moved aside.
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { scenarioOf } from "./completion-answers";
 import {
-  AcceptsOutput,
   acceptsPrompt,
   answerPrompt,
   CheckableFile,
@@ -45,7 +46,6 @@ import {
   findingsPrompt,
   type JudgeProfile,
   type JudgePrompt,
-  NamesOutput,
   namesPrompt,
   numbersPrompt,
   preamblePrompt,
@@ -54,12 +54,13 @@ import {
   SHARED_RUNS_RULE,
   SharedRunsFile,
   sharedRunPrompt,
-  TestingOutput,
   testingPrompt,
 } from "./judge-prompts";
+import { runIdentity } from "./run-names";
 import { Refused } from "./run-records";
 import {
   approval,
+  caseJudges,
   checkouts,
   coverage,
   JUDGED_SCENARIOS,
@@ -246,7 +247,8 @@ function specAfter(runDir: string, writeAt: string, own: string): string {
 }
 
 /** `judge.ts run`: the nine judges of one spec run, or, for a run of a worker scenario (score.ts's
- * JUDGED_SCENARIOS, by the scenario its record or its directory names), the two of `judgeWorker`. */
+ * JUDGED_SCENARIOS, by the scenario its record or its directory names), the three of
+ * `judgeWorker`, those its case reads. */
 export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
   const scenario = scenarioOf(runDir);
   if (scenario !== undefined && JUDGED_SCENARIOS.includes(scenario))
@@ -378,63 +380,46 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
  * `crossing` (b) asks of a message where an earlier pass does not hold at that commit. A commit
  * named by a SHA prefix of seven characters or more is the scorer's to decide, never a judge's.
  * Writes accepts.json, names.json and testing.json into the run directory, the answer of each
- * judge as it wrote it, and a file with no row for a judge that had nothing to read, which runs no
- * session: a run whose agents wrote no text, or (accepts, testing) a scenario with no commit the
- * run's agents decide at. */
+ * judge as it wrote it, and a file with no row for a judge that runs no session: one whose answer
+ * no term of the run's case reads (score.ts's `caseJudges`, by the case its record or its
+ * directory names), or one that had nothing to read, in a run whose agents wrote no text or
+ * (accepts, testing) a scenario with no commit the run's agents decide at. */
 export async function judgeWorker(runDir: string, scenario: string, options: JudgeOptions = {}) {
   const runner = options.runner ?? rigRunner;
   const judging = path.join(workOf(runDir), "judging", path.basename(path.resolve(runDir)));
   const texts = workerTexts(runDir);
   const givens = workerGivens(runDir);
   const commit = workerCommit(runDir, scenario);
-  const covers = (file: string) => (answer: unknown) =>
-    workerCoverage(file, answer, texts, givens, commit);
+  const identity = runIdentity(runDir);
+  const reads = caseJudges(scenario, typeof identity === "string" ? undefined : identity.case);
+  const job = <T>(prompt: JudgePrompt<T>, inputs: Record<string, string>) =>
+    ({
+      dir: path.join(judging, prompt.name),
+      prompt,
+      inputs,
+      covers: (answer: unknown) =>
+        workerCoverage(prompt.file, answer, texts, givens, commit, reads),
+    }) as Job<unknown>;
   const jobs = [
-    ...(texts.length === 0 || commit === undefined
+    ...(texts.length === 0 || commit === undefined || !reads.includes(acceptsPrompt.file)
       ? []
-      : [
-          {
-            dir: path.join(judging, acceptsPrompt.name),
-            prompt: acceptsPrompt,
-            inputs: { "texts.json": pretty(texts), "commit.txt": `${commit}\n` },
-            covers: covers(acceptsPrompt.file),
-          },
-        ]),
-    ...(texts.length === 0
+      : [job(acceptsPrompt, { "texts.json": pretty(texts), "commit.txt": `${commit}\n` })]),
+    ...(texts.length === 0 || !reads.includes(namesPrompt.file)
       ? []
-      : [
-          {
-            dir: path.join(judging, namesPrompt.name),
-            prompt: namesPrompt,
-            inputs: { "texts.json": pretty(texts), "given.json": pretty(givens) },
-            covers: covers(namesPrompt.file),
-          },
-        ]),
-    ...(texts.length === 0 || commit === undefined
+      : [job(namesPrompt, { "texts.json": pretty(texts), "given.json": pretty(givens) })]),
+    ...(texts.length === 0 || commit === undefined || !reads.includes(testingPrompt.file)
       ? []
-      : [
-          {
-            dir: path.join(judging, testingPrompt.name),
-            prompt: testingPrompt,
-            inputs: { "texts.json": pretty(texts) },
-            covers: covers(testingPrompt.file),
-          },
-        ]),
-  ] as Job<unknown>[];
+      : [job(testingPrompt, { "texts.json": pretty(texts) })]),
+  ];
   const files = [acceptsPrompt.file, namesPrompt.file, testingPrompt.file];
-  refuseTaken([...files.map((name) => path.join(runDir, name)), ...jobs.map((job) => job.dir)]);
+  refuseTaken([...files.map((name) => path.join(runDir, name)), ...jobs.map((one) => one.dir)]);
   await runAll(jobs, runner, options.parallel ?? 5);
-  const empty = {
-    [acceptsPrompt.file]: AcceptsOutput,
-    [namesPrompt.file]: NamesOutput,
-    [testingPrompt.file]: TestingOutput,
-  };
   for (const name of files) {
-    const job = jobs.find((one) => one.prompt.file === name);
+    const started = jobs.find((one) => one.prompt.file === name);
     const text =
-      job === undefined
-        ? pretty(empty[name]?.parse({ rows: [] }))
-        : readFileSync(path.join(job.dir, name), "utf8");
+      started === undefined
+        ? pretty({ rows: [] })
+        : readFileSync(path.join(started.dir, name), "utf8");
     writeFileSync(path.join(runDir, name), text, { flag: "wx" });
   }
 }

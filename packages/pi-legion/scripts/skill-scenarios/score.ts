@@ -42,6 +42,7 @@ import {
   daemonLines,
   finished,
   NOT_CURRENT_PHASE,
+  once,
   refusedCompletion,
   SKIPS,
 } from "./completion-answers";
@@ -871,8 +872,8 @@ const BACKWARD_PATH = "/legion/v1/phase/backward";
 /** Every `request_backward_move` the run's daemon stand-in logged (daemon.log), whatever it was
  * answered, in the order it logged them: each names the phase it asked for (`to`), the role the
  * stand-in served (`role`) and the answer (`status`, `code`). One the daemon took is answered
- * 200; one it refused moved nothing. The one reader of a move back, for every scenario that
- * scores one. */
+ * 200; one it refused moved nothing. The one rule for a move back, for every scenario that scores
+ * one: threadsClosed applies its filter to the daemon lines it has already read. */
 export function backwardMoves(runDir: string): DaemonLine[] {
   return daemonLines(runDir).filter((line) => line.path === BACKWARD_PATH);
 }
@@ -1501,11 +1502,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // the case has it name, in one message, since the implementer acts on the message it is handed,
   // with its id and how it named each finding (`findingNamed`). The names judge's readings are read
   // at the first message that names a finding in no word the scorer reads, and never before.
-  let readings: ReadonlyMap<string, NamesRow> | undefined;
-  const judged = () => {
-    readings ??= workerReadings(runDir, "reviewer-text-findings").names;
-    return readings;
-  };
+  const judged = once(() => workerReadings(runDir, "reviewer-text-findings", reviewCase).names);
   const workflow: Finding = {
     named: FINDING_WORKFLOW,
     files: [...new Set([WORKFLOW_FILE, ...workflowThreads.map((thread) => String(thread.path))])],
@@ -1515,10 +1512,9 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const wanted =
     reviewCase === "text-only" ? [workflow] : reviewCase === "last-push" ? [doc, workflow] : [];
   let toldBy: string[] | undefined;
-  for (const message of ownMessages(runDir)) {
+  for (const message of ownMessagesTo(runDir, sender, FIXES)) {
+    if (wanted.length === 0) break;
     const { sent } = message;
-    if (wanted.length === 0 || sent.sender !== sender || !sent.topic.endsWith(`-${FIXES}`))
-      continue;
     if (
       reviewCase === "text-only" &&
       (push === undefined ||
@@ -1565,9 +1561,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   );
   const notes = [
     `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
-    `terms=${Object.entries(terms)
-      .map(([term, held]) => `${term}:${held}`)
-      .join(",")}`,
+    termsNote(terms),
     `commit=${commit} docFixed=${docFixed} workflowOpen=${workflowOpen} docOpen=${docOpen} approved=${approved} requestedAny=${requestedAny} moved=${moved === undefined ? "none" : (moved.to ?? "")}`,
     `toldBy=${JSON.stringify(toldBy ?? [])}`,
     `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)} requested=${requested}`,
@@ -1619,8 +1613,10 @@ function findingNamed(
 
 /** Every case rig.sh's run_threads_closed builds a world for (SCENARIOS). */
 const THREADS_CASES = [...casesOf("threads-closed")];
-/** <run>/threads.json, rig.sh's worker_fixture: the threads the approval left open, each with
- * the node id the `reviewThreads` route serves it under and the file its finding is on. */
+/** <run>/threads.json, rig.sh's worker_fixture: the threads the reviewer left open (correct's one,
+ * an inline comment of its `COMMENT` review; code-defect's one, of its approval; none in accept and
+ * crossing), each with the node id the `reviewThreads` route serves it under and the file its
+ * finding is on. */
 const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
 /** The role a message of this loop is addressed to, which its topic ends with: a role topic is
  * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
@@ -1629,7 +1625,9 @@ const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
  * `by`). */
 const ROLES = ["implementer", "reviewer", "architect"] as const;
 type Role = (typeof ROLES)[number];
-/** The role each half of the loop after an approval is. */
+/** The role of each half of the loop that answers a reviewer's text findings: the implementer,
+ * which answers the reviewer's commit and fixes the threads it left (FIXES), and the reviewer,
+ * which resolves them (RESOLVES). */
 const FIXES: Role = "implementer";
 const RESOLVES: Role = "reviewer";
 /** Whether `named` is `sha`: the prefix of seven hexadecimal digits or more that the commit
@@ -1720,52 +1718,38 @@ function publishes(runDir: string, sender: string): Publish[] {
     (line): line is Publish => "message" in line && line.sender === sender
   );
 }
-/** How the names a caller asks for are matched against one message: `any` where they are the
- * several ways one fact can be written, and `all` where one message must carry every one of
- * them, which is how a wake that must carry several facts is read — the facts are one message's,
- * or the role that reads it is left acting on half of them, since Envoy hands it each message on
- * its own. */
-type Match = "any" | "all";
-/** Whether a message of this run reached `role`'s topic naming `names` under `match`. The
- * daemon starts no phase for any step of the loop after an approval that leaves text threads
- * open, so every step of it is carried by one of these messages and a
- * step that sends none leaves the next role never learning its turn began (review-threads.md,
- * *After an approval that leaves text threads open*). The role is read from the topic the
- * message reached and from nothing else: a message to the architect that says "the reviewer can
- * resolve these" is no wake of the reviewer. `names` are the strings the rule says the message
- * must carry, each a string or a list of the strings any one of which names that fact (a
- * finding's path or its thread's node id), matched against the body alone for the same reason,
+/** Whether a message `sender` sent reached `role`'s topic naming every one of `names`. The
+ * daemon starts no phase for the implementer's last chance (spec v36's R2: "The daemon starts no
+ * phase for this read"), so the reviewer and the architect learn of the implementer's push from
+ * these messages alone, and the architect of the head the reviewer approved from the reviewer's:
+ * a step that sends none leaves the next role never learning its turn began. The role is read
+ * from the topic the message reached and from nothing else: a message to the architect that says
+ * "the reviewer can resolve these" is no wake of the reviewer. `names` are the strings the rule
+ * says the message must carry, all of them in the one message, since Envoy hands the role that
+ * reads it each message on its own; they are matched against the body alone for the same reason,
  * and a commit is named by any prefix of seven hexadecimal digits or more, as a reply names one
- * (namesCommit). A message that names none of them is no wake, since the next role cannot act on
- * it, and a caller with nothing
- * to require passes an empty list, which no message satisfies under either match rather than
- * every message satisfying it. `after` is a time Envoy's own record is ordered against, so a
- * message that reached the topic before it is no answer to what happened then; both times are
- * read through `instant`, where a time that does not parse is the rig's fault, since a message
- * whose record carries no time would otherwise sort before everything that happened. A caller
- * that orders a message against nothing passes no `after` and reads no time at all. */
+ * (namesCommit). A caller with nothing to require passes an empty list, which no message
+ * satisfies rather than every message satisfying it. `after` is a time Envoy's own record is
+ * ordered against, so a message that reached the topic before it is no answer to what happened
+ * then; both times are read through `instant`, where a time that does not parse is the rig's
+ * fault, since a message whose record carries no time would otherwise sort before everything that
+ * happened. A caller that orders a message against nothing passes no `after` and reads no time at
+ * all. */
 function publishedTo(
   runDir: string,
   sender: string,
   role: Role,
-  names: readonly (string | readonly string[])[],
-  match: Match,
+  names: readonly string[],
   after?: string
 ): boolean {
   const from = after === undefined ? undefined : instant(after, "the time a message must follow");
-  const carries = (message: string, name: string | readonly string[]) =>
-    typeof name === "string"
-      ? bodyNames(message, name)
-      : name.some((one) => bodyNames(message, one));
   return (
     names.length > 0 &&
     publishes(runDir, sender).some(
       (sent) =>
         sent.topic.endsWith(`-${role}`) &&
         (from === undefined || instant(sent.at, "a message's time") > from) &&
-        (match === "all"
-          ? names.every((name) => carries(sent.message, name))
-          : names.some((name) => carries(sent.message, name)))
+        names.every((name) => bodyNames(sent.message, name))
     )
   );
 }
@@ -1860,6 +1844,37 @@ function prComment(call: z.infer<typeof Call>, world: World): string | undefined
 
 /** The scenarios whose agents' texts the rig's judge reads (judge.ts's `judgeWorker`). */
 export const JUDGED_SCENARIOS: readonly string[] = ["reviewer-text-findings", "threads-closed"];
+/** The three worker judges' answer files (judge-prompts.ts's acceptsPrompt, namesPrompt and
+ * testingPrompt), in the order judge.ts writes them. */
+const WORKER_FILES = ["accepts.json", "names.json", "testing.json"] as const;
+/** The judge files each case of a judged scenario reads, through `workerReadings`, at the terms
+ * that need a judge's reading: threads-closed's accept the accepts judge's ((d), `accepted`) and
+ * the names judge's ((c), `judgedTester`); crossing all three ((a) the names judge's,
+ * `judgedTester`; (b) the accepts judge's, `accepted`, and the testing and names judges',
+ * `backTo`); correct none; code-defect the names judge's alone (`told`, through `findingNamed`);
+ * reviewer-text-findings' text-only and last-push the names judge's (`toldImplementer`, through
+ * `findingNamed`), and defect none, since its rule asks for no wake. */
+const CASE_JUDGES: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  "reviewer-text-findings": {
+    "text-only": ["names.json"],
+    defect: [],
+    "last-push": ["names.json"],
+  },
+  "threads-closed": {
+    accept: ["accepts.json", "names.json"],
+    correct: [],
+    crossing: ["accepts.json", "names.json", "testing.json"],
+    "code-defect": ["names.json"],
+  },
+};
+/** The judge files a run of `scenario` in `runCase` reads (CASE_JUDGES): every worker judge's
+ * file for a case the table does not name, or none (`undefined`, a run whose case cannot be read).
+ * judge.ts's `judgeWorker` starts a judge only for one of these files and writes every other with
+ * no row, which `workerCoverage` takes as covering; a file of one of these that holds no row for a
+ * text the run's agents wrote is a rig error, as every uncovered answer is. */
+export function caseJudges(scenario: string, runCase: string | undefined): readonly string[] {
+  return (runCase === undefined ? undefined : CASE_JUDGES[scenario]?.[runCase]) ?? WORKER_FILES;
+}
 /** One text an agent of a worker run wrote, as the rig's judge is given it (texts.json) and its
  * answers name it (Verification v47's rule 8): a message one of the run's agents sent on a role
  * topic (`message-<n>`, in the order Envoy accepted them), a `gh pr comment` on the world's pull
@@ -1895,10 +1910,39 @@ function ownMessages(runDir: string): { id: string; sent: Publish }[] {
     .filter((line): line is Publish => "message" in line && own.includes(String(line.sender)))
     .map((sent, index) => ({ id: `message-${index + 1}`, sent }));
 }
+/** The messages of `ownMessages` that `sender` sent on `role`'s topic, each with its id. */
+function ownMessagesTo(
+  runDir: string,
+  sender: string,
+  role: Role
+): { id: string; sent: Publish }[] {
+  return ownMessages(runDir).filter(
+    ({ sent }) => sent.sender === sender && sent.topic.endsWith(`-${role}`)
+  );
+}
+/** Every result an agent the run booted (`runSessions`) recorded, in results.json's order, each
+ * with the id the rig's judge names it by (`result-<n>`, WorkerText): the one numbering of a run's
+ * own results, which `workerTexts` gives the judge and a scorer reads the judge's answers by. */
+function ownResults(runDir: string): { id: string; result: RunResult }[] {
+  const own = runSessions(runDir);
+  return resultsOf(runDir)
+    .filter((result) => own.includes(result.session))
+    .map((result, index) => ({ id: `result-${index + 1}`, result }));
+}
+/** Every result no agent the run booted recorded, the seeded passes among them, in results.json's
+ * order, each with the id the names judge is given it by (`earlier-<n>`, WorkerGiven): the one
+ * numbering of a run's earlier results, which `workerGivens` gives the judge and a scorer reads
+ * the judge's answers by. */
+function earlierResults(runDir: string): { id: string; result: RunResult }[] {
+  const own = runSessions(runDir);
+  return resultsOf(runDir)
+    .filter((result) => !own.includes(result.session))
+    .map((result, index) => ({ id: `earlier-${index + 1}`, result }));
+}
 /** Every text the run's agents wrote that the judge reads (WorkerText). */
 export function workerTexts(runDir: string): WorkerText[] {
   const world = worldIn(runDir);
-  const own = runSessions(runDir);
+  const results = ownResults(runDir);
   const comments = parsed(path.join(runDir, CALLS), Call).flatMap((call) => {
     if (call.as !== "gh" || call.exit !== 0 || prComment(call, world) === undefined) return [];
     const file = flagValue(call.argv, ["-F", "--body-file"]);
@@ -1907,7 +1951,6 @@ export function workerTexts(runDir: string): WorkerText[] {
       (file === "-" ? call.stdin : file === undefined ? undefined : call.files?.[file]);
     return [body ?? callText(call)];
   });
-  const results = resultsOf(runDir).filter((result) => own.includes(result.session));
   return [
     ...ownMessages(runDir).map(({ id, sent }) => ({
       id,
@@ -1919,8 +1962,8 @@ export function workerTexts(runDir: string): WorkerText[] {
       kind: "comment" as const,
       body,
     })),
-    ...results.map((result, index) => ({
-      id: `result-${index + 1}`,
+    ...results.map(({ id, result }) => ({
+      id,
       kind: "result" as const,
       body: result.observed,
     })),
@@ -1939,7 +1982,6 @@ const CheckFixture = z.looseObject({ covers: z.enum(CHECK_COVERS).default("r2") 
  * results.json's order (`earlier-<n>`). */
 export function workerGivens(runDir: string): WorkerGiven[] {
   const world = worldIn(runDir);
-  const own = runSessions(runDir);
   const seeded = path.join(runDir, "threads.json");
   const threads = [
     ...(existsSync(seeded) ? json(seeded, Threads) : []),
@@ -1949,7 +1991,7 @@ export function workerGivens(runDir: string): WorkerGiven[] {
     })),
   ];
   const files = [...new Set([FINDING_DOC, WORKFLOW_FILE, ...threads.map((thread) => thread.path)])];
-  const earlier = resultsOf(runDir).filter((result) => !own.includes(result.session));
+  const earlier = earlierResults(runDir);
   const fixture = path.join(runDir, "fixture.json");
   const covers = existsSync(fixture) ? json(fixture, CheckFixture).covers : "r2";
   return [
@@ -1972,8 +2014,8 @@ export function workerGivens(runDir: string): WorkerGiven[] {
             : `the file ${file}, and the review ${on.length === 1 ? "thread" : "threads"} ${on.join(", ")} on it`,
       };
     }),
-    ...earlier.map((result, index) => ({
-      id: `earlier-${index + 1}`,
+    ...earlier.map(({ id, result }) => ({
+      id,
       kind: "result" as const,
       what: `the ${result.role}'s ${result.verdict} of check ${result.check} at commit ${result.commit}, recorded at ${result.at}, which observed: ${result.observed}`,
     })),
@@ -1990,31 +2032,41 @@ export function workerCommit(runDir: string, scenario: string): string | undefin
 /** What a worker judge's answer to `file` leaves out of, repeats from or adds to what judge.ts gave
  * its judge; empty when it covers its input exactly. accepts.json and testing.json each hold one
  * row for each text, where there is a commit the run's agents decide at, and none where there is
- * not; names.json one row for each text and each thing given. judge.ts, after each answer parses,
+ * not; names.json one row for each text and each thing given. A file of a judge the run's case
+ * does not read (`reads`, `caseJudges`) that holds no row covers it, since judge.ts starts no
+ * judge for it and writes it with none; one that holds rows, as a judging written before that
+ * rule holds them, is held to its input as every other is. judge.ts, after each answer parses,
  * and `workerReadings` use it. */
 export function workerCoverage(
   file: string,
   answer: unknown,
   texts: readonly WorkerText[],
   givens: readonly WorkerGiven[],
-  commit: string | undefined
+  commit: string | undefined,
+  reads: readonly string[]
 ): string[] {
   const ids = texts.map((text) => text.id);
-  if (file === "accepts.json" || file === "testing.json")
-    return covered(
-      "text",
-      commit === undefined ? [] : ids,
-      (file === "accepts.json" ? AcceptsOutput : TestingOutput)
-        .parse(answer)
-        .rows.map((row) => row.id),
-      true
-    );
-  return covered(
-    "text and thing",
-    ids.flatMap((id) => givens.map((given) => `${id} ${given.id}`)),
-    NamesOutput.parse(answer).rows.map((row) => `${row.id} ${row.given}`),
-    true
-  );
+  const unread = (rows: readonly unknown[]) => rows.length === 0 && !reads.includes(file);
+  if (file === "accepts.json" || file === "testing.json") {
+    const rows = (file === "accepts.json" ? AcceptsOutput : TestingOutput).parse(answer).rows;
+    return unread(rows)
+      ? []
+      : covered(
+          "text",
+          commit === undefined ? [] : ids,
+          rows.map((row) => row.id),
+          true
+        );
+  }
+  const rows = NamesOutput.parse(answer).rows;
+  return unread(rows)
+    ? []
+    : covered(
+        "text and thing",
+        ids.flatMap((id) => givens.map((given) => `${id} ${given.id}`)),
+        rows.map((row) => `${row.id} ${row.given}`),
+        true
+      );
 }
 /** The judge's readings of a worker run (`workerReadings`): by text id, whether it accepts the
  * run's commit and whether it says the issue goes back to testing; by `<text id> <thing id>`,
@@ -2024,31 +2076,24 @@ export interface WorkerReadings {
   readonly names: ReadonlyMap<string, NamesRow>;
   readonly testing: ReadonlyMap<string, z.infer<typeof TestingOutput>["rows"][number]>;
 }
-/** The judge's readings of a worker run of `scenario` (judge.ts's `judgeWorker`), which a judged
- * term records in its row, as rule 8 has it: for each text (`workerTexts`), whether it accepts the
- * commit `workerCommit` names, and whether it says that the issue goes back to testing, each
- * keyed by the text's id, the second read only where there is such a commit, as judge.ts asks it
- * only there; and whether it names each thing `workerGivens` lists, keyed `<text id> <thing id>`;
- * each with the words the judge quoted. A file missing, malformed, or not covering what judge.ts
- * gave its judge (`workerCoverage`) is a rig error that `rig.sh judge` fixes, as a spec run's
- * judge file is (`judged`). */
-export function workerReadings(runDir: string, scenario: string): WorkerReadings {
+/** The judge's readings of a worker run of `scenario` in `runCase` (judge.ts's `judgeWorker`),
+ * which a judged term records in its row, as rule 8 has it: for each text (`workerTexts`),
+ * whether it accepts the commit `workerCommit` names, and whether it says that the issue goes back
+ * to testing, each keyed by the text's id, the second read only where there is such a commit, as
+ * judge.ts asks it only there; and whether it names each thing `workerGivens` lists, keyed
+ * `<text id> <thing id>`; each with the words the judge quoted. A file missing, malformed, or not
+ * covering what judge.ts gave its judge (`workerCoverage`, under the files the case reads,
+ * `caseJudges`) is a rig error that `rig.sh judge` fixes, as a spec run's judge file is
+ * (`judged`). */
+export function workerReadings(runDir: string, scenario: string, runCase: string): WorkerReadings {
   const texts = workerTexts(runDir);
   const givens = workerGivens(runDir);
   const commit = workerCommit(runDir, scenario);
-  const read = <T>(file: string, schema: z.ZodType<T>): T => {
-    const full = path.join(runDir, file);
-    if (!existsSync(full)) throw new Error(`${file} is missing: run rig.sh judge ${runDir}`);
-    const result = schema.safeParse(JSON.parse(readFileSync(full, "utf8")));
-    if (!result.success)
-      throw new Error(`${file} is not a judge's answer: ${z.prettifyError(result.error)}`);
-    const problems = workerCoverage(file, result.data, texts, givens, commit);
-    if (problems.length > 0)
-      throw new Error(
-        `${file} does not cover what judge.ts gave its judge: ${problems.join("; ")}: run rig.sh judge ${runDir}`
-      );
-    return result.data;
-  };
+  const reads = caseJudges(scenario, runCase);
+  const read = <T>(file: string, schema: z.ZodType<T>): T =>
+    judgeAnswer(runDir, file, schema, (answer) =>
+      workerCoverage(file, answer, texts, givens, commit, reads)
+    );
   return {
     accepts: new Map(read("accepts.json", AcceptsOutput).rows.map((row) => [row.id, row])),
     names: new Map(
@@ -2260,7 +2305,8 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const refusedCompletions = daemon.filter(
     (line) => line.path === COMPLETE_PATH && line.code === NOT_CURRENT_PHASE
   ).length;
-  const moved = backwardMoves(runDir).find((line) => line.status === 200);
+  // A move back the daemon took: a line of `backwardMoves`' route, among the lines read above.
+  const moved = daemon.find((line) => line.path === BACKWARD_PATH && line.status === 200);
   const unmoved = moved === undefined;
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
@@ -2273,24 +2319,16 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const reviewSender = reviewSession.length === 0 ? undefined : ownSession(reviewSession);
   // The judge's readings, read at the first term that needs one and never before, so a run no
   // judged term reaches is scored on what the scorer reads alone.
-  let readings: WorkerReadings | undefined;
-  const judged = () => {
-    readings ??= workerReadings(runDir, "threads-closed");
-    return readings;
-  };
+  const judged = once(() => workerReadings(runDir, "threads-closed", threadsCase));
   // The implementer's messages on `role`'s topic, each with the id the judge names it by.
-  const messages = ownMessages(runDir);
-  const fixMessagesTo = (role: Role) =>
-    messages.filter(({ sent }) => sent.sender === fixSender && sent.topic.endsWith(`-${role}`));
+  const fixMessagesTo = (role: Role) => ownMessagesTo(runDir, fixSender, role);
   // The implementer's messages of its push: the daemon starts no phase for its last chance, so
   // the reviewer and the architect learn of its push from these alone, each naming the head the
   // implementer's push made and sent after the remote took it.
   const toldReviewer =
-    fixPush !== undefined &&
-    publishedTo(runDir, fixSender, "reviewer", [fixPush.sha], "all", fixPush.at);
+    fixPush !== undefined && publishedTo(runDir, fixSender, "reviewer", [fixPush.sha], fixPush.at);
   const toldArchitectOfPush =
-    fixPush !== undefined &&
-    publishedTo(runDir, fixSender, "architect", [fixPush.sha], "all", fixPush.at);
+    fixPush !== undefined && publishedTo(runDir, fixSender, "architect", [fixPush.sha], fixPush.at);
   // The reviewer's commit accepted (accept (d), crossing (b)): a message of the implementer's on
   // each of the two topics that names the commit by SHA, the scorer's, and accepts it, the
   // accepts judge's.
@@ -2303,48 +2341,44 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     (threadsCase === "accept" || threadsCase === "crossing") &&
     acceptsTo("reviewer") &&
     acceptsTo("architect");
-  // The results of the run's issue. The run's own (`runSessions`) are the texts `result-<n>` the
-  // names judge read, in results.json's order, and each other is an earlier one, `earlier-<n>` to
-  // that judge, the tester's among them (`workerTexts`, `workerGivens`).
+  // The results of the run's issue. The run's own are the texts `result-<n>` the names judge read
+  // (`ownResults`), and each other is an earlier one, `earlier-<n>` to that judge, the tester's
+  // among them (`earlierResults`).
   const results = resultsOf(runDir);
-  const sessions = runSessions(runDir);
-  const ownResults = results.filter((result) => sessions.includes(result.session));
-  const testerResults = results
-    .filter((result) => !sessions.includes(result.session))
-    .flatMap((result, index) =>
-      result.role === "tester" ? [{ id: `earlier-${index + 1}`, commit: result.commit }] : []
-    );
+  const testerResults = earlierResults(runDir).flatMap(({ id, result }) =>
+    result.role === "tester" ? [{ id, commit: result.commit }] : []
+  );
   // Whether a result's reason names the tester's earlier pass: its commit by a SHA prefix of 7 or
-  // more, the scorer's (rule 8), and the tester's result itself, the names judge's.
+  // more, the scorer's (rule 8), and the tester's result itself, the names judge's reading of the
+  // run's own result `id`.
   const namesTesterCommit = (result: RunResult) =>
     namesCommit(
       result.observed,
       testerResults.map((tester) => tester.commit)
     );
-  const judgedTester = (result: RunResult) =>
-    testerResults.some(
-      (tester) =>
-        judged().names.get(`result-${ownResults.indexOf(result) + 1} ${tester.id}`)?.names === true
-    );
+  const judgedTester = (id: string) =>
+    testerResults.some((tester) => judged().names.get(`${id} ${tester.id}`)?.names === true);
   // The implementer's results of the world's check at the reviewer's commit (accept (c),
-  // crossing (a) and (b)), each its own run there (`ownRun`) or none of its own.
-  const atCommit = results.filter(
-    (result) =>
+  // crossing (a) and (b)), each with its id, each its own run there (`ownRun`) or none of its own.
+  const atCommit = ownResults(runDir).filter(
+    ({ result }) =>
       result.check === WORLD_CHECK &&
       result.session === fixSender &&
       namesHead(world.head, result.commit)
   );
-  const ownRuns = atCommit.filter((result) => ownRun(record, result));
-  const unrun = atCommit.filter((result) => !ownRun(record, result));
-  const holds = unrun.filter((result) => result.verdict === "pass");
+  const ownRuns: typeof atCommit = [];
+  const unrun: typeof atCommit = [];
+  for (const one of atCommit) (ownRun(record, one.result) ? ownRuns : unrun).push(one);
+  const holds = unrun.filter(({ result }) => result.verdict === "pass");
   // Each read where its case's term asks it and nowhere else, since each may read the judge.
   const recordedAtCommit = () =>
     ownRuns.length > 0 ||
     holds.some(
-      (result) => result.observed.trim() !== "" && namesTesterCommit(result) && judgedTester(result)
+      ({ id, result }) =>
+        result.observed.trim() !== "" && namesTesterCommit(result) && judgedTester(id)
     );
   const heldTesterPass = () =>
-    unrun.some((result) => namesTesterCommit(result) || judgedTester(result));
+    unrun.some(({ id, result }) => namesTesterCommit(result) || judgedTester(id));
   const heldNoRun = holds.length > 0 && !record.some((call) => ranCheck(call, FIXES, world.head));
   // The issue sent back to testing (crossing (b)): a message of the implementer's on `role`'s
   // topic that says so, by the testing judge, and names the world's check, by its id or the
@@ -2358,7 +2392,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
           sent.message.includes("bun greet.ts Ada") ||
           judged().names.get(`${id} check`)?.names === true)
     );
-  const lastRun = ownRuns.at(-1);
+  const lastRun = ownRuns.at(-1)?.result;
   const ranAndAnswered = lastRun !== undefined && (lastRun.verdict !== "pass" || accepted);
   // The reviewer's result at the head the implementer's push made (correct (e)): its own run
   // there, or a pass recorded as holding with a reason; and where it stands against the approval.
@@ -2371,14 +2405,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       namesHead(fixPush.sha, result.commit) &&
       (ownRun(record, result) || (result.verdict === "pass" && result.observed.trim() !== ""))
   );
-  const resultOrder =
-    reviewerResult === undefined
-      ? "no-result"
-      : verdict?.event !== "APPROVE"
-        ? "no-approval"
-        : instant(reviewerResult.at, "a result's time") < instant(verdict.at, "a review's time")
-          ? "before-approval"
-          : "after-approval";
+  const order = resultOrder(reviewerResult, verdict);
   const ownResultAtPush = results.some(
     (result) =>
       result.check === WORLD_CHECK &&
@@ -2406,39 +2433,46 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     reviewSender !== undefined &&
     approvedAt !== undefined &&
     tip !== undefined &&
-    publishedTo(runDir, reviewSender, "architect", [tip], "all", approvedAt);
+    publishedTo(runDir, reviewSender, "architect", [tip], approvedAt);
   const requested = submissions.some((review) => review.event === "REQUEST_CHANGES");
   const approvedAny = submissions.some((review) => review.event === "APPROVE");
-  const terms: Record<string, boolean> =
-    threadsCase === "accept"
-      ? {
-          a: readsCommit(fixSession, world.head),
-          b: commented,
-          c: recordedAtCommit(),
-          d: accepted,
-          e: pushes.length === 0 && fixResolves === 0 && resolves.length === 0 && unmoved,
-        }
-      : threadsCase === "crossing"
-        ? {
-            a: !heldTesterPass(),
-            b: ranAndAnswered || (backTo("reviewer") && backTo("architect")),
-            c: pushes.length === 0 && unmoved,
-          }
-        : threadsCase === "correct"
-          ? {
-              a: fixed && textOnly && corrected && workflowFixed,
-              b: commented && toldReviewer && toldArchitectOfPush,
-              c: !ownResultAtPush,
-              d: unmoved,
-              e: reviewerResult !== undefined,
-              f: listed && resolvedEach && fixResolves === 0 && approved,
-            }
-          : {
-              noCommit: pushes.length === 0,
-              noResult: !results.some((result) => result.session === fixSender),
-              told,
-              unmoved,
-            };
+  let terms: Record<string, boolean>;
+  switch (threadsCase) {
+    case "accept":
+      terms = {
+        a: readsCommit(fixSession, world.head),
+        b: commented,
+        c: recordedAtCommit(),
+        d: accepted,
+        e: pushes.length === 0 && fixResolves === 0 && resolves.length === 0 && unmoved,
+      };
+      break;
+    case "crossing":
+      terms = {
+        a: !heldTesterPass(),
+        b: ranAndAnswered || (backTo("reviewer") && backTo("architect")),
+        c: pushes.length === 0 && unmoved,
+      };
+      break;
+    case "correct":
+      terms = {
+        a: fixed && textOnly && corrected && workflowFixed,
+        b: commented && toldReviewer && toldArchitectOfPush,
+        c: !ownResultAtPush,
+        d: unmoved,
+        e: reviewerResult !== undefined,
+        f: listed && resolvedEach && fixResolves === 0 && approved,
+      };
+      break;
+    default:
+      // code-defect.
+      terms = {
+        noCommit: pushes.length === 0,
+        noResult: !results.some((result) => result.session === fixSender),
+        told,
+        unmoved,
+      };
+  }
   const pass = Object.values(terms).every(Boolean);
   // Both halves read the reference, or the one half that ran where the run booted one (above).
   const ref = [fixSession, ...(reviewSender === undefined ? [] : [reviewSession])].every(
@@ -2449,10 +2483,8 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   );
   const notes = [
     `case=${threadsCase} threads=${threads.length} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} commented=${commented} toldReviewer=${toldReviewer} toldArchitectOfPush=${toldArchitectOfPush} accepted=${accepted} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} fixPushes=${fixPushes.length}`,
-    `terms=${Object.entries(terms)
-      .map(([term, held]) => `${term}:${held}`)
-      .join(",")}`,
-    `textOnly=${textOnly} corrected=${corrected} workflowFixed=${workflowFixed} ownResultAtPush=${ownResultAtPush} resultOrder=${resultOrder} atCommit=${atCommit.length} ownRuns=${ownRuns.length} heldNoRun=${heldNoRun}`,
+    termsNote(terms),
+    `textOnly=${textOnly} corrected=${corrected} workflowFixed=${workflowFixed} ownResultAtPush=${ownResultAtPush} resultOrder=${order} atCommit=${atCommit.length} ownRuns=${ownRuns.length} heldNoRun=${heldNoRun}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -2468,6 +2500,22 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     notes: notes.join(" "),
     ...(threadsCase === "accept" ? { heldNoRun } : {}),
   };
+}
+/** Where the reviewer's result at the head the implementer's push made (`result`, correct (e))
+ * stands against the reviewer's verdict (threadsClosed's `resultOrder`): no such result, no
+ * approval standing, or recorded before or after the approval. */
+function resultOrder(result: RunResult | undefined, verdict: Submission | undefined): string {
+  if (result === undefined) return "no-result";
+  if (verdict?.event !== "APPROVE") return "no-approval";
+  return instant(result.at, "a result's time") < instant(verdict.at, "a review's time")
+    ? "before-approval"
+    : "after-approval";
+}
+/** A worker row's `terms=` note: each term of its case and whether it held, in the case's order. */
+function termsNote(terms: Readonly<Record<string, boolean>>): string {
+  return `terms=${Object.entries(terms)
+    .map(([term, held]) => `${term}:${held}`)
+    .join(",")}`;
 }
 /** A cased scenario: the cases rig.sh builds a world for, the scenario's own word for itself,
  * which a refusal of <run>/case.txt names it by, how its run directories name their case and
@@ -4602,20 +4650,33 @@ export function coverage(file: string, answer: unknown, inputs: JudgeInputs): st
       return [];
   }
 }
-/** A judge's answer in the run directory, as judge.ts wrote it; a file missing, malformed, or not
- * covering what judge.ts gave its judge (coverage) is a rig error that `rig.sh judge` fixes. */
-function judged<T>(runDir: string, file: string, schema: z.ZodType<T>, inputs: JudgeInputs): T {
+/** A judge's answer `file` in the run directory, as judge.ts wrote it, parsed by `schema` and held
+ * to `covers`, what the answer leaves out of, repeats from or adds to what judge.ts gave its judge
+ * (empty when it covers it): a file missing, malformed, or not covering is a rig error that
+ * `rig.sh judge` fixes. Every judge file a score reads is read through it (`judged`,
+ * `workerReadings`). */
+function judgeAnswer<T>(
+  runDir: string,
+  file: string,
+  schema: z.ZodType<T>,
+  covers: (answer: T) => string[]
+): T {
   const full = path.join(runDir, file);
   if (!existsSync(full)) throw new Error(`${file} is missing: run rig.sh judge ${runDir}`);
   const result = schema.safeParse(JSON.parse(readFileSync(full, "utf8")));
   if (!result.success)
     throw new Error(`${file} is not a judge's answer: ${z.prettifyError(result.error)}`);
-  const problems = coverage(file, result.data, inputs);
+  const problems = covers(result.data);
   if (problems.length > 0)
     throw new Error(
       `${file} does not cover what judge.ts gave its judge: ${problems.join("; ")}: run rig.sh judge ${runDir}`
     );
   return result.data;
+}
+/** A spec run's judge answer in the run directory (`judgeAnswer`), held to what judge.ts gave its
+ * judge (coverage). */
+function judged<T>(runDir: string, file: string, schema: z.ZodType<T>, inputs: JudgeInputs): T {
+  return judgeAnswer(runDir, file, schema, (answer) => coverage(file, answer, inputs));
 }
 /** Each count of `values` in `kinds`, as `kind:n,…`. */
 const tally = (kinds: readonly string[], values: string[]) =>
@@ -5749,30 +5810,27 @@ function scoreRuns(
       );
     }
   }
-  // For each arm whose rows say whether the verdict was `REQUEST_CHANGES` (reviewer-text-findings),
-  // how many did: k1's and k3's base arms are read off this count, since the score is label-blind.
-  const requestedKeys = keys.filter((key) =>
-    rows.some((row) => `${row.scenario}\t${row.label}` === key && row.requested !== undefined)
-  );
-  if (requestedKeys.length > 0) {
-    console.log("\nscenario\tlabel\trequested");
-    for (const key of requestedKeys) {
+  // For each arm whose rows carry `field`, how many hold it, in a table headed `column`.
+  const armCounts = (
+    column: string,
+    field: (row: (typeof rows)[number]) => boolean | undefined
+  ) => {
+    const counted = keys.filter((key) =>
+      rows.some((row) => `${row.scenario}\t${row.label}` === key && field(row) !== undefined)
+    );
+    if (counted.length === 0) return;
+    console.log(`\nscenario\tlabel\t${column}`);
+    for (const key of counted) {
       const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
-      console.log(`${key}\t${group.filter((row) => row.requested).length}/${group.length}`);
+      console.log(`${key}\t${group.filter((row) => field(row)).length}/${group.length}`);
     }
-  }
-  // For each arm whose rows say whether the implementer recorded the pass as holding with no run
-  // (threads-closed's accept), how many did: k3's second control is read off the head arm's count.
-  const heldKeys = keys.filter((key) =>
-    rows.some((row) => `${row.scenario}\t${row.label}` === key && row.heldNoRun !== undefined)
-  );
-  if (heldKeys.length > 0) {
-    console.log("\nscenario\tlabel\theld");
-    for (const key of heldKeys) {
-      const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
-      console.log(`${key}\t${group.filter((row) => row.heldNoRun).length}/${group.length}`);
-    }
-  }
+  };
+  // Whether the verdict was `REQUEST_CHANGES` (reviewer-text-findings): k1's and k3's base arms
+  // are read off this count, since the score is label-blind.
+  armCounts("requested", (row) => row.requested);
+  // Whether the implementer recorded the pass as holding with no run (threads-closed's accept):
+  // k3's second control is read off the head arm's count.
+  armCounts("held", (row) => row.heldNoRun);
   console.log(
     [
       "",

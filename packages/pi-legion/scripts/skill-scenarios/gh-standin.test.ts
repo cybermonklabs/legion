@@ -4947,10 +4947,11 @@ const WORLD_VALUES = [
  * worker_boot writes a label's (`writeGhSelectors`). `worldCase` is the case the world's function
  * builds (worker_fixture passes it): for approved_world the threads-closed case (rig.sh's own
  * refusal names the world that is given none), `correct`, the reviewer's commit at the head with
- * one thread left on the workflow file, `accept`, its commit with none, or `code-defect`, with the
- * guard `dropped`; for review_world `last-push`, text-only's world on a base whose rules require
- * the last push approved by another, or none. `env` is the operator's own environment the build
- * runs in, over this process's. */
+ * one thread left on the workflow file, `accept`, its commit with none, `crossing`, accept's world
+ * with a check that compares the command's output with docs/cli.md's example line, or
+ * `code-defect`, with the guard `dropped`; for review_world `last-push`, text-only's world on a
+ * base whose rules require the last push approved by another, or none. `env` is the operator's
+ * own environment the build runs in, over this process's. */
 function worldDir(
   world: string,
   guard = "",
@@ -8977,7 +8978,8 @@ test("a body edit gives each object of a list answer that has a body the new bod
     '[{"number":7,"body":"new"}]\n'
   );
   expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
-  // gh 2.98.0 prints a `gh api` body with no line end (measured 2026-11-18, gh-standin.ts:3455).
+  // gh 2.98.0 prints a `gh api` body with no line end (measured 2026-11-18; gh-standin.ts: "gh
+  // prints the answer of a `gh api` call no `--jq` reads").
   expect(gh(run, "api", "repos/fernbrook/widgets/issues/7/comments").stdout).toBe('[{"id":1}]');
   const edit = readFileSync(path.join(run, "calls.jsonl"), "utf8")
     .trimEnd()
