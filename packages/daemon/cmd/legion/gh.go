@@ -800,13 +800,14 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 
 // ghSentFiles is what the parsed command would send to GitHub beside its argv (leakguard.GhSent),
 // for the leak guard to read as one answer (leakguard.GhRequest.Sent): the files it sends as
-// content, each named once and each named by the option it came from, whose text the guard
-// reads; the use the command makes of standard input; and whether it sends that input as content
-// at all. command is the leaf's path. What each option's value names is leakguard.GhSent's rule,
-// the one the guard's own reader of a bare argv keeps to, so the two readers name what one
-// option's value sends the same way. Finding the values is this parse's reading by the leaf's
-// help, which reads calls the guard's own reader cannot, such as `gh pr create -dF <path>`
-// (`--draft --body-file <path>`), and the guard takes this answer in place of its own reading.
+// content, each named once and each named by the option it came from or as a release asset
+// (below), whose text the guard reads; the use the command makes of standard input; and whether
+// it sends that input as content at all. command is the leaf's path. What each option's value
+// names is leakguard.GhSent's rule, the one the guard's own reader of a bare argv keeps to, so the
+// two readers name what one option's value sends the same way. Finding the values is this parse's
+// reading by the leaf's help, which reads calls the guard's own reader cannot, such as `gh pr
+// create -dF <path>` (`--draft --body-file <path>`), and the guard takes this answer in place of
+// its own reading.
 // The answer is never nil, so a command that sends nothing is a command the guard reads nothing
 // of, rather than one it reads the argv of again with tables of its own. A file a field names
 // (`-F <name>=@<path>` in `gh api`) carries the field's name (leakguard.GhFile.Field), which is
@@ -826,8 +827,19 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // answer.) The options are read in the order their names sort, since a parse holds each option's
 // values together and not the argv's order across options, and a report that named two files
 // must name them the same way twice.
+//
+// A release asset is named before the options (leakguard.GhSent.Asset): `gh release upload <tag>
+// <files>...` and `gh release create [<tag>] [<filename>... | <pattern>...]`, `gh release new`
+// among them by its canonical path, upload each positional argument past the tag (ghReleaseAssets),
+// which the guard reads whole and as the strings of a JSON document. A file that is an asset and
+// also, say, the release notes is then read as the asset, the reading that holds the other's.
 func ghSentFiles(command []string, parsed ghArgs) *leakguard.GhSent {
 	sent := &leakguard.GhSent{}
+	if slices.Equal(command, []string{"release", "upload"}) || slices.Equal(command, []string{"release", "create"}) {
+		if len(parsed.positionals) > 1 {
+			ghReleaseAssets(sent, parsed.positionals[1:])
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
 		use, option := ghSentFileOptions[name], "--"+name
 		for _, value := range parsed.values[name] {
@@ -848,6 +860,41 @@ func ghSentFiles(command []string, parsed ghArgs) *leakguard.GhSent {
 		sent.UsesStdin(leakguard.StdinRequestBody)
 	}
 	return sent
+}
+
+// ghReleaseAssets names on sent the files gh 2.98.0 uploads as release assets for args, the
+// positional arguments of `gh release upload` or `gh release create` past the tag, as its
+// AssetsFromArgs reads them (cli/cli v2.98.0 pkg/cmd/release/shared/upload.go). An argument
+// holding no `#` is a pattern gh expands (pkg/cmdutil's GlobPaths, filepath.Glob in the working
+// directory gh shares with `legion gh`) into the files it matches, so the guard reads the files gh
+// uploads and not the pattern. One with no glob metacharacter (Glob's own on Unix) is itself, as
+// Glob answers for a file that is there, and one that matches nothing, or is malformed, is
+// answered as written: gh then refuses the call and uploads nothing, and the guard's open of it
+// fails, so a file made between the two expansions is never uploaded unread. gh then splits each
+// argument and each match alike at its first `#`, where that `#` is not its first character: the
+// path before it is the file, and the text after it the asset's label, which GitHub shows. An
+// argument's own record holds its label; a match's label is in no argument, so it is named with
+// the file (leakguard.GhFile.Label) for the guard to read.
+func ghReleaseAssets(sent *leakguard.GhSent, args []string) {
+	for _, arg := range args {
+		files, matched := []string{arg}, false
+		if !strings.Contains(arg, "#") && strings.ContainsAny(arg, `*?[\`) {
+			if matches, err := filepath.Glob(arg); err == nil && len(matches) > 0 {
+				files, matched = matches, true
+			}
+		}
+		for _, file := range files {
+			path, label, labelled := strings.Cut(file, "#")
+			switch {
+			case !labelled || path == "":
+				path, label = file, ""
+			case !matched:
+				// The argument's own record holds the label.
+				label = ""
+			}
+			sent.Asset(path, label)
+		}
+	}
 }
 
 // ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,

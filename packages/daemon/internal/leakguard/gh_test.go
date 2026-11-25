@@ -317,6 +317,112 @@ func TestAGhCallsUploadTheGuardDoesNotReadIsASetupFailure(t *testing.T) {
 	}
 }
 
+// gh uploads each argument of `gh release upload` and `gh release create` past the tag as a
+// release asset, which GitHub publishes as the bytes sent, so on a public repository each asset a
+// caller's parse names (ReleaseAsset) is read whole, as a body GitHub stores as sent is, and as the
+// strings of a JSON document beside it: of a clean asset and one naming the fixture's word, the
+// call is refused naming the word's file; an asset that is one JSON document with a letter of the
+// word behind a `\u` escape is refused naming the string by its JSON path; and clean assets are
+// cleared, in upload and in create. GitHub names an asset by its file's name and shows its label,
+// neither of which the argv writes where a glob pattern matched the file, so both are read too: a
+// clean asset whose file is named after the word is refused naming the name, and a clean asset
+// whose label, the text after a `#` in a matched file's name, holds the word is refused naming the
+// label. An asset past maxGhFile is the setup failure that names the file and the bound.
+func TestAGhCallsReleaseAssetsAreReadOnAPublicRepository(t *testing.T) {
+	clean := fieldFile(t, "clean.txt", "a clean asset\n")
+	word := fieldFile(t, "word.txt", "the "+leakguardtest.Word+" notes\n")
+	escaped := fieldFile(t, "escaped.json", wordBehindAnEscape(t))
+	named := fieldFile(t, leakguardtest.Word+".txt", "a clean asset\n")
+	huge := fieldFile(t, "huge.bin", strings.Repeat("a", maxGhFile+1))
+	// upload is `gh release upload v1` of assets, as the argv writes them and as the caller's
+	// parse names them.
+	upload := func(t *testing.T, assets ...string) error {
+		t.Helper()
+		return ghFieldCall(t, GhRequest{Args: append([]string{"release", "upload", "v1"}, assets...), Sent: assetParse(assets...)})
+	}
+	t.Run("an asset naming the word is refused", func(t *testing.T) {
+		reports(t, refusal(t, upload(t, clean, word)).Lines, word+": "+leakguardtest.WordClass)
+	})
+	t.Run("a word behind a JSON escape is refused", func(t *testing.T) {
+		reports(t, refusal(t, upload(t, escaped)).Lines, escaped+", JSON .a: "+leakguardtest.WordClass)
+	})
+	t.Run("clean assets are cleared", func(t *testing.T) {
+		cleared(t, upload(t, clean))
+		cleared(t, ghFieldCall(t, GhRequest{Args: []string{"release", "create", "v1", clean, "--notes", "a clean note"}, Sent: assetParse(clean)}))
+	})
+	t.Run("an asset's file name is read", func(t *testing.T) {
+		// The argv writes the pattern, and the parse names the file it matched.
+		err := ghFieldCall(t, GhRequest{Args: []string{"release", "upload", "v1", filepath.Join(filepath.Dir(named), "*.txt")}, Sent: assetParse(named)})
+		reports(t, refusal(t, err).Lines, named+" (asset name): "+leakguardtest.WordClass)
+	})
+	t.Run("a matched asset's label is read", func(t *testing.T) {
+		// The argv writes the pattern, and the parse names the file the match's name holds
+		// before its `#`, with the label after it.
+		sent := &GhSent{}
+		sent.Asset(clean, "the "+leakguardtest.Word+" notes")
+		err := ghFieldCall(t, GhRequest{Args: []string{"release", "upload", "v1", filepath.Join(filepath.Dir(clean), "*.txt")}, Sent: sent})
+		reports(t, refusal(t, err).Lines, clean+" (asset label): "+leakguardtest.WordClass)
+	})
+	t.Run("an asset past the bound is a setup failure", func(t *testing.T) {
+		failed := setupFailure(t, upload(t, huge))
+		if want := "the file gh uploads as a release asset, " + huge + ", is longer than"; !strings.Contains(failed.Why, want) || !strings.Contains(failed.Why, maxGhFileSaid) {
+			t.Fatalf("the setup failure is %q, want one holding %q and %q", failed.Error(), want, maxGhFileSaid)
+		}
+	})
+}
+
+// On a private repository the guard runs no rule pass, so it opens no release asset: a call
+// naming one that is not there, under a file name holding the fixture's word, is cleared, as it
+// was before assets were read; the same call to a public repository is the setup failure of a
+// file the guard cannot open, which is what proves the private call opened nothing.
+func TestAGhCallsReleaseAssetsAreNotOpenedOnAPrivateRepository(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), leakguardtest.Word+".txt")
+	call := func(visibility Visibility) error {
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), visibility)
+		_, err := guard.GhCall(bound(t), GhRequest{Args: []string{"release", "upload", "v1", absent}, Repo: "invented-org/invented-repo", Sent: assetParse(absent)})
+		return err
+	}
+	if err := call(Private); err != nil {
+		t.Fatalf("the call to a private repository: %v, want it cleared", err)
+	}
+	if failed := setupFailure(t, call(Public)); !strings.Contains(failed.Why, "the file gh uploads as a release asset, "+absent+", could not be opened") {
+		t.Fatalf("the call to a public repository failed with %q, want the asset that could not be opened", failed.Error())
+	}
+}
+
+// A caller that hands the guard a bare argv (GhRequest.Sent nil) gives it no parse of gh's help
+// to tell a release asset from another option's value, so the fallback refuses every `gh release
+// upload`, and a `gh release create` or `new` with any argument past the tag, as a setup failure
+// saying it cannot tell the assets: an argument past a bare `--`, and a `--notes` value, among
+// them. A create with the tag alone, -R's value or its notes in a file passes on to be read as
+// before, and so does every other command.
+func TestAGhCallsReleaseAssetsInABareArgvAreASetupFailure(t *testing.T) {
+	for _, args := range [][]string{
+		{"release", "upload", "v1", "a.txt"},
+		{"-R", "invented-org/invented-repo", "release", "upload", "v1", "a.txt#a label"},
+		{"release", "create", "v1", "a.txt"},
+		{"release", "new", "v1", "a.txt"},
+		{"release", "create", "v1", "--", "-a.txt"},
+		{"release", "create", "v1", "--notes", "a clean note"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			failed := setupFailure(t, ghFieldCall(t, GhRequest{Args: args}))
+			if !strings.Contains(failed.Why, "uploads each argument after the tag as a release asset, which this guard cannot tell") {
+				t.Fatalf("the setup failure is %q, want one saying the guard cannot tell the release assets", failed.Error())
+			}
+		})
+	}
+	notes := fieldFile(t, "notes.md", "the release's clean notes\n")
+	for _, args := range [][]string{
+		{"release", "create", "v1"},
+		{"release", "create", "v1", "-R", "invented-org/invented-repo", "--notes=a clean note"},
+		{"release", "create", "v1", "--notes-file", notes},
+		{"release", "view", "v1", "--json", "assets"},
+	} {
+		cleared(t, ghFieldCall(t, GhRequest{Args: args}))
+	}
+}
+
 // A body file naming nothing private is cleared, which is what makes the refusal above a report
 // of the text rather than of the option.
 func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {

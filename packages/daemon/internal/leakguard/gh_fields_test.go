@@ -39,6 +39,29 @@ func stdinParse(option, field string, use StdinUse) *GhSent {
 	return sent
 }
 
+// assetParse is the GhSent a caller's parse hands for a call that uploads paths as release
+// assets, each written whole in the argv so that no label stands outside it: what cmd/legion's
+// ghSentFiles builds for them, by the rule of GhSent.Asset.
+func assetParse(paths ...string) *GhSent {
+	sent := &GhSent{}
+	for _, path := range paths {
+		sent.Asset(path, "")
+	}
+	return sent
+}
+
+// wordBehindAnEscape is a one-line JSON document whose string `.a` holds the fixture's one word
+// with its t written as a JSON escape, so that no rule reads the word in the document's bytes and
+// only a read of its decoded strings finds it.
+func wordBehindAnEscape(t *testing.T) string {
+	t.Helper()
+	document := `{"a":"the ` + strings.Replace(leakguardtest.Word, "t", `\u0074`, 1) + ` notes"}`
+	if strings.Contains(document, leakguardtest.Word) {
+		t.Fatalf("the document %q spells the word in its own bytes, so it proves nothing", document)
+	}
+	return document
+}
+
 // cleared fails the test unless err is nil.
 func cleared(t *testing.T, err error) {
 	t.Helper()
@@ -198,12 +221,7 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 	if strings.Contains(asset, "\n") {
 		t.Fatalf("the asset %q is on more than one line, so a read of it whole would not join its fields", asset)
 	}
-	// The fixture's one word with its t written as a JSON escape, so that no rule reads the word
-	// in the asset's bytes.
-	escaped := `{"a":"the ` + strings.Replace(leakguardtest.Word, "t", `\u0074`, 1) + ` notes"}`
-	if strings.Contains(escaped, leakguardtest.Word) {
-		t.Fatalf("the asset %q spells the word in its own bytes, so it proves nothing", escaped)
-	}
+	escaped := wordBehindAnEscape(t)
 	// fieldsAreTheBody fails the test unless args, a call to the upload, is the setup failure of
 	// fields gh sends as the asset.
 	fieldsAreTheBody := func(t *testing.T, args []string) {
