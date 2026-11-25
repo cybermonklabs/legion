@@ -99,7 +99,12 @@ EOF
   kind_k run gvisor-check --image="$kind_busybox" --restart=Never \
     --overrides='{"spec":{"runtimeClassName":"gvisor"}}' -- dmesg
   kind_k wait --for=jsonpath='{.status.phase}'=Succeeded pod/gvisor-check --timeout=180s
-  kind_k logs gvisor-check | grep -q 'Starting gVisor' || fail "a gvisor pod's kernel is not gVisor's: $(kind_k logs gvisor-check)"
+  # The whole log is read before it is matched: under the caller's pipefail, a `grep -q` reading
+  # kubectl's output exits at its first match, and a kubectl still writing dies of SIGPIPE, which
+  # fails the check on a log that holds the line.
+  local kernel
+  kernel=$(kind_k logs gvisor-check) || fail "cannot read the gvisor-check pod's log"
+  [[ $kernel == *'Starting gVisor'* ]] || fail "a gvisor pod's kernel is not gVisor's: $kernel"
   note "a runtimeClassName: gvisor pod runs under $(docker exec "$kind_node" /usr/local/bin/runsc --version | head -1)"
   kind_k delete pod gvisor-check --wait=false
 }
@@ -117,7 +122,12 @@ kind_sandbox_internal_kubeconfig() {
 kind_sandbox_teardown() {
   local status=$1 evidence=$2
   [ -n "$kind_cluster" ] || return 0
-  "$kind_bin" get clusters 2>/dev/null | grep -qx "$kind_cluster" || return 0
+  # kind's whole list is read before it is matched: kind writes one line per cluster, so a
+  # `grep -qx` that matched before the last line leaves kind to die of SIGPIPE under pipefail, and
+  # a live cluster would be taken for one already gone and left behind.
+  local clusters
+  clusters=$("$kind_bin" get clusters 2>/dev/null) || return 0
+  grep -qx "$kind_cluster" <<<"$clusters" || return 0
   if [ "$status" -ne 0 ]; then
     {
       kind_k get pods -A -o wide
