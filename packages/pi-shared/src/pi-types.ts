@@ -728,7 +728,16 @@ export interface PiApi {
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
-    options?: { readonly deliverAs: "aside" | "followUp" }
+    options?: {
+      readonly deliverAs?: "aside" | "followUp";
+      /** `"outside"` when the text is a person's own turn the extension relays: the host's
+       *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
+       *  terminal does (`session/agent-session.ts:12977`, the option at
+       *  `session/agent-session-types.ts:693-694`, at vOMP_PIN_PENDING_VERSION). Unset, the
+       *  text counts as made inside the session and the hold stays; a host without the option
+       *  ignores it. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => void;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
@@ -740,7 +749,18 @@ export interface PiApi {
    */
   readonly sendUserInput?: (
     text: string,
-    options?: { readonly deliverAs?: "aside"; readonly tag?: string }
+    options?: {
+      readonly deliverAs?: "aside";
+      readonly tag?: string;
+      /** `"outside"` when the text is a person's own turn the extension relays, a bridge's typed
+       *  Send: the host hands it on to the prompt, skill or built-in the input runs, and a prompt
+       *  or skill so marked ends the session's cyber-policy hold as a prompt typed at the terminal
+       *  does (`extensibility/extensions/send-user-input-handler.ts:89-142` and
+       *  `SendUserInputOptions` at `extensibility/extensions/types.ts:2503-2508`, at
+       *  vOMP_PIN_PENDING_VERSION). Unset, the input counts as made inside the session and the
+       *  hold stays. */
+      readonly origin?: "outside" | "inside";
+    }
   ) => Promise<UserInputResult>;
   /** The session's extension, custom and skill slash commands (`skill:<name>`), never its
    *  built-ins. Every Oh My Pi build has it; Legion's own test hosts leave it out. */
