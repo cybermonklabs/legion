@@ -18,6 +18,7 @@ import (
 // child runs) and the adoption of a queued root's todo members into a live tree (Adopt).
 
 func TestAReenteredChildKeepsItsOwnPriority(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	parent := "LEGION-208"
@@ -35,6 +36,7 @@ func TestAReenteredChildKeepsItsOwnPriority(t *testing.T) {
 }
 
 func TestAnAdoptedTodoMemberKeepsItsOwnPriority(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Implementing)
 	queued := record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300", Project: "LEGION",

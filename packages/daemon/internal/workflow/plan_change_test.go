@@ -166,6 +166,7 @@ func architectOf(t *testing.T) claim.Token {
 // The twin: a root given no plan opens to planning, the first of the default steps, in the rows of
 // the task default that its first step writes.
 func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
+	t.Parallel()
 	t.Run("a root at admitted takes it, and its gate opens to the plan's first step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -359,6 +360,7 @@ func runningRefusal() *intake.Refusal {
 // started at a raised entry told why, the pass rises by one, and no pair, round or hook is counted.
 // A version that changes a task that is done, or one whose issue left the workflow, is refused.
 func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
+	t.Parallel()
 	t.Run("while a runs, then after it is stopped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -499,6 +501,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 // stop_task, which the route names by the same id (issue, generation, document, version), applies
 // and is taken, rather than answered as a duplicate that took nothing.
 func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)
@@ -561,6 +564,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 // twin: an issue that started its work before Legion took plans, which stands in planning with no
 // plan rows, takes no plan, and stays where it stands.
 func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T) {
+	t.Parallel()
 	t.Run("the stopped task default is replaced by a, which starts at its first step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -703,6 +707,7 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 // prove, since the route alone reads Dispatch's versions: api's TestAVersionNobodyGaveChangesNothing,
 // beside TestRegisterPlanTakesAPlanAndRefusesWithReasons.
 func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
+	t.Parallel()
 	const merged = "merge-42"
 	versionOne := []string{"implementer/implementation", "reviewer/review"}
 	want := []walkStanding{

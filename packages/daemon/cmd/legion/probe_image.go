@@ -118,7 +118,7 @@ func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	f := &probeImageFlags{}
 	flags.StringVar(&f.omp, "omp", "", "the OMP executable to probe (default: $LEGION_OMP_PATH)")
-	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion),
+	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion()),
 		"the daemon API contract the image's pi-legion must declare (the daemon's probe Sandbox passes its own)")
 	flags.StringVar(&f.pluginRoot, "plugin-root", "", "the Legion plugin directory a pod loads as an explicit extension, which the load probe loads the same way (required)")
 	flags.StringVar(&f.envoyPluginRoot, "envoy-plugin-root", "", "the Envoy plugin directory a pod loads as its other explicit extension, which the load probe loads the same way (required)")

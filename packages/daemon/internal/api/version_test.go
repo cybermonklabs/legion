@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -11,11 +12,34 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The contract number the boot gate requires of the installed plugin is written where both sides
-// read it: `packages/pi-legion/src/daemon-api-version.test.ts` pins the plugin manifest's
-// `legion.daemonApiVersion` to this fixture, so a bump on one side alone fails a test.
-func TestDaemonAPIVersionGolden(t *testing.T) {
-	golden(t, "version.json", map[string]int{"daemonApiVersion": DaemonAPIVersion})
+// The numbers of the numbered entries are written where every reader with no Go toolchain reads
+// them: `released-contracts.json`, a JSON list of SupportedContracts' frozen list
+// (frozenContracts), the numbered entries from ServingFloor up, in strictly ascending order. Its
+// greatest number is L, to which `scripts/daemon-contract.sh`, `daemonContract()` of
+// packages/contracts and `legion-pins` add the count of entry fixtures to read a commit's
+// contract, and each of them refuses a file of another form. The list never moves, so neither
+// does the file; a new entry changes neither.
+func TestReleasedContractsGolden(t *testing.T) {
+	if greatest := frozenContracts[len(frozenContracts)-1]; greatest != LastNumberedContract {
+		t.Errorf("the frozen list ends at %d, want L (%d)", greatest, LastNumberedContract)
+	}
+	if !*updateGolden {
+		path := goldenPath("released-contracts.json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s (run `go test ./internal/api/ -update`): %v", path, err)
+		}
+		var onFile []int
+		if err := json.Unmarshal(raw, &onFile); err != nil || onFile == nil {
+			t.Fatalf("%s is no JSON list of integers (%v), the one form its readers take", path, err)
+		}
+		for at := 1; at < len(onFile); at++ {
+			if onFile[at] <= onFile[at-1] {
+				t.Errorf("%s lists %d after %d: its readers take a list in strictly ascending order", path, onFile[at], onFile[at-1])
+			}
+		}
+	}
+	golden(t, "released-contracts.json", frozenContracts)
 }
 
 // The closed set of causes a claim can fail under is two hand-kept lists — the constants of
@@ -23,7 +47,7 @@ func TestDaemonAPIVersionGolden(t *testing.T) {
 // `packages/contracts/src/legion-api.ts`, which `failure.cause` and `pendingCause` are read
 // through — and a word added to the Go list alone would make every strict plugin refuse the
 // whole state body. So the Go roster is written where the contracts suite reads it, as the
-// contract number above is: this golden, which `legion-api.test.ts` holds equal to that enum,
+// numbered contracts above are: this golden, which `legion-api.test.ts` holds equal to that enum,
 // word for word and in order. A cause added to supervise leaves this fixture stale, and the
 // fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
 // the enum names the word too.
@@ -104,9 +128,9 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 		t.Fatalf("supervise.PodUpdateContract = %d, want %d, the contract whose entry in version.go introduced ready_for_update",
 			supervise.PodUpdateContract, introducedReadyForUpdate)
 	}
-	if supervise.PodUpdateContract > DaemonAPIVersion {
+	if supervise.PodUpdateContract > DaemonAPIVersion() {
 		t.Fatalf("supervise.PodUpdateContract = %d, above DaemonAPIVersion %d: no claim could answer an update round",
-			supervise.PodUpdateContract, DaemonAPIVersion)
+			supervise.PodUpdateContract, DaemonAPIVersion())
 	}
 }
 
@@ -123,9 +147,9 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 		t.Fatalf("OwnerPlanContract = %d, want %d, the contract whose entry in version.go added register_plan, stop_task, returnTo and the two new hold reasons",
 			OwnerPlanContract, addedOwnerPlan)
 	}
-	if OwnerPlanContract > DaemonAPIVersion {
+	if OwnerPlanContract > DaemonAPIVersion() {
 		t.Fatalf("OwnerPlanContract = %d, above DaemonAPIVersion %d: no caller could be served the two new hold reasons",
-			OwnerPlanContract, DaemonAPIVersion)
+			OwnerPlanContract, DaemonAPIVersion())
 	}
 }
 
@@ -154,30 +178,35 @@ func numberedEntries(t *testing.T) map[int]bool {
 	return entries
 }
 
-// SupportedContracts (answers.go) is the list of contracts this daemon describes a shape for,
-// and version.go's numbered entries are what say which contracts exist. The two are held
-// together in both directions: an entry between the floor and this daemon's own contract that
-// the list omits is a contract no answer is shaped for, and a number in the list that no entry
-// names is a contract nothing ever shipped under. A number with no entry would be the second
-// case, which is why none is in the list.
+// The frozen list of SupportedContracts (answers.go's frozenContracts) is the list of the
+// numbered contracts this daemon describes a shape for, and version.go's numbered entries are
+// what say which numbered contracts exist. The two are held together in both directions, from the
+// floor to L: an entry in that range that the list omits is a contract no answer is shaped for,
+// and a number in the list that no entry names is a contract nothing ever shipped under. A number
+// with no entry would be the second case, which is why none is in the list. SupportedContracts
+// begins with the frozen list, and holds above it the numbers of the new entries alone
+// (contracts_test.go's wantNumbered).
 func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 	entries := numberedEntries(t)
 	listed := map[int]bool{}
-	for _, contract := range SupportedContracts {
+	for _, contract := range frozenContracts {
 		listed[contract] = true
 	}
-	for contract := ServingFloor; contract <= DaemonAPIVersion; contract++ {
+	for contract := ServingFloor; contract <= LastNumberedContract; contract++ {
 		if entries[contract] && !listed[contract] {
-			t.Errorf("version.go has an entry for %d and SupportedContracts leaves it out", contract)
+			t.Errorf("version.go has an entry for %d and SupportedContracts' frozen list leaves it out", contract)
 		}
 	}
-	for _, contract := range SupportedContracts {
-		if contract < ServingFloor || contract > DaemonAPIVersion {
-			t.Errorf("SupportedContracts names %d, outside the floor %d and this daemon's own contract %d",
-				contract, ServingFloor, DaemonAPIVersion)
+	for _, contract := range frozenContracts {
+		if contract < ServingFloor || contract > LastNumberedContract {
+			t.Errorf("SupportedContracts' frozen list names %d, outside the floor %d and L (%d)",
+				contract, ServingFloor, LastNumberedContract)
 		}
 		if !entries[contract] {
-			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
+			t.Errorf("SupportedContracts' frozen list names %d and version.go has no entry for it", contract)
 		}
+	}
+	if supported := SupportedContracts(); !slices.Equal(supported[:len(frozenContracts)], frozenContracts) {
+		t.Errorf("SupportedContracts() = %v, want it to begin with the frozen list %v", supported, frozenContracts)
 	}
 }

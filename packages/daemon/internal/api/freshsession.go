@@ -877,7 +877,7 @@ func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *
 	}
 	s.operatorFailure(w, r, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
-		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsRestore,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
 	return 0, "", false, false
 }

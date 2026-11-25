@@ -39,8 +39,9 @@ import pkg from "../package.json";
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. */
-const BUILD = pluginBuildOf(pkg);
+ * build on every pod made from an older image. Its contract is `daemonContract`'s, read as the
+ * module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
