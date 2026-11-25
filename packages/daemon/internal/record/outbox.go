@@ -1235,13 +1235,16 @@ type SuperviseRequest struct {
 	// issue stands in (PhaseHolds). It carries no slot mark and Store.EnqueueFixStart alone writes
 	// it, so it stands in no waiting line and no start of the phase takes it out
 	// (pendingPhaseStart). FixFrom is the head the fix's working copy is made at, which only a
-	// fix's start names, and MoveTo the head the task's working copy moves to before the task, ""
-	// for none. The release before decodes strictly, so the way back of
+	// fix's start names, FixBranch the fix's own branch beside its task's (claim.BesideBranch of
+	// the implementer), which every start and resume of a fix names whether or not a push of it
+	// is recorded, and MoveTo the head the task's working copy moves to before the task, "" for
+	// none. The release before decodes strictly, so the way back of
 	// 20261123134547_fix_beside_steps deletes each queued fix start and takes moveTo off each other
 	// start.
-	Fix     int    `json:"fix,omitempty"`
-	FixFrom string `json:"fixFrom,omitempty"`
-	MoveTo  string `json:"moveTo,omitempty"`
+	Fix       int    `json:"fix,omitempty"`
+	FixFrom   string `json:"fixFrom,omitempty"`
+	FixBranch string `json:"fixBranch,omitempty"`
+	MoveTo    string `json:"moveTo,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
 	// (workflow.StartOrOwe); the outbox decodes it now and acts on it nowhere.
@@ -2511,6 +2514,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.FixFrom != "" && value.Fix == 0 {
 			return fmt.Errorf("only a fix's start names the head its working copy is made at; this %s names %q", value.Op, value.FixFrom)
+		}
+		if value.FixBranch != "" && value.Fix == 0 {
+			return fmt.Errorf("only a fix's start names the fix's own branch; this %s names %q", value.Op, value.FixBranch)
 		}
 		if value.Relaunch && (value.Op != "start" || value.Task != "" || value.Phase == "" || value.NeedsSlot) {
 			return fmt.Errorf("the relaunch half of a start carries a phase and no task, and waits for no slot")
