@@ -54,6 +54,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   Such a job proves no `before_merge` check (`skill://legion-architect/references/design-gate.md`, "A check CI proves", item 3), so a check that needs its result is `after_merge` and reads the merge group of the merged commit.
   At hand-off, that job is named as "runs in the merge queue; not yet run", never as a pass.
   A hand-started run of the whole workflow is not that proof, and it costs what the queue would: in one repository whose slow jobs run only in its queue, 281 such runs billed 43,407 runner-minutes from 2026-11-22 to 11-25, against the merge queue's 13,547 on 11-24 alone, and 2 of 133 successful runs ever reached the queue at the head they proved.
+  Keeping the pull request a draft saves nothing either, where the repository runs only its fast filter on a pull request: it costs the head its own run and leaves the same work to be started by hand.
 
 ## A name that no run answers
 

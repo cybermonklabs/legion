@@ -37,7 +37,9 @@ whole suite is the CI job that runs it.
    request, the merge group is that job's only run. Write no `before_merge` check whose proof is
    that job, and never ask a role for a run of it at the head it hands off. A check that must name
    that job's result is `after_merge`, and it reads the merge group of the merged commit. Where a
-   label does run the job on a pull request, item 4 holds instead and the check names that label.
+   label does run the job on a pull request, item 4 holds instead and the check names that label;
+   a repository that keeps such a label runs that job twice for a commit that lands, which is the
+   repetition a queue-only design removes, so its own measurement says what the label costs.
 4. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
    check names it; without it the check reads `absent` or `skipped`.
 5. Write in `negative_control` the case inside that job that fails when the property breaks: a
