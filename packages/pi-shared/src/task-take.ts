@@ -576,7 +576,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     inTurnBound?.abort();
     const bound = new AbortController();
     inTurnBound = bound;
-    (deps.wait ?? timerWait)(IN_TURN_REWRITE_BOUND_MS, bound.signal).then((passed) => {
+    // Not awaited: this runs from the host's synchronous callbacks, and the wait never rejects
+    // (an abort resolves it false), so its callback is the whole of what follows.
+    void (deps.wait ?? timerWait)(IN_TURN_REWRITE_BOUND_MS, bound.signal).then((passed) => {
       if (!passed || inTurnBound !== bound) return;
       endInTurnRefusal();
       // A reading that says the held number finished leaves the value held but owed nothing, and
