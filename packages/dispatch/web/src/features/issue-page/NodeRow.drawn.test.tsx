@@ -1983,7 +1983,8 @@ test("a press on an option of an unfocused row picks it and focuses the row in o
 });
 
 // Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
-// and its key is the row's tag, a link to the child's own page; it names no author and no time.
+// and its key is the row's tag, which opens the child in the children's section above the outline
+// (R9, R14) and links nowhere itself; it names no author and no time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
   const child: IssueChild = {
     active_at: "2026-11-05T12:00:00Z",
@@ -2003,7 +2004,8 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
     const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
     expect(tag?.textContent).toBe("CORE-2");
-    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(tag?.querySelector("button[data-child-key]")?.textContent).toBe("CORE-2");
+    expect(tag?.querySelector("a"), "the child's tag is a link").toBeNull();
     expect(view.container.querySelector("[data-node-author]")).toBeNull();
     expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {

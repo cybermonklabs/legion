@@ -37,8 +37,8 @@ export type AddressTarget =
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
-   *  `t h`) names the first row of their group in the outline, which the page unfolds the path
-   *  to and puts the focus on. */
+   *  `t h`), which lands on their section above the outline (`children-section.tsx`, R14). The
+   *  tree's first child row tells the page whether the issue holds any (`pathToTarget`). */
   | { readonly kind: "children"; readonly id: string };
 
 /** What one address of the issue page opens. */
@@ -259,8 +259,8 @@ function pathToNode(
  * `<slug>#b-<id>` (`tree-drafts.ts`'s `blockNodeId`) and a block id is the author's, unique
  * inside one document alone: `/issues/KEY/artifacts/plan-md#b-t1` would otherwise land on the
  * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
- * address - has only the block id to go on, and the first node carrying it answers. The
- * children's address names the first child of their group.
+ * address - has only the block id to go on, and the first node carrying it answers. For the
+ * children's address it is the chain to the first child of the outline, where the tree holds one.
  */
 export function pathToTarget(
   root: TreeNode,

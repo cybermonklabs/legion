@@ -305,7 +305,11 @@ const MOST_SEGMENTS = 12;
  * bar filled to the share done. That keeps the line of a large root - 24 children, a gated step
  * waiting on the reader, 20 labels - inside the header's height limits.
  */
-function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] }): ReactNode {
+export function ChildrenProgress({
+  childIssues,
+}: {
+  childIssues: readonly IssueChild[];
+}): ReactNode {
   if (childIssues.length === 0) return null;
   const done = childIssues.filter((child) => child.status === "done").length;
   const subtree = childIssues.reduce(

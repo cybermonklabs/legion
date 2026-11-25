@@ -33,10 +33,11 @@ import { DeletedBody, EditedMark } from "../refs/PostBody";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
+import { openChildEntry } from "./children-section";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
-import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
+import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
 import { isStatement, type NodeChip, type ParentLine, type TreeNode } from "./issue-tree";
@@ -720,15 +721,26 @@ export function RowMargin({
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
   if (node.child !== undefined) {
-    // A child issue's tag is its key, a link to its own page; its row names no author, no time
+    // A child issue's tag is its key, which opens the child in the children's section above the
+    // outline (R9, R14), where its entry links to its own page; its row names no author, no time
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
+    const key = node.child.key;
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-          {/* A plain span: its link stays inline, so the 6 px a link's touch target takes above
-              and below it on a phone adds nothing to the line's height. */}
+          {/* A plain span: its control stays inline, so the 6 px a control's touch target takes
+              above and below it on a phone adds nothing to the line's height. */}
           <span data-node-tag="">
-            <ChildIssueTag child={node.child} tabStops={tabStops} />
+            <button
+              className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
+              data-child-key=""
+              onClick={() => openChildEntry(key)}
+              tabIndex={tabStops ? undefined : -1}
+              type="button"
+              {...authorText}
+            >
+              {key}
+            </button>
           </span>
         </div>
       </div>

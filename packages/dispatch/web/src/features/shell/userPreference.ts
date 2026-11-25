@@ -14,6 +14,8 @@ export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
+  /** Whether this reader keeps the new issue page's children's section collapsed. */
+  | "issue.children-section"
   /** Which of the new issue page's Details sections this reader has closed. */
   | "issue.margin-sections"
   | "issue.page"

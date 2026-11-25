@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
@@ -17,7 +16,6 @@ import { isViewer } from "../refs/actor";
 import { EditedMark } from "../refs/PostBody";
 import { postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
@@ -251,7 +249,6 @@ export function IssueTree({
   const [report, setReport] = useState<{ readonly line: string; readonly row?: string }>();
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
-  const navigate = useNavigate();
   const takeRequest = useTakeOutlineRequest();
   // The reader, whose own new words a write from the line takes them to.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
@@ -699,29 +696,10 @@ export function IssueTree({
     if (request.id !== undefined) goToNode(request.id);
   }, [goToNode, request, takeRequest]);
 
-  // The first row of the children's group, which their own address names (`issue-address.ts`'s
-  // `pathToTarget`); undefined where the tree the view left holds no child.
-  const firstChild = useMemo(
-    () => pathToTarget(root, { id: root.id, kind: "children" })?.at(-1)?.id,
-    [root]
-  );
   useTreeKeymap({
     container: body,
     editing: editing !== undefined,
     holdsEscape,
-    // `t h` takes the reader to the children's first row itself, each time it is pressed and
-    // from any zoom (`reach`), and opens their own address too. The address alone moved the
-    // focus once per address and only to a row the tree drew, so a second `t h` after the
-    // reader moved on, or one pressed from a zoom that holds no child, moved nothing.
-    // Where the tree holds no child the key is not offered.
-    ...(firstChild === undefined
-      ? {}
-      : {
-          onChildren: () => {
-            reach(firstChild);
-            navigate(buildIssuePath({ key: root.id, kind: "children" }));
-          },
-        }),
     onCycle: unfoldAll,
     onEdit: edit,
     onEditEnd: stopEditing,

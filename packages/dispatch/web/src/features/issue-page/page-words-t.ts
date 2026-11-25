@@ -48,6 +48,15 @@ export default {
       /** The reader's own comment carries it on its row: it sets the line at the foot of the
        *  outline to edit that comment, which `save` sends back (R11). */
       edit_comment: "Edit",
+      /** The heading of the children's section above the outline, its one control, which opens
+       *  and closes the list of the issue's children; the header's bar and both counts stand
+       *  beside it (R14). */
+      children_section: "Child issues",
+      /** The control after the children the section lists, while more remain, which lists the
+       *  next 20 (R14, R15): the count before it is how many children are left and carries
+       *  `AUTHOR_TEXT_ATTRIBUTE`, and the words agree with it: "1 more child", "3 more children". */
+      children_page_child: "more child",
+      children_page_children: "more children",
     },
   },
   unasked: [],

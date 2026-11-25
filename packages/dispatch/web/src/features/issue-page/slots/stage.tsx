@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { focusOnDocument } from "../../shell/roving";
+import { ChildrenSection } from "../children-section";
 import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
@@ -57,6 +58,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * Below 1024 px, where no Contents pane holds them, the issue's three sentences stand above the
  * slot (`contents-frame.tsx`'s `ThreeThingsAbove`), but under the Spec view, whose own first
  * group draws them (R13).
+ *
+ * Above the slot, after those sentences, stand the issue's children, a section of their own that
+ * opens and closes (`children-section.tsx`), in every view that draws an outline read (R14).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -114,6 +118,8 @@ export function StageSlot({
         <ReaderActsWatch into={acts} key={following} />
         {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
         <ThreeThingsAbove {...props} view={View !== undefined} />
+        {/* The issue's children, above the slot's first row (R14). */}
+        <ChildrenSection {...props} />
         {View === undefined ? (
           <StageBox>
             <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />

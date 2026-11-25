@@ -216,7 +216,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             readsHeld={readsHeld}
             readsSettled={readsSettled && !readingPages}
             {...(request === undefined ? {} : { request })}
-            reveal={ancestor ?? addressed.reveal}
+            // The children's own address lands on their section above the outline
+            // (`children-section.tsx`), and on no row of the outline (R14).
+            reveal={
+              ancestor ?? (address.target?.kind === "children" ? undefined : addressed.reveal)
+            }
             root={view.root}
             rootRow={view.rootRow}
             {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
