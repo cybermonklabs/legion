@@ -406,10 +406,12 @@ Each item below names a script, then what it proves.
 - `approval-message.sh`
 
   while a person's approval of a root's spec stands, the root architect's model requests carry the approval message (check e4b07a29), captured from real sessions of the pinned Oh My Pi, each the root architect of an issue with this checkout's two plugins packed as the release packs them, in the sandbox launch's order, and a recorder of every request body loaded last, on the pod's own `models.yml` and operator overlay, so every turn is a real model call through the pod's gateway, against a stand-in daemon whose approval route answers none until a case's entry is sent and then the approval, in the daemon's own words:
-  the entry of each of the six paths, to an idle session and to one in a turn after a tool result, the carried root's among them, is followed by a request whose last entry is the message as `system`, and by later requests that hold it with the same bytes right before its answer;
-  two cards in one window, a people's-answers message, the reverse plugin order, two compactions, a fresh session, three relaunches around a changes request and a later approval, the date reminder, a task subagent, a side turn and the handoff prompt each hold the message where the check says;
-  R1's words sent as a card go as a user message, and the whole list then runs again on claude-sonnet-5, where the message is a user message at the same place and pi-legion logs one line naming the model.
-  `APPROVAL_MESSAGE_PLUGINS_REF=origin/main` packs main's plugins instead, the negative control, which passes exactly when its requests hold no approval message.
+  the pod's `models.yml` and overlays set no remote compaction and no Bedrock route;
+  on the overlay's `default` model, the entry of each of the six paths, to an idle session and to one in a turn after a tool result, the carried root's among them, is followed by a request whose last entry is the message as `system`, and by later requests that hold it with the same bytes right before its answer;
+  two cards in one window, a people's-answers message, the reverse plugin order, two compactions, a fresh session, three relaunches around a changes request and a later approval, the date reminder, a task subagent, a side turn and the handoff prompt each hold the message where the check says, and R1's words sent as a card go as a user message;
+  then on each model of the architect's fallback chain the message is the last entry as `system` where the model takes a system message inside the conversation, and on gemini-4-neon, gpt-6.2-sol and kimi-k3.1-pro it ends the top-level system prompt and is nowhere else, with pi-legion's mark in the session;
+  and a session that falls back from claude-opus-5-5 to gemini-4-neon on a rate limit and is set back holds the text at the end of gemini-4-neon's system prompt alone, then the earlier placement at its place.
+  `APPROVAL_MESSAGE_PLUGINS_REF=origin/main` packs main's plugins instead, the negative control, which passes exactly when its requests hold no approval message; `APPROVAL_MESSAGE_PLUGINS_REF=e516478c APPROVAL_MESSAGE_ENTRIES=chain-flag-off` is the flag-off negative control on the three models that take no system message inside the conversation.
   `APPROVAL_MESSAGE_ENTRIES=top-level-capture` runs none of the cases: it writes the wire bodies Oh My Pi itself sends to claude-sonnet-5, gemini-4-neon, kimi-k3.1-pro and gpt-6.2-sol (in both of its Responses forms), from sessions that load the recorder alone, under `packages/pi-legion/test/fixtures/approval-context/top-level/`.
   Legion pod only
 
@@ -5123,36 +5125,42 @@ The run's own scratch directory, which holds the natsd it built and that server'
 
 ```sh
 bash scripts/e2e/approval-message.sh     # → "approval message capture: PASS", exit 0
+APPROVAL_MESSAGE_ONLY=chain: bash scripts/e2e/approval-message.sh     # the route's settings, then the chain cases and the fallback case alone → "approval message capture: PASS", exit 0
 APPROVAL_MESSAGE_PLUGINS_REF=origin/main bash scripts/e2e/approval-message.sh     # the negative control → "approval message capture: negative control PASS", exit 0 when no request holds an approval message, else exit 1
+APPROVAL_MESSAGE_PLUGINS_REF=e516478c APPROVAL_MESSAGE_ENTRIES=chain-flag-off bash scripts/e2e/approval-message.sh     # the flag-off negative control → "approval message capture: flag-off negative control PASS", exit 0
 APPROVAL_MESSAGE_ENTRIES=top-level-capture bash scripts/e2e/approval-message.sh     # no case: the top-level capture → "approval message capture: top-level capture PASS: 5 bodies under …", exit 0
 ```
 
 The capture of check e4b07a29: while a person's approval of a root's spec stands, the root architect's model requests carry the approval message that `POST /legion/v1/claims/approval` answers, and Oh My Pi sends it as `system` to a model that takes a system message inside the conversation.
-It runs in a Legion pod, on the pod's own model route:
-each session reads the pod's operator overlay through `PI_CONFIG_FILES` as the pod's own sessions do, runs `--model @default`, the model the overlay puts on `default`, and reaches the pod's model gateway through a recording proxy, so every turn is a real model call.
+It runs in a Legion pod, on the pod's own model route, and each session reads the pod's operator overlay through `PI_CONFIG_FILES` as the pod's own sessions do.
+The cases on the default model run `--model @default`, the model the overlay puts on `default`, and reach the pod's model gateway through a recording proxy, so every turn is a real model call.
 That model must take a system message inside the conversation: each case on it reads the placement as `system`, and a model that takes none fails those cases.
 The proxy is the session's stand-in server:
 the run's `models.yml` is the pod's `anthropic` provider with its `baseUrl` at the proxy and, where the pod's file holds a literal key, a placeholder key, and the proxy records each request body, forwards the request to the pod's own `baseUrl` with the headers Oh My Pi sent, the placeholder replaced by the real key, and streams the answer back.
-The driver reads the real `baseUrl` and key from the pod's `models.yml` in its own process alone; nothing the run prints or keeps holds either, or any header value.
+Each chain case's session links the pod's own `models.yml` into its profile as it is, so it reaches each provider as that file names it;
+the fallback case's session reads a copy of the pod's whole file, mode 0600 in the run's work directory and removed with the session, whose `anthropic` `baseUrl` is the stand-in, which forwards as the proxy does until the case has it answer a rate limit.
+The driver reads the real base URLs and keys from the pod's `models.yml` in its own process alone; nothing the run prints or keeps holds either, or any header value.
 It needs `bash`, `bun` (after `bun install` at the checkout's root), `go`, `curl`, `tar`, `jq` and `flock` (for [`lib/pack-plugin.sh`](#libpack-pluginsh)), and `git` with `APPROVAL_MESSAGE_PLUGINS_REF`, and no PostgreSQL, Docker, kube context or tmux; the top-level capture needs `bash`, `bun`, `curl` and `tar` alone.
 
 | input | default | what it is |
 | :--- | :--- | :--- |
-| `APPROVAL_MESSAGE_MODELS` | `$PI_CODING_AGENT_DIR/models.yml` | the pod's `models.yml`, whose `anthropic` provider must offer claude-sonnet-5 and the overlay's `default` model, since the run's own `models.yml` holds that provider alone |
-| `APPROVAL_MESSAGE_OVERLAY` | the `overlay.yml` that `PI_CONFIG_FILES` names | the pod's operator overlay, whose `modelRoles.default` every case but the claude-sonnet-5 pass runs |
-| `APPROVAL_MESSAGE_ENTRIES` | `each-path` | which entry files the entry cases send: the first of each of the six paths, or `every` file; or `top-level-capture`, which runs no case but the top-level capture (below) |
-| `APPROVAL_MESSAGE_PLUGINS_REF` | unset: this checkout | a git revision whose two plugins the run packs and loads in place of this checkout's, and checks that no request holds an approval message |
+| `APPROVAL_MESSAGE_MODELS` | `$PI_CODING_AGENT_DIR/models.yml` | the pod's `models.yml`, whose `anthropic` provider must offer the overlay's `default` model, since the run's own `models.yml` for the cases on that model holds that provider alone, and which must offer each model of the architect's fallback chain on its API |
+| `APPROVAL_MESSAGE_OVERLAY` | the `overlay.yml` that `PI_CONFIG_FILES` names | the pod's operator overlay, whose `modelRoles.default` every case but the chain cases runs |
+| `APPROVAL_MESSAGE_ROLE_OVERLAY` | `role-architect.yml` beside the operator overlay | the overlay of the pod's architect role, whose `retry.fallbackChains` for claude-opus-5-5 must be the chain the chain cases run |
+| `APPROVAL_MESSAGE_ENTRIES` | `each-path` | which entry files the entry cases send: the first of each of the six paths, or `every` file; or `chain-flag-off`, the flag-off negative control alone (below); or `top-level-capture`, which runs no case but the top-level capture (below) |
+| `APPROVAL_MESSAGE_ONLY` | unset: every case | a prefix of case names: only the cases whose names start with it run, after the route's settings; `chain:` runs the chain cases and the fallback case |
+| `APPROVAL_MESSAGE_PLUGINS_REF` | unset: this checkout | a git revision whose two plugins the run packs and loads in place of this checkout's, and checks that no request holds an approval message, or, with `chain-flag-off`, runs the flag-off cases on them |
 | `APPROVAL_MESSAGE_OMP_ROOT` | `$TMPDIR/omp-pin` | where the pinned build is installed; a build already there at `.omp-pin`'s version is used again |
 | `APPROVAL_MESSAGE_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: the transcript, `logs/` (the NATS server, each pack, a revision's `bun install`) and `records/`, every session's recorded events, one file per case |
 
 | check | what it holds |
 | :--- | :--- |
-| `prerequisites` | the tools, the driver and `node_modules`, a readable `models.yml` and a readable overlay |
+| `prerequisites` | the tools, the driver and `node_modules`, a readable `models.yml`, a readable overlay and, but for the top-level capture, a readable architect role overlay |
 | `omp` | the build `.omp-pin` names, installed as [`.github/actions/install-omp`](../../.github/actions/install-omp/action.yml) installs it: mise's GitHub backend fetches that build's release asset for the platform and unpacks it, and a pod has no mise, so the script fetches and unpacks the same asset, and `omp --version` must print the pin's release |
 | `nats` | the NATS server the run builds (`packages/envoy/internal/testnats/cmd/natsd`) and starts on a port the kernel picks, since a session whose Envoy plugin reaches none is given no consumer and its claim boot ends it; `go install` puts it in `$TMPDIR/legion-e2e-natsd`, where it stays for the next run, and links it again only when what it is built from changed |
 | `plugins` | `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), from this checkout or from a `git archive` of `APPROVAL_MESSAGE_PLUGINS_REF` after `bun install` there, and unpacked; a session loads each unpacked package's directory, as the sandbox launch loads the image's |
 
-Then the driver, `packages/pi-legion/test/approval-message-capture.ts`, run with `bun`, checks the route first: the `anthropic` provider of the pod's `models.yml` offers claude-sonnet-5 and the model the overlay puts on `default`.
+Then the driver, `packages/pi-legion/test/approval-message-capture.ts`, run with `bun`, checks the route first: the `anthropic` provider of the pod's `models.yml` offers the model the overlay puts on `default`, and the file offers each model of the architect's fallback chain on its API.
 It prints `== <case>`, what it observed and `ok <case>` or `FAIL <case>: <why>` for each case, and ends the run.
 A failed case does not stop the run, since each case is a session of its own, and the last line is `approval message capture: PASS` or names the first case that failed; a failure before the first case, the route's check among them, ends the run with `approval message capture: FAIL: <why>`.
 Each case is one root architect's session, run by `runLegionPane` (`packages/pi-shared/test/omp-harness.ts`) with the two plugins and then the recorder (`packages/pi-legion/test/approval-context-recorder.ts`), whose `before_provider_request` handler writes every request body Oh My Pi sends with each message's per-call mark.
@@ -5164,6 +5172,8 @@ a task reaches it as the shim's RPC prompt, which a session in a turn refuses, a
 Each session's appended system prompt (`CONTRACT` in the driver) says which tool calls each message asks for, so the model makes the requests the case reads and acts on no task or card.
 
 The cases, and what each holds:
+
+- the route's settings, the first case of every run: the pod's `models.yml`, its operator overlay and its architect role overlay set no `remoteCompaction`, no `compaction.remoteEndpoint` and no Bedrock route (a provider of the `models.yml` that is named so or whose `api` or host names Bedrock, or a model role or a fallback chain of an overlay that names such a provider), one line per file saying only whether each is set; and the role overlay chains claude-opus-5-5 to the models the chain cases run;
 
 - the entry of each of the six paths, to a session idle after a turn of its own and to one in a turn after a tool result, the carried root's notice among them with the carried message that names the other root's spec:
   no request before the entry holds the message, the first request of the conversation after it holds the message as its last entry with role `system`, and each later request holds it with the same bytes and role right before the assistant message that answered that first request;
@@ -5188,12 +5198,23 @@ The cases, and what each holds:
 
 - R1's words sent as a card that wakes an idle session, with no approval standing, which Oh My Pi sends as a user message;
 
-Then the whole list runs again on claude-sonnet-5, a model that takes no system message inside the conversation:
-in each case the message is a user message at the same place, and each process that carried it logs one line that names the model.
-[`approval-message-omp.test.ts`](../../packages/pi-legion/test/approval-message-omp.test.ts) runs the same driver in CI on a stand-in model: the list in both plugin orders, and the list once more on claude-sonnet-5.
+- the chain cases, a session on each model of the architect's fallback chain at the chain's thinking level, `anthropic/claude-fable-5-2:xhigh`, `model-gateway/gemini-4-neon:high`, `anthropic/claude-sonnet-5-5:xhigh`, `openai/gpt-6.2-sol:xhigh`, `anthropic/claude-opus-5:xhigh` and `model-gateway/kimi-k3.1-pro:max`, each with the design-approved entry and two requests after it, whose bodies the recorder writes on every provider's route:
+  no request before the entry holds the message;
+  on the three Claude models, which take a system message inside the conversation, the first request after the entry holds it as its last entry with role `system`, and the next holds it at its place with the same bytes and role;
+  on gemini-4-neon and kimi-k3.1-pro the last leading `system` or `developer` message of each request after the entry ends with a blank line and the message, on gpt-6.2-sol `instructions` or the last leading `developer` item does, no other part of those requests holds it, and the session holds one `legion-approval-top-level` mark for that version and model;
+
+- the fallback case, a session on `anthropic/claude-opus-5-5:xhigh` whose case overlay sets `retry.fallbackChains` to `anthropic/claude-opus-5-5: [model-gateway/gemini-4-neon:high]` and leaves `retry.rateLimitWalksChain` at its default, which changes nothing for a candidate of another provider, on the copy of the pod's `models.yml` whose `anthropic` `baseUrl` is the stand-in:
+  after the entry and the request that holds its placement's answer, the stand-in answers each request to claude-opus-5-5 with 429 `rate_limit_error`, `x-should-retry: false` and a `retry-after` of ten minutes (the cooldown before Oh My Pi would go back to that model by itself), so one prompt's first request fails with no retry and Oh My Pi falls back to gemini-4-neon at once for that prompt's two requests (a request the gateway refuses and Oh My Pi sends again counts once);
+  then it forwards again, the driver sets the model back with the RPC `set_model`, and one more prompt makes one request;
+  the stand-in answered one request with the rate limit, which held the copy at its place, the two gemini-4-neon requests hold the text only at the end of their top-level system prompt, and the first request after the return holds the earlier placement at its place with the same bytes and role `system`.
+
+[`approval-message-omp.test.ts`](../../packages/pi-legion/test/approval-message-omp.test.ts) runs the cases on the default model in CI, on a stand-in model (provider `anthropic`, claude-opus-5-5 and claude-sonnet-5, no compat line): the list in both plugin orders, and the list once more on claude-sonnet-5, a model that takes no system message inside the conversation, where each case reads the message as a new last block of the request's `system` that no other part of the request holds, a changes request takes it out, and a later approval's text takes the earlier one's place.
 With `APPROVAL_MESSAGE_PLUGINS_REF`, the run then checks that no request of any case holds an approval message, which is the negative control's own check, and the only one its exit status reads: its placing cases fail at their first placement.
 It ends with `approval message capture: negative control PASS` and exit 0 when the run's sessions sent requests and none of them holds an approval message, and otherwise with `approval message capture: negative control FAIL: <why>` and exit 1.
-Each session's scratch root is under `TMPDIR`, removed with the session; the run's work directory (the NATS server's store, the packed plugins and a revision's tree) is removed at the end with the NATS server, however the run ended, and the evidence directory, the installed build and natsd stay.
+With `APPROVAL_MESSAGE_ENTRIES=chain-flag-off` the run is the flag-off negative control: after the route's settings, the chain session on each of gemini-4-neon, gpt-6.2-sol and kimi-k3.1-pro alone, with the plugins `APPROVAL_MESSAGE_PLUGINS_REF` names, which for `e516478c` are pi-legion's from before it put the message at the end of the top-level system prompt.
+Each case must show the message as a user message of the conversation of the first request after the entry, and no top-level system prompt of the session holding it; the run ends with `approval message capture: flag-off negative control PASS` and exit 0, or names the first case that failed and exits 1.
+With this checkout's plugins those cases fail.
+Each session's scratch root is under `TMPDIR`, removed with the session; the run's work directory (the NATS server's store, the packed plugins, a revision's tree and the fallback case's copy of `models.yml`) is removed at the end with the NATS server, however the run ended, and the evidence directory, the installed build and natsd stay.
 
 ### The top-level capture
 

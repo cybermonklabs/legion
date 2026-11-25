@@ -8,10 +8,13 @@ import { approvalWords, captureCases, type Words } from "./approval-message-capt
 // compat line, its base URL the stand-in's), in both load orders: pi-envoy then pi-legion, the
 // sandbox launch's, and pi-legion then pi-envoy; then the whole list once more on
 // claude-sonnet-5, a model that takes no system message inside the conversation, in the sandbox
-// launch's order. The entry cases send the first entry file of each of the six paths, as the
-// daemon's approval-path test writes it. `ompNatsGuard` skips the file without LEGION_TEST_OMP
-// and LEGION_TEST_NATS_URL, and fails it on GitHub Actions without them; the stand-in route's
-// words come from the daemon itself, through `go run` in packages/daemon.
+// launch's order (its reverse-order case loads the other), where each case reads the message as a
+// new last block of the request's `system` that no other part of the request holds (row S26 of
+// the plan). The entry cases send the first entry file of each of the six paths, as the daemon's
+// approval-path test writes it. The chain cases and the fallback case of the script need the
+// pod's own models.yml, so they run there alone. `ompNatsGuard` skips the file without
+// LEGION_TEST_OMP and LEGION_TEST_NATS_URL, and fails it on GitHub Actions without them; the
+// stand-in route's words come from the daemon itself, through `go run` in packages/daemon.
 const guard = ompNatsGuard();
 
 /** A case runs one to four lives of a pane, each step bounded by the driver's own wait. */

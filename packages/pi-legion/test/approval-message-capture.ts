@@ -25,20 +25,40 @@
 // requests on either route. A case drives all its steps first and then checks what the recorder
 // wrote, so a failed check still leaves every step's requests in the record.
 //
-// On claude-sonnet-5, which takes no system message inside the conversation, the same cases read
-// the approval message where pi-legion puts it on such a model: the last block of the request's
-// `system`, with no message of the conversation holding it.
+// approval-message-omp.test.ts also runs the cases on claude-sonnet-5, which takes no system
+// message inside the conversation, and there they read the approval message where pi-legion puts
+// it on such a model: the last block of the request's `system`, with no message of the
+// conversation holding it.
+//
+// The script then runs the chain cases (`chainCases`), on the pod's route alone: a session on each
+// model of the pod's fallback chain of the architect role (`CHAIN`), on the pod's own models.yml as
+// it is, with the design-approved entry and two requests after it, which reads the message as a
+// `system` message on a model that takes one, and at the end of the top-level system prompt on any
+// other, where the session also holds pi-legion's mark of it; and a session on claude-opus-5-5 that
+// falls back to gemini-4-neon on a rate limit the stand-in answers, and that the driver then sets
+// back (`fallbackCase`).
 //
 //   bun packages/pi-legion/test/approval-message-capture.ts --omp <binary> --nats <url> \
 //     --envoy <plugin> --legion <plugin> --models <models.yml> --overlay <overlay.yml> \
-//     [--entries every|each-path] [--evidence <dir>] [--negative-control]
+//     --role-overlay <role-architect.yml> --work <dir> [--entries every|each-path|chain-flag-off] \
+//     [--only <prefix>] [--evidence <dir>] [--negative-control]
 //
 // prints `== <case>`, what it observed and `ok <case>` or `FAIL <case>: <why>` for each case, and
 // ends with `approval message capture: PASS`, or with FAIL naming the first case that failed, or
-// the failure that stopped the run before its cases. It first checks the route: the models.yml's
-// `anthropic` provider offers claude-sonnet-5 and the overlay's `default` model.
+// the failure that stopped the run before its cases. It first checks the route: the models.yml
+// offers the overlay's `default` model on its `anthropic` provider and each model of `CHAIN` on
+// its API; and its first case reads the models.yml and both overlays for a remote compaction or a
+// Bedrock route, printing only which keys are set, and checks that the role overlay's chain is
+// `CHAIN` (`routeSettingsCase`). `--only <prefix>` runs only the cases whose names start with the
+// prefix (`chain:` runs the chain cases and the fallback case), after that first case.
 // `--negative-control` runs the same cases, whose placing ones fail by design, and then exits 0
 // exactly when the run sent requests and none of them holds an approval message.
+// `--entries chain-flag-off` runs, after that first case, only a session on each model of `CHAIN`
+// that takes no system message inside the conversation (`flagOffCase`), each of which must show the
+// approval message as a user message of the conversation and no top-level system prompt holding
+// it: the negative control of the plugins of a revision from before pi-legion put it there, which
+// ends with `approval message capture: flag-off negative control PASS` or names the first case
+// that failed.
 //
 //   bun packages/pi-legion/test/approval-message-capture.ts --entries top-level-capture \
 //     --omp <binary> --models <models.yml> --overlay <overlay.yml> --work <dir> [--evidence <dir>]
@@ -83,7 +103,11 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers as natsHeaders, StringCodec } from "nats";
-import { DATE_REMINDER } from "../src/approval-message";
+import {
+  APPROVAL_TOP_LEVEL_ENTRY,
+  type ApprovalTopLevel,
+  DATE_REMINDER,
+} from "../src/approval-message";
 
 const RECORDER = path.join(import.meta.dir, "approval-context-recorder.ts");
 const ENTRIES = path.resolve(
@@ -105,10 +129,11 @@ const QUIET_MS = 4_000;
 /**
  * The appended system prompt of every session, and the rules `standinReply` answers by. It names
  * the tool calls each kind of message asks for, so a real model makes the requests a case reads,
- * and acts on no task or card.
+ * and acts on no task or card. It says nothing before its rules: claude-opus-5 refuses every
+ * request whose system prompt also says the session is a test or asks for no real work
+ * (`Refusal (reasoning_extraction)`, measured on the pod's route).
  */
 const CONTRACT = [
-  "This session is a test of the model requests that a Legion architect's plugins build. Do no real work.",
   "Follow these rules in every turn, whatever a task, a notice, a card or any other message asks.",
   "1. A user message that says `Run the bash command` and a command in backticks names a command to run. Run each command named that way, in the order named, with one call of the bash tool each.",
   "2. A user message that says `Use the task tool once to hand one subagent this assignment:` asks for one call of the task tool with the assignment in backticks after it, and for nothing else.",
@@ -276,11 +301,15 @@ export type ModelRoute =
   | { readonly kind: "standin" }
   | {
       readonly kind: "pod";
-      /** The pod's own models.yml's `anthropic` provider, parsed once per run (`podGateway`). */
+      /** The pod's own models.yml. */
+      readonly models: string;
+      /** That file, parsed once per run (`podGateway`). */
       readonly gateway: Gateway;
       /** The pod's operator overlay, which the pane reads as the pod's sessions read it
        *  (`PI_CONFIG_FILES`). */
       readonly overlay: string;
+      /** The overlay of the pod's architect role, which holds its fallback chain. */
+      readonly roleOverlay: string;
     };
 
 /** The stand-in route's profile: provider `anthropic` with the two models and no compat line, so
@@ -289,10 +318,11 @@ const STANDIN_PROVIDERS = [
   { provider: "anthropic", models: ["claude-opus-5-5", "claude-sonnet-5"] },
 ] as const;
 
-/** The pod route's `anthropic` provider, read from its models.yml in this process alone and never
- *  printed: the gateway's base URL, the key where the file holds a literal one, and the ids of the
- *  models it offers. */
+/** The pod route's models.yml, read in this process alone and never printed: the file itself, and
+ *  of its `anthropic` provider the gateway's base URL, the key where the file holds a literal one,
+ *  and the ids of the models it offers. */
 interface Gateway {
+  readonly file: ModelsFile;
   readonly provider: Readonly<Record<string, unknown>>;
   readonly base: string;
   readonly key: string | undefined;
@@ -304,17 +334,16 @@ interface Gateway {
 const PROXY_KEY = fixtureSecret("proxy");
 
 function podGateway(models: string): Gateway {
-  const parsed = Bun.YAML.parse(readFileSync(models, "utf8")) as {
-    readonly providers?: Readonly<Record<string, unknown>>;
-  } | null;
-  const provider = parsed?.providers?.anthropic;
+  const file = (Bun.YAML.parse(readFileSync(models, "utf8")) ?? {}) as ModelsFile;
+  const provider = file.providers?.anthropic;
   if (typeof provider !== "object" || provider === null) {
     fail(`${models} names no anthropic provider`);
   }
-  const { baseUrl, apiKey, models: offered } = provider as Record<string, unknown>;
+  const { baseUrl, apiKey, models: offered } = provider;
   if (typeof baseUrl !== "string") fail(`${models} names no baseUrl for the anthropic provider`);
   return {
-    provider: provider as Record<string, unknown>,
+    file,
+    provider,
     base: baseUrl.replace(/\/+$/, ""),
     key: typeof apiKey === "string" && !apiKey.startsWith("!") ? apiKey : undefined,
     ids: (Array.isArray(offered) ? offered : []).flatMap((model: unknown) =>
@@ -326,16 +355,13 @@ function podGateway(models: string): Gateway {
 }
 
 /**
- * The model the pod's overlay puts on `default`, which every case but the second pass's runs
- * (`--model @default`, as the sandbox launch runs it), checked before any case runs: the run's
- * models.yml holds the pod's `anthropic` provider alone, so that provider must offer it, and
- * claude-sonnet-5, which the second pass names. The cases on the default read each placement as
- * `system`, so that model must take a system message inside the conversation.
+ * The model the pod's overlay puts on `default`, which every case but the chain cases runs
+ * (`--model @default`, as the sandbox launch runs it), checked before any case runs: those cases'
+ * models.yml holds the pod's `anthropic` provider alone, so that provider must offer it. The cases
+ * on the default read each placement as `system`, so that model must take a system message inside
+ * the conversation.
  */
 function overlayDefault(overlay: string, gateway: Gateway, models: string): string {
-  if (!gateway.ids.includes("claude-sonnet-5")) {
-    fail(`${models}'s anthropic provider offers no model claude-sonnet-5`);
-  }
   const parsed = Bun.YAML.parse(readFileSync(overlay, "utf8")) as {
     readonly modelRoles?: Readonly<Record<string, unknown>>;
   } | null;
@@ -351,14 +377,13 @@ function overlayDefault(overlay: string, gateway: Gateway, models: string): stri
   return selector;
 }
 
-/** The run's models.yml, as JSON, which is YAML: the pod's `anthropic` provider alone, its base
- *  URL the stand-in's recording proxy at `base`, and its key, where the pod's file holds a literal
- *  one, `PROXY_KEY`. */
-function routeThroughProxy(gateway: Gateway, base: string): string {
+/** The run's models.yml, as JSON, which is YAML: the pod's `anthropic` provider, its base URL the
+ *  stand-in's recording proxy at `base`, and its key, where the pod's file holds a literal one,
+ *  `PROXY_KEY`; with `every`, beside every other provider of the pod's file as it is. */
+function routeThroughProxy(gateway: Gateway, base: string, every = false): string {
   const key = gateway.key === undefined ? {} : { apiKey: PROXY_KEY };
-  return JSON.stringify({
-    providers: { anthropic: { ...gateway.provider, baseUrl: `${base}/anthropic`, ...key } },
-  });
+  const anthropic = { ...gateway.provider, baseUrl: `${base}/anthropic`, ...key };
+  return JSON.stringify({ providers: { ...(every ? gateway.file.providers : {}), anthropic } });
 }
 
 /**
@@ -395,6 +420,28 @@ async function forward(
   }
 }
 
+/**
+ * The stand-in's rate limit on the `anthropic` route, in Anthropic's form: 429, a
+ * `rate_limit_error`, and `x-should-retry: false`, so neither the Anthropic client nor Oh My Pi's
+ * retry sends the request to that model again, and the session walks its fallback chain at once.
+ * Its `retry-after` of ten minutes is the cooldown Oh My Pi gives the model it leaves
+ * (`noteRetryFallbackCooldown`, packages/coding-agent/src/session/turn-recovery.ts at the pinned
+ * tag), so the session does not go back to it by itself before the case sets it back, as it does
+ * at the next run once the cooldown ends (`#maybeRestoreRetryFallbackPrimary`).
+ */
+function rateLimited(): Response {
+  return Response.json(
+    {
+      type: "error",
+      error: {
+        type: "rate_limit_error",
+        message: "This request would exceed the rate limit of requests per minute.",
+      },
+    },
+    { status: 429, headers: { "x-should-retry": "false", "retry-after": "600" } }
+  );
+}
+
 /** What every case runs against. */
 export interface CaptureSetup {
   /** The Oh My Pi binary `.omp-pin` names. */
@@ -416,8 +463,11 @@ export interface CaptureSetup {
   /** Every request every pane of the run sent, filled as each pane ends: what the negative
    *  control reads. */
   readonly sent: Sent[];
-  /** The model every pane of the case runs. */
+  /** The model every pane of the case runs, but a chain case's, which names its own. */
   readonly model: ModelName;
+  /** The run's work directory, where a pane on a copy of the pod's whole models.yml keeps that
+   *  copy (`PaneSpec.models`); the pod's route alone has one. */
+  readonly work?: string;
 }
 
 /** A wire message as the recorder wrote it. */
@@ -447,15 +497,106 @@ export interface Sent {
   /** Its order among the pane's requests, from 0. */
   readonly index: number;
   readonly pane: string;
-  /** What the request is (`requestKind`), or a task subagent's (`sub`). */
+  /** What the request is (`requestKind`, read on its conversation and its top-level system
+   *  prompt), or a task subagent's (`sub`). */
   readonly kind: RequestKind | "sub";
+  /** The request's model, as the recorder read it from the handler's context. */
+  readonly model: SentModel;
+  /** The items of its conversation: an Anthropic request's `messages`, a chat completion's
+   *  `messages` after its leading `system` or `developer` messages, and a Responses request's
+   *  `input` after its leading `developer` items (`bodyParts`). */
   readonly messages: readonly WireMessage[];
-  /** The text of each block of its top-level system prompt, an Anthropic request's `system`. */
+  /** The text of each part of its top-level system prompt, in order: an Anthropic request's
+   *  `system` blocks, a chat completion's leading `system` or `developer` messages, and a
+   *  Responses request's leading `developer` items and then its `instructions`. The last is the
+   *  one pi-legion ends with the approval message on a model that takes none inside the
+   *  conversation. */
   readonly system: readonly string[];
+  /** The recorder's per-call flag of each item of `messages`. */
   readonly perCall: readonly boolean[];
+  /** The body itself, as Oh My Pi built it and both plugins left it. */
+  readonly payload: Readonly<Record<string, unknown>>;
 }
 
-/** A wire message's text: its string content, or its text blocks joined. */
+/** A request's model: its provider, id and wire API, and whether it takes a system message inside
+ *  the conversation (`compat.supportsMidConversationSystem`). */
+interface SentModel {
+  readonly provider?: string;
+  readonly id?: string;
+  readonly api: WireApi;
+  readonly midConversationSystem: boolean;
+}
+
+/** The parts of a body by its wire API (`Sent.system` and `Sent.messages`), and how many items of
+ *  its `messages` lead the conversation as its top-level system prompt. */
+function bodyParts(
+  api: WireApi,
+  payload: Readonly<Record<string, unknown>>
+): { readonly system: string[]; readonly messages: WireMessage[]; readonly lead: number } {
+  const list = (items: unknown): WireMessage[] =>
+    (Array.isArray(items) ? items : []) as WireMessage[];
+  switch (api) {
+    case "anthropic-messages":
+      return { system: systemTexts(payload.system), messages: list(payload.messages), lead: 0 };
+    case "openai-completions": {
+      const messages = list(payload.messages);
+      const lead = leading(messages, ["system", "developer"]).length;
+      return {
+        system: messages.slice(0, lead).map(textOf),
+        messages: messages.slice(lead),
+        lead,
+      };
+    }
+    case "openai-responses": {
+      const input = list(payload.input);
+      const lead = leading(input, ["developer"]).length;
+      const instructions = typeof payload.instructions === "string" ? [payload.instructions] : [];
+      return {
+        system: [...input.slice(0, lead).map(textOf), ...instructions],
+        messages: input.slice(lead),
+        lead: 0,
+      };
+    }
+  }
+}
+
+/** A model's wire API as the recorder read it from the handler's context: `anthropic-messages`,
+ *  which every model of the stand-in's profile speaks, where the record names none. */
+function wireApi(api: unknown): WireApi {
+  if (api === undefined || api === "anthropic-messages") return "anthropic-messages";
+  if (api === "openai-completions" || api === "openai-responses") return api;
+  return fail(`the recorder names the wire API ${String(api)}, which this driver does not read`);
+}
+
+/** One request as a case reads it (`Sent`): the body `payload`, sent to `model`, by a task
+ *  subagent where `sub`, with the recorder's per-call flag of each item of the body's `messages`. */
+function readSent(
+  where: { readonly index: number; readonly pane: string; readonly sub: boolean },
+  payload: Readonly<Record<string, unknown>>,
+  model: SentModel,
+  perCall: readonly boolean[]
+): Sent {
+  const { system, messages, lead } = bodyParts(model.api, payload);
+  const body = { ...payload, system, messages };
+  return {
+    index: where.index,
+    pane: where.pane,
+    kind: where.sub ? "sub" : requestKind({ path: "/anthropic/v1/messages", body }),
+    model,
+    messages,
+    system,
+    perCall: perCall.slice(lead),
+    payload,
+  };
+}
+
+/** The provider and id of `request`'s model. */
+function modelOf(request: Sent): string {
+  return `${String(request.model.provider)}/${String(request.model.id)}`;
+}
+
+/** A wire message's text: its string content, or its text blocks joined (Anthropic's and chat
+ *  completions' `text`, the Responses API's `input_text` and `output_text`). */
 function textOf(message: unknown): string {
   if (typeof message !== "object" || message === null || !("content" in message)) return "";
   const { content } = message;
@@ -466,7 +607,7 @@ function textOf(message: unknown): string {
       typeof block === "object" &&
       block !== null &&
       "type" in block &&
-      block.type === "text" &&
+      (block.type === "text" || block.type === "input_text" || block.type === "output_text") &&
       "text" in block &&
       typeof block.text === "string"
         ? block.text
@@ -476,18 +617,21 @@ function textOf(message: unknown): string {
 }
 
 /** A wire message's role and content, its `cache_control` marks set aside and a string content
- *  read as the one text block Oh My Pi's cache marking turns it into. */
-function normalized(message: unknown): string {
+ *  read as the one text block Oh My Pi's cache marking turns it into; without its thinking blocks
+ *  where `thinking` is false. */
+function normalized(message: unknown, thinking = true): string {
   if (typeof message !== "object" || message === null) return JSON.stringify(message ?? null);
   const role = "role" in message ? message.role : undefined;
   const content = "content" in message ? message.content : undefined;
   const blocks =
     typeof content === "string"
       ? [{ type: "text", text: content }]
-      : (Array.isArray(content) ? content : []).map((block: unknown) => {
-          if (typeof block !== "object" || block === null) return block;
+      : (Array.isArray(content) ? content : []).flatMap((block: unknown) => {
+          if (typeof block !== "object" || block === null) return [block];
           const { cache_control: _mark, ...rest } = block as Record<string, unknown>;
-          return rest;
+          return !thinking && (rest.type === "thinking" || rest.type === "redacted_thinking")
+            ? []
+            : [rest];
         });
   return JSON.stringify({ role, content: blocks });
 }
@@ -528,17 +672,20 @@ function recordReader(file: string, pane: string): () => readonly Sent[] {
       if (event.event !== "before_provider_request") continue;
       const payload = (event.payload ?? {}) as Record<string, unknown>;
       const agent = event.agent as { readonly kind?: unknown } | undefined;
-      sent.push({
-        index: sent.length,
-        pane,
-        kind:
-          agent?.kind === "sub"
-            ? "sub"
-            : requestKind({ path: "/anthropic/v1/messages", body: payload }),
-        messages: (Array.isArray(payload.messages) ? payload.messages : []) as WireMessage[],
-        system: systemTexts(payload.system),
-        perCall: (Array.isArray(event.perCall) ? event.perCall : []).map((flag) => flag === true),
-      });
+      const model = (event.model ?? {}) as Readonly<Record<string, unknown>>;
+      sent.push(
+        readSent(
+          { index: sent.length, pane, sub: agent?.kind === "sub" },
+          payload,
+          {
+            provider: typeof model.provider === "string" ? model.provider : undefined,
+            id: typeof model.id === "string" ? model.id : undefined,
+            api: wireApi(model.api),
+            midConversationSystem: model.supportsMidConversationSystem === true,
+          },
+          (Array.isArray(event.perCall) ? event.perCall : []).map((flag) => flag === true)
+        )
+      );
     }
     return sent;
   };
@@ -559,29 +706,75 @@ function systemTexts(system: unknown): string[] {
   return (Array.isArray(system) ? system : []).map((block) => textOf({ content: [block] }));
 }
 
+/** Whether `part`, the last part of a top-level system prompt, ends with `text`: is the text
+ *  itself, or ends with a blank line and the text. */
+function endsWithText(part: string | undefined, text: string): boolean {
+  return part !== undefined && (part === text || part.endsWith(`\n\n${text}`));
+}
+
+/** How many times `text` appears in `payload`, as the content of a JSON string. */
+function occurrences(payload: unknown, text: string): number {
+  return JSON.stringify(payload).split(JSON.stringify(text).slice(1, -1)).length - 1;
+}
+
 /** How many approval messages `request` holds: those among its messages, and one where the last
- *  block of its top-level system prompt is the approval message. */
+ *  part of its top-level system prompt ends with an approval message. */
 function approvalsHeld(request: Sent, words: Words): number {
-  const texts = new Set([...words.values()].map((answer) => answer.message));
+  const texts = [...words.values()].map((answer) => answer.message);
+  const last = request.system.at(-1);
   return (
-    approvalsIn(request.messages, words).length + (texts.has(request.system.at(-1) ?? "") ? 1 : 0)
+    approvalsIn(request.messages, words).length +
+    (texts.some((text) => endsWithText(last, text)) ? 1 : 0)
   );
 }
 
-/** `request` ends its top-level system prompt with `words` as a block of its own, which nothing
- *  else of the request holds. */
-function endsSystemWith(request: Sent, words: string, label: string): void {
+/** No request of `requests` holds an approval message the route answers anywhere in its body. */
+function holdsNoText(requests: readonly Sent[], words: Words, label: string): void {
+  const texts = [...words.values()].map((answer) => answer.message);
+  for (const request of requests) {
+    if (texts.some((text) => occurrences(request.payload, text) > 0)) {
+      fail(`${label}: request #${request.index} holds an approval message`);
+    }
+  }
+}
+
+/**
+ * `request` ends its top-level system prompt with `words`, which no other part of its body holds:
+ * on `anthropic-messages` as a last block of `system` of its own (row S26 of the plan), on
+ * `openai-completions` at the end of the last leading `system` or `developer` message (S24), and on
+ * `openai-responses` at the end of `instructions` or of the last leading `developer` item (S25),
+ * after a blank line.
+ */
+function endsTopLevelWith(request: Sent, words: string, label: string): void {
   const last = request.system.at(-1);
-  if (last !== words) {
+  const ends =
+    request.model.api === "anthropic-messages" ? last === words : endsWithText(last, words);
+  if (!ends) {
     fail(
-      `${label}: request #${request.index} ends its system prompt with ${JSON.stringify(last?.slice(0, 80))}, not the approval message`
+      `${label}: request #${request.index} (${modelOf(request)}) ends its top-level system prompt with ${JSON.stringify(last?.slice(-80))}, not the approval message`
     );
   }
-  if (
-    request.system.slice(0, -1).includes(words) ||
-    request.messages.some((message) => textOf(message) === words)
-  ) {
-    fail(`${label}: request #${request.index} holds the approval message elsewhere too`);
+  const held = occurrences(request.payload, words);
+  if (held !== 1) {
+    fail(
+      `${label}: request #${request.index} (${modelOf(request)}) holds the approval message ${held} times, not only at the end of its top-level system prompt`
+    );
+  }
+}
+
+/** Where `request` holds its top-level system prompt's last part, in the words of its API. */
+function topLevelForm(request: Sent): string {
+  switch (request.model.api) {
+    case "anthropic-messages":
+      return "a last block of `system`";
+    case "openai-completions": {
+      const role = roleName(leading(request.payload.messages, ["system", "developer"]).at(-1));
+      return `the last leading \`${role}\` message`;
+    }
+    case "openai-responses":
+      return typeof request.payload.instructions === "string"
+        ? "`instructions`"
+        : "the last leading `developer` item";
   }
 }
 
@@ -606,6 +799,9 @@ interface Placement {
   readonly copy: string;
   /** The assistant message that answered that request, normalized. */
   readonly answer: string;
+  /** That message without its thinking blocks, which Oh My Pi no longer sends after a history
+   *  rewrite (`kept`). */
+  readonly bareAnswer: string;
   /** Where the copy sits in a request that holds its answer. */
   readonly place: number;
 }
@@ -620,11 +816,23 @@ function holdsCount(requests: readonly Sent[], count: number, words: Words, labe
   }
 }
 
-/** `request` holds `placement`'s copy with the same bytes and role, right before the assistant
- *  message that answered it (and, with `atPlace`, where it sat before). */
-function kept(request: Sent, placement: Placement, label: string, atPlace = false): void {
+/**
+ * `request` holds `placement`'s copy with the same bytes and role, right before the assistant
+ * message that answered it (and, with `atPlace`, where it sat before). With `rewritten`, the
+ * request comes after a history rewrite, a compaction's summary, before that answer: Oh My Pi then
+ * sends it without its thinking blocks to a model that binds its thinking to the request's prefix
+ * (`invalidBoundThinkingAssistantIndexes`, packages/ai/src/providers/transform-messages.ts at the
+ * pinned tag), so the answer is read with them set aside.
+ */
+function kept(
+  request: Sent,
+  placement: Placement,
+  label: string,
+  atPlace = false,
+  rewritten = false
+): void {
   if (placement.place < 0) {
-    endsSystemWith(request, placement.words, label);
+    endsTopLevelWith(request, placement.words, label);
     return;
   }
   const at = request.messages.findIndex((message) => textOf(message) === placement.words);
@@ -636,7 +844,10 @@ function kept(request: Sent, placement: Placement, label: string, atPlace = fals
       `${label}: request #${request.index} holds the approval message as ${describe(request.messages[at])}, not with the bytes and role it was placed with`
     );
   }
-  if (normalized(request.messages[at + 1]) !== placement.answer) {
+  if (
+    normalized(request.messages[at + 1], !rewritten) !==
+    (rewritten ? placement.bareAnswer : placement.answer)
+  ) {
     fail(
       `${label}: request #${request.index} holds the approval message before ${describe(request.messages[at + 1])}, not right before the assistant message that answered it`
     );
@@ -667,9 +878,9 @@ function placedLast(
     const requests = mains(after);
     if (requests.length === 0)
       fail(`${label}: no request of the conversation came after the entry`);
-    for (const request of requests) endsSystemWith(request, words, label);
+    for (const request of requests) endsTopLevelWith(request, words, label);
     holdsCount(requests, 1, all, label);
-    return { words, copy: "", answer: "", place: -1 };
+    return { words, copy: "", answer: "", bareAnswer: "", place: -1 };
   }
   const conversation = mains(after);
   const first =
@@ -706,6 +917,7 @@ function placedLast(
     words,
     copy: normalized(last),
     answer: normalized(next.messages[answerAt]),
+    bareAnswer: normalized(next.messages[answerAt], false),
     place: answerAt - 1,
   };
   for (const later of conversation.slice(1)) {
@@ -715,11 +927,17 @@ function placedLast(
   return placement;
 }
 
-/** What a pane's stand-ins answer, which a case changes as it goes: the approval route, and
- *  Dispatch's people's answers. */
+/** What a pane's stand-ins answer, which a case changes as it goes: the approval route,
+ *  Dispatch's people's answers, and, on the pod's route, whether the `anthropic` route answers a
+ *  rate limit (`rateLimited`). */
 interface PaneState {
   route: RouteAnswer | null;
   answers: Record<string, unknown>[];
+  /** While set, the stand-in answers each Messages request of the `anthropic` route with a rate
+   *  limit instead of forwarding it to the gateway. */
+  limited: boolean;
+  /** How many requests it answered so. */
+  limitedAnswers: number;
 }
 
 /** What a case does with one life of its pane: the steps of `PaneLife`, each prompt and card
@@ -748,6 +966,18 @@ interface PaneSpec {
   readonly reverse?: boolean;
   /** The route's answer from the launch on. */
   readonly route?: RouteAnswer | null;
+  /** The model the pane runs (`--model`), where the case names its own: a chain case's. */
+  readonly model?: string;
+  /**
+   * Which models.yml the pane reads on the pod's route: by default the run's own, the pod's
+   * `anthropic` provider alone through the recording proxy (`routeThroughProxy`); `pod`, the pod's
+   * own file as it is, linked into the profile; `stub`, a copy of the pod's whole file, mode 0600
+   * in the run's work directory and removed with the pane, whose `anthropic` provider reaches the
+   * gateway through the stand-in, which can answer it with a rate limit (`PaneState.limited`).
+   */
+  readonly models?: "pod" | "stub";
+  /** Lines of a case overlay, which the pane reads after the pod's overlay (`PI_CONFIG_FILES`). */
+  readonly overlay?: readonly string[];
 }
 
 interface Pane {
@@ -756,6 +986,8 @@ interface Pane {
    *  it recorded and forwarded to the gateway. Each holds its body alone, never a header. */
   readonly modelRequests: () => readonly Request[];
   readonly sessions: string;
+  /** The marks (`APPROVAL_TOP_LEVEL_ENTRY`) the session's transcript holds, in order. */
+  readonly marks: () => Promise<ApprovalTopLevel[]>;
   readonly relaunch: (life: (life: Life) => Promise<void>) => Promise<void>;
 }
 
@@ -1059,14 +1291,22 @@ async function openPane(
       await copyFile(recordFile, path.join(setup.evidence, `${named}.jsonl`));
     }
   });
-  const state: PaneState = { route: spec.route ?? null, answers: [] };
+  const state: PaneState = {
+    route: spec.route ?? null,
+    answers: [],
+    limited: false,
+    limitedAnswers: 0,
+  };
   const { route } = setup;
+  const pod = route.kind === "pod" ? route : undefined;
   const lane = `${ROLE_TOPIC_PREFIX}legion-${PANE}-${spec.tree.toLowerCase()}-architect`;
   const legionFirst = setup.reverse !== (spec.reverse === true);
+  const caseOverlay = path.join(scratch, "case-overlay.yml");
+  if (spec.overlay !== undefined) await writeFile(caseOverlay, [...spec.overlay, ""].join("\n"));
 
   let sessionID = "";
   const modelRequests: Request[] = [];
-  const gateway = route.kind === "pod" ? route.gateway : undefined;
+  const gateway = pod?.gateway;
   const driver = paneDriver({
     nats: setup.nats,
     cleanup: setup.cleanup,
@@ -1112,12 +1352,14 @@ async function openPane(
       extensions: [RECORDER],
       args: [
         "--model",
-        // The pod's route runs the model its overlay puts on `default`, as the sandbox launch does.
-        setup.model === "sonnet"
-          ? "anthropic/claude-sonnet-5"
-          : route.kind === "pod"
-            ? "@default"
-            : "anthropic/claude-opus-5-5",
+        // The pod's route runs the model its overlay puts on `default`, as the sandbox launch does,
+        // but where the case names its own.
+        spec.model ??
+          (setup.model === "sonnet"
+            ? "anthropic/claude-sonnet-5"
+            : pod !== undefined
+              ? "@default"
+              : "anthropic/claude-opus-5-5"),
         ...(spec.thinkingOff === true ? ["--thinking=off"] : []),
         "--append-system-prompt",
         contractFile,
@@ -1125,17 +1367,41 @@ async function openPane(
       env: {
         LEGION_CAPTURE_RECORD: recordFile,
         ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-        ...(route.kind === "pod" ? { PI_CONFIG_FILES: route.overlay } : {}),
+        ...(pod === undefined
+          ? {}
+          : {
+              PI_CONFIG_FILES: [
+                pod.overlay,
+                ...(spec.overlay === undefined ? [] : [caseOverlay]),
+              ].join(":"),
+            }),
       },
-      ...(gateway === undefined
+      ...(pod === undefined
         ? { providers: STANDIN_PROVIDERS, config: spec.config ?? [] }
         : {
             profile: async (agent: string, base: string) => {
-              await writeFile(path.join(agent, "models.yml"), routeThroughProxy(gateway, base));
               await writeFile(
                 path.join(agent, "config.yml"),
                 [...(spec.config ?? []), ""].join("\n")
               );
+              const models = path.join(agent, "models.yml");
+              if (spec.models === "pod") {
+                await symlink(pod.models, models);
+                return;
+              }
+              if (spec.models === undefined) {
+                await writeFile(models, routeThroughProxy(pod.gateway, base));
+                return;
+              }
+              // The copy holds every provider's entry as the pod's file does: owner-only, in the
+              // run's work directory, and removed with the pane.
+              const copy = path.join(
+                setup.work ?? fail("a pane on a copy of the pod's models.yml needs --work"),
+                `models-${spec.name}.yml`
+              );
+              setup.cleanup.push(() => rm(copy, { force: true }));
+              await writeFile(copy, routeThroughProxy(pod.gateway, base, true), { mode: 0o600 });
+              await symlink(copy, models);
             },
           }),
       onFrame: driver.onFrame,
@@ -1158,6 +1424,10 @@ async function openPane(
         }
         const dispatch = dispatchStandin(url, state.answers);
         if (dispatch !== undefined) return dispatch;
+        if (gateway !== undefined && url.pathname === "/anthropic/v1/messages" && state.limited) {
+          state.limitedAnswers += 1;
+          return rateLimited();
+        }
         if (gateway !== undefined && url.pathname.startsWith("/anthropic/")) {
           return forward(gateway, url, body, headers);
         }
@@ -1178,6 +1448,18 @@ async function openPane(
     sent,
     modelRequests: () => modelRequests,
     sessions: pane.sessions,
+    marks: async () =>
+      (await pane.transcriptEntries(APPROVAL_TOP_LEVEL_ENTRY)).filter(
+        (data): data is ApprovalTopLevel =>
+          typeof data === "object" &&
+          data !== null &&
+          "version" in data &&
+          typeof data.version === "number" &&
+          "model" in data &&
+          typeof data.model === "string" &&
+          "answer" in data &&
+          typeof data.answer === "string"
+      ),
     relaunch: (life) =>
       pane.resume([], [], async (rpc) => {
         await life(await lifeOf(rpc));
@@ -1411,7 +1693,7 @@ function compactionCase(summarizes: boolean): CaptureCase {
         const after = mains(requests.slice(compacted));
         if (after.length === 0) fail("no request of the conversation came after the compaction");
         holdsCount(after, 1, setup.words, "after the compaction");
-        for (const request of after) kept(request, placement, "after the compaction");
+        for (const request of after) kept(request, placement, "after the compaction", false, true);
         setup.note(
           `after the compaction, ${after.length} requests hold the copy right before its answer`
         );
@@ -1430,16 +1712,17 @@ function compactionCase(summarizes: boolean): CaptureCase {
       if (own.length === 0 && summarizes) fail("the compaction made no model request of its own");
       let remote = 0;
       own.forEach((request, index) => {
-        const conversation: Sent = {
-          index,
-          pane: "the compaction",
-          kind: "main",
-          messages: (Array.isArray(request.body.messages)
-            ? request.body.messages
-            : []) as WireMessage[],
-          perCall: [],
-          system: systemTexts(request.body.system),
-        };
+        const conversation = readSent(
+          { index, pane: "the compaction", sub: false },
+          request.body,
+          {
+            provider: "anthropic",
+            id: typeof request.body.model === "string" ? request.body.model : undefined,
+            api: "anthropic-messages",
+            midConversationSystem: roleOf(setup) === "system",
+          },
+          []
+        );
         if (isSummarization(request)) {
           holdsCount([conversation], 0, setup.words, "the compaction's summary request");
           return;
@@ -1835,6 +2118,476 @@ export function captureCases(entries: "every" | "each-path"): CaptureCase[] {
     wordsAsCard,
   ];
 }
+
+/** A model of the pod's fallback chain of the architect role, as the pod's models.yml names it and
+ *  at the thinking level the chain runs it at, and whether Oh My Pi's catalogue lets it take a
+ *  system message inside the conversation (`compat.supportsMidConversationSystem`). */
+interface ChainModel extends TopLevelModel {
+  readonly midConversationSystem: boolean;
+}
+
+/** The model whose fallback chain the chain cases run, which the overlay puts on `default`, and
+ *  which the fallback case starts on and returns to. */
+const CHAIN_HEAD = { provider: "anthropic", id: "claude-opus-5-5", thinking: "xhigh" } as const;
+
+/** The model the fallback case falls back to. */
+const GEMINI: ChainModel = {
+  provider: "model-gateway",
+  id: "gemini-4-neon",
+  api: "openai-completions",
+  thinking: "high",
+  midConversationSystem: false,
+};
+
+/** The fallback chain of `CHAIN_HEAD` in the pod's architect role overlay, in its order: the
+ *  models check e4b07a29 names. */
+const CHAIN: readonly ChainModel[] = [
+  {
+    provider: "anthropic",
+    id: "claude-fable-5-2",
+    api: "anthropic-messages",
+    thinking: "xhigh",
+    midConversationSystem: true,
+  },
+  GEMINI,
+  {
+    provider: "anthropic",
+    id: "claude-sonnet-5-5",
+    api: "anthropic-messages",
+    thinking: "xhigh",
+    midConversationSystem: true,
+  },
+  {
+    provider: "openai",
+    id: "gpt-6.2-sol",
+    api: "openai-responses",
+    thinking: "xhigh",
+    midConversationSystem: false,
+  },
+  {
+    provider: "anthropic",
+    id: "claude-opus-5",
+    api: "anthropic-messages",
+    thinking: "xhigh",
+    midConversationSystem: true,
+  },
+  {
+    provider: "model-gateway",
+    id: "kimi-k3.1-pro",
+    api: "openai-completions",
+    thinking: "max",
+    midConversationSystem: false,
+  },
+];
+
+/** A model's selector, as a fallback chain names it: `<provider>/<id>:<thinking>`. */
+function selectorOf(model: {
+  readonly provider: string;
+  readonly id: string;
+  readonly thinking: string;
+}): string {
+  return `${model.provider}/${model.id}:${model.thinking}`;
+}
+
+/** Whether `request` went to `model`. */
+function sentTo(request: Sent, model: { readonly provider: string; readonly id: string }): boolean {
+  return request.model.provider === model.provider && request.model.id === model.id;
+}
+
+/** Each request of the conversation of `requests` went to `model`, which takes a system message
+ *  inside the conversation exactly where `CHAIN` says it does. */
+function onModel(requests: readonly Sent[], model: ChainModel): void {
+  for (const request of mains(requests)) {
+    if (!sentTo(request, model)) {
+      fail(
+        `request #${request.index} went to ${modelOf(request)}, not ${model.provider}/${model.id}`
+      );
+    }
+    if (request.model.midConversationSystem !== model.midConversationSystem) {
+      fail(
+        `request #${request.index}'s model ${modelOf(request)} ${request.model.midConversationSystem ? "takes" : "takes no"} system message inside the conversation, which this case reads otherwise`
+      );
+    }
+  }
+}
+
+/**
+ * A session on `model` through the pod's own models.yml as it is: a first prompt, then the entry
+ * of the design-approved path, a notice whose run makes two requests, and a later prompt where it
+ * made one. Answers the pane, its requests, the route's answer and the mark at the entry.
+ */
+async function chainSession(
+  setup: CaptureSetup,
+  model: ChainModel,
+  name: string
+): Promise<{
+  readonly pane: Pane;
+  readonly requests: readonly Sent[];
+  readonly answer: RouteAnswer;
+  readonly mark: number;
+}> {
+  if (setup.route.kind !== "pod") fail("a chain case runs on the pod's route alone");
+  const notice = entryFile("notice-design-approved-from-artifact-approved");
+  const answer = answerFor(setup, notice.approval);
+  let mark = 0;
+  const pane = await openPane(
+    setup,
+    { name, tree: OWN_ROOT, model: selectorOf(model), models: "pod" },
+    async (life) => {
+      await life.prompt(WARM_UP);
+      mark = await sendEntry(life, notice, answer, false);
+      await laterRequest(life, mark);
+    }
+  );
+  const requests = pane.sent();
+  onModel(requests, model);
+  return { pane, requests, answer, mark };
+}
+
+/**
+ * A session on one model of `CHAIN`, with the design-approved entry and two requests after it. On
+ * a model that takes a system message inside the conversation, the first request after the entry
+ * holds the message last as `system`, and the next holds it at its place with the same bytes and
+ * role. On any other, each request of the conversation after the entry ends its top-level system
+ * prompt with the message, which no other part of it holds, and the session holds pi-legion's
+ * mark for that version and model. No request before the entry holds the message.
+ */
+function chainCase(model: ChainModel): CaptureCase {
+  return {
+    name: `chain: ${selectorOf(model)}`,
+    run: async (setup) => {
+      const { pane, requests, answer, mark } = await chainSession(
+        setup,
+        model,
+        `chain-${model.id}`
+      );
+      holdsNoText(requests.slice(0, mark), setup.words, "before the entry");
+      const after = requests.slice(mark);
+      if (model.midConversationSystem) {
+        const placement = placedLast(
+          after,
+          answer.message,
+          "system",
+          setup.words,
+          "after the entry"
+        );
+        setup.note(
+          `${mark} requests before the entry hold none; ${noteOf(after, placement, "system")}`
+        );
+        return;
+      }
+      const conversation = mains(after);
+      const first = conversation[0];
+      if (first === undefined || conversation.length < 2) {
+        fail(`after the entry: ${conversation.length} requests of the conversation came, want two`);
+      }
+      for (const request of conversation) {
+        endsTopLevelWith(request, answer.message, "after the entry");
+      }
+      const name = `${model.provider}/${model.id}`;
+      const marks = (await pane.marks()).filter(
+        (one) => one.version === answer.version && one.model === name
+      );
+      if (marks.length !== 1) {
+        fail(
+          `the session holds ${marks.length} marks (${APPROVAL_TOP_LEVEL_ENTRY}) of version ${answer.version} on ${name}, want one`
+        );
+      }
+      setup.note(
+        `${mark} requests before the entry hold none; the ${conversation.length} requests of the conversation after it, from #${first.index}, end ${topLevelForm(first)} with the approval message and hold it nowhere else; the session's mark: version ${answer.version} on ${name}, answered by ${marks[0]?.answer}`
+      );
+    },
+  };
+}
+
+/**
+ * The flag-off negative control on one model of `CHAIN` that takes no system message inside the
+ * conversation, for the plugins of a revision from before pi-legion put the approval message at
+ * the end of the top-level system prompt: the first request after the entry holds the message as
+ * a user message of the conversation, and no request of the session holds it in its top-level
+ * system prompt.
+ */
+function flagOffCase(model: ChainModel): CaptureCase {
+  return {
+    name: `flag-off negative control: ${selectorOf(model)}`,
+    run: async (setup) => {
+      const { requests, answer, mark } = await chainSession(setup, model, `flag-off-${model.id}`);
+      const first =
+        mains(requests.slice(mark))[0] ??
+        fail("no request of the conversation came after the entry");
+      const at = first.messages.findIndex((message) => textOf(message) === answer.message);
+      if (at < 0) {
+        fail(
+          `request #${first.index}, the first after the entry, holds no message whose text is the approval message`
+        );
+      }
+      if (first.messages[at]?.role !== "user") {
+        fail(
+          `request #${first.index} holds the approval message as ${describe(first.messages[at])}, not as a user message`
+        );
+      }
+      const texts = [...setup.words.values()].map((one) => one.message);
+      const holding = requests.find((request) =>
+        request.system.some((part) => texts.some((text) => part.includes(text)))
+      );
+      if (holding !== undefined) {
+        fail(`request #${holding.index} holds an approval message in its top-level system prompt`);
+      }
+      setup.note(
+        `request #${first.index}, the first after the entry, holds the approval message as a user message at ${at} of its ${first.messages.length} conversation items; none of the session's ${requests.length} requests holds it in its top-level system prompt`
+      );
+    },
+  };
+}
+
+/** The prompt after the fallback case's return to `CHAIN_HEAD`, which asks for no tool call. */
+const BACK = "Run no command: reply with the word back.";
+
+/**
+ * A session on claude-opus-5-5 whose case overlay sets its fallback chain to gemini-4-neon alone
+ * and leaves `retry.rateLimitWalksChain` at its default, which changes nothing for a candidate of
+ * another provider: Oh My Pi defers only a same-provider Anthropic candidate while the last answer
+ * carries another model's signed thinking (`#tryRetryModelFallback`,
+ * `packages/coding-agent/src/session/turn-recovery.ts` at the pinned tag). Its models.yml is a
+ * copy of the pod's whole file whose `anthropic` provider reaches the gateway through the stand-in
+ * (`PaneSpec.models`). After the design-approved entry and the request that holds the placement's
+ * answer, the stand-in answers each request to that provider with a rate limit (`rateLimited`), so
+ * a prompt's first request fails with no retry on claude-opus-5-5, the session falls back to
+ * gemini-4-neon at once, and that prompt's run makes gemini-4-neon's two requests: a tool call, and
+ * the answer after its result (a request the gateway refuses and Oh My Pi sends again with the same
+ * messages counts once). Then the stand-in forwards again, the driver sets the session's model
+ * back to claude-opus-5-5 with the RPC `set_model`, which also ends the fallback, and one more
+ * prompt makes one request. The gemini-4-neon requests hold the text only at the end of their
+ * top-level system prompt, and the first request after the return holds the earlier placement at
+ * its place with the same bytes and role `system`.
+ */
+const fallbackCase: CaptureCase = {
+  name: `chain: a fallback from ${CHAIN_HEAD.id} to ${GEMINI.id} on a rate limit, and the return`,
+  run: async (setup) => {
+    if (setup.route.kind !== "pod") fail("the fallback case runs on the pod's route alone");
+    const notice = entryFile("notice-design-approved-from-artifact-approved");
+    const answer = answerFor(setup, notice.approval);
+    const marks = { entry: 0, limited: 0, back: 0 };
+    let limitedAnswers = 0;
+    let applied: Record<string, unknown> | undefined;
+    const pane = await openPane(
+      setup,
+      {
+        name: "chain-fallback",
+        tree: OWN_ROOT,
+        model: selectorOf(CHAIN_HEAD),
+        models: "stub",
+        overlay: [
+          "retry:",
+          "  fallbackChains:",
+          `    ${CHAIN_HEAD.provider}/${CHAIN_HEAD.id}: [${selectorOf(GEMINI)}]`,
+        ],
+      },
+      async (life) => {
+        await life.prompt(WARM_UP);
+        marks.entry = await sendEntry(life, notice, answer, false);
+        await laterRequest(life, marks.entry);
+        life.state.limited = true;
+        const fellBack = life.frame((frame) => {
+          if (frame.type !== "retry_fallback_applied") return false;
+          applied = frame;
+          return true;
+        }, `the fallback to ${GEMINI.id}`);
+        // Awaited once the prompt's run has ended; a failed prompt leaves it to settle unread.
+        fellBack.catch(() => undefined);
+        marks.limited = await life.prompt(FOLLOW_UP);
+        await fellBack;
+        life.state.limited = false;
+        limitedAnswers = life.state.limitedAnswers;
+        const switched = await life.command("set_model", {
+          provider: CHAIN_HEAD.provider,
+          modelId: CHAIN_HEAD.id,
+        });
+        if (switched.success !== true) fail(`set_model answered ${JSON.stringify(switched)}`);
+        marks.back = await life.prompt(BACK);
+      }
+    );
+    const requests = pane.sent();
+    holdsCount(requests.slice(0, marks.entry), 0, setup.words, "before the entry");
+    const placement = placedLast(
+      requests.slice(marks.entry, marks.limited),
+      answer.message,
+      "system",
+      setup.words,
+      "after the entry"
+    );
+    const window = mains(requests.slice(marks.limited, marks.back));
+    const other = window.find(
+      (request) => !sentTo(request, CHAIN_HEAD) && !sentTo(request, GEMINI)
+    );
+    if (other !== undefined) {
+      fail(
+        `request #${other.index} went to ${modelOf(other)}, neither ${CHAIN_HEAD.id} nor ${GEMINI.id}`
+      );
+    }
+    const head = window.filter((request) => sentTo(request, CHAIN_HEAD));
+    const limited = head[0];
+    if (limited === undefined || head.length !== 1 || limitedAnswers !== 1) {
+      fail(
+        `${head.length} requests went to ${CHAIN_HEAD.id} after the stand-in began to answer the rate limit, and it answered ${limitedAnswers}; want one of each, no retry on that model`
+      );
+    }
+    kept(limited, placement, "the request the rate limit answered", true);
+    const fallen = window.filter((request) => sentTo(request, GEMINI));
+    // A request the gateway refused and Oh My Pi sent again with the same messages is one request.
+    const distinct = new Set(fallen.map((request) => JSON.stringify(request.messages))).size;
+    const firstFallen = fallen[0];
+    if (firstFallen === undefined || distinct !== 2) {
+      fail(
+        `${distinct} requests went to ${GEMINI.id} after the fallback, in ${fallen.length} sends; want two`
+      );
+    }
+    for (const request of fallen) {
+      endsTopLevelWith(request, answer.message, `after the fallback to ${GEMINI.id}`);
+    }
+    const first =
+      mains(requests.slice(marks.back))[0] ??
+      fail(`no request of the conversation came after the return to ${CHAIN_HEAD.id}`);
+    if (!sentTo(first, CHAIN_HEAD)) {
+      fail(`the first request after the return (#${first.index}) went to ${modelOf(first)}`);
+    }
+    holdsCount([first], 1, setup.words, "after the return");
+    kept(first, placement, `after the return to ${CHAIN_HEAD.id}`, true);
+    const name = `${GEMINI.provider}/${GEMINI.id}`;
+    const geminiMarks = (await pane.marks()).filter(
+      (one) => one.version === answer.version && one.model === name
+    );
+    setup.note(
+      `${noteOf(requests.slice(marks.entry, marks.limited), placement, "system")}; then the stand-in answered request #${limited.index} to ${CHAIN_HEAD.id} with a rate limit, the only one, which held the copy at ${placement.place}, and Oh My Pi fell back from ${String(applied?.from)} to ${String(applied?.to)}`
+    );
+    setup.note(
+      `requests #${fallen.map((request) => request.index).join(", #")} to ${GEMINI.id}, ${distinct} requests in ${fallen.length} sends, end ${topLevelForm(firstFallen)} with the approval message and hold it nowhere else; the session holds ${geminiMarks.length} mark of version ${answer.version} on ${name}`
+    );
+    setup.note(
+      `after set_model, request #${first.index} to ${CHAIN_HEAD.id} holds the copy at ${placement.place} with the same bytes and role system, right before its answer`
+    );
+  },
+};
+
+/** The chain cases of the script's run, after the cases on the overlay's default model. */
+function chainCases(): CaptureCase[] {
+  return [...CHAIN.map(chainCase), fallbackCase];
+}
+
+/** Every key path of `value`, its keys joined with dots. */
+function keyPaths(value: unknown, at = ""): string[] {
+  if (typeof value !== "object" || value === null) return [];
+  return Object.entries(value).flatMap(([key, inner]) => {
+    const here = at === "" ? key : `${at}.${key}`;
+    return [here, ...keyPaths(inner, here)];
+  });
+}
+
+/** What names Amazon Bedrock: a provider, an API or a host of its. */
+const BEDROCK = /bedrock/i;
+
+/** The providers of `file` that are a Bedrock route: named so, or whose `api` or `baseUrl`'s host,
+ *  or a model's, names Bedrock. */
+function bedrockProviders(file: ModelsFile): string[] {
+  const host = (url: unknown): string => {
+    try {
+      return new URL(String(url)).hostname;
+    } catch {
+      return "";
+    }
+  };
+  return Object.entries(file.providers ?? {}).flatMap(([name, provider]) => {
+    const models: unknown[] = Array.isArray(provider.models) ? provider.models : [];
+    const routed = [provider, ...models].some(
+      (one) =>
+        typeof one === "object" &&
+        one !== null &&
+        (("api" in one && BEDROCK.test(String(one.api))) ||
+          ("baseUrl" in one && BEDROCK.test(host(one.baseUrl))))
+    );
+    return BEDROCK.test(name) || routed ? [name] : [];
+  });
+}
+
+/** A parsed overlay's `retry.fallbackChains`, empty where it sets none. */
+function fallbackChains(
+  overlay: Readonly<Record<string, unknown>>
+): Readonly<Record<string, unknown>> {
+  const { retry } = overlay;
+  const chains =
+    typeof retry === "object" && retry !== null && "fallbackChains" in retry
+      ? retry.fallbackChains
+      : undefined;
+  return typeof chains === "object" && chains !== null ? (chains as Record<string, unknown>) : {};
+}
+
+/**
+ * The route's settings, which every case reads after: the pod's models.yml and both overlays set
+ * no remote compaction (a `remoteCompaction` key anywhere, or `compaction.remoteEndpoint`) and no
+ * Bedrock route (a provider of the models.yml that is one, or a model role or a fallback chain of
+ * an overlay that names one), so no compaction's own request of a case goes where no payload hook
+ * sees it but the ones the plan reads; and the role overlay's fallback chain of `CHAIN_HEAD` is
+ * `CHAIN`. Prints only whether each key is set, never a value.
+ */
+const routeSettingsCase: CaptureCase = {
+  name: "the route's settings: no remote compaction, no Bedrock route, and the architect's chain",
+  run: async (setup) => {
+    const { route } = setup;
+    if (route.kind !== "pod") fail("the route's settings are the pod's route's alone");
+    const parsed = (file: string): Readonly<Record<string, unknown>> =>
+      (Bun.YAML.parse(readFileSync(file, "utf8")) ?? {}) as Record<string, unknown>;
+    const bedrock = bedrockProviders(route.gateway.file);
+    const role = parsed(route.roleOverlay);
+    const set: string[] = [];
+    for (const [file, value] of [
+      [route.models, parsed(route.models)],
+      [route.overlay, parsed(route.overlay)],
+      [route.roleOverlay, role],
+    ] as const) {
+      const paths = keyPaths(value);
+      const chains = fallbackChains(value);
+      const selectors = [
+        ...(typeof value.modelRoles === "object" && value.modelRoles !== null
+          ? Object.values(value.modelRoles)
+          : []),
+        ...Object.keys(chains),
+        ...Object.values(chains).flat(),
+      ].filter((one): one is string => typeof one === "string");
+      const found = {
+        remoteCompaction: paths.some(
+          (one) => one === "remoteCompaction" || one.endsWith(".remoteCompaction")
+        ),
+        "compaction.remoteEndpoint": paths.includes("compaction.remoteEndpoint"),
+        "a Bedrock route":
+          file === route.models
+            ? bedrock.length > 0
+            : selectors.some((selector) => {
+                const provider = selector.split("/")[0] ?? "";
+                return BEDROCK.test(provider) || bedrock.includes(provider);
+              }),
+      };
+      setup.note(
+        `${file}: ${Object.entries(found)
+          .map(([key, held]) => `${key} ${held ? "set" : "not set"}`)
+          .join(", ")}`
+      );
+      for (const [key, held] of Object.entries(found)) {
+        if (held) set.push(`${file} sets ${key}`);
+      }
+    }
+    const head = `${CHAIN_HEAD.provider}/${CHAIN_HEAD.id}`;
+    const chain = fallbackChains(role)[head];
+    const want = CHAIN.map(selectorOf);
+    if (JSON.stringify(chain) !== JSON.stringify(want)) {
+      set.push(
+        `${route.roleOverlay} chains ${head} to ${JSON.stringify(chain)}, not to the models the chain cases run, ${want.join(", ")}`
+      );
+    } else {
+      setup.note(`${route.roleOverlay}: ${head} falls back to ${want.join(", ")}`);
+    }
+    if (set.length > 0) fail(set.join("; "));
+  },
+};
 
 /** The checkout's root, written over in each body of the top-level capture. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../..");
@@ -2382,63 +3135,80 @@ function flag(args: readonly string[], name: string): string | undefined {
 }
 
 /**
- * The script's run: the route's check, every case on the pod's own model route, then every case
- * again on claude-sonnet-5; or, with `--entries top-level-capture`, the top-level capture alone
- * (`topLevelCapture`). Answers the exit status: 0 when every case passed, or under
- * `--negative-control` when the run sent requests and none of them holds an approval message,
- * and 1 otherwise.
+ * The script's run: the route's check, the route's settings (`routeSettingsCase`), then every case
+ * on the overlay's default model and the chain cases (`chainCases`), or with `--entries
+ * chain-flag-off` the flag-off negative control (`flagOffCase`) on each model of `CHAIN` that takes
+ * no system message inside the conversation, each list cut to the cases `--only` names; or, with
+ * `--entries top-level-capture`, the top-level capture alone (`topLevelCapture`). Answers the exit
+ * status: 0 when every case passed, or under `--negative-control` when the run sent requests and
+ * none of them holds an approval message, and 1 otherwise.
  */
 async function main(args: readonly string[]): Promise<number> {
   const required = (name: string): string =>
     flag(args, name) ?? fail(`--${name} is required (see the head of this file)`);
   const entries = flag(args, "entries") ?? "each-path";
   if (entries === "top-level-capture") return topLevelCapture(args);
-  if (entries !== "every" && entries !== "each-path") {
-    fail(`--entries ${entries}: want every, each-path or top-level-capture`);
+  if (entries !== "every" && entries !== "each-path" && entries !== "chain-flag-off") {
+    fail(`--entries ${entries}: want every, each-path, chain-flag-off or top-level-capture`);
   }
   const negative = args.includes("--negative-control");
+  const flagOff = entries === "chain-flag-off";
+  if (negative && flagOff) {
+    fail(
+      "--negative-control and --entries chain-flag-off are two negative controls: run each alone"
+    );
+  }
   const models = required("models");
   const overlay = required("overlay");
   const gateway = podGateway(models);
   const model = overlayDefault(overlay, gateway, models);
+  for (const one of CHAIN) modelEntry(gateway.file, one, models);
+  const listed = flagOff
+    ? CHAIN.filter((one) => !one.midConversationSystem).map(flagOffCase)
+    : [...captureCases(entries), ...chainCases()];
+  const only = flag(args, "only");
+  const picked = only === undefined ? listed : listed.filter((one) => one.name.startsWith(only));
+  if (picked.length === 0) fail(`--only ${only} names no case of this run`);
   console.log(
-    `   the route: ${models}'s anthropic provider; the cases run the overlay's default ${model}, then claude-sonnet-5`
+    flagOff
+      ? `   the route: ${models}; the flag-off negative control runs ${picked.length} sessions on the models of the architect's fallback chain that take no system message inside the conversation`
+      : `   the route: ${models}; the cases run the overlay's default ${model}, then each model of the architect's fallback chain and a fallback (${picked.length} cases${only === undefined ? "" : ` whose names start with ${JSON.stringify(only)}`})`
   );
   const sent: Sent[] = [];
   const base = {
     binary: required("omp"),
     nats: required("nats"),
-    route: { kind: "pod", gateway, overlay },
+    route: { kind: "pod", models, gateway, overlay, roleOverlay: required("role-overlay") },
     plugins: { envoy: required("envoy"), legion: required("legion") },
     reverse: false,
     words: await approvalWords(),
     note: (line: string) => console.log(`   ${line}`),
     evidence: flag(args, "evidence"),
     sent,
+    model: "opus",
+    work: required("work"),
   } as const;
   const failed: string[] = [];
   const started = Date.now();
-  for (const model of ["opus", "sonnet"] as const) {
-    for (const one of captureCases(entries)) {
-      const name = `${model === "sonnet" ? "claude-sonnet-5: " : ""}${one.name}`;
-      console.log(`== ${name}`);
-      const began = Date.now();
-      const cleanup: Cleanup = [];
-      try {
-        await one.run({ ...base, cleanup, model });
-        console.log(`ok ${name} (${Math.round((Date.now() - began) / 1000)}s)`);
-      } catch (error) {
-        failed.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
-        console.log(`FAIL ${failed.at(-1)}`);
-      } finally {
-        for (const step of cleanup.splice(0).reverse()) {
-          await step().catch((error: unknown) => console.log(`   cleanup: ${String(error)}`));
-        }
+  const cases = [routeSettingsCase, ...picked];
+  for (const one of cases) {
+    console.log(`== ${one.name}`);
+    const began = Date.now();
+    const cleanup: Cleanup = [];
+    try {
+      await one.run({ ...base, cleanup });
+      console.log(`ok ${one.name} (${Math.round((Date.now() - began) / 1000)}s)`);
+    } catch (error) {
+      failed.push(`${one.name}: ${error instanceof Error ? error.message : String(error)}`);
+      console.log(`FAIL ${failed.at(-1)}`);
+    } finally {
+      for (const step of cleanup.splice(0).reverse()) {
+        await step().catch((error: unknown) => console.log(`   cleanup: ${String(error)}`));
       }
     }
   }
   console.log(
-    `${failed.length} of the cases failed; the run took ${Math.round((Date.now() - started) / 1000)}s and its sessions sent ${sent.length} requests`
+    `${failed.length} of the ${cases.length} cases failed; the run took ${Math.round((Date.now() - started) / 1000)}s and its sessions sent ${sent.length} requests`
   );
   if (negative) {
     // The negative control's verdict is its own check alone: its placing cases fail by design, at
@@ -2461,11 +3231,14 @@ async function main(args: readonly string[]): Promise<number> {
     console.log("approval message capture: negative control PASS");
     return 0;
   }
+  const verdict = flagOff
+    ? "approval message capture: flag-off negative control"
+    : "approval message capture:";
   if (failed.length === 0) {
-    console.log("approval message capture: PASS");
+    console.log(`${verdict} PASS`);
     return 0;
   }
-  console.log(`approval message capture: FAIL: the first case that failed is ${failed[0]}`);
+  console.log(`${verdict} FAIL: the first case that failed is ${failed[0]}`);
   return 1;
 }
 

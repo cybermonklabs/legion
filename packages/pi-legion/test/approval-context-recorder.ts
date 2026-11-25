@@ -36,6 +36,7 @@ interface RecorderContext {
   readonly model?: {
     readonly provider?: string;
     readonly id?: string;
+    readonly api?: string;
     readonly input?: readonly string[];
     readonly compat?: { readonly supportsMidConversationSystem?: boolean };
   };
@@ -107,6 +108,7 @@ export default function recorder(pi: RecorderApi): void {
       model: {
         provider: context.model?.provider,
         id: context.model?.id,
+        api: context.model?.api,
         input: context.model?.input,
         supportsMidConversationSystem: context.model?.compat?.supportsMidConversationSystem,
       },

@@ -33,7 +33,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34"),
     ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
     (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:204-208 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :197; "
-                              "packages/pi-legion/test/approval-message-capture.ts:1168,1283 read the entry files of internal/workflow/testdata/approval-entries (ENTRIES :69-72)"),
+                              "packages/pi-legion/test/approval-message-capture.ts reads the entry files of internal/workflow/testdata/approval-entries, the directory its ENTRIES constant names, in sendEntry and in cardCase's two cards"),
     ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :196"),
     ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :198"),
     ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
