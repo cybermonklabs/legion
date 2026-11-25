@@ -74,32 +74,11 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
-      # pods' test Postgres runs (packages/daemon/docker/legion-testpg): it keeps the runner's
-      # disk out of the timing rows below. Delivery's worst-phase row
-      # (TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase) holds a take-over to
-      # intakeHoldTTL plus 2 s, and with commits waiting on the disk one take of the hold took
-      # 2.1 s to commit in a builds Job, past that bound (dispatch://INFRA-557, round 181). A
-      # service container takes no server arguments, so `alter system` writes the three, as
-      # docs-site.yaml's screenshots step does, and a reload applies them; the step reads them
-      # back from a new session and fails unless each is off.
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
       - name: Turn crash safety off on the service
         timeout-minutes: 2
-        run: |
-          container="${{ job.services.postgres.id }}"
-          docker exec "$container" psql -U postgres -v ON_ERROR_STOP=1 -q \
-            -c 'alter system set fsync = off' \
-            -c 'alter system set full_page_writes = off' \
-            -c 'alter system set synchronous_commit = off' \
-            -c 'select pg_reload_conf()'
-          for _ in $(seq 1 20); do
-            settings=$(docker exec "$container" psql -U postgres -Atc \
-              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')")
-            [ "$settings" = "off off off" ] && break
-            sleep 0.5
-          done
-          echo "fsync, full_page_writes, synchronous_commit: $settings"
-          [ "$settings" = "off off off" ] || { echo "::error::the service's fsync, full_page_writes and synchronous_commit read '$settings' after the reload, not 'off off off'"; exit 1; }
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with
       # a database and pools of its own, beside the step's other packages, so this samples the
       # service's client connections every 2 s while the next step runs and the step after it prints
