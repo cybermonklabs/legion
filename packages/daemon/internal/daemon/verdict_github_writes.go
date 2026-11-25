@@ -92,9 +92,10 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 
 // writeDecidedChanged is writeDecided, and answers too, where it answers no error, whether it
 // created or updated a check run or set a commit status: a pass that writes a success is followed
-// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not.
+// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not. A
+// decision that is no decision yet (verdict.Undecided) is written by no caller, and not here either.
 func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
-	if decided.conclusion == verdict.None && !overForeign || w.verdicts.appID == 0 {
+	if decided.conclusion == verdict.None && !overForeign || decided.conclusion == verdict.Undecided || w.verdicts.appID == 0 {
 		return false, nil
 	}
 	serving := w.repositories.serving(target.repository)

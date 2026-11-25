@@ -2078,16 +2078,17 @@ func TestLegionVerdictAReviewerWhoseClaimRecordsNoSessionReadsNoCommit(t *testin
 	rig.noReader(t, "code", wantNoReaderOpening, "code")
 }
 
-// C2: where the fake answers no list of the change's commits, the default steps write failure on H
-// once every step has passed there: where the daemon cannot read every commit of the change, no
-// commit has a reader, and it says why. So does a list that does not reach H, which is the change of
-// another head.
+// C2: where GitHub answers that it cannot serve the compare of the change's commits (404, 422), the
+// default steps write failure on H once every step has passed there: where the daemon cannot read
+// every commit of the change, no commit has a reader, and it says why. So does a list that does not
+// reach H, which is the change of another head.
 func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		github func(*verdictGitHub)
 	}{
-		{"GitHub answers no list", func(g *verdictGitHub) { g.compareStatus = http.StatusBadGateway }},
+		{"GitHub answers 404", func(g *verdictGitHub) { g.compareStatus = http.StatusNotFound }},
+		{"GitHub answers 422", func(g *verdictGitHub) { g.compareStatus = http.StatusUnprocessableEntity }},
 		{"the list does not reach H", func(g *verdictGitHub) { g.history = []string{"code-0"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2107,6 +2108,114 @@ func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 
 // changeUnreadLine is what the writer logs when it cannot read the change's commits.
 const changeUnreadLine = "verdict: the change's commits could not be read, so no commit has a reader"
+
+// changeUnansweredLine is what the writer logs each time GitHub gives no answer to its read of the
+// change's commits, and noAnswerLine what it logs once a head has had none on noAnswerSweeps of the
+// writers' sweep's passes in a row.
+const (
+	changeUnansweredLine = "verdict: GitHub gave no answer to the read of the change's commits, so nothing is decided at this head yet; the next write or sweep reads it again"
+	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on several sweeps in a row, so nothing is decided there and legion-verdict stays as it stands"
+)
+
+// A read of the change GitHub gives no answer to (a 5xx, as a transport error or a timeout) decides
+// nothing yet: the success that stands at code stays as it is, with no failure written over it, on
+// a fact's write, on a merge group's write, and on the writers' sweep's, and each such read says so.
+func TestLegionVerdictNoAnswerToTheChangesReadLeavesTheSuccessAsItStands(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	run := rig.acceptedAndWritten(t)
+	made, events := rig.github.recorded()
+	compared := len(compares(events))
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.checkState(t, "code", "k1", verdict.StateYes)
+	rig.written(t)
+	rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+	rig.written(t)
+	rig.swept(t)
+	writes, events := rig.github.recorded()
+	if read := len(compares(events)) - compared; read < 3 {
+		t.Fatalf("GitHub was asked for the change %d times after the success, want at least 3: a fact's, a group's and a sweep's", read)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d left at success: no answer decides nothing", runs, run.ID)
+	}
+	if len(writes) != len(made) {
+		t.Fatalf("the writer wrote %+v, want nothing: no answer decides nothing", writes[len(made):])
+	}
+	if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 0 {
+		t.Fatalf("%q lines = %v, want none: GitHub gave no answer, not one that the change cannot be read", changeUnreadLine, lines)
+	}
+	if lines := loggedMessages(t, rig.logs.String(), changeUnansweredLine); len(lines) < 3 || lines[0]["head"] != "code" {
+		t.Fatalf("%q lines = %v, want one naming code for each read", changeUnansweredLine, lines)
+	}
+}
+
+// A refusal at a head needs no read of the change, so GitHub's silence leaves it standing: a
+// person's request for changes of code, every step passed there, turns the success to failure while
+// GitHub gives no answer to the read of the change, with no reason named, since the commits were not
+// read.
+func TestLegionVerdictAPersonsRefusalWritesFailureWhileGitHubGivesNoAnswer(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	run := rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.review(t, personsReview(1, "changes_requested"))
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" ||
+		runs[0].Title != "legion-verdict: failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want run %d at failure with no reason named: a person refused code", runs, run.ID)
+	}
+}
+
+// A head whose change GitHub gives no answer to on noAnswerSweeps of the writers' sweep's passes in a
+// row is logged once, as a WARN naming the repository, the head, the count and the last error, so a
+// head left undecided does not stay so silently. An answer starts the count again.
+func TestLegionVerdictSweepsWithNoAnswerAtAHeadWarnOnce(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.acceptedAndWritten(t)
+	answers := func(status int) {
+		rig.github.mu.Lock()
+		rig.github.compareStatus = status
+		rig.github.mu.Unlock()
+	}
+	warned := func(want int, after string) {
+		t.Helper()
+		lines := loggedMessages(t, rig.logs.String(), noAnswerLine)
+		if len(lines) != want {
+			t.Fatalf("%q lines after %s = %v, want %d", noAnswerLine, after, lines, want)
+		}
+		for _, line := range lines {
+			if line["level"] != "WARN" || line["repository"] != "acme/widgets" || line["head"] != "code" || line["sweeps"] != float64(noAnswerSweeps) ||
+				!strings.Contains(fmt.Sprint(line["error"]), "502") {
+				t.Fatalf("%q line = %v, want a WARN naming acme/widgets, code, %d sweeps and GitHub's 502", noAnswerLine, line, noAnswerSweeps)
+			}
+		}
+	}
+	answers(http.StatusBadGateway)
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	warned(0, fmt.Sprintf("%d sweeps", noAnswerSweeps-1))
+	rig.swept(t)
+	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
+	rig.swept(t)
+	rig.swept(t)
+	warned(1, "more sweeps with no answer")
+	answers(0)
+	rig.swept(t)
+	answers(http.StatusBadGateway)
+	for range noAnswerSweeps - 1 {
+		rig.swept(t)
+	}
+	warned(1, "an answer and then fewer sweeps with no answer than the count")
+	rig.swept(t)
+	warned(2, "the count of sweeps with no answer again")
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want the success left as it stands", runs)
+	}
+}
 
 // unreadReviewersCommit seeds CAPTURE-1 in accepting on the default steps, every step but the
 // owner's acceptance passed at code, where the tester's claim and the owner's record no session:

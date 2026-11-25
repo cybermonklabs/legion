@@ -54,9 +54,11 @@ func (w *workflowRuntime) queueMergeGroupWrite(repository ghrepo.Repository, num
 // fails the group too (R4); the write reads the open pull requests at that head once (headPulls).
 // A group with no verdict is failure, not nothing, so the queue removes the entry at once rather
 // than at its check's timeout; that holds for a pull request on another project's issue branch
-// too, where no verdict stands here. The group commit holds the pull requests ahead of it in the
-// queue too, each with a group of its own that the queue also waits for, so only the pull request
-// the group's ref names is read.
+// too, where no verdict stands here. A head that is undecided, GitHub having given no answer to a
+// read its decision needs (verdict.Undecided), writes nothing on the group yet: the writers' next
+// sweep writes the group again, and the head's own writes count the sweeps (writeVerdictOver). The
+// group commit holds the pull requests ahead of it in the queue too, each with a group of its own
+// that the queue also waits for, so only the pull request the group's ref names is read.
 func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTarget) error {
 	entry, ok := w.verdictEntry(target.repository)
 	if !ok {
@@ -72,7 +74,11 @@ func (w *workflowRuntime) writeMergeGroup(ctx context.Context, target verdictTar
 			return err
 		}
 	}
-	if decided.conclusion != verdict.Success {
+	switch decided.conclusion {
+	case verdict.Undecided:
+		return nil
+	case verdict.Success:
+	default:
 		decided.conclusion = verdict.Failure
 	}
 	return w.writeDecided(ctx, verdictTarget{repository: target.repository, number: target.number, head: target.group}, decided, target.overForeign)

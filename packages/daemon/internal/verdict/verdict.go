@@ -25,7 +25,9 @@
 // changes, the CI reviewer's request for changes, or a person's last review at the head
 // asking for changes. A person's refusal stands on every kind of head until that person approves
 // the same head, and a comment lifts nothing. A head that holds no verdict and no refusal
-// concludes nothing, and nothing is written on it, so it cannot merge.
+// concludes nothing, and nothing is written on it, so it cannot merge. A Legion head where each
+// check and step passed, no refusal stands, and GitHub gave no answer to the read of the change's
+// commits is undecided: no decision yet, so nothing is written and a run written before stands.
 package verdict
 
 import (
@@ -40,14 +42,19 @@ import (
 // status of the same name another writer of the one App left, as a commit status.
 const CheckName = "legion-verdict"
 
-// Conclusion is what legion-verdict concludes on a head: success, failure, or None, which writes no
-// check.
+// Conclusion is what legion-verdict concludes on a head: success, failure, None, which writes no
+// check, or Undecided, which writes nothing and leaves the check as it stands.
 type Conclusion string
 
 const (
 	None    Conclusion = ""
 	Success Conclusion = "success"
 	Failure Conclusion = "failure"
+	// Undecided is no decision yet: on a Legion head where each check reads yes and every step
+	// passed, GitHub gave no answer at all to the read of the change's commits (Inputs.Unanswered),
+	// and no refusal stands. It is never written: a run written before stands until a read is
+	// answered.
+	Undecided Conclusion = "undecided"
 )
 
 // The review states that decide, as intake spells a GitHub review's state; every other state (a
@@ -84,8 +91,9 @@ const (
 	// NoReader is a head where a commit of the change has no reader (CommitsWithNoReader names
 	// each), a plan with no testing step and no review step among them, whose commits no agent reads.
 	NoReader Reason = "a commit with no reader"
-	// ChangeUnread is a head where the daemon could not read every commit of the change, so no
-	// commit has a reader.
+	// ChangeUnread is a head where GitHub answered that the daemon cannot read every commit of the
+	// change (Inputs.Unread), so no commit has a reader. No answer at all is no such answer, and
+	// decides nothing yet (Undecided).
 	ChangeUnread Reason = "change unread"
 )
 
@@ -133,8 +141,8 @@ type Inputs struct {
 	// Head is the commit decided.
 	Head string
 	// Legion is whether a Legion issue of this daemon's project owns the head (a legion/<KEY> head,
-	// or a task branch legion/<KEY>.<slug>); Steps, Checks, Commits and Unread are that issue's,
-	// and read on no other head.
+	// or a task branch legion/<KEY>.<slug>); Steps, Checks, Commits, Unread and Unanswered are that
+	// issue's, and read on no other head.
 	Legion bool
 	// Steps are the steps of the task's plan, in its order.
 	Steps []Step
@@ -145,9 +153,11 @@ type Inputs struct {
 	// Commits is each commit of the change, in its order, as the daemon read them from GitHub. None
 	// where it has not read them, which is no reading of the change: a change has a commit.
 	Commits []Commit
-	// Unread is whether the daemon could not read every commit of the change, so no commit has a
-	// reader.
-	Unread bool
+	// Unread is whether GitHub answered that the daemon cannot read every commit of the change, so
+	// no commit has a reader. Unanswered is whether GitHub gave no answer at all to the read, which
+	// decides nothing yet (Undecided). The two stay apart: no answer is no answer that the commits
+	// cannot be read.
+	Unread, Unanswered bool
 	// CIReviewer is the bot login the repository's entry names as its ci_reviewer, "" for none.
 	CIReviewer string
 	// SideReviews is whether the entry takes side reviews, and Side the side reviewer's verdict at
@@ -186,15 +196,18 @@ func Decide(in Inputs) (Conclusion, Reason) {
 		return Failure, reason
 	case approved:
 		return Success, ""
+	case in.Legion && in.Unanswered && StepsPassed(in):
+		return Undecided, ""
 	}
 	return None, ""
 }
 
 // stepsAt is what the checks, the steps and the change's commits of a Legion head say at the head:
 // failed where a check reads no there or a review step's agent asked for changes there, or where
-// each check reads yes and every step passed and a commit of the change has no reader, or the
-// daemon could not read them, which reason then names; and passed where each check reads yes, every
-// step passed and each commit has a reader.
+// each check reads yes and every step passed and a commit of the change has no reader, or GitHub
+// answered that the daemon cannot read them, which reason then names; neither where every step
+// passed and GitHub gave no answer to the read of the commits; and passed where each check reads
+// yes, every step passed and each commit has a reader.
 func stepsAt(in Inputs) (failed, passed bool, reason Reason) {
 	failed = in.checkReads(StateNo)
 	for _, step := range in.Steps {
@@ -203,6 +216,8 @@ func stepsAt(in Inputs) (failed, passed bool, reason Reason) {
 	switch {
 	case failed || !StepsPassed(in):
 		return failed, false, ""
+	case in.Unanswered:
+		return false, false, ""
 	case in.Unread || len(in.Commits) == 0:
 		return true, false, ChangeUnread
 	case len(CommitsWithNoReader(in)) > 0:
