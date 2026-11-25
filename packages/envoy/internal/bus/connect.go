@@ -233,17 +233,73 @@ func connectFirstInBackground(name string, urls []string, now func() time.Time, 
 	return nc, nil
 }
 
+// authorizationRefusals are the errors nats.go reports the server refusing a connection's
+// credential with: a credential the server does not know (nats.ErrAuthorization), or one whose
+// authorization expired or was revoked.
+var authorizationRefusals = [...]error{nats.ErrAuthorization, nats.ErrAuthExpired, nats.ErrAuthRevoked, nats.ErrAccountAuthExpired}
+
 // authorizationRefusal reports whether err is the server refusing the connection's credential:
-// one it does not know, or one whose authorization expired or was revoked.
+// whether err or any error it wraps is one of authorizationRefusals (errors.Is).
 func authorizationRefusal(err error) bool {
-	return errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) ||
-		errors.Is(err, nats.ErrAuthRevoked) || errors.Is(err, nats.ErrAccountAuthExpired)
+	for _, refusal := range authorizationRefusals {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthorizationRefused reports whether err holds the server's refusal of the connection's
-// credential (authorizationRefusal). cmd/listener's start ends on it once the connect that met it
-// has waited it out (WithCredentialWait): the credential is the listener's own configuration.
+// credential anywhere in its chain (authorizationRefusal), an earlier refusal that a start's last
+// error names beside the error its last try failed with (withLastRefusal) included. cmd/listener's
+// start records it as a refusal the start met before the main client's connect ends the start, so
+// the start's last line names the credential (connectListener, startFailureLine). Whether the
+// connect's last try was refused, which decides whether a later connect ends the start, is
+// FinalTryRefused's question.
 func AuthorizationRefused(err error) bool { return authorizationRefusal(err) }
+
+// FinalTryRefused reports whether err, the error a connect ended with, is the server refusing the
+// connection's credential at the connect's last try: whether err or an error it wraps is one of
+// authorizationRefusals, read along err's chain as errors.Is reads it but following only the first
+// error of an error that wraps several (Unwrap() []error). In the form a start's last error takes
+// when it names an earlier refusal beside the error its last try failed with (withLastRefusal),
+// that first error is the last try's, so the earlier refusal does not count; a start that ended at
+// its bound on a refusal (credentialWaitEnded) wraps that refusal alone, so it counts.
+// cmd/listener's later connects end the start on it and try every other error again by the start
+// rule (openStartConnection).
+func FinalTryRefused(err error) bool {
+	for err != nil {
+		if refusalItself(err) {
+			return true
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			wrapped := wrapper.Unwrap()
+			if len(wrapped) == 0 {
+				return false
+			}
+			err = wrapped[0]
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// refusalItself reports whether err itself, not an error it wraps, is one of
+// authorizationRefusals, matched as errors.Is matches each error of a chain: equal to it, or
+// saying so through an Is method (FinalTryRefused).
+func refusalItself(err error) bool {
+	is, hasIs := err.(interface{ Is(error) bool })
+	for _, refusal := range authorizationRefusals {
+		if err == refusal || hasIs && is.Is(refusal) {
+			return true
+		}
+	}
+	return false
+}
 
 // logRefusal writes the line a refused credential is reported with, naming the servers as the
 // reconnect failure's line does (serverList).

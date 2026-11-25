@@ -136,8 +136,11 @@ func credentialWaitEnded(bound time.Duration, refusal error) error {
 }
 
 // withLastRefusal is err, the error of the last of connectTries tries in a row that failed other
-// than by a refusal, naming refusal, the last refusal of the credential before them, when there
-// was one.
+// than by a refusal, or of a try that ended the start at once (endsStart), naming refusal, the last
+// refusal of the credential before it, when there was one. It wraps both, err first: errors.Is
+// still finds the refusal (AuthorizationRefused), and a judge of the start's last try reads err
+// alone (FinalTryRefused, which follows only the first error of an error that wraps several), so
+// cmd/listener's later connects try err again by the start rule rather than end on the refusal.
 func withLastRefusal(err, refusal error) error {
 	if refusal == nil {
 		return err

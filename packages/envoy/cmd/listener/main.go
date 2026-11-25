@@ -1273,7 +1273,7 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 		if errors.As(err, &edgeRead) {
 			// Named, because a reader of a log that holds only "context deadline exceeded"
 			// cannot tell which step of the start timed out.
-			log.Fatal(startFailureLine(err, start, os.LookupEnv))
+			endStartOnNATS(err, start)
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("stream", bus.Stream), cfg.NATSReplicas, code, err)
@@ -1289,11 +1289,23 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 			// matches (the natslive edge test reads "connect to NATS and reconcile the ... stream:
 			// "), and names the credential the hub refused, an nkey user by its public key, which
 			// is what an operator looks for in the hub's authorization; err names the step.
-			log.Fatal(startFailureLine(err, start, os.LookupEnv))
+			endStartOnNATS(err, start)
 		}
 		logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 		time.Sleep(startRetry)
 	}
+}
+
+// endStartOnNATS ends a start whose main connect failed with err: it exits with
+// startFailureLine's line. A connect begun once the start's bound had passed waits nothing and
+// tells the start of no refusal (natsStart.option), so a refusal of the credential err carries
+// (bus.AuthorizationRefused) is recorded first (natsStart.refused), and the line names the
+// credential all the same.
+func endStartOnNATS(err error, start *natsStart) {
+	if bus.AuthorizationRefused(err) {
+		start.refused(err)
+	}
+	log.Fatal(startFailureLine(err, start, os.LookupEnv))
 }
 
 // openStartStore opens one of the listener's stores on client's connection with open, which opens
@@ -1538,9 +1550,12 @@ const natsReleaseRefusedLine = "nats-server release below the listener's floor; 
 //     wait, logging natsReleaseRefusedLine at ERROR with the server's release and the floor;
 //   - a failure for want of NATS (natsConnectionError), among them a connection's ten dials
 //     (bus.Connect) that no server answered, every startRetry, logging failedLine at WARN;
-//   - a credential the server still refuses once the connect has waited it out
-//     (bus.AuthorizationRefused) ends the start: endedLine at ERROR names the refusal and the
-//     credential (natsStart.stepFailed), and the process exits 1, as connectListener ends it;
+//   - a credential the server still refuses at the connect's last try once the connect has waited
+//     it out (bus.FinalTryRefused) ends the start: endedLine at ERROR names the refusal and the
+//     credential (natsStart.stepFailed), and the process exits 1, as connectListener ends it. A
+//     connect that got past a refusal and then failed ten tries in a row otherwise ends with the
+//     last of those errors, naming the earlier refusal beside it (bus.WithCredentialWait); that
+//     last error, not the refusal, picks its case here;
 //   - any other failure, a server that refuses the connection itself (an account at its
 //     connection limit) among them, after the same wait as a grant's refusal, logging failedLine
 //     at ERROR.
@@ -1570,7 +1585,7 @@ func openStartConnection[T any](logger *logging.Logger, start *natsStart, failed
 		case natsConnectionError(err):
 			logger.Warn(failedLine, slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 			time.Sleep(startRetry)
-		case bus.AuthorizationRefused(err):
+		case bus.FinalTryRefused(err):
 			// A connect begun once the start's bound had passed waits nothing, and names no
 			// refusal to the start on its own: the line names the credential all the same.
 			start.refused(err)
