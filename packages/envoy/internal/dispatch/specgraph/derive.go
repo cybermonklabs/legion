@@ -102,15 +102,17 @@ func Derive(in Input) (State, error) {
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);
-//   - History set, FixtureHistory{Commits: []FixtureCommit{}} for none: with no history no result
-//     carries, so a failure at another commit counts nowhere, and a caller that gives none is not
-//     one that states that it has none; a FixtureHistory as ReadFixtureHistory refuses it
-//     (FixtureHistory.check), Commits set among it, a GitHistory with no Dir, and a nil value of
-//     any type that implements History (historyFault): a commit with no files, or a tree with no
-//     path, would be an empty tree, and two of them one tree, a content label of no letter and no
-//     digit, such as "" or " ", would be one content at each commit that has it, a path that is no
-//     repository path a change that no tie covers, and a nil history would panic where a result
-//     carries;
+//   - History set, FixtureHistory{Commits: []FixtureCommit{}} for none: a run of a check of the
+//     code counts only at its own commit, history or not, and with no history no failing example
+//     counts at another commit, nor a run of a program check of production or of the graph whose
+//     test is of another commit (carries), so a failure or a failing example that missed its fault
+//     there counts nowhere, and a caller that gives none is not one that states that it has none;
+//     a FixtureHistory as ReadFixtureHistory refuses it (FixtureHistory.check), Commits set among
+//     it, a GitHistory with no Dir, and a nil value of any type that implements History
+//     (historyFault): a commit with no files, or a tree with no path, would be an empty tree, and
+//     two of them one tree, a content label of no letter and no digit, such as "" or " ", would be
+//     one content at each commit that has it, a path that is no repository path a change that no
+//     tie covers, and a nil history would panic where a result carries;
 //   - Ties set, CommitTies{} for none, as ReadCommitTies refuses it (CommitTies.fault), for the
 //     same reason: each commit and check of it a name, the map of each commit that it names set (a
 //     commit where no tie is known has {} or no key), each known tie as NewTie refuses it, since a
@@ -119,8 +121,8 @@ func Derive(in Input) (State, error) {
 //     would be hidden (R9), and with no map of the checks that CI refused, a refused check would be
 //     judged at its commit by its results, where R48 makes it unknown ("At that commit, such a
 //     check reads unknown, and no earlier result of it counts"), and elsewhere by the results of
-//     the refused commit, which count nowhere; and Uncited as the reader of uncited.json refuses it
-//     (uncitedFault);
+//     the refused commit that support true, which count nowhere (deriveChecks, step 2); and Uncited
+//     as the reader of uncited.json refuses it (uncitedFault);
 //   - each job run (JobRun.fault).
 //
 // A History that could not answer is refused later, where the judge first asks it (checkJudge).
