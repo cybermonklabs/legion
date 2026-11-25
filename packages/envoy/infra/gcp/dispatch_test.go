@@ -840,6 +840,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
 		}},
+		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
@@ -2737,6 +2738,57 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
 	requireInputError(t, err, "oidcAudience")
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+}
+
+// requireOptionalEnv fails unless env carries name with want, or, with want "", carries no name at
+// all: an optional setting renders only when its input is set.
+func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
+	t.Helper()
+	if want == "" {
+		require.NotContains(t, env, name)
+		return
+	}
+	require.Equal(t, want, env[name])
+}
+
+// A value Dispatch refuses at boot is refused when the stack plans, naming the input, so one typo
+// never reaches a Deployment whose one replica would then not start: an owner fallback that is no
+// lowercase email.
+func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	for _, row := range []struct {
+		name, want string
+		edit       func(*gcp.DispatchArgs)
+	}{
+		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
+		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+			// The core.InputError names a list by its own name, the path cut at its index.
+			input, _, _ := strings.Cut(row.want, "[")
+			requireInputError(t, err, input)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
+// projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
+// the owner of every project the migration left without one, and renders nothing when it is unset.
+func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
+	for _, owner := range []string{"", "owner@example.com"} {
+		t.Run(fmt.Sprintf("%q", owner), func(t *testing.T) {
+			args := dispatchArgs()
+			args.ProjectOwnerFallback = owner
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PROJECT_OWNER_FALLBACK", owner)
+		})
+	}
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

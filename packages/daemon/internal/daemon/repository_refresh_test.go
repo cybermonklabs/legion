@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1213,16 +1214,24 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 // The refresher reads GitHub again of its own for an issue's unread repository (its third job,
 // recoverRepositories) on its retry's backoff (repositoryReadBounds.retry), the initial wait doubling to its cap, and
 // no more; once nothing is unread it reads nothing of its own, and the next repository left
-// unread starts again at the initial wait. The backoff runs here at 10 ms doubling to 80 ms, which
-// the refresher's clock (time.After) waits out for real, so each wait it asks for is the job's own
-// backoff: a job's wait is armed when its cause stands and moved on when the job has run.
+// unread starts again at the initial wait. The backoff runs here at 10 ms doubling to 80 ms.
+//
+// The schedule is read from the job's own runs (recoveryRuns): each logs the wait it waited.
+// The clock is no reading of it, since the refresher asks the clock (recheckAfter) for a wait at
+// every turn, whichever job or wake began it: a wake that comes while the job waits makes it ask
+// for the rest of the wait, and a wake whose run ends past the job's due time makes it ask for
+// none, the job being due at once. Counted from the clock's asks, this test failed on main when a
+// wake's run ended past the due time (daemon-go-race job 138963236285, `waits = [10ms 0s 20ms 40ms
+// 80ms 80ms]`): TestARecoveryWokenPastItsDueTimeKeepsItsBackoff forces that order every run.
 func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	var waits []time.Duration
+	logs := &syncBuffer{}
 	w, client, installs, _ := repositoryRigWith(t, &installations{}, withReads(func(reads *repositoryReadBounds) {
 		reads.retry.Initial, reads.retry.Max = 10*time.Millisecond, 80*time.Millisecond
 	}), func(w *workflowRuntime) {
+		w.log = slog.New(slog.NewJSONHandler(logs, nil))
 		w.recheckAfter = func(d time.Duration) <-chan time.Time {
 			mu.Lock()
 			waits = append(waits, d)
@@ -1231,18 +1240,17 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 		}
 	})
 	rigHandlers(w)
-	recorded := func() []time.Duration {
+	asked := func() int {
 		mu.Lock()
 		defer mu.Unlock()
-		return slices.Clone(waits)
+		return len(waits)
 	}
-	start := len(recorded())
 	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/gadgets")
 	deliver(t, w, client, issue("LEGION-1450", "orbit/gadgets", "todo", true, "", 1))
-	testwait.Eventually(t, "six waits", func() bool { return len(recorded()) >= start+6 })
+	testwait.Eventually(t, "six runs of the recovery of its own", func() bool { return len(recoveryRuns(t, logs)) >= 6 })
 	want := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond}
-	if got := recorded()[start : start+6]; !slices.Equal(got, want) {
-		t.Fatalf("waits = %v, want %v", got, want)
+	if got := recoveryRuns(t, logs)[:6]; !slices.Equal(got, want) {
+		t.Fatalf("the recovery's runs of its own waited %v, want %v", got, want)
 	}
 
 	installs.setFailing(nil, "implement orbit/gadgets")
@@ -1250,17 +1258,88 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 		return recordsOn(w, "orbit/gadgets") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
 	time.Sleep(100 * time.Millisecond)
-	idle := len(recorded())
+	idle, ran := asked(), len(recoveryRuns(t, logs))
 	time.Sleep(100 * time.Millisecond)
-	if got := len(recorded()); got != idle {
+	if got := asked(); got != idle {
 		t.Fatalf("the refresher asked for %d more waits with nothing unread, want none", got-idle)
 	}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/tools")
 	deliver(t, w, client, issue("LEGION-1451", "orbit/tools", "todo", true, "", 1))
-	testwait.Eventually(t, "a wait after orbit/tools is left unread", func() bool { return len(recorded()) > idle })
-	if got := recorded()[idle]; got != w.reads().retry.Initial {
-		t.Fatalf("the first wait after orbit/tools was left unread = %s, want %s", got, w.reads().retry.Initial)
+	testwait.Eventually(t, "a run of the recovery after orbit/tools is left unread", func() bool { return len(recoveryRuns(t, logs)) > ran })
+	if got := recoveryRuns(t, logs)[ran]; got != w.reads().retry.Initial {
+		t.Fatalf("the first run of the recovery after orbit/tools was left unread waited %s, want %s", got, w.reads().retry.Initial)
 	}
+}
+
+// A wake of the recovery whose run ends past the job's due time leaves the backoff as it was: the
+// job runs at once, its wait doubles, and the waits after it are its own. Here no timer fires until
+// the test has let the first wait's due time pass (every wait asked before then never fires), and
+// the test then wakes the recovery, so the wake's run always ends past the due time, the order
+// daemon-go-race job 138963236285 met by chance. A wake that comes meanwhile, a read of the live
+// records, runs its job and no recovery of the recovery's own, since only a timer runs that. The
+// job's own runs then wait 10 ms, 20 ms, 40 ms, 80 ms; the clock's asks read [10ms … 0s 20ms
+// 40ms …], the 0s being the turn after the wake's run, at which the job was due already.
+func TestARecoveryWokenPastItsDueTimeKeepsItsBackoff(t *testing.T) {
+	t.Parallel()
+	const initial = 10 * time.Millisecond
+	var mu sync.Mutex
+	var asked []time.Duration
+	released := false
+	logs := &syncBuffer{}
+	w, client, installs, _ := repositoryRigWith(t, &installations{}, withReads(func(reads *repositoryReadBounds) {
+		reads.retry.Initial, reads.retry.Max = initial, 80*time.Millisecond
+	}), func(w *workflowRuntime) {
+		w.log = slog.New(slog.NewJSONHandler(logs, nil))
+		w.recheckAfter = func(d time.Duration) <-chan time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			asked = append(asked, d)
+			if !released {
+				return nil
+			}
+			return time.After(d)
+		}
+	})
+	rigHandlers(w)
+	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/gadgets")
+	deliver(t, w, client, issue("LEGION-1452", "orbit/gadgets", "todo", true, "", 1))
+	testwait.Eventually(t, "orbit/gadgets left unread and the recovery's first wait asked for", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(w.unreadReasons()) != 0 && len(asked) != 0
+	})
+	time.Sleep(5 * initial)
+	if runs := recoveryRuns(t, logs); len(runs) != 0 {
+		t.Fatalf("the recovery ran of its own (%v) while no timer could fire, so the wake below would not come past its due time", runs)
+	}
+	mu.Lock()
+	released = true
+	mu.Unlock()
+	wake(w.recoverWake)
+	testwait.Eventually(t, "four runs of the recovery of its own", func() bool { return len(recoveryRuns(t, logs)) >= 4 })
+	want := []time.Duration{initial, 2 * initial, 4 * initial, 8 * initial}
+	if got := recoveryRuns(t, logs)[:4]; !slices.Equal(got, want) {
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("the recovery's runs of its own waited %v, want %v (the clock was asked for %v)", got, want, asked)
+	}
+}
+
+// recoverAgainLine is the line the refresher logs as its recovery runs of its own: its "waited" is
+// the wait the job waited before the run, a step of its backoff. The package's tests read a wait
+// from its log line where no other seam carries it, as the boot's rate-limit tests read theirs
+// (loggedDuration on "waited").
+const recoverAgainLine = "workflow: recovering again the issues of the repositories GitHub did not answer for"
+
+// recoveryRuns is the wait each run of the recovery of its own waited, in the order they ran, read
+// from the lines the refresher logged.
+func recoveryRuns(t *testing.T, logs *syncBuffer) []time.Duration {
+	t.Helper()
+	var waited []time.Duration
+	for _, line := range loggedMessages(t, logs.String(), recoverAgainLine) {
+		waited = append(waited, loggedDuration(t, line, "waited"))
+	}
+	return waited
 }
 
 // A zero retrying is a job whose cause has not stood yet, and it waits the retry it is given:
