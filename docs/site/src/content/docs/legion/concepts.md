@@ -696,10 +696,10 @@ it back to two hours. That look tries the agent once more, with one attempt left
 failure spent, so an agent that cannot start is launched once a look rather than a whole budget's
 worth of times; a failure that spent no budget, a provider error's, starts a fresh run. The
 architect is told of each such failure, with its cause, how the agent's last pod ended and when the
-next look tries it. An operator's `legion claims retry` or the controller's fresh session gives the
-agent its whole budget again. A look that began before a pause of the project ended counts its two
-hours from the resume, or from its agent's last ready after the resume where that is later, and
-counts nothing while that agent is still starting.
+next look tries it. An operator's `legion claims retry`, or the controller's retry or fresh session,
+gives the agent its whole budget again. A look that began before a pause of the project ended
+counts its two hours from the resume, or from its agent's last ready after the resume where that is
+later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
