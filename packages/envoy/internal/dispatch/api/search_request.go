@@ -12,8 +12,8 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -218,12 +218,13 @@ func searchKeyForms(q string) (key string, number int) {
 
 // searchOwnIssueKeys is the issues the query names by key, which lead the page
 // (searchOwnKeyLead). A key form names one issue and needs no read of its own: the issue arm
-// matches the key it is given, and matches nothing when no issue holds it. A number alone names
-// the issue of that number in each project, which only this one read can answer, and only a
-// query that is a bare number ever pays for it; scope is the project it is read in
-// (numberScope), which names that project's issue alone, and without one every matching issue,
-// in project order.
-func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]string, error) {
+// matches the key it is given, and matches nothing when no issue holds it or the reader does not
+// see its project. A number alone names the issue of that number in each project the reader sees,
+// which only this one read can answer, and only a query that is a bare number ever pays for it;
+// scope is the project it is read in (numberScope), which names that project's issue alone, and
+// without one every matching issue, in project order. A project the reader does not see names no
+// issue here, as a project no row holds names none.
+func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string, who model.Actor) ([]string, error) {
 	key, number := searchKeyForms(q)
 	if key != "" {
 		return []string{key}, nil
@@ -232,7 +233,9 @@ func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]str
 		return []string{}, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx,
-		`select key from issues where number = $1 and ($2 = '' or project_key = $2) order by project_key`, number, scope)
+		`select key from issues where number = $1 and ($2 = '' or project_key = $2) and `+
+			access.ProjectClause("project_key", "$3")+` order by project_key`,
+		number, scope, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

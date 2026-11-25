@@ -342,7 +342,11 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
 // on an open listener: a caller that presents a broker token is held to the session it names
-// even where /v1 would have served the request with no credential at all.
+// even where /v1 would have served the request with no credential at all. A token that passes
+// every check but whose broker answers its person held is refused 401 MEMBERSHIP_HELD
+// (refuseHeldBrokerToken), and served again once the broker answers otherwise; one whose broker
+// answers its person not held only until a deadline that has passed is 503 BROKER_UNAVAILABLE
+// (refuseLapsedBrokerToken), and served again once the broker answers a later deadline.
 //
 // A listener with none of the broker variables set reads that header as it read every
 // Authorization header it did not know before this credential existed: the open listener serves
@@ -423,6 +427,14 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
+				return
+			}
+			switch {
+			case caller.Held:
+				refuseHeldBrokerToken(w, auth.logger, r, caller)
+				return
+			case auth.brokers.lapsed(caller):
+				refuseLapsedBrokerToken(w, auth.logger, r)
 				return
 			}
 			ctx := withBrokerCaller(r.Context(), caller)
@@ -560,6 +572,38 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// refuseHeldBrokerToken answers a broker token that passed every check of this listener, the
+// proof and the key among them, whose broker answered its person held (ciphertoken.Caller.Held):
+// Dispatch holds that person's credentials until it confirms them again, by their next sign-in
+// under a Google rule or the Workspace Directory's next active answer under Identity-Aware Proxy.
+// The answer carries no rule and the listener knows none, so it is 401 MEMBERSHIP_HELD in words
+// true under both, naming the person; the token is still live, so a client keeps it and the same
+// token is served once the broker answers otherwise. It logs the rejection line every refused
+// presentation writes, under the class membership_held.
+func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller ciphertoken.Caller) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", "membership_held"),
+		slog.String("path", r.URL.Path))
+	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
+		"Dispatch holds %s's credentials; they work again once Dispatch confirms them", caller.Person)})
+}
+
+// refuseLapsedBrokerToken answers a broker token that passed every check of this listener whose
+// broker answered its person not held only until a deadline that has passed
+// (ciphertoken.Verifier.Lapsed): an IAP deployment's Dispatch has had no active Workspace Directory
+// answer for that person in 24 hours, so whether they may still act cannot be read. It is 503
+// BROKER_UNAVAILABLE with Retry-After 60, as Dispatch answers it and as its words ask, and never a
+// refusal of the token, which is served again once the broker answers a later deadline. It logs
+// the rejection line every refused presentation writes, under the class deadline_passed.
+func refuseLapsedBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", "deadline_passed"),
+		slog.String("path", r.URL.Path))
+	w.Header().Set("Retry-After", "60")
+	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Code: "BROKER_UNAVAILABLE",
+		Error: "whether this token's person may still act could not be read; try again in a minute"})
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:

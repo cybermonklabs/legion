@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -45,7 +44,7 @@ func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, ledger *docs.
 		if comment.ReplyTo == nil {
 			return nil
 		}
-		root, err := s.loadComment(ctx, tx, *comment.ReplyTo)
+		root, err := s.loadComment(ctx, tx, everyReader, *comment.ReplyTo)
 		if err != nil {
 			return err
 		}

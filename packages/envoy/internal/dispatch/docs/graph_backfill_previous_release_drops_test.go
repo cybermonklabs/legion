@@ -206,8 +206,8 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after the backfill over what the previous release dropped, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after the backfill over what the previous release dropped, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }
 
@@ -222,7 +222,7 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 	ctx := context.Background()
 	editLiveTree(t, service, artifactID, edit)
 	waitForLandedAppends(t, service, artifactID)
-	markdown, blocks, err := service.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the edited document: %v", err)
 	}

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -574,7 +573,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
 	suggestions := srv.relatedCheck(context.Background(), relatedInput{
-		project: "STUCK", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "STUCK", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -630,7 +629,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
 		answered <- srv.relatedCheck(request, relatedInput{
-			project: "GONE", text: "Zymurgy ledger totals drift",
+			who: everyReader, project: "GONE", text: "Zymurgy ledger totals drift",
 			source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 			record: true,
 		})
@@ -766,7 +765,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 		t.Fatalf("lock asks: %v", err)
 	}
 	suggestions := srv.relatedCheck(context.Background(), relatedInput{
-		project: "MIGR", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "MIGR", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -851,7 +850,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	}()
 
 	srv.relatedCheck(context.Background(), relatedInput{
-		project: "SHUT", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "SHUT", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -1061,7 +1060,7 @@ func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
 	fixture.answer(t, "no-option", "alice", map[string]any{"selected": []string{}, "text": "Neither; use enamel."})
 
 	encoded, err := json.Marshal(fixture.srv.relatedCheck(context.Background(), relatedInput{
-		project: "NOOPT", text: "Which lacquer for the dirigible gondolas?",
+		who: everyReader, project: "NOOPT", text: "Which lacquer for the dirigible gondolas?",
 	}))
 	if err != nil {
 		t.Fatalf("encode the check's result: %v", err)

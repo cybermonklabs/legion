@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -47,6 +46,10 @@ type projectDefaultAssigneeUpdated struct {
 // default, and no project at all is an empty list, never null.
 func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
@@ -113,6 +116,10 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

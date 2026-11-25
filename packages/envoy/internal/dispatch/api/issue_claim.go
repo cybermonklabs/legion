@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -162,6 +163,23 @@ func (s *server) writeClaimError(w http.ResponseWriter, err error) {
 		return
 	}
 	s.writeHandlerError(w, err)
+}
+
+// claimHolderHidden reports whether who may not see the holder of claim, a session or a person
+// (the rule of references, references_seen.go): an issue read answers such a claim as none, and a
+// claim answer names no such holder. A reader that sees every object, and a nil claim, cost no
+// read.
+func claimHolderHidden(ctx context.Context, q queryer, who model.Actor, claim *model.IssueClaim) (bool, error) {
+	if claim == nil || seesEveryObject(who) {
+		return false, nil
+	}
+	named := references{}
+	named.nameActor(claim.Actor)
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return false, err
+	}
+	return !seen.holdsActor(claim.Actor), nil
 }
 
 // holderLiveness is what the listener answered about the claim's holder, read with no
@@ -364,7 +382,7 @@ func issueClaimSession(claim *model.IssueClaim) string {
 func (s *server) judgeHolder(
 	ctx context.Context, key string, actor model.Actor, rule personRule,
 ) (judgement, error) {
-	holder, err := s.readIssueClaim(ctx, key)
+	holder, err := s.readIssueClaim(ctx, who, key)
 	if err != nil {
 		return judgement{}, err
 	}
@@ -379,12 +397,13 @@ func (s *server) judgeHolder(
 	return judged, nil
 }
 
-// readIssueClaim reads one issue's claim on a pooled connection.
-func (s *server) readIssueClaim(ctx context.Context, key string) (*model.IssueClaim, error) {
+// readIssueClaim reads one issue's claim on a pooled connection, as who reads the issue: one of a
+// project who does not see is pgx.ErrNoRows, as a key no issue holds is.
+func (s *server) readIssueClaim(ctx context.Context, who model.Actor, key string) (*model.IssueClaim, error) {
 	var claim claimScan
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select `+issueClaimColumns+` from issues i where i.key = $1
-	`, key).Scan(claim.targets()...); err != nil {
+		select `+issueClaimColumns+` from issues i where i.key = $1 and `+access.ProjectClause("i.project_key", "$2")+`
+	`, key, refs.VisibilityArg(who)).Scan(claim.targets()...); err != nil {
 		return nil, err
 	}
 	return claim.resolve(key)
@@ -601,7 +620,7 @@ func (s *server) claimWrite(
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(key)); err != nil {
 		return claimApplied{}, err
 	}
-	before, err := s.loadIssue(ctx, tx, key)
+	before, err := s.loadIssue(ctx, tx, who, key)
 	if err != nil {
 		return claimApplied{}, err
 	}
@@ -680,6 +699,12 @@ func (s *server) claimCycle(
 	rule personRule,
 	decide func(before model.Issue, judged judgement) (claimChange, error),
 ) {
+	// The issue is read as the caller reads it, so the reader is resolved here, before the write
+	// holds a connection.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	applied, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (judgement, error) {
 			return s.judgeHolder(ctx, key, actor, rule)
@@ -692,7 +717,7 @@ func (s *server) claimCycle(
 		errClaimContended,
 	)
 	if errors.Is(err, errClaimContended) {
-		s.answerContendedClaim(w, r, key)
+		s.answerContendedClaim(w, r, who, key)
 		return
 	}
 	if err != nil {
@@ -764,12 +789,21 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 // answerContendedClaim ends the bounded cycle: the holder changed twice while this request
 // ran, so no verdict was applied. It is never ISSUE_CLAIMED — nothing on this path established
 // that the holder is running, and naming a live title would mean another listener call — so it
-// has its own code, and carries the claim the row shows for any caller that wants it.
-func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, key string) {
-	current, err := s.readIssueClaim(r.Context(), key)
+// has its own code, and carries the claim the row shows, as who reads the issue, for any caller
+// that wants it: a claim whose holder who may not see is answered as no claim (claimHolderHidden).
+func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, who model.Actor, key string) {
+	current, err := s.readIssueClaim(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	hidden, err := claimHolderHidden(r.Context(), s.deps.Store.Pool, who, current)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if hidden {
+		current = nil
 	}
 	message := "the claim on " + key + " changed twice while this request ran, so nothing was applied; read the issue and try again"
 	if current != nil {

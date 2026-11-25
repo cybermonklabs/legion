@@ -29,9 +29,6 @@ import (
 	"time"
 	"unicode"
 
-	"golang.org/x/sync/semaphore"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -51,6 +48,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 )
 
 // AppContext holds shared dependencies for the HTTP handlers. All fields are

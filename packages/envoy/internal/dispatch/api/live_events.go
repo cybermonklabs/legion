@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The events view is the Dispatch event feed on a page's live socket: every committed event, in id
@@ -132,13 +134,20 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 			subscription.cancel()
 		}
 		subscription, subscribed = next, true
+		// What the caller sees, resolved after the relay subscription began, so it holds every
+		// access change at or below the subscription's head, and before the head is read below,
+		// so every access change it holds stands at or below that head (eventsReader.through).
+		if reader, err = s.readerFor(ctx, stream.Caller()); err != nil {
+			endEventsAfterFailure(ctx, stream, sub, "resolve what the caller sees", err)
+			return
+		}
 		// The log's newest id, and the row at the relay's cursor, as they stand now, after the
 		// relay subscription began. A cursor above the newest id, or one whose row is gone or
 		// carries another created_at, is a relay whose reset check has not yet run. The same
 		// statement counts what a resume is behind (eventSubscriptionCheck), so a resume reads
 		// the pool once before its replay rather than twice.
 		var cursorAt *time.Time
-		if head, cursorAt, behind, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, subscription.head, since); err != nil {
+		if head, cursorAt, behind, accessChanged, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, reader, subscription.head, since); err != nil {
 			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
@@ -222,7 +231,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 				return
 			default:
 			}
-			next, caughtUp, ok := s.resumeAfterOverflow(ctx, after)
+			next, caughtUp, caughtUpView, ok := s.resumeAfterOverflow(ctx, stream.Caller(), after)
 			if !ok {
 				_ = stream.SendWait(ctx, liveEnded(sub, liveEndedBehind))
 				return
@@ -246,6 +255,16 @@ func sendReplayedEvents(ctx context.Context, stream liveStreamer, sub string, ev
 		}
 	}
 	return true
+}
+
+// eventsReader is who an events subscription sends the log to: the caller as last resolved
+// (reader), and through, the log's newest id as it stood just after the subscription last resolved
+// the caller where no event asked it to (feedEvents, resumeAfterOverflow). An access change that
+// resolution can hold committed before it and so stands at or below through; one above through
+// committed after it and is not in it.
+type eventsReader struct {
+	reader  model.Actor
+	through int64
 }
 
 // eventReplay is what one events subscription is replayed before its live events, or after an
@@ -288,7 +307,7 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 		if replacedFrom < 0 {
 			return eventReplay{start: published, after: published}, nil
 		}
-		return s.replayThrough(ctx, min(replacedFrom, published), published, false, -1)
+		return s.replayThrough(ctx, reader, min(replacedFrom, published), published, false, -1)
 	}
 	resume := *since
 	if resume > published {
@@ -297,30 +316,27 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 		}
 		return eventReplay{start: published, after: published}, nil
 	}
-	return s.replayThrough(ctx, resume, published, true, behind)
+	return s.replayThrough(ctx, reader, resume, published, true, behind)
 }
 
-// replayThrough is the bounded replay of (from, published]: every event there, each encoded once,
-// when they are at most maxLiveReplay of them and their encodings total at most maxLiveReplayBytes,
-// and complete says so in the events_start. Past either bound nothing is replayed and the
-// subscription starts at published, not complete, so its page refreshes what it shows. behind is
-// how many events stand there, counted up to maxLiveReplay+1, or below zero when the caller has not
-// counted them, and it counts them itself.
-func (s *server) replayThrough(ctx context.Context, from, published int64, complete bool, behind int) (eventReplay, error) {
+// replayThrough is the bounded replay of (from, published]: every event there that reader may read
+// (eventReadableSQL), each encoded once, when the events there are at most maxLiveReplay and the
+// encodings replayed total at most maxLiveReplayBytes, and complete says so in the events_start.
+// Past either bound nothing is replayed and the subscription starts at published, not complete, so
+// its page refreshes what it shows. behind is how many events stand there, counted up to
+// maxLiveReplay+1, or below zero when the caller has not counted them, and it counts them itself.
+func (s *server) replayThrough(ctx context.Context, reader model.Actor, from, published int64, complete bool, behind int) (eventReplay, error) {
 	if behind < 0 {
 		if err := s.deps.Store.Pool.QueryRow(ctx, `
-			select count(*) from (select 1 from events where id > $1 and id <= $2 order by id limit $3) as behind
-		`, from, published, maxLiveReplay+1).Scan(&behind); err != nil {
+			select count(*) from (select 1 from events e where e.id > $1 and e.id <= $2 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as behind
+		`, from, published, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&behind); err != nil {
 			return eventReplay{}, err
 		}
 	}
 	if behind > maxLiveReplay {
 		return eventReplay{start: published, after: published}, nil
 	}
-	// The replay serves whoever subscribed, and this read resolves no credential of theirs, so it
-	// reads as one that proves no author: an ask reserved for its author carries no detail here
-	// (refs' visibility registry).
-	missed, err := s.readEventsAfterID(ctx, model.Actor{}, from, published, maxLiveReplay)
+	missed, err := s.readEventsAfterID(ctx, reader, from, published, maxLiveReplay)
 	if err != nil {
 		return eventReplay{}, err
 	}
@@ -342,44 +358,146 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 
 // resumeAfterOverflow answers a subscription the relay dropped, holding every event through after:
 // a new relay subscription and what it missed, (after, published] of that new subscription,
-// resolved as a resume from after (resolveEventReplay). The new subscription is made before the
-// caller cancels the dropped one, so the generation runs on between them. false is a catch-up that
-// is not complete (past the replay's bounds, or from a log replaced meanwhile) or that failed; the
-// subscription then ends, and its page subscribes again from the last id it applied.
-func (s *server) resumeAfterOverflow(ctx context.Context, after int64) (relaySubscription, eventReplay, bool) {
+// resolved as a resume from after (resolveEventReplay) for caller resolved again, as feedEvents
+// resolves it before its own check, and the reader the live loop goes on with. The new
+// subscription is made before the caller cancels the dropped one, so the generation runs on
+// between them. false is a catch-up that is not complete (past the replay's bounds, across an
+// access change, or from a log replaced meanwhile) or that failed; the subscription then ends,
+// and its page subscribes again from the last id it applied.
+func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, after int64) (relaySubscription, eventReplay, eventsReader, bool) {
 	next, err := s.eventRelay.subscribe(ctx, liveEventsBuffer)
 	if err != nil {
-		return relaySubscription{}, eventReplay{}, false
+		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
-	head, cursorAt, behind, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, next.head, &after)
+	reader, err := s.readerFor(ctx, caller)
+	if err != nil {
+		next.cancel()
+		return relaySubscription{}, eventReplay{}, eventsReader{}, false
+	}
+	head, cursorAt, behind, accessChanged, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, reader, next.head, &after)
 	if err != nil || events.EventLogWasReset(next.head, next.headAt, head, cursorAt) {
 		next.cancel()
-		return relaySubscription{}, eventReplay{}, false
+		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
-	caughtUp, err := s.resolveEventReplay(ctx, &after, next.head, head, -1, behind)
+	caughtUp, err := s.resolveEventReplay(ctx, reader, &after, next.head, head, -1, behind, accessChanged)
 	if err != nil || !caughtUp.complete {
 		next.cancel()
-		return relaySubscription{}, eventReplay{}, false
+		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
-	return next, caughtUp, true
+	return next, caughtUp, eventsReader{reader: reader, through: head}, true
 }
 
 // eventSubscriptionCheck is events.EventCursorCheck for an events subscription whose relay
 // subscription began at cursor, and in the same statement how many events a resume from since
-// stands behind it: the rows of (since, cursor], counted up to maxLiveReplay+1, which is all the
-// bound needs (replayThrough). behind is -1 when there is nothing to count: no since, or a since
-// above the cursor, which resolveEventReplay answers without a replay read. One statement, so a
-// resume waits for the shared pool once before its replay read rather than twice: on a restart
-// every page resumes at once, behind every request queued for a connection.
-func eventSubscriptionCheck(ctx context.Context, q queryer, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, err error) {
+// stands behind it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted
+// up to maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access
+// change that moved what reader sees stands among them (accessChanged, sightMovedSQL). For a
+// reader that sees every object (seesEveryObject) that is a project made public alone
+// (madePublicSQL): no other access change moves what such a reader sees, so its resume across a
+// write of a group or of a list is replayed and complete, as every resume was before a project
+// could be private (R9). behind is -1 when there is nothing to count: no since, or a since above
+// the cursor, which resolveEventReplay answers without a replay read. One statement, so a resume
+// waits for the shared pool once before its replay read rather than twice: on a restart every
+// page resumes at once, behind every request queued for a connection.
+func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
+	moved := sightMovedSQL("e", "$4")
+	if seesEveryObject(reader) {
+		moved = madePublicSQL("e")
+	}
 	if err := q.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),
-			case when $2::bigint is null or $2::bigint > $1 then -1
-			else (select count(*) from (select 1 from events where id > $2::bigint and id <= $1 order by id limit $3) as b)::int end
-	`, cursor, since, maxLiveReplay+1).Scan(&maxID, &cursorAt, &behind); err != nil {
-		return 0, nil, 0, err
+			case when $2::bigint is null or $2::bigint > $1 then -1 else count(*)::int end,
+			coalesce(bool_or(missed.moved), false)
+		from (select `+moved+` as moved from events e
+			where e.id > $2::bigint and e.id <= $1 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as missed
+	`, cursor, since, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&maxID, &cursorAt, &behind, &accessChanged); err != nil {
+		return 0, nil, 0, false, err
 	}
-	return maxID, cursorAt, behind, nil
+	return maxID, cursorAt, behind, accessChanged, nil
+}
+
+// eventGapSQL passes the events row eventAlias names when it belongs to the gap of a resume read
+// for the viewer bound at viewerParam: an event that viewer may read (eventReadableSQL), which a
+// complete replay sends, and a change of a project's access that took the project from the viewer
+// (lostSightSQL), which the viewer no longer reads once it is made. Every other event is one the
+// page never held and would not be sent, so it is no gap: a resume across a project the caller
+// never saw is complete. A write of a group is read by every open viewer, a full member's
+// credential whatever it lists, and by no restricted member, whom no group admits to a project
+// (store.PersonSeesProjectSQL), so a group write a viewer may not read moves nothing it sees.
+func eventGapSQL(eventAlias, viewerParam string) string {
+	return `(` + eventReadableSQL(eventAlias, viewerParam) + ` or ` + lostSightSQL(eventAlias, viewerParam) + `)`
+}
+
+// sightMovedSQL is whether the event eventAlias names, one of the gap's (eventGapSQL), moved what
+// the viewer bound at viewerParam sees, so the page owes the refresh replay_complete false asks for:
+// a change of a project's access that took the project from the viewer (lostSightSQL) or gave it
+// the project (gainedSightSQL), and a change of a group the viewer reads, whose payload names no
+// member and so may have moved anyone's. Every other access change in the gap is one the viewer
+// reads and that moved nothing it sees: another person added to a list it is on, its project turned
+// private while it stays on the list, a project's Slack channels.
+func sightMovedSQL(eventAlias, viewerParam string) string {
+	e := eventAlias
+	return `(` + e + `.type = '` + accessGroupChangedEvent + `' or ` + lostSightSQL(e, viewerParam) + ` or ` + gainedSightSQL(e, viewerParam) + `)`
+}
+
+// madePublicSQL is sightMovedSQL for a viewer that sees every object (seesEveryObject): whether the
+// event eventAlias names made a project public, which that viewer's page, read while the project
+// was private, may lack. It reads the server's record of the event, as lostSightSQL does.
+func madePublicSQL(eventAlias string) string {
+	e := eventAlias
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and recorded.visibility = '` + model.ProjectPublic + `'
+		offset 0))`
+}
+
+// lostSightSQL is whether the event eventAlias names is a change of the access of a project the
+// viewer bound at viewerParam does not see now, that took the project from it:
+//
+//   - the removal of the viewer's own person from the project's list;
+//   - the removal from the list of a group that holds the viewer's person as a full member, which
+//     the person saw the project through: a group admits only its full members
+//     (store.PersonSeesProjectSQL), so its removal takes nothing from a restricted member in it;
+//   - an owner change that took the project from the viewer's person (its principal, SetOwner);
+//   - the project turned private, to a viewer that read it while it was public: an open viewer,
+//     which reads every public project, and a credential whose own list names it (Viewer.Lists).
+//
+// Who a change named, and the visibility it left, are the server's own record of the event
+// (project_access_changes, access.recordProjectChanges), never the payload, which names the project
+// and the change alone.
+func lostSightSQL(eventAlias, viewerParam string) string {
+	e, person := eventAlias, access.ViewerPerson(viewerParam)
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
+			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
+				and recorded.principal = ` + person + `)
+			or (` + e + `.payload->>'change' = '` + model.AccessGroupRemoved + `' and exists (
+				select 1 from access_group_members lost
+				join people full_member on full_member.email = lost.person and full_member.member_kind = 'full'
+				where lost.group_name = recorded.principal and lost.person = ` + person + `
+				offset 0))
+			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPrivate + `'
+				and (` + access.OpenClause(viewerParam) + ` or ` + access.ListsClause(e+`.project_key`, viewerParam) + `)))
+		offset 0))`
+}
+
+// gainedSightSQL is whether the event eventAlias names is a change of the access of a project the
+// viewer bound at viewerParam sees now, that may have given the viewer the project: its own person
+// added to the project's list, or made its owner; a group added to the list that holds the viewer's
+// person; or the project turned public, to a viewer that reads every public project it may (an
+// open viewer, or a credential whose list names it). It reads the server's record of the event, as
+// lostSightSQL does.
+func gainedSightSQL(eventAlias, viewerParam string) string {
+	e, person := eventAlias, access.ViewerPerson(viewerParam)
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
+			(` + e + `.payload->>'change' = '` + model.AccessPersonAdded + `' and recorded.principal = ` + person + `)
+			or (` + e + `.payload->>'change' = '` + model.AccessOwnerChanged + `' and recorded.owner = ` + person + `)
+			or (` + e + `.payload->>'change' = '` + model.AccessGroupAdded + `' and exists (
+				select 1 from access_group_members gained where gained.group_name = recorded.principal and gained.person = ` + person + `
+				offset 0))
+			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPublic + `'
+				and (` + access.OpenClause(viewerParam) + ` or ` + access.ListsClause(e+`.project_key`, viewerParam) + `)))
+		offset 0))`
 }
 
 // endEventsAfterFailure ends a subscription whose read failed, with an ended frame (behind), so its

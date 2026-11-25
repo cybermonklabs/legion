@@ -120,7 +120,7 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 		t.Fatalf("commit edit transaction: %v", err)
 	}
 	ledger.fail(errors.New("commit outcome unknown"))
-	if got, err := service.Text(ctx, artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("document after failing its live write = %q (%v), want the committed text", got, err)
 	}
 }

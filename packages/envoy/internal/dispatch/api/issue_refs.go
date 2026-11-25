@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -17,10 +18,11 @@ type issueRefResolved struct {
 }
 
 func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	key, err := s.resolveIssueRef(r.Context(), r.URL.Query().Get("ref"))
+	key, err := s.resolveIssueRef(r.Context(), who, r.URL.Query().Get("ref"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -34,11 +36,13 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 // An external reference finds a link stored under either name of its repository's rename pair
 // (refs.Renames.URLSpellings), so `sjawhar/legion#1955` and `cybermonklabs/legion#1955` reach
 // the same issue, whichever name its link was stored under.
-func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error) {
+func (s *server) resolveIssueRef(ctx context.Context, who model.Actor, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
+	viewer := refs.VisibilityArg(who)
 	if issueKeyPattern.MatchString(ref) {
 		var key string
-		err := s.deps.Store.Pool.QueryRow(ctx, `select key from issues where key = $1`, ref).Scan(&key)
+		err := s.deps.Store.Pool.QueryRow(ctx, `select key from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), ref, viewer).Scan(&key)
 		if err != nil {
 			return "", err
 		}
@@ -53,8 +57,10 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 		urls = append(urls, s.deps.Renames.URLSpellings(link)...)
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
-	`, urls)
+		select distinct l.issue_key from issue_external_links l join issues i on i.key = l.issue_key
+		where l.url = any($1) and `+access.ProjectClause("i.project_key", "$2")+`
+		order by l.issue_key
+	`, urls, viewer)
 	if err != nil {
 		return "", err
 	}

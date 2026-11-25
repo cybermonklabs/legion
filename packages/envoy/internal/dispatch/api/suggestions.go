@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -204,7 +203,7 @@ func (s *server) decisionBlockChecks(
 			source.artifactID = artifact.ID
 		}
 		input := relatedInput{
-			project: artifact.Project, text: block.Question, title: block.Question,
+			who: who, project: artifact.Project, text: block.Question, title: block.Question,
 			source: source, question: true, record: true,
 		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
@@ -252,6 +251,12 @@ type suggestionSource struct {
 
 // relatedInput is one related-item check's question.
 type relatedInput struct {
+	// who is the reader the check answers: the writer whose write triggered it, or the caller of
+	// the no-write route, with the viewer its request resolved (readerOf). Every search the check
+	// makes binds it (refs.VisibilityArg), so the check offers only what that caller may read and
+	// nothing of a project it does not see. The zero Actor is the closed viewer, which is offered
+	// nothing.
+	who model.Actor
 	// project is the project to search; empty resolves it from source's owner.
 	project string
 	// text is what is checked: a new issue's title and spec, an ask's or decision block's question,
@@ -872,7 +877,12 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates, input.trees); err != nil {
+	// The answers are read as the check's reader (input.who): the writer whose write ran it, with the
+	// viewer its handler resolved from the request's credential (readerOf), so a token's list holds
+	// here as on every read. The writer's recorded actor carries no credential to resolve
+	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
+	who := input.source.actor.Reader()
+	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)

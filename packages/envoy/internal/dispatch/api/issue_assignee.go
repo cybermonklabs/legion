@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // parseIssueAssignee decodes the tri-state `assignee` field of an issue write. Absent →
@@ -40,6 +40,11 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
+		reader, ok := readerFromContext(ctx)
+		if !ok {
+			reader = everyReader
+		}
+		viewer := refs.VisibilityArg(reader)
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
 			return "", fmt.Errorf("read person %q: %w", canonical, err)
 		}
@@ -110,6 +115,10 @@ type listUsersResponse struct {
 // listUsers returns everyone who has signed in, sorted by email: the assignee picker's options.
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
@@ -186,6 +195,14 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if human {
 		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes})
 		return
+	}
+	if actor.Credential != nil && len(actor.Credential.Projects) > 0 && s.deps.Store != nil && s.deps.Store.Pool != nil {
+		reader, err := s.readerFor(r.Context(), actor)
+		if err != nil {
+			s.writeHandlerError(w, fmt.Errorf("read which of the credential's projects are private: %w", err))
+			return
+		}
+		viewer = reader.Viewer
 	}
 	var owner *string
 	if actor.Owner != nil {

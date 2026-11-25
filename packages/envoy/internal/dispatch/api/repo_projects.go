@@ -13,7 +13,8 @@ import (
 // pairs are read once at boot (store.ReadRepoRenames). The route stays for one release because
 // the Legion daemons of the last release read it at boot.
 func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `

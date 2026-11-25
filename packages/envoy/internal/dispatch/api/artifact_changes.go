@@ -111,7 +111,11 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.artifactReaderOf(w, r)
+	if !ok {
+		return
+	}
+	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

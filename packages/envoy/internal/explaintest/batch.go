@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -73,9 +72,9 @@ func BatchedBy(t testing.TB, send func(pgx.Tx) error) []Statement {
 	return recorder.sent
 }
 
-// RecordedTx is a transaction that keeps every statement sent through it by Query, QueryRow or
-// Exec, with the arguments it bound, and runs each on the transaction it wraps: a reader or a
-// writer handed it answers as it would, and the test reads the plan of the statement it sent.
+// RecordedTx is a transaction that keeps every statement sent through it by Query or QueryRow,
+// with the arguments it bound, and runs each on the transaction it wraps: a reader handed it
+// answers as it would, and the test reads the plan of the statement it sent.
 type RecordedTx struct {
 	pgx.Tx
 	Sent []Statement
@@ -89,11 +88,6 @@ func (r *RecordedTx) Query(ctx context.Context, sql string, args ...any) (pgx.Ro
 func (r *RecordedTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	r.Sent = append(r.Sent, Statement{SQL: sql, Args: args})
 	return r.Tx.QueryRow(ctx, sql, args...)
-}
-
-func (r *RecordedTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	r.Sent = append(r.Sent, Statement{SQL: sql, Args: args})
-	return r.Tx.Exec(ctx, sql, args...)
 }
 
 // Holding is the one statement of r.Sent whose text holds marker, which names the statement

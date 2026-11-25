@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -495,6 +494,13 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// What the caller sees, resolved before the read's transaction holds a connection: the Reply
+	// rows are those of its projects (myRepliesSeen), and the Agent rows those of the
+	// conversations it may read (agentConversationSeen), a session it may not see being no row.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	wantReply, wantAgent, err := parseMyRepliesKinds(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -575,6 +581,11 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 	if wantAgent {
 		// The Agent half answers its own total beside its rows when the read is counted, rather
+		// than in a second statement: it reads every root the state holds either way. A reader
+		// that may not see every object binds its viewer after the page's own parameters, and
+		// one that sees every object reads the statements every reader read before a project
+		// could be private (myAgentSeenAnd).
+		seen := !seesEveryObject(who)
 		// than in a second statement: it reads every root the state holds either way.
 		args := unreadDirectRepliesArgs(caller.ID, nil)
 		read, total, err := s.readMyAgentRows(r.Context(), tx,
@@ -616,7 +627,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if state == myRepliesStateDismissed && limit != nil && len(rows) == *limit {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
-	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
+	if err := nameAgentSessions(r.Context(), tx, who, rows); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -777,6 +788,10 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

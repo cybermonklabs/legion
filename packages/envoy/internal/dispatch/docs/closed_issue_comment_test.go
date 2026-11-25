@@ -163,7 +163,7 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	}
 
 	// Behind the comment, the document still reads and still takes the next comment.
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the closed issue's document after its comment: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestAnAnchoredCommentOnAClosedIssueIsWrittenWhileItsRoomHoldsAnUnstoredUpda
 	}
 
 	// Behind the comment, the document still reads and still takes the next comment.
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the closed issue's document after its comment: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestAnAnchoredCommentOnAClosedIssuePinsAStoredVersionWhileItsRoomHoldsAnUns
 	}
 
 	// Behind the comment, the document still reads and still takes the next comment.
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the closed issue's document after its comment: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestAMarkOnlyAClosedIssuesRoomHoldsIsNoAnchor(t *testing.T) {
 	if _, err := commentAnchor(service, artifactID, "c1", "before", alice); err != nil {
 		t.Fatalf("the comment sent again by quote on the closed issue: %v", err)
 	}
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the closed issue's document after its comment: %v", err)
 	}

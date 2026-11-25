@@ -53,6 +53,10 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	repo, provided, err := parseIssueRepo(input.Repo, "INVALID_PROJECT")
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -71,6 +75,10 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if _, err := s.loadProject(r.Context(), tx, who, r.PathValue("key")); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, putProjectGatedSteps, lockEventOwner): taking the row first and the lock at
 	// the append below would wait, holding the row, on an issue create that holds the lock in its
@@ -88,9 +96,11 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		s.writeHandlerError(w, err)
 		return
 	}
-	// An unknown project is 404 PROJECT_NOT_FOUND here. The update wrote no row for it, so
-	// nothing is left to roll back.
-	project, err := s.loadProject(r.Context(), tx, r.PathValue("key"))
+	// The row as this write left it, read as the writer reads it. An access change can commit
+	// between the read above and the owner lock, so this read can find the project hidden: it is
+	// then the 404 PROJECT_NOT_FOUND of a key nobody holds, and the update rolls back with the
+	// transaction.
+	project, err := s.loadProject(r.Context(), tx, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

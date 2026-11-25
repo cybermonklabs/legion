@@ -215,8 +215,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// service and no person names no project at all. Nor does a read-only token, whose project
 	// scope none names no project and writes none.
 	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
-		project := caller.Projects[0]
-		actor.Project = &project
+		actor.Credential.NamedProject = caller.Projects[0]
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

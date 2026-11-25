@@ -13,6 +13,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -154,7 +155,8 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 // Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
 // as a comment list reads its bodies' (displayTreeReader), so the page parses no description.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -170,13 +172,59 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The list is final here, so every field registered stands where resolve fills it.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	for index := range body.Priorities {
 		row := &body.Priorities[index]
 		reader.text(&row.DescriptionTree, row.Description)
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, body)
+}
+
+// leaveOutHiddenPriorityReferences writes the two fault lists' rows as who reads them (the rule of
+// references, references_seen.go), in one read, as the issue's own read and the listing answer
+// them: an assignee who does not see is null, and so is a claim whose holder, and the actor who
+// moved the issue into backlog or icebox, who does not see. The read is made whatever the rows name
+// (seenReferences), so a row claimed or moved by a hidden holder costs what one nobody claimed
+// costs. A reader that sees every object, and lists with no row, cost no read.
+func leaveOutHiddenPriorityReferences(ctx context.Context, q queryer, who model.Actor, body *model.Priorities) error {
+	if seesEveryObject(who) || len(body.WorkUnderNoPriority.Issues)+len(body.PriorityWorkParked.Issues) == 0 {
+		return nil
+	}
+	rows := [][]model.PriorityIssue{body.WorkUnderNoPriority.Issues, body.PriorityWorkParked.Issues}
+	named := references{}
+	for _, issues := range rows {
+		for _, issue := range issues {
+			if issue.Assignee != nil {
+				named.name(personReference, *issue.Assignee)
+			}
+			if issue.Claim != nil {
+				named.nameActor(issue.Claim.Actor)
+			}
+			if issue.MovedBy != nil {
+				named.nameActor(*issue.MovedBy)
+			}
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for _, issues := range rows {
+		for index := range issues {
+			issue := &issues[index]
+			if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+				issue.Assignee = nil
+			}
+			if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+				issue.Claim = nil
+			}
+			if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
+				issue.MovedBy = nil
+			}
+		}
+	}
+	return nil
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.
@@ -470,7 +518,8 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 // id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the
 // row is there, and the delete is the last act of it.
 func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")

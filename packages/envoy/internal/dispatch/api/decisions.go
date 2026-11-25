@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -78,7 +78,7 @@ type decisionSection struct {
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -88,7 +88,10 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	// reader is nil for a caller that did not ask, and every call on it then does nothing.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
-	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
+	// An issue who does not see holds no decision, as a key no issue carries holds none: both
+	// document loaders below bind who's project clause, so a hidden issue's spec and decisions
+	// document read as missing and the view is the empty one, a read rather than a refusal.
+	spec, specFound, err := s.issueSpecDocument(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -99,7 +102,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	document, found, err := s.issueDecisionsDocument(r.Context(), key)
+	document, found, err := s.issueDecisionsDocument(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -129,14 +132,14 @@ func artifactReference(document model.Artifact) string {
 		document.Kind, document.Primary)
 }
 
-// issueSpecDocument is the issue's primary document, the spec a decision's links point into. An
-// issue with none, and an issue that does not exist, answer found false: the view is a read, and
-// an issue with no spec simply holds no decision link.
-func (s *server) issueSpecDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
-	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, s.deps.Store.Pool.QueryRow(ctx, `
+// issueSpecDocument is the issue's primary document, the spec a decision's links point into, as
+// who reads it. An issue with none, an issue that does not exist and an issue who does not see
+// answer found false: the view is a read, and an issue with no spec simply holds no decision link.
+func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
+	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, who, s.deps.Store.Pool.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where issue_key = $1 and is_primary and kind = 'doc'
-	`, key))
+		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+access.DocumentClause("artifacts", "$2")+`
+	`, key, refs.VisibilityArg(who)))
 	if err != nil {
 		if artifactMissing(err) {
 			return model.Artifact{}, false, nil
@@ -148,16 +151,16 @@ func (s *server) issueSpecDocument(ctx context.Context, key string) (model.Artif
 
 // issueDecisionsDocument is the issue's decisions.md: the document at the slug its reference
 // names, else the one whose filename it is, as every document reference resolves.
-func (s *server) issueDecisionsDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
+func (s *server) issueDecisionsDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
 	target := artifactTarget{IssueKey: &key}
-	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+decisionsDocumentSlug)
+	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, who, target.refPrefix()+"/"+decisionsDocumentSlug)
 	if err == nil {
 		return document, true, nil
 	}
 	if !isArtifactNotFound(err) {
 		return model.Artifact{}, false, err
 	}
-	document, err = s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, target, decisionsDocumentName)
+	document, err = s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, who, target, decisionsDocumentName)
 	if err != nil {
 		if artifactMissing(err) {
 			return model.Artifact{}, false, nil
@@ -211,7 +214,7 @@ func (s *server) specOpenQuestions(
 	for index := range questions {
 		asks[index] = &questions[index].Ask
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, &who, asks); err != nil {
 		return nil, err
 	}
 	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
@@ -236,7 +239,8 @@ func (s *server) specOpenQuestions(
 func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
-	markdown, sections, err := s.decisionSections(ctx, document.ID)
+	viewer := refs.VisibilityArg(who)
+	markdown, sections, err := s.decisionSections(ctx, who, document.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -607,8 +611,8 @@ func decisionTextSum(text string) string {
 // decisionSections cuts the decisions document into its sections: each `##` heading outside
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
 // next heading of its level or higher.
-func (s *server) decisionSections(ctx context.Context, artifactID string) (string, []decisionSection, error) {
-	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+func (s *server) decisionSections(ctx context.Context, who model.Actor, artifactID string) (string, []decisionSection, error) {
+	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, who, artifactID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -757,6 +761,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Resolved before any connection is held: the decision is read as the caller reads it.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -767,7 +776,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 			"text_sha256 is the text_sha256 the decision was read at")
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -829,7 +838,7 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
 	}
-	decisionsDocument, found, err := s.issueDecisionsDocument(ctx, *document.IssueKey)
+	decisionsDocument, found, err := s.issueDecisionsDocument(ctx, who, *document.IssueKey)
 	if err != nil {
 		return model.Decision{}, err
 	}
@@ -855,7 +864,11 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -899,7 +912,11 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("version must be a whole number from 0 to %d", maxIntegerColumn))
 		return
 	}
-	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -1,4 +1,11 @@
-GET /api/v1 public
+GET /api/v1 any
+GET /api/v1/access-groups any
+DELETE /api/v1/access-groups/{name} any
+PUT /api/v1/access-groups/{name} any
+GET /api/v1/access/person any
+GET /api/v1/access/private-projects any
+GET /api/v1/access/projects/{key} any
+GET /api/v1/access/projects/{key}/repositories any
 GET /api/v1/agents any
 GET /api/v1/agents/{session_id}/answers any
 POST /api/v1/agents/{session_id}/artifacts any
@@ -164,6 +171,14 @@ PATCH /api/v1/priorities/{id} any
 GET /api/v1/priorities/{id}/history any
 GET /api/v1/projects any
 POST /api/v1/projects any
+GET /api/v1/projects/{key}/access any
+PATCH /api/v1/projects/{key}/access any
+DELETE /api/v1/projects/{key}/access/groups/{name} any
+PUT /api/v1/projects/{key}/access/groups/{name} any
+DELETE /api/v1/projects/{key}/access/people/{email} any
+PUT /api/v1/projects/{key}/access/people/{email} any
+POST /api/v1/projects/{key}/access/people/{email}/invitations any
+POST /api/v1/projects/{key}/access/people/{email}/reset any
 GET /api/v1/projects/{key}/architecture any
 GET /api/v1/projects/{key}/architecture-source any
 POST /api/v1/projects/{key}/architecture-source/sync any
@@ -196,7 +211,7 @@ GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
 POST /api/v1/results/{id}/retract any
-GET /api/v1/schema/blocks public
+GET /api/v1/schema/blocks any
 GET /api/v1/search any
 GET /api/v1/search/coverage any
 GET /api/v1/search/results any
@@ -210,3 +225,4 @@ GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any
 GET /api/v1/whoami any
+GET /metrics any

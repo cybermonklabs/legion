@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -489,7 +490,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			Store:             database,
 			Events:            events.NewBroker(),
 			Identity:          headerIdentity(database),
-			ServerURL:         "https://dispatch.example",
+			Origins:           text.NewOrigins("https://dispatch.example"),
 			Settle:            time.Hour,
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
@@ -647,7 +648,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		Persistence: store,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {
@@ -701,16 +702,16 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	}
 }
 
-// A socket's upgrade made through processHeaderWriter, as ServeHTTP makes it in a process that
+// A socket's upgrade made through upgradeHeadersWriter, as ServeHTTP makes it in a process that
 // knows its host name, answers with the process's line among the upgrade's headers, and the
 // frames after that answer pass through the connection unchanged.
-func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
+func TestTheUpgradeThroughTheUpgradeHeadersWriterNamesTheProcess(t *testing.T) {
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": task-a\r\n")}
+		w = &upgradeHeadersWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": task-a\r\n")}
 		connection, err := (&gws.Upgrader{}).Upgrade(w, r, nil)
 		if err != nil {
 			return

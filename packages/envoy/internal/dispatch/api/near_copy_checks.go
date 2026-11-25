@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -243,7 +242,8 @@ func scanNearCopyCheck(row pgx.Row, check *model.NearCopyCheck) error {
 // ?project= recorded within [from, to), oldest first, at most ?limit= of them, after the row
 // ?after= names. It reads one more row than the page holds to know whether another page follows.
 func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -325,7 +325,8 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 // getNearCopyCheck answers GET /api/v1/near-copy-checks/{id}: the one row of that id, a refused
 // row with the spec it refused, or 404 NEAR_COPY_CHECK_NOT_FOUND.
 func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	if !requireUUIDPath(w, r, "near_copy_check") {

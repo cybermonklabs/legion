@@ -17,6 +17,10 @@ func (s *server) listCIReconcilePasses(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	passes, err := cireconcile.RecentPasses(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		s.writeHandlerError(w, err)
