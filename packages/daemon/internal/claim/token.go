@@ -10,6 +10,7 @@ import (
 // ProjectKeyPattern is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
 // (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
 // digits. IsProjectKey is the one test of it, and a refusal that names the rule quotes this.
+// TestTheProjectKeyPatternIsTheContractsOwn holds it to the contract's own.
 const ProjectKeyPattern = `^[A-Z][A-Z0-9]{1,9}$`
 
 var (

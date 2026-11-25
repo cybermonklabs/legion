@@ -71,8 +71,18 @@ func (r *changeRig) rollBack(t *testing.T, key string, write func(ctx context.Co
 
 func (r *changeRig) run(t *testing.T, key string, write func(ctx context.Context, tx pgx.Tx), commit bool) moved {
 	t.Helper()
+	return r.runOver(t, []string{key}, write, commit)[key]
+}
+
+// runOver runs write in a transaction of its own, which it commits or rolls back, and answers what
+// that one transaction did to each issue of keys.
+func (r *changeRig) runOver(t *testing.T, keys []string, write func(ctx context.Context, tx pgx.Tx), commit bool) map[string]moved {
+	t.Helper()
 	ctx := context.Background()
-	before, queued := r.view(t, key), len(r.changesOf(t, key))
+	before, queued := map[string]routeFields{}, map[string]int{}
+	for _, key := range keys {
+		before[key], queued[key] = r.view(t, key), len(r.changesOf(t, key))
+	}
 	tx, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -86,7 +96,11 @@ func (r *changeRig) run(t *testing.T, key string, write func(ctx context.Context
 	} else if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("roll back: %v", err)
 	}
-	return moved{before: before, after: r.view(t, key), changes: r.changesOf(t, key)[queued:]}
+	got := make(map[string]moved, len(keys))
+	for _, key := range keys {
+		got[key] = moved{before: before[key], after: r.view(t, key), changes: r.changesOf(t, key)[queued[key]:]}
+	}
+	return got
 }
 
 // put is a write of issue through the publishing store, which a step expects to succeed.
@@ -521,5 +535,108 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 		assertMoved(t, key, r.rollBack(t, key, grant(t, key, 71)))
 		assertMoved(t, key, r.rollBack(t, key, release(t, key)))
 		assertMoved(t, key, r.rollBack(t, key, releaseForWait(t, key)))
+	})
+}
+
+// A release of a tree's slots (ReleaseTreeSlots, the re-admission of the tree's own root) queues,
+// in its own transaction, one state change for each slot it frees, as a release of one slot does:
+// each naming the slot of its issue, from the index the state route served before the release to
+// null, in the order of the slots' indexes, which is the order the release answers its issues in.
+// An issue of the tree that holds no slot, and an issue of another tree, get none. A release of a
+// tree holding no slot queues nothing, and so do a release that rolled back and a release through
+// a store whose state events are off. The issues are recorded and granted their slots through a
+// store with its state events off, so every state change these steps read is a release's.
+func TestATreeReleaseQueuesOneStateEventForEachSlotItFrees(t *testing.T) {
+	r := newChangeRig(t)
+	admitted := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	// seed records root and each of members in root's tree, and grants each issue of slots its
+	// index.
+	seed := func(t *testing.T, root string, members []string, slots map[string]int) {
+		t.Helper()
+		if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			records := record.NewStore()
+			for _, key := range append([]string{root}, members...) {
+				issue := changeIssue(key, phase.Implementing)
+				issue.Tree = root
+				if err := records.PutIssue(ctx, tx, issue); err != nil {
+					return err
+				}
+			}
+			for key, index := range slots {
+				if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: admitted}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("record the tree of %s: %v", root, err)
+		}
+	}
+	// release frees the slots of tree through records and holds the issues it answers to want.
+	release := func(t *testing.T, records *record.Postgres, tree string, want ...string) func(context.Context, pgx.Tx) {
+		return func(ctx context.Context, tx pgx.Tx) {
+			t.Helper()
+			released, err := records.ReleaseTreeSlots(ctx, tx, tree)
+			if err != nil {
+				t.Fatalf("release the slots of %s's tree: %v", tree, err)
+			}
+			if !slices.Equal(released, want) {
+				t.Fatalf("the release of %s's tree answers %v, want %v, in slot order", tree, released, want)
+			}
+		}
+	}
+	// queued is the issue of every state change the outbox holds, in the order it was queued.
+	queued := func(t *testing.T) []string {
+		t.Helper()
+		rows, err := r.st.Pool().Query(context.Background(), `select payload->>'issue' from outbox where kind = $1 order by id`,
+			string(record.OutboxKindStateChange))
+		if err != nil {
+			t.Fatalf("read the state changes: %v", err)
+		}
+		issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the state changes: %v", err)
+		}
+		return issues
+	}
+
+	t.Run("a tree holding two slots", func(t *testing.T) {
+		const root, member, idle, other = "LEGION-201", "LEGION-202", "LEGION-203", "LEGION-204"
+		seed(t, root, []string{member, idle}, map[string]int{root: 2, member: 1})
+		seed(t, other, nil, map[string]int{other: 0})
+		before := len(queued(t))
+		got := r.runOver(t, []string{root, member, idle, other}, release(t, r.records, root, member, root), true)
+		for key, index := range map[string]string{member: "1", root: "2"} {
+			if from, to := assertMoved(t, key, got[key], record.StateFieldSlot); from[record.StateFieldSlot] != index || to[record.StateFieldSlot] != "null" {
+				t.Fatalf("the slot change of %s goes from %s to %s, want %s to null", key, from[record.StateFieldSlot], to[record.StateFieldSlot], index)
+			}
+		}
+		assertMoved(t, idle, got[idle])
+		assertMoved(t, other, got[other])
+		if order := queued(t)[before:]; !slices.Equal(order, []string{member, root}) {
+			t.Fatalf("the release queued the state changes of %v, want %s's and then %s's, in slot order", order, member, root)
+		}
+	})
+
+	t.Run("a tree holding no slot", func(t *testing.T) {
+		const root = "LEGION-211"
+		seed(t, root, nil, nil)
+		assertMoved(t, root, r.commit(t, root, release(t, r.records, root)))
+	})
+
+	t.Run("a rolled-back release", func(t *testing.T) {
+		const root, member = "LEGION-221", "LEGION-222"
+		seed(t, root, []string{member}, map[string]int{root: 3, member: 4})
+		got := r.runOver(t, []string{root, member}, release(t, r.records, root, root, member), false)
+		assertMoved(t, root, got[root])
+		assertMoved(t, member, got[member])
+	})
+
+	t.Run("a store with the state events off", func(t *testing.T) {
+		const root = "LEGION-231"
+		seed(t, root, nil, map[string]int{root: 5})
+		if got := r.commit(t, root, release(t, record.NewStore(), root, root)); len(got.changes) != 0 || got.after[record.StateFieldSlot] != "null" {
+			t.Fatalf("a release through a store with its state events off queued %+v and the route serves %v, want none queued and the slot freed", got.changes, got.after)
+		}
 	})
 }

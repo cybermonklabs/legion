@@ -470,9 +470,11 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 // The state events one transaction commits go out as one message, in the order the transaction
 // wrote them and with the one time it committed at: a pass that takes an issue's slot away and
 // grants it another, and moves its phase, in one fact is one message of three events, so Dispatch
-// holds only the slot that committed. A transaction whose events would pass stateMessageBound as
-// the listener's envelope carries them goes out as consecutive messages, split between its events,
-// each under the bound and with no gap between them.
+// holds only the slot that committed, and a release of a tree's two slots (the re-admission of its
+// root, record.Store.ReleaseTreeSlots) is one message of two events, in the slots' order. A
+// transaction whose events would pass stateMessageBound as the listener's envelope carries them
+// goes out as consecutive messages, split between its events, each under the bound and with no
+// gap between them.
 func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 	t.Run("a slot released and granted again and a phase moved", func(t *testing.T) {
 		r := newStateRig(t)
@@ -524,6 +526,52 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 		}
 		if !reflect.DeepEqual(message.events, want) {
 			t.Fatalf("the message's events = %+v, want the release, the grant and the phase in that order, %+v", message.events, want)
+		}
+		if rows := r.stateRows(t); len(rows) != 0 {
+			t.Fatalf("state rows left = %+v, want every row of the message finished with it", rows)
+		}
+	})
+
+	t.Run("a tree's two slots released together", func(t *testing.T) {
+		r := newStateRig(t)
+		root, member := stateIssue(), stateIssue()
+		member.Key, member.Title = "LEGION-2", "member"
+		r.seed(t, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+			for index, slotted := range []record.Issue{member, root} {
+				if err := records.PutIssue(ctx, tx, slotted); err != nil {
+					return err
+				}
+				if err := records.PutSlot(ctx, tx, record.Slot{Issue: slotted.Key, Index: index, AdmittedAt: time.Now()}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		ids := r.commit(t, r.records, func(ctx context.Context, tx pgx.Tx, records record.Store) error {
+			_, err := records.ReleaseTreeSlots(ctx, tx, root.Tree)
+			return err
+		})
+		rows := r.stateRows(t)
+		if len(ids) != 2 || len(rows) != 2 {
+			t.Fatalf("the release queued %v and the outbox holds %+v, want two state rows", ids, rows)
+		}
+		r.drain(t)
+		published := statesPublished(t, r.publisher, 0)
+		if len(published) != 1 {
+			t.Fatalf("the release went out as %d messages %+v, want one", len(published), published)
+		}
+		message := published[0]
+		if message.key != record.OutboxKey(ids[0]) || message.message.FirstSeq != rows[0].seq || message.message.Seq != rows[1].seq {
+			t.Fatalf("the message = %+v, want %d-%d under %q", message, rows[0].seq, rows[1].seq, record.OutboxKey(ids[0]))
+		}
+		want := []stateEvent{
+			{Seq: rows[0].seq, Kind: "change", Issue: member.Key, Changes: []record.StateFieldChange{
+				{Field: record.StateFieldSlot, Old: json.RawMessage(`0`), New: json.RawMessage(`null`)}}},
+			{Seq: rows[1].seq, Kind: "change", Issue: root.Key, Changes: []record.StateFieldChange{
+				{Field: record.StateFieldSlot, Old: json.RawMessage(`1`), New: json.RawMessage(`null`)}}},
+		}
+		if !reflect.DeepEqual(message.events, want) {
+			t.Fatalf("the message's events = %+v, want each slot from its index to null, in slot order, %+v", message.events, want)
 		}
 		if rows := r.stateRows(t); len(rows) != 0 {
 			t.Fatalf("state rows left = %+v, want every row of the message finished with it", rows)
@@ -981,5 +1029,55 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 			}
 			t.Logf("the boot event's envelope, as the listener's publish route stores it, takes %d bytes", len(envelope))
 		})
+	}
+}
+
+// A daemon booted with no dispatch_url runs no workflow, so it runs no outbox that would send a
+// state row and turns no state event on (run): through its whole run it writes no row of the state
+// lane, publishes no boot event on the project's state topic, though its Envoy listener takes every
+// publish, and GET /legion/v1/state serves no `daemon.stateRun`, the run a reader takes a starting
+// point's messages from.
+func TestADaemonWithNoDispatchURLWritesAndPublishesNoStateEvent(t *testing.T) {
+	cfg := testConfig(t)
+	listener := newNoticeListener()
+	envoy := httptest.NewServer(listener)
+	t.Cleanup(envoy.Close)
+	cfg.EnvoyURL = envoy.URL
+	token, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
+	status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
+	if status != http.StatusOK {
+		t.Fatalf("GET the state = %d %s", status, body)
+	}
+	var state struct {
+		Daemon map[string]json.RawMessage `json:"daemon"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil || state.Daemon == nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	if run, served := state.Daemon["stateRun"]; served {
+		t.Fatalf("the state serves daemon.stateRun %s, want none: a daemon with no workflow publishes no state event", run)
+	}
+	d.stop()
+
+	// Read once the run has returned, so every write and every publish of the run is counted.
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer st.Close()
+	var rows int
+	if err := st.Pool().QueryRow(context.Background(), `select count(*) from outbox where kind = any($1)`, stateKindNames()).Scan(&rows); err != nil {
+		t.Fatalf("count the state rows: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("the daemon's run wrote %d state rows, want none: a daemon with no workflow writes no state event", rows)
+	}
+	if published := listener.acceptedOn(notify.StateTopic(token)); len(published) != 0 {
+		t.Fatalf("the daemon published %+v on its state topic, want nothing: a daemon with no workflow publishes no boot event", published)
 	}
 }

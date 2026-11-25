@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -542,10 +543,53 @@ func releaseForWait(t *testing.T, pool *pgxpool.Pool, key string) {
 	})
 }
 
+// slotChange is one change of an issue's slot that a state event names, from one index to another,
+// each as its JSON: null for no slot.
+type slotChange struct {
+	issue, from, to string
+}
+
+// slotChanges is every change of a slot the outbox's state events name, in the order they were
+// queued, each decoded as the outbox decodes it, so a row this package could not send fails here.
+func slotChanges(t *testing.T, pool *pgxpool.Pool) []slotChange {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = $1 order by id`, string(record.OutboxKindStateChange))
+	if err != nil {
+		t.Fatalf("list the state changes: %v", err)
+	}
+	defer rows.Close()
+	var changes []slotChange
+	for rows.Next() {
+		var row record.OutboxRow
+		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
+			t.Fatalf("read a state change: %v", err)
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode state change %d: %v", row.ID, err)
+		}
+		change := payload.(record.StateChange)
+		if row.Issue != testProject || change.Project != testProject || change.Run != blockRun {
+			t.Fatalf("state change %d is queued under %q for project %q and run %q, want %q, %q and %q",
+				row.ID, row.Issue, change.Project, change.Run, testProject, testProject, blockRun)
+		}
+		for _, field := range change.Changes {
+			if field.Field == record.StateFieldSlot {
+				changes = append(changes, slotChange{issue: change.Issue, from: string(field.Old), to: string(field.New)})
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list the state changes: %v", err)
+	}
+	return changes
+}
+
 // A root moved to backlog and back to todo while its project is paused comes back with its tree's
 // slots and wait marks of the generation before still standing, since a paused pass releases
 // nothing and the re-admission ends the linger that release reads. The re-admission frees them
-// all, so after the resume the root's promotion opens its tree and brings its members back. Kept,
+// all, each slot with its state event from its index to null, as a daemon with a workflow queues
+// it, so after the resume the root's promotion opens its tree and brings its members back. Kept,
 // the root's own slot would read as a promotion, and the pass would clear the mark as one an
 // earlier release left and strand the members; a member's slot would fill the cap of one, so the
 // root would never be promoted.
@@ -594,8 +638,29 @@ func TestReadmittedMembersOfARootMovedOutAndBackDuringAPauseComeBackAfterTheResu
 			pause := pauseTestProject(t, pool, fixedNow)
 			apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
+			var freed []slotChange
+			for _, slot := range slots(t, pool) {
+				if slot.Issue == rmRoot || slices.Contains(rmMembers, slot.Issue) {
+					freed = append(freed, slotChange{issue: slot.Issue, from: strconv.Itoa(slot.Index), to: "null"})
+				}
+			}
+			if len(freed) == 0 {
+				t.Fatalf("the tree holds no slot as its root comes back (%#v), want the slot of the generation before: the case's premise", slots(t, pool))
+			}
+			// The re-admission's fact writes through a record store whose state events are on, as
+			// a daemon with a workflow runs it (publishingAdmission). The facts around it write with
+			// the events off, since a state event cannot name the fixture's LEGION-ACTIVE, which is
+			// no issue key.
+			unpublished, records := admission.store, record.NewStore()
+			records.PublishState(blockRun, nil)
+			admission.store = records
 			apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
 				Status: "todo", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
+			admission.store = unpublished
+			if got := slotChanges(t, pool); !reflect.DeepEqual(got, freed) {
+				t.Fatalf("the re-admission during the pause queued the slot changes %+v, want %+v: one for each slot of the tree it frees, from its index to null",
+					got, freed)
+			}
 			if got := issue(t, pool, rmRoot); got.Generation != 2 || got.Phase != phase.Admitted || !got.MembersOwed {
 				t.Fatalf("the root re-admitted during the pause = %#v, want generation 2 at admitted with its members owed their return", got)
 			}

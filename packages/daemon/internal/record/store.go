@@ -29,13 +29,17 @@ const maxInt64 = uint64(^uint64(0) >> 1)
 // Postgres implements Store exclusively through caller-owned pgx transactions. It has no pool:
 // opening, committing, and retrying a transaction belong to the layer that owns its boundary.
 type Postgres struct {
-	// state is what PublishState turned the state events on with. It is nil until the daemon turns
-	// the events on, and while it is nil no write queues one.
+	// state is what PublishState turned the state events on with, nil until the daemon turns them
+	// on. While it is nil the issue and slot writes PublishState lists queue no state change, and
+	// QueueAdmissionBlock refuses a block. It gates neither EnqueueStateChange, which the claim
+	// writes of internal/store call under their own switch (store.Store.PublishState), nor Enqueue,
+	// which takes each run's boot row before this switch is on (internal/daemon's queueStateBoot).
 	state atomic.Pointer[statePublication]
 }
 
 // statePublication is what PublishState turns the state events on with: the id of the daemon run
-// every state row carries, and the call each write makes once it has queued a state row.
+// every state row carries, and the call each of the writes PublishState lists makes once it has
+// queued a state row (queueStateChange, QueueAdmissionBlock).
 type statePublication struct {
 	run    string
 	queued func(ctx context.Context)
@@ -48,19 +52,18 @@ func NewStore() *Postgres { return &Postgres{} }
 
 // PublishState turns the state events on: from this call on, each write of an issue or a slot that
 // moves what Dispatch observes of it — the issue's phase, tree or waitingOn (PutIssue,
-// ObservationOf), its slot's index (PutSlot, ReleaseSlot, ReleaseSlotForWait) — queues one
-// state_change row naming each field it moved, in the write's own transaction, so the change and
-// its event commit together or not at all, and a write of the admission block that moves it queues
-// its state_admission row (QueueAdmissionBlock). Each row carries run, the id of the daemon run that
-// wrote it, which a row that names none is refused for (StateChange). Only a daemon with a workflow
-// runs the outbox that sends and deletes the rows, so only that daemon turns the events on, beside
-// the role-holder publication (store.Store.PublishRoleHolders); every other store, a daemon's with
-// no workflow among them, queues none, since a row it wrote would be neither sent nor deleted.
+// ObservationOf), its slot's index (PutSlot, ReleaseSlot, ReleaseSlotForWait, ReleaseTreeSlots) —
+// queues one state_change row for each issue it moved, naming each field of it the write moved, in
+// the write's own transaction, so the change and its event commit together or not at all, and a
+// write of the admission block that moves it queues its state_admission row (QueueAdmissionBlock).
+// Each row carries run, the id of the daemon run that wrote it, which a row that names none is
+// refused for (StateChange). Only a daemon with a workflow turns the events on (internal/daemon's
+// run says why); every other store queues none.
 //
-// Each write that queued a state row calls queued with its own context, inside its transaction
-// and once the row is queued, and a write that queued none calls nothing: the store knows nothing
-// of the lanes, and the daemon wakes the project's state lane from there once the transaction
-// commits (its commit hooks, store.OnCommit). A nil queued calls nothing.
+// Each of these writes calls queued with its own context once for each state row it queued, inside
+// its transaction and once the row is queued, and a write that queued none calls nothing: the
+// store knows nothing of the lanes, and the daemon wakes the project's state lane from there once
+// the transaction commits (its commit hooks, store.OnCommit). A nil queued calls nothing.
 func (s *Postgres) PublishState(run string, queued func(ctx context.Context)) {
 	if queued == nil {
 		queued = func(context.Context) {}
@@ -441,9 +444,9 @@ func (s *Postgres) queueStateChange(ctx context.Context, tx pgx.Tx, state *state
 // 20261122163303_state_events gives it its sequence and its time when tx commits. It tells
 // nothing: the writer wakes the lane once tx commits.
 //
-// It is the one queue of a state change, this store's issue and slot writes' (queueStateChange)
-// and the claim writes' of internal/store, which cannot import this package and is handed this
-// method when the daemon turns its events on (store.Store.PublishState).
+// It is the one queue of a state change; package stateevent's comment says whose writes use it and
+// why internal/store is handed it. The admission block's row and the boot row go in through
+// Enqueue instead (QueueAdmissionBlock, internal/daemon's queueStateBoot).
 func (s *Postgres) EnqueueStateChange(ctx context.Context, tx pgx.Tx, change stateevent.Change, due time.Time) error {
 	row, err := NewOutboxRow(change.Project, StateChange(change), due)
 	if err != nil {
@@ -2625,10 +2628,8 @@ func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue stri
 }
 
 // slotReleased reads the index and the time a release's delete of issue's slot returned (deleted),
-// and with the state events on queues the state change naming the slot, from that index to null,
-// due at that time. A delete that found no slot returns no row and queues nothing. A slot names
-// its issue by key alone, so the change is queued on the lane of the project the key names
-// (keyProject).
+// and with the state events on queues the state change naming the slot (queueSlotRelease). A
+// delete that found no slot returns no row and queues nothing.
 func (s *Postgres) slotReleased(ctx context.Context, tx pgx.Tx, issue string, deleted pgx.Row) error {
 	var index int
 	var due time.Time
@@ -2642,6 +2643,14 @@ func (s *Postgres) slotReleased(ctx context.Context, tx pgx.Tx, issue string, de
 	if state == nil {
 		return nil
 	}
+	return s.queueSlotRelease(ctx, tx, state, issue, index, due)
+}
+
+// queueSlotRelease queues the state change of a release of issue's slot, carrying state's run: the
+// slot, from index, the index the release's delete took, to null, due at due, the time that delete
+// returned. A slot names its issue by key alone, so the change is queued on the lane of the
+// project the key names (keyProject).
+func (s *Postgres) queueSlotRelease(ctx context.Context, tx pgx.Tx, state *statePublication, issue string, index int, due time.Time) error {
 	return s.queueStateChange(ctx, tx, state, keyProject(issue), issue,
 		[]StateFieldChange{{Field: StateFieldSlot, Old: json.RawMessage(strconv.Itoa(index)), New: stateevent.Null}}, due)
 }
@@ -2661,19 +2670,43 @@ func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue st
 	return nil
 }
 
+// ReleaseTreeSlots's delete returns each slot it took, its issue and its index, with the
+// transaction's own time, now(), and with the state events on (PublishState) the release queues,
+// slot by slot in the order it answers them, the state change naming that slot, as ReleaseSlot's
+// does (queueSlotRelease). A tree holding no slot deletes nothing and queues nothing.
 func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
 	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where tree = $1 and released_for_wait_at is not null", tree); err != nil {
 		return nil, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
 	}
+	type releasedSlot struct {
+		issue string
+		index int
+		due   time.Time
+	}
 	rows, err := tx.Query(ctx, `with released as (delete from slots using issues
 		where slots.issue = issues.key and issues.tree = $1 returning slots.issue, slots.index)
-		select issue from released order by index, issue`, tree)
+		select issue, index, now() from released order by index, issue`, tree)
 	if err != nil {
 		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
-	released, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	slots, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (releasedSlot, error) {
+		var slot releasedSlot
+		err := row.Scan(&slot.issue, &slot.index, &slot.due)
+		return slot, err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
+	}
+	state := s.state.Load()
+	released := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		released = append(released, slot.issue)
+		if state == nil {
+			continue
+		}
+		if err := s.queueSlotRelease(ctx, tx, state, slot.issue, slot.index, slot.due); err != nil {
+			return nil, fmt.Errorf("release the slot of %s in %s's tree: %w", slot.issue, tree, err)
+		}
 	}
 	return released, nil
 }
@@ -3239,8 +3272,7 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // row ($6 is the state lane's kinds) waits while an unfinished state row of its project has a
 // lower sequence: every state row carries the bare project key as its issue, and takes its
 // sequence when its transaction commits (OutboxRow.StateSeq), so the project's one state lane
-// publishes its rows strictly in sequence order, and a row that fails holds every later one until
-// it is published (LaneState).
+// publishes its rows strictly in sequence order (LaneState, which says what a failed row holds).
 //
 // None of the four holds back any row but the ones it names. A row that is merely unclaimable
 // takes no lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose
@@ -4135,10 +4167,9 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 
 // StatePublication reads project's counter row (state_publication), which the commit trigger of
 // migration 20261122163303_state_events makes at the project's first state row and steps once for
-// each state row the project's daemon commits: its last_seq, which, read in the state route's
-// snapshot, names which events that snapshot holds (every one at or below it, and none above it),
-// and its store_id, the id the trigger's first insert made for this store's state events and
-// nothing changes after. A project with no state row reads sequence 0 and no id.
+// each state row the project's daemon commits: its last_seq and its store_id, which the state route
+// serves as `daemon.stateSeq` and `daemon.stateId` (api.DaemonInfo says what each tells a reader).
+// A project with no state row reads sequence 0 and no id.
 func (s *Postgres) StatePublication(ctx context.Context, tx pgx.Tx, project string) (StatePublication, error) {
 	var published StatePublication
 	var id *string
@@ -4154,11 +4185,13 @@ func (s *Postgres) StatePublication(ctx context.Context, tx pgx.Tx, project stri
 
 // StateRowsAfter is every state row still in the outbox that committed in head's transaction
 // (OutboxRow.StateTx) with a sequence above head's, in sequence order: the rows the project's state
-// lane publishes with head as one message. They hold the sequences that follow head's, since the
-// commit trigger of migration 20261122163303_state_events holds the project's counter row from a
-// transaction's first state row to its commit, so no other transaction's row takes a sequence
-// between them. None of them is leased: the lane rule (outboxInOrder) makes a state row claimable
-// only while no unfinished state row of its project has a lower sequence, and head is one.
+// lane publishes after head, in head's message or, past the message bound, in the next ones
+// (internal/daemon's stateEvents). They hold the sequences that follow head's, since the commit
+// trigger of migration 20261122163303_state_events takes the lock of the project's counter row at
+// the transaction's commit and holds it until the commit ends, so no other transaction's row takes
+// a sequence between them. None of them is leased: the lane rule (outboxInOrder) makes a state row
+// claimable only while no unfinished state row of its project has a lower sequence, and head is
+// one.
 func (s *Postgres) StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
 		where issue = $1 and state_tx = $2 and state_seq > $3 order by state_seq`, head.Issue, head.StateTx, head.StateSeq)
