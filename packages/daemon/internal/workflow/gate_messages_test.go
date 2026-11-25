@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"testing"
@@ -102,6 +103,67 @@ func TestAnOpeningGoesAsNewsToAnOwedReviewerAndAsTheMessageWithTheClauseToAnUnow
 		{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: opened + " " + nothingChangedClause(1)},
 	})
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
+}
+
+// A fix that runs beside a member's step works on that member's task, so a move of the tree's
+// design gate reaches it as it reaches the step: the close and the opening are each sent to the
+// implementer that runs the fix, beside the reviewer whose phase the member stands in. The fix's
+// implementer holds no told row of the member's phase, so it is sent the opened message itself,
+// and the reviewer's news carries the reviewer's opening as before. The control, kept: the same
+// member with no fix tells the reviewer and the architect alone.
+func TestAGateMoveReachesTheFixBesideTheReview(t *testing.T) {
+	for _, fixRuns := range []bool{true, false} {
+		name := "a fix runs beside the review"
+		if !fixRuns {
+			name = "no fix runs"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 4, Status: "needs_review", Rank: "U"})
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+				LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+				LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+			seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+			took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
+			seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
+			seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
+			engine := stepsEngine(twoSteps(), nil)
+			if fixRuns {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+					fix := record.TaskFix{Issue: gatedRoot, Generation: 4, Task: "default", Fix: 1, State: record.FixReading,
+						Check: "k-ci", Head: headOne, Place: 1}
+					if err := engine.store.PutFix(ctx, tx, fix); err != nil {
+						return err
+					}
+					fix.State, fix.Entry = record.FixRunning, 2
+					return engine.store.UpdateFix(ctx, tx, fix)
+				})
+			}
+
+			applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
+				Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
+			applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
+
+			closed := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, false)
+			opened := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, true)
+			want := []record.RoleMessage{
+				{Role: treeRoleToken(t, gatedRoot, claim.RoleReviewer), Body: closed},
+				{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+			}
+			if fixRuns {
+				want = []record.RoleMessage{
+					{Role: treeRoleToken(t, gatedRoot, claim.RoleReviewer), Body: closed},
+					{Role: treeRoleToken(t, gatedRoot, claim.RoleImplementer), Body: closed},
+					{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+					{Role: treeRoleToken(t, gatedRoot, claim.RoleImplementer), Body: opened},
+				}
+			}
+			assertRoleMessages(t, pool, gatedRoot, want)
+			assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
+		})
+	}
 }
 
 // A member in accepting is held by the architect that owns it (the owner walk,

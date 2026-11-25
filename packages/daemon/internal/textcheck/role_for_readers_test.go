@@ -90,7 +90,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
-	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},

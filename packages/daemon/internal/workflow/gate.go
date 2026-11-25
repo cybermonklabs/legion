@@ -1019,11 +1019,17 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The members first, then the root's architect, since the gate is the root's.
+	// The members first, then the root's architect, since the gate is the root's. Each member's
+	// open roles are told (OpenRoles): the worker of its phase, and the implementer of a fix that
+	// runs beside that phase's step, whose work is the member's task too.
 	recipients := make([]roleRecipient, 0, len(members)+1)
+	fixOf := make(map[string]claim.Role, len(members))
 	for _, member := range members {
-		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
+		for _, role := range OpenRoles(member) {
 			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
+			if FixWork(member, role) {
+				fixOf[member.Key] = role
+			}
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
@@ -1056,8 +1062,19 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
-		if role, _ := to.token.Role(); role == claim.RoleArchitect {
+		role, _ := to.token.Role()
+		if role == claim.RoleArchitect {
 			audience = record.AudienceArchitect
+		}
+		// A fix's implementer holds no told row of its member's phase, whose holder is the phase's
+		// worker, so it is told the opening by the message, and the holder's row is left to the
+		// holder.
+		if fixRole, ok := fixOf[to.issue]; ok && role == fixRole && audience == record.AudienceHolder {
+			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: opened}); err != nil {
+				return err
+			}
+			messages++
+			continue
 		}
 		way := openingDelivery(owed, facts.Told, to.issue, audience, opened, step, version)
 		if err := e.store.SettleOpening(ctx, tx, to.issue, audience, way.byNews); err != nil {
