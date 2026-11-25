@@ -63,7 +63,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// issue owns it, and the row names it, as the server's upload writes them (api's
 	// storeArtifact); the seed records no event of a document, so what the node write states
 	// carries the sentinel. Every node and tuple the document's write states has its head rows
-	// written once, at the end (heads, below), once every row they read stands.
+	// written once, at the end (heads, below), once every row they read stands, on a database that
+	// holds the head projection (seedRun.noHeadRows).
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
 	node := graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created)
 	var facts []graphstore.Tuple
@@ -214,10 +215,12 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 			return fmt.Errorf("record what the references stated: %w", err)
 		}
 	}
-	heads := slices.Concat(graphstore.HeadsOf([]graphstore.Node{node}, facts), graphstore.HeldHeads(blockWrite),
-		graphstore.HeadsOf(versionNodes, versionFacts))
-	if err := graphstore.WriteHeads(ctx, tx, heads); err != nil {
-		return fmt.Errorf("write the head rows of the document: %w", err)
+	if !r.noHeadRows {
+		heads := slices.Concat(graphstore.HeadsOf([]graphstore.Node{node}, facts), graphstore.HeldHeads(blockWrite),
+			graphstore.HeadsOf(versionNodes, versionFacts))
+		if err := graphstore.WriteHeads(ctx, tx, heads); err != nil {
+			return fmt.Errorf("write the head rows of the document: %w", err)
+		}
 	}
 	if document.Primary {
 		if err := docs.RecordTaskProgressMarkdown(ctx, tx, document.ID, latest); err != nil {

@@ -620,10 +620,27 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 // head rows of a comment's blocks it wrote, moved or removed (queueBlockHeads), the links its
 // blocks hold, and last the statement that records the item indexed (queueRecordIndexed).
 func (i ItemIndexing) Queue(b *store.WriteBatch) {
+	i.queue(b, true)
+}
+
+// QueueKeepingNoHeadRows is Queue without the head rows of a comment's blocks (queueBlockHeads),
+// for a writer that fills a database holding none of the head projection this build writes
+// (graphstore.QueueHeads), as a database migrated from the release before this one holds none,
+// whose server writes no head row. Its one writer is the seed on such a database
+// (cmd/dispatch-seed's seedRun.noHeadRows), which marks no issue's head rows whole, so no mark
+// stands for the rows it leaves unwritten. Every writer of this build's server runs Queue.
+func (i ItemIndexing) QueueKeepingNoHeadRows(b *store.WriteBatch) {
+	i.queue(b, false)
+}
+
+// queue is Queue, with the head rows of a comment's blocks where heads holds.
+func (i ItemIndexing) queue(b *store.WriteBatch, heads bool) {
 	i.queueStateLock(b)
 	if i.changed {
 		i.queueBlocks(b)
-		i.queueBlockHeads(b)
+		if heads {
+			i.queueBlockHeads(b)
+		}
 	}
 	i.queueBlockRefs(b)
 	i.queueRecordIndexed(b)
