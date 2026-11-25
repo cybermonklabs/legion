@@ -3,6 +3,8 @@ import { expect, test } from "bun:test";
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import { actorLabelText } from "../refs/AgentName";
 import { deletedLineText } from "../refs/post-marks";
+import type { AddressFallback } from "./address-target";
+import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import {
@@ -14,6 +16,7 @@ import {
   presetView,
   tagFilter,
 } from "./presets";
+import { addressView } from "./slots/body";
 import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
@@ -293,6 +296,53 @@ test("a block Conversation's read does not hold opens the filter whose view answ
   expect(answerHolds(views.plan, { id: "r1" })).toBe(true);
   expect(answerHolds(views.plan, { document: "plan-md", id: "r1" })).toBe(false);
   expect(answerHolds(undefined, { id: "r1" })).toBe(false);
+});
+
+/** Where an address whose `target` the tree holds no node of lands once its reads are held. */
+function absent(target: Extract<AddressFallback, { kind: "absent" }>["target"]): AddressFallback {
+  return { kind: "absent", target };
+}
+
+// R9: the outline alone reads a node address (`?node=`), Conversation's and Graph's, so one
+// whose node Conversation draws no row of - a node Conversation's read holds none of, or a plan
+// task it holds - goes to Graph's `?node=` of that node, which draws every node of its read
+// (R10), whether the page holds Graph's read or not; a block address goes to its filter, else to
+// Graph where the page holds Graph's read and it holds the block. A node Conversation draws a
+// row of stays, and Graph's own address sends nothing elsewhere.
+test("a node address Conversation draws no row of goes to Graph's ?node= of that node", () => {
+  const placed = { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" };
+  const graphRead = treeAnswer([
+    treeNode("t9", "plan_task", null, { document: placed, in: "plan-md" }),
+  ]);
+  const nodeTarget = { id: "CORE-1/plan-md#t9", kind: "node" } as const;
+  const blockTarget = { id: "t9", kind: "block" } as const;
+  const on = (target: AddressTarget) => ({ preset: "conversation", target }) as const;
+  const root = issue();
+  for (const read of [undefined, graphRead]) {
+    expect(
+      addressView(on(nodeTarget), undefined, root, absent(nodeTarget), read),
+      `a node Conversation's read holds none of, with Graph's read ${read === undefined ? "not " : ""}held`
+    ).toBe("graph");
+  }
+  expect(addressView(on(blockTarget), undefined, root, absent(blockTarget), graphRead)).toBe(
+    "graph"
+  );
+  expect(
+    addressView(on(blockTarget), undefined, root, absent(blockTarget), undefined)
+  ).toBeUndefined();
+  // A plan task Conversation's tree holds is no row of it: its block's address opens Plan, and
+  // its node's address Graph.
+  const task = node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" });
+  const toTask = [node("CORE-1", "issue", [task]), task];
+  expect(addressView(on(blockTarget), toTask, root, undefined, graphRead)).toBe("plan");
+  expect(addressView(on(nodeTarget), toTask, root, undefined, graphRead)).toBe("graph");
+  // A comment is a row of Conversation, which lands on it.
+  const comment = node("comment-1", "comment", [], { readId: "comment-1" });
+  const toComment = [node("CORE-1", "issue", [comment]), comment];
+  expect(addressView(on(nodeTarget), toComment, root, undefined, graphRead)).toBeUndefined();
+  // Graph's own address draws Graph, which says in its place where its read holds no node.
+  const graph = { preset: "graph", target: nodeTarget } as const;
+  expect(addressView(graph, undefined, root, absent(nodeTarget), graphRead)).toBeUndefined();
 });
 
 test("each filter's signal is its count, with what of it asks something of the reader", () => {

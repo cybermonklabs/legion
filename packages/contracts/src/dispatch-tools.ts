@@ -497,6 +497,8 @@ export const ISSUE_UPDATE_PATCH_FIELDS = [
   "route",
   "parent",
   "blocked_by",
+  "duplicate_of",
+  "filed_from",
   "advances",
   "advances_revision",
   "components",
@@ -1881,6 +1883,8 @@ export const dispatchToolSpecs = [
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
       "document before the body goes, so the text an insert suggestion put there goes with it. " +
+      "A retired document takes no new text, so there the suggestion and the margin mark stay " +
+      "as its frozen text holds them, and the delete writes no version of it. " +
       "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
       "of the comment reads none either. A Dispatch of this release keeps the body: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
@@ -2214,10 +2218,14 @@ export const dispatchToolSpecs = [
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's answer, resolve, decline, close or reopen of an ask writes one version, which " +
+      "A human's answer, resolve, decline, close or reopen of an ask writes one version. When " +
+      "the answer, resolve, decline, close or reopen is that version's whole change, the version " +
       "changes only the server-owned attributes of the ask's block: its state, and who answered " +
       "and when. An approval carries across the version an answer, a resolve or a decline writes, " +
-      "and the request keeps whoever held its turn; a close's version carries none, so the " +
+      "and the request keeps whoever held its turn. The version carries an approval only when the " +
+      "person's answer, resolve or decline is its whole change. If text that a person was editing " +
+      "in the browser is settled into the same version, the approval does not carry, and the " +
+      "request goes back to its agent. A close's version carries none, so the " +
       "approval reads stale until the reopen's version carries it. A new " +
       "version of a Legion root spec closes its armed design gate until a human approves it; a " +
       "carried approval reopens it too. " +

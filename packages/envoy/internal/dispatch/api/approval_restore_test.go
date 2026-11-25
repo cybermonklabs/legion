@@ -18,9 +18,11 @@ import (
 // nothing. Dispatch carries the document's newest approval to that version in the transaction
 // that writes it (docs.carryApproval), so the approval reads approved there, the write reports no
 // approval it superseded, and a request for approval finds nothing to ask. A person's answer is
-// held on the ask's node, and the one version it writes changes only the server-owned attributes
-// of the ask's block (R3), which R10's case carries an approval across, so text restored around a
-// block answered since still carries the approval. Text one character away from the approved text
+// held on the ask's node. When the answer is the whole change of the one version it writes (docs'
+// changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+// version), that version changes only the server-owned attributes of the ask's block (R3), which
+// R10's case carries an approval across, so text restored around a block answered since still
+// carries the approval. Text one character away from the approved text
 // is a change, and a version holding the approved text around a changed ask block is judged by the
 // carry's cases (docs.carryVerdict), which carry no question's words.
 

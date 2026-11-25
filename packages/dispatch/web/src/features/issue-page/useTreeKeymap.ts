@@ -13,10 +13,10 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 import { inputMethodKey } from "./useNodeEditing";
 
 /**
- * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
- * and `t h`, which takes the reader to the issue's children, the outline's own rows. The chords
- * that open a view, Details or the node menu are the page's (`useIssueKeymap.ts`), because each
- * of those is an address the outline does not draw.
+ * The tree's keyboard: every key of the issue page's key table that acts on the tree itself. The
+ * chords that open a view, Details, the node menu or the children's section above the outline
+ * are the page's (`useIssueKeymap.ts`), because each of those is an address the outline does not
+ * draw.
  *
  * Every binding is registered in the page's own `issue` scope, so the registry suspends all of
  * them while a caret is in a node's text: reading mode is where no caret is, which the keymap
@@ -58,9 +58,6 @@ export interface TreeKeyboard {
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
-  /** Takes the reader to the issue's children (`t h`): the focus on the group's first row, and
-   *  their own address. Undefined where the tree holds no child. */
-  readonly onChildren?: () => void;
   /** What `z` does: in the outline, unfolds every node the reader folded (R11); a view that
    *  draws more or less of itself by the key - the Decisions view's foot - draws it so. */
   readonly onCycle: () => void;
@@ -676,20 +673,6 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         tree.onCycle();
       },
       when: reading,
-    },
-    {
-      // The children are rows of the outline, one group under the issue, which the header
-      // stands for and draws no row of, so the chord that reaches them is the tree's: it puts
-      // the focus on the group's first row and opens their own address, `/children`
-      // (`IssueTree`'s `onChildren`).
-      id: "tree-children",
-      keys: "t h",
-      label: "Move to the issue's children",
-      run: () => {
-        tree.onReport("");
-        tree.onChildren?.();
-      },
-      when: () => tree.onChildren !== undefined,
     },
     {
       // The caret goes into the node's own text where it lives, which is its document's block

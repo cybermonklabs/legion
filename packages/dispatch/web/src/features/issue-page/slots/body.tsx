@@ -29,13 +29,14 @@ import {
 } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
-import { issueAddress, presetPath } from "../issue-address";
+import { type IssueAddress, issueAddress, presetPath } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
+import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
-import { EMPTY_STATE_LINES } from "../page-words";
+import { EMPTY_STATE_LINES, type Preset } from "../page-words";
 import { answerHolds, filterHolding, filterOfUndrawn, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
@@ -126,16 +127,10 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // answered, opens the filter whose view answer the page holds it in (`filterHolding`), else
   // Graph where Graph's read, as the page holds it, answers it (`answerHolds`); where none does,
   // the outline says in its place that it has no row for the block.
+  // A node address (`?node=`), which the outline alone reads, goes to Graph's of that node
+  // instead, wherever Conversation draws no row of it (`addressView`).
   const graphRead = useQueryClient().getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
-  const undrawn =
-    address.preset !== "conversation"
-      ? undefined
-      : addressed.reveal !== undefined
-        ? filterOfUndrawn(addressed.reveal.at(-1) ?? root)
-        : fallback?.kind === "absent" && fallback.target.kind === "block"
-          ? (filterHolding(root.views, fallback.target) ??
-            (answerHolds(graphRead, fallback.target) ? "graph" : undefined))
-          : undefined;
+  const undrawn = addressView(address, addressed.reveal, root, fallback, graphRead);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which the address's row
@@ -216,7 +211,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             readsHeld={readsHeld}
             readsSettled={readsSettled && !readingPages}
             {...(request === undefined ? {} : { request })}
-            reveal={ancestor ?? addressed.reveal}
+            // The children's own address lands on their section above the outline
+            // (`children-section.tsx`), and on no row of the outline (R14).
+            reveal={
+              ancestor ?? (address.target?.kind === "children" ? undefined : addressed.reveal)
+            }
             root={view.root}
             rootRow={view.rootRow}
             {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
@@ -226,6 +225,39 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
       {panels}
     </NoTooltips>
   );
+}
+
+/**
+ * The view an address on Conversation's own address opens in Conversation's place, where
+ * Conversation draws no row of the node it names (`BodySlot`): `reveal` is the chain down to that
+ * node in Conversation's tree `root` where the tree holds it, `fallback` where the address lands
+ * once the tree holds none of it (`useAddressFallback`), and `graphRead` Graph's read as the page
+ * holds it. A node the tree holds that Conversation draws no row of - a plan task, a result -
+ * opens the filter of its kind (`filterOfUndrawn`), and a block Conversation's read holds no node
+ * of the filter whose view answer holds it (`filterHolding`), else Graph where Graph's read
+ * answers it (`answerHolds`). A node address (`?node=`) is read by the outline alone,
+ * Conversation's and Graph's (`issueAddress`), so one whose node Conversation draws no row of,
+ * held or not, opens Graph at that node: Graph draws every node of its read (R10), and says in
+ * its place where it holds none. Undefined for every other address, and on every other preset.
+ */
+export function addressView(
+  address: Pick<IssueAddress, "preset" | "target">,
+  reveal: readonly TreeNode[] | undefined,
+  root: TreeNode,
+  fallback: AddressFallback | undefined,
+  graphRead: TreeAnswer | undefined
+): Preset | undefined {
+  if (address.preset !== "conversation") return undefined;
+  if (reveal !== undefined) {
+    const filter = filterOfUndrawn(reveal.at(-1) ?? root);
+    return filter !== undefined && address.target?.kind === "node" ? "graph" : filter;
+  }
+  if (fallback?.kind !== "absent") return undefined;
+  if (fallback.target.kind === "node") return "graph";
+  return fallback.target.kind === "block"
+    ? (filterHolding(root.views, fallback.target) ??
+        (answerHolds(graphRead, fallback.target) ? "graph" : undefined))
+    : undefined;
 }
 
 /**
@@ -437,6 +469,12 @@ const ABSENT_LINES: Readonly<
   children: {
     heading: "No child issues",
     line: (key) => `That link names the child issues of ${key}, which has none.`,
+  },
+  // A node `?node=` names that no read holds: Conversation sends its address to Graph
+  // (`addressView`), which draws every node of its read, so Graph says so.
+  node: {
+    heading: "No row for this node",
+    line: (key) => `That link names no row of ${key}'s outline.`,
   },
 };
 

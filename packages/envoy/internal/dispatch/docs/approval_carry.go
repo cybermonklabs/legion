@@ -1110,8 +1110,10 @@ var turnCases = []carryCase{attributeRemovalCase}
 // block of each (carryVerdictOver with attributeRemovalCase alone), every block id earlier holds
 // still standing. It is MoveApprovalAsk's keep-turn rule beside restoresApprovedText: the version
 // a person's answer, resolve or decline writes, or a reopen's settlement, changes no more than
-// that. A nil tree is markdown's read-back, parsed here; a version holding no ask block differs in
-// no ask attribute. Its reads run where it is called.
+// that when the answer, resolve, decline or reopen is that version's whole change. Text a person
+// was editing in the browser and settled into the same version makes this false, and the request
+// goes back to its agent. A nil tree is markdown's read-back, parsed here; a version holding no
+// ask block differs in no ask attribute. Its reads run where it is called.
 func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string, earlier, number int, markdown string, tree *pmdoc.Node) (bool, error) {
 	if tree == nil {
 		parsed, err := pmdoc.ParseRendering(markdown)

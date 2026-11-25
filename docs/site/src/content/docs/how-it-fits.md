@@ -82,9 +82,13 @@ Two decisions stay with people:
 
 - **The design gate.** Before implementation starts, a person approves the root issue's spec at a
   specific version in Dispatch. A later version of the spec closes the gate again until someone
-  approves it. A person's answer to an ask block in the spec writes one version, whose only change
-  is the block's `state`, answerer and time, and Dispatch carries the approval across it, so it
-  leaves the gate as it stands. Dispatch carries the approval to a later version only when that version's text
+  approves it. A person's answer to an ask block in the spec writes one version. When the answer
+  is that version's whole change, the version changes only the block's `state`, answerer and
+  time, and Dispatch carries the approval across it, so it leaves the gate as it stands. The
+  version carries the approval only when the person's answer, resolve or decline is its whole
+  change. If text that a person was editing in the browser is settled into the same version, the
+  approval does not carry, and the request goes back to its agent. Dispatch carries the approval
+  to a later version only when that version's text
   is the approved text, or when its only changes are ones that change no decision: the readings of
   decisions and answered asks, attributes of ask blocks the server owns, or what Dispatch's
   decisions step moved into the spec. Then Dispatch records the approval in the person's name at

@@ -39,8 +39,10 @@ import {
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
+import { useMediaQuery } from "../../shell/useDialog";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
@@ -292,6 +294,9 @@ export function SpecFilterBody({
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
+  // From 1024 px up the Contents pane stands beside the view and holds the issue's three
+  // sentences, so the view draws no first group of them there, and they are drawn once (R13).
+  const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const tree = useRef<HTMLDivElement | null>(null);
@@ -548,17 +553,19 @@ export function SpecFilterBody({
       </div>
       {/* The issue's three sentences, the first group, in the statements' column, as the
           prototype's `renderSpec` puts them after the column heads. */}
-      <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
-        <IssueThreeThings
-          look="spec"
-          nameOf={nameOf}
-          // The head says the spec holds no summary only once its blocks are held; the
-          // sentences themselves come with the batched names read, which waits until no read
-          // of the tree is still out (`slots/contents.tsx`).
-          specHeld={spec !== undefined && specBlocksRead.data !== undefined}
-          summary={summary}
-        />
-      </div>
+      {paned ? null : (
+        <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
+          <IssueThreeThings
+            look="spec"
+            nameOf={nameOf}
+            // The head says the spec holds no summary only once its blocks are held; the
+            // sentences themselves come with the batched names read, which waits until no read
+            // of the tree is still out (`slots/contents.tsx`).
+            specHeld={spec !== undefined && specBlocksRead.data !== undefined}
+            summary={summary}
+          />
+        </div>
+      )}
       {/* The outline the page draws under the Spec filter, which is this body's two columns:
           one tree, named as the tree every other filter draws, so a reader meets one outline
           on every address (R2, `IssueTree.tsx`). Its items are each statement and each

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react";
+import { createContext, type ReactNode, useContext, useEffect } from "react";
 
 import { useOutlineReads } from "../outline-reads";
 import { BodySlot } from "./body";
@@ -26,4 +26,15 @@ export function ViewGraphSlot({ onAddressDrawn, ...props }: ViewSlotProps): Reac
     if (readsSettled) onAddressDrawn(true);
   }, [onAddressDrawn, readsSettled]);
   return <BodySlot {...props} />;
+}
+
+/** Whether the view the stage draws lands on the node the address names itself, as the outline
+ *  does (`IssueTree`'s landing): the stage says so of Graph's slot, which draws the outline, while
+ *  the address names a node beside Graph's own address, and takes no first focus for it
+ *  (`stage.tsx`' `ViewStage`). */
+export const LandsItself = createContext(false);
+
+/** Whether the view the stage draws lands on the address's node itself (`LandsItself`). */
+export function useLandsItself(): boolean {
+  return useContext(LandsItself);
 }

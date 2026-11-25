@@ -3,6 +3,8 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { focusOnDocument } from "../../shell/roving";
+import { ChildrenSection } from "../children-section";
+import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -14,7 +16,7 @@ import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
-import { ViewGraphSlot } from "./view-graph";
+import { LandsItself, useLandsItself, ViewGraphSlot } from "./view-graph";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
@@ -52,6 +54,13 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
  * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
  * focus back as it leaves.
+ *
+ * Below 1024 px, where no Contents pane holds them, the issue's three sentences stand above the
+ * slot (`contents-frame.tsx`'s `ThreeThingsAbove`), but under the Spec view, whose own first
+ * group draws them (R13).
+ *
+ * Above the slot, after those sentences, stand the issue's children, a section of their own that
+ * opens and closes (`children-section.tsx`), in every view that draws an outline read (R14).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -103,18 +112,28 @@ export function StageSlot({
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
+  // Graph's slot draws the outline (`view-graph.tsx`), whose own landing puts the focus on the
+  // node an address beside it names: the view stage is told so (`LandsItself`), and leaves the
+  // first focus to that landing (`ViewStage`).
+  const landsItself = beside && preset === "graph";
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
       <DocumentStages>
         <ReaderActsWatch into={acts} key={following} />
+        {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
+        <ThreeThingsAbove {...props} view={View !== undefined} />
+        {/* The issue's children, above the slot's first row (R14). */}
+        <ChildrenSection {...props} />
         {View === undefined ? (
           <StageBox>
             <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
           </StageBox>
         ) : (
-          <ViewStage box={viewBox} key={preset}>
-            <View {...props} onAddressDrawn={onAddressDrawn} />
-          </ViewStage>
+          <LandsItself.Provider value={landsItself}>
+            <ViewStage box={viewBox} key={preset}>
+              <View {...props} onAddressDrawn={onAddressDrawn} />
+            </ViewStage>
+          </LandsItself.Provider>
         )}
       </DocumentStages>
     </ViewReadProvider>
@@ -201,6 +220,12 @@ const SLOT_TREE = '[role="tree"]';
  * A failed read's line that leaves the page with the focus in it gives the focus back as every
  * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
+ *
+ * A view whose tree lands on the node the address names itself - Graph's, which draws the
+ * outline (`view-graph.tsx`), on an address naming a node - is drawn under `LandsItself` set so
+ * by `StageSlot`, and the stage takes no focus for it: that landing puts the focus on the node's
+ * row in the frame after it draws the row, and reads a focus the stage gave the tab stop before
+ * then as somebody else's, which it leaves there, so the address landed on the tree's first row.
  */
 export function ViewStage({
   box: given,
@@ -212,6 +237,10 @@ export function ViewStage({
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  // Whether the view lands on the address's node itself (`LandsItself`), as the stage last drew
+  // it: the take runs from an effect of the stage's first draw, and reads it whenever it runs.
+  const landsItself = useRef(false);
+  landsItself.current = useLandsItself();
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -244,6 +273,8 @@ export function ViewStage({
     // placed no longer does), as the outline's opening waits a frame for its first row; a focus
     // the reader or a script put elsewhere in that frame stays.
     const take = (): boolean => {
+      // True at once for a view whose tree lands on the address's node itself (`LandsItself`).
+      if (landsItself.current) return true;
       const active = document.activeElement;
       const onTree = active?.matches(SLOT_TREE) === true && stage.contains(active);
       if (!focusIsLoose(stage) && !onTree) return true;

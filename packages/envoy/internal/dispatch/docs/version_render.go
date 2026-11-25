@@ -158,7 +158,7 @@ var errVersionRenderCut = errors.New("docs: a version's record is read at a cut 
 // with the version or not at all. It writes a table of its own and no tuple of the store. A version
 // that holds its row keeps it: the first pass that states a version records it, and a later pass
 // that states the version again - a room pass stating each fragment's newest version, the
-// reconciliation stating a version ReviseQueries wrote - records nothing.
+// reconciliation stating a version the drain of a query mark wrote (writeRevisions) - records nothing.
 func QueueVersionRender(b *store.WriteBatch, artifactID string, number int, record QueryRecord) error {
 	if record.Cut.Dated || record.Cut.At.IsZero() {
 		return errVersionRenderCut
@@ -592,10 +592,13 @@ func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int
 // revisedDocumentsStatement is each document of the issue $1 whose versions a query's record covers
 // (queryOfBand), where the issue has converted - an issue_trees row holds its tree, whose room each
 // such document is edited in (document_rooms) - and nothing for any other issue: each one's id, its
-// band, and its newest version's number and markdown with the digest that version's version_renders
-// row records, null where it holds no row. They come in id order.
+// band, its name, its newest version's number and markdown with the digest that version's
+// version_renders row records, null where it holds no row, and whether the document's block index
+// stands at that version: its document_block_versions row at that number, holding no mark of this
+// build's (store_owed_at). They come in id order.
 var revisedDocumentsStatement = `
-	select d.id::text, ` + refs.DocumentBandSQL("d") + `, v.number, coalesce(v.markdown, ''), r.record_sha256
+	select d.id::text, ` + refs.DocumentBandSQL("d") + `, d.name, v.number, coalesce(v.markdown, ''), r.record_sha256,
+	       coalesce(b.version = v.number and b.store_owed_at is null, false)
 	from issue_trees t
 	join document_rooms m on m.room = t.artifact_id
 	join artifacts d on d.id = m.artifact_id and d.issue_key = t.issue_key and d.kind = 'doc' and d.retired_at is null
@@ -603,6 +606,7 @@ var revisedDocumentsStatement = `
 		select number, markdown from artifact_versions where artifact_id = d.id order by number desc limit 1
 	) v on true
 	left join version_renders r on r.artifact_id = d.id and r.number = v.number
+	left join document_block_versions b on b.artifact_id = d.id
 	where t.issue_key = $1 and ` + refs.DocumentBandSQL("d") + ` in ('` + string(refs.RankBandSpec) + `', '` +
 	string(refs.RankBandVerification) + `', '` + string(refs.RankBandPlan) + `')
 	order by d.id`
@@ -611,14 +615,12 @@ var revisedDocumentsStatement = `
 // as lockDocumentRoom takes it, and takes nothing for an issue with no tree.
 const lockQueryRoomsStatement = `select pg_advisory_xact_lock(hashtext(t.artifact_id::text)) from issue_trees t where t.issue_key = $1`
 
-// LockQueryRooms takes, in tx, the lock of every room ReviseQueries writes a version of issueKey's
-// query documents in: the issue's own room, its tree's, whose stored history's head each version
-// records (versionRoomHead), and nothing for an issue that has not converted. A writer that calls
-// ReviseQueries after writes of its own takes it right after its owner locks and before its first
-// write, the order docs/persistence.go sets for a transaction that takes both an owner's lock and
-// a room's: the owner's advisory lock, then the room's, then the owner row its writes take (the
-// event's). The lock is a transaction advisory lock, so ReviseQueries taking it again later waits
-// on nothing.
+// LockQueryRooms takes, in tx, the lock of every room a version of issueKey's query documents is
+// written in (writeRevisions): the issue's own room, its tree's, whose stored history's head each
+// version records (versionRoomHead), and nothing for an issue that has not converted. The drain
+// takes it right after the issue's owner lock and before its first write (drainQueryMark), the
+// order docs/persistence.go sets for a transaction that takes both an owner's lock and a room's:
+// the owner's advisory lock, then the room's, then the owner row its writes take (an event's).
 func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 	if _, err := tx.Exec(ctx, lockQueryRoomsStatement, issueKey); err != nil {
 		return fmt.Errorf("lock the room of %s: %w", issueKey, err)
@@ -626,123 +628,150 @@ func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 	return nil
 }
 
-// ReviseQueries appends, in tx, a version of each query document of the converted issue issueKey
-// whose query's record or whose rendering moved since its newest version, for a write that moved
-// a query's record and wrote no version of it: a recorded result, its retraction, a room write
-// that moved a query whose document's fragment it did not change. For an issue that has not
-// converted - no issue_trees row holds its tree - it does nothing and answers the zero value.
-//
-// It reads the store as tx holds it, so its caller's writes have run: it is called after them, and
-// never between a write phase's planning and its batch. It takes the issue's owner lock, which
-// every writer of a version takes first and which its caller holds already, and reads at one cut
-// of tx (refs.HeadCut) each query document's record (IssueTree.QueryRecord, the issue's tree walked
+// queryDocument is one query document of a converted issue as revisedDocumentsStatement reads it:
+// its id, the query whose record covers it, its name, its newest version's number and markdown
+// with the digest that version's version_renders row records, and whether its block index stands
+// at that version.
+type queryDocument struct {
+	id, query, name, markdown string
+	number                    int
+	digest                    *string
+	indexed                   bool
+}
+
+// queryRevision is a version a query document is owed (planRevisions): the document as its newest
+// version leaves it, the markdown the new version stores - the document's render at the cut, which
+// for a record moved alone is the bytes of the version before it - and the query's record read at
+// that cut; and, once the version is written (writeRevisions), its row and its node's facts.
+type queryRevision struct {
+	document queryDocument
+	markdown string
+	record   QueryRecord
+	version  model.Version
+	node     graphstore.Uncaused
+}
+
+// planRevisions reads, through tx, the version each query document of the converted issue
+// issueKey is owed, and nothing for an issue that has not converted: the drain's read
+// (drainQueryMark), for a write that moved a query's record and wrote no version of it - a
+// recorded result, its retraction, an issue room's settlement that moved a query whose document's
+// fragment it did not change. It reads the store as the transaction holds it, at one cut of tx
+// (refs.HeadCut): each query document's record (IssueTree.QueryRecord, the issue's tree walked
 // once) and its render as of the cut's time (RenderAt). A document whose newest version holds no
 // version_renders row is left as it is: either no pass has stated that version yet, so the tree may
 // not hold it (a deferred pass), and the pass that states it records its digest, or it is no query
 // version this build's version write made (madeQueryVersion), which no row ever covers and which
 // answers its stored bytes for good. A document whose record digests to its newest version's
-// digest and whose render is that version's markdown is left too. Each other one takes a version
-// whose markdown is the render, which for a record moved alone is the bytes of the version before
-// it, written by writer, with its version node
-// (WriteVersionNode, whose owner names the query and its definition_version, ReadVersionOwner) and
-// its version_renders row holding the record's digest and the cut's time and seq, as a pass records
-// them (QueueVersionRender): the census reads it as every rendered version, and never as deferred.
-//
-// Before it writes, it takes the lock of the issue's room (LockQueryRooms), after every owner lock
-// its caller holds: each version records the head of its room's stored history
-// (versionRoomHead), which only that lock holds still. A caller that wrote before calling it took
-// that lock already, right after its owner locks and before its first write (LockQueryRooms); a
-// room settlement holds its own room's lock from its read phase; so the take here waits on nothing
-// in either.
-//
-// What it answers is the version nodes' facts, held for the event the caller writes: the caller
-// causes them under that event (graphstore.Caused), as every writer of the store causes its facts.
-// It appends no event of its own.
-func (s *Service) ReviseQueries(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor) (graphstore.Uncaused, error) {
-	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
-		return graphstore.Uncaused{}, err
-	}
+// digest and whose render is that version's markdown is left too. Each other one is owed a version
+// whose markdown is the render. It writes nothing.
+func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevision, error) {
 	rows, err := tx.Query(ctx, revisedDocumentsStatement, issueKey)
 	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
-	}
-	type queryDocument struct {
-		id, query, markdown string
-		number              int
-		digest              *string
+		return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 	}
 	var documents []queryDocument
 	for rows.Next() {
 		var document queryDocument
 		var band string
-		if err := rows.Scan(&document.id, &band, &document.number, &document.markdown, &document.digest); err != nil {
+		if err := rows.Scan(&document.id, &band, &document.name, &document.number, &document.markdown, &document.digest, &document.indexed); err != nil {
 			rows.Close()
-			return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
+			return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 		}
 		if document.query = queryOfBand[band]; document.digest != nil {
 			documents = append(documents, document)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
+		return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 	}
 	if len(documents) == 0 {
-		return graphstore.Uncaused{}, nil
+		return nil, nil
 	}
 	cut, err := refs.HeadCut(ctx, tx)
 	if err != nil {
-		return graphstore.Uncaused{}, err
+		return nil, err
 	}
 	records := cutRecords{cut: cut}
-	type revision struct {
-		document queryDocument
-		markdown string
-		record   QueryRecord
-	}
-	var revisions []revision
+	var revisions []queryRevision
 	for _, document := range documents {
 		record, err := records.record(ctx, tx, queryOf{issue: issueKey, query: document.query})
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
 		}
 		rendering, err := RenderAt(ctx, tx, model.Actor{}, document.id, cut.At)
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return nil, err
 		}
 		if record.Digest != *document.digest || rendering.Markdown != document.markdown {
-			revisions = append(revisions, revision{document: document, markdown: rendering.Markdown, record: record})
+			revisions = append(revisions, queryRevision{document: document, markdown: rendering.Markdown, record: record})
 		}
 	}
-	if len(revisions) == 0 {
-		return graphstore.Uncaused{}, nil
-	}
-	if err := LockQueryRooms(ctx, tx, issueKey); err != nil {
-		return graphstore.Uncaused{}, err
-	}
-	nodes := make([]graphstore.Uncaused, 0, len(revisions))
-	for _, revised := range revisions {
+	return revisions, nil
+}
+
+// writeRevisions writes, in tx, each of revisions (planRevisions) as a version by writer: its row,
+// whose markdown is the render (queueVersionInsert), its version node (WriteVersionNode, whose owner
+// names the query and its definition_version, ReadVersionOwner) and its version_renders row holding
+// the record's digest and the cut's time and seq, as a pass records them (QueueVersionRender), so
+// the census reads it as every rendered version, and never as deferred. A version that stores the
+// bytes of the version before it, where the document's block index stood at that version, stands
+// the index at the new version in the same write (queueRevisionStand). Each write is queued on the
+// drain's ledger (drainQueryMark, write), which sends them all in its write phase. It records each
+// version's row and its node's facts on its revision, for the drain to cause.
+func (s *Service) writeRevisions(ctx context.Context, tx pgx.Tx, revisions []queryRevision, writer model.Actor) error {
+	for index := range revisions {
+		revised := &revisions[index]
 		id := revised.document.id
 		version, err := queueVersionInsert(ctx, tx, id, revised.markdown, []model.Actor{writer}, false, nil, nil, RenderStamp{})
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return err
 		}
 		owner, err := ReadVersionOwner(ctx, tx, id)
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return err
 		}
 		node, err := WriteVersionNode(ctx, tx, owner, version.Number, writer, version.CreatedAt)
 		if err != nil {
-			return graphstore.Uncaused{}, err
+			return err
 		}
 		record := revised.record
+		stands := revised.document.indexed && revised.markdown == revised.document.markdown
 		if err := write(ctx, tx, func(b *store.WriteBatch) error {
-			return QueueVersionRender(b, id, version.Number, record)
+			if err := QueueVersionRender(b, id, version.Number, record); err != nil {
+				return err
+			}
+			if stands {
+				queueRevisionStand(b, id, version.Number, s.markingRule)
+			}
+			return nil
 		}); err != nil {
-			return graphstore.Uncaused{}, err
+			return err
 		}
-		nodes = append(nodes, node)
+		revised.version, revised.node = version, node
 	}
-	return graphstore.Joined(nodes...), nil
+	return nil
+}
+
+// queueRevisionStand queues on b the stand of the block index of the document artifactID at
+// version number, a version that stores the bytes of the version before it, whose block index
+// stood at that version (writeRevisions): the revision fence's own statement
+// (refs.RevisionFenceStatement) at the marking rule rule, as the index pass of one document stands
+// its row (refs' BlockIndexing.queueStand). The version's insert, queued before it, owes the
+// document its index (document_block_versions_owe, migration 0122), and the fence admits a stand
+// over that owed row. The blocks the version before stood at are the new version's, byte for
+// byte, so no pass is owed it, and the coverage read lists no document owed for it (api's
+// owedDocumentsStatement) and still draws each missing check. A version whose rendering moved stays
+// owed for the reconciliation. A stand the fence refuses fails the write, as the pass's does.
+func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int) {
+	b.Queue(fmt.Sprintf("stand the blocks of %s indexed at version %d", artifactID, number),
+		refs.RevisionFenceStatement, artifactID, number, rule).QueryRow(func(row pgx.Row) error {
+		// The one column says the row was written; nothing reads its value.
+		if err := row.Scan(nil); !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		return fmt.Errorf("the revision fence refused the stand of the blocks of %s at version %d, which stores the bytes of the version before it",
+			artifactID, number)
+	})
 }
 
 // versionRenderAt renders the document artifactID as of at for the census of the rendered

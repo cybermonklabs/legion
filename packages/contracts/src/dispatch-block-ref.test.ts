@@ -308,9 +308,20 @@ test.each([
     want: [opener("a")],
   },
   {
+    // An opening `---` that nothing closes is no front matter, and after it no typed block opens
+    // at the document's level (pmdoc's frontmatterAttempt, which wraps the typed block's parser
+    // in pmdoc/parse.go). The opener is paragraph text.
     name: "an opening `---` nothing closes is no front matter",
     lines: ["---", opener("a")],
-    want: [opener("a")],
+    want: [],
+  },
+  {
+    // After an opening `---` that nothing closes, a callout does not open at the document's
+    // level either, so the ask block's opener inside it is paragraph text (pmdoc's
+    // frontmatterAttempt).
+    name: "after an opening `---` nothing closes, neither a callout nor an ask block in it opens",
+    lines: ["---", ":::callout{#c}", opener("a"), ":::", ":::"],
+    want: [],
   },
   {
     // A backslash before ASCII punctuation escapes it, so `\]` and `\[` are part of the label. An
@@ -357,6 +368,24 @@ test.each([
     lines: [`    > ${opener("a")}`, "", `>     ${opener("b")}`, "", `-     ${opener("c")}`],
     want: [],
   },
+  {
+    // An empty item takes its content from the next line where that line reaches the item's
+    // content column and no blank line stands between them. So the list stays open, though
+    // goldmark closes it at a marker of another bullet character (pmdoc's
+    // emptyItemGuard.Continue).
+    name: "a list stays open at a line that reaches its empty last item's content column",
+    lines: ["-", "   *", `\t${opener("a")}`],
+    want: [opener("a")],
+  },
+  {
+    // After indented code, a line of only `>` counts as blank only where the list opens in no
+    // container that its own line opens (pmdoc's interruptsOpenBlock). Here the `>` line opened
+    // the quote a line before the item, so the code holds nothing open on the item's line, and
+    // the item numbered 10 opens a list in the quote.
+    name: "after indented code, an item numbered 10 opens a list in the quote a line of `>` opened",
+    lines: ["    code", ">", `> 10. ${opener("a")}`],
+    want: [opener("a")],
+  },
 ])("askOpenerLines: $name", ({ lines, want }) => {
   expect(askOpenerLines(lines.join("\n"))).toEqual([...want]);
 });
@@ -364,6 +393,20 @@ test.each([
 test("askOpenerLines reads lines that end in a carriage return and a line feed", () => {
   const lines = ["```", opener("a"), "```", opener("b"), ""];
   expect(askOpenerLines(lines.join("\r\n"))).toEqual([opener("b")]);
+});
+
+// A pattern with two runs of spaces and tabs side by side tries each split of a long run between
+// them, so a line of many tabs and then a character that ends the match took seconds. The second
+// and third lines go on with the paragraph (a table's delimiter row is looked for in each), the
+// fourth is a blank line, and the sixth stands inside the ask block (a closing line is looked for
+// in it). Each is read in time linear in its length.
+test("askOpenerLines reads lines of 50,000 tabs in under one second", () => {
+  const tabs = "\t".repeat(50_000);
+  const lines = ["Some text.", `${tabs}|`, `|-${tabs}x|`, tabs, opener("a"), `:${tabs}x`, ":::"];
+  const start = performance.now();
+  const openers = askOpenerLines(lines.join("\n"));
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(openers).toEqual([opener("a")]);
 });
 
 test("askOpenerBlockId reads back each id as the renderer writes it, and no other spelling", () => {

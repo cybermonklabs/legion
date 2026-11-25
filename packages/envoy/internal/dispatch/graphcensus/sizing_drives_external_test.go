@@ -201,11 +201,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// (writeRecordedResult): the result's node with its base attributes, its values, its
 		// part_of, its result_of its check and her authored_by, which the term result counts. A
 		// person's result names no run_session, and her node stands from the issue's spec. The
-		// issue is born converted, so the result moves the Verification query's record and the
-		// route appends a version of that document under result.recorded (reviseQueriesUnder):
+		// issue is born converted, so the result moves the Verification query's record: its batch
+		// marks the issue's queries owed, and the drain the route runs once the result has
+		// committed appends a version of that document under result.recorded (drainQueryMark):
 		// the version's node, a query version with its definition_version.
 		Name: "api/results.go#writeRecordedResult", Database: r.database,
-		Sites: []string{"api/results.go#writeRecordedResult", "api/results.go#reviseQueriesUnder", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainQueryMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "verification.md", "content": ":::check{#" + sizedCheck + " surface=\"cli\"}\nThe sizing counts every writer.\n:::\n",
@@ -223,9 +224,10 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	}, {
 		// alice's retraction of that result (writeCheckResultRetraction): its retracted value,
 		// which the term result_retraction counts, and the version of the Verification document
-		// the retraction moves the record of, under result.retracted (reviseQueriesUnder).
+		// the retraction moves the record of, which the drain appends under result.retracted
+		// (drainQueryMark).
 		Name: "api/results_retract.go#writeCheckResultRetraction", Database: r.database,
-		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "api/results.go#reviseQueriesUnder", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "docs/query_marks.go#drainQueryMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/results/"+result+"/retract",
 				map[string]any{"reason": "The run measured the wrong build."}, "alice", http.StatusCreated)
@@ -321,11 +323,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// the spec's new version, its facts caused by that version's event (causeRoomFacts) - the
 		// new paragraph's block with its values and alice's authored_by, as a block of an issue's
 		// room records its authors, and the version's node, a query version with its
-		// definition_version. Once its write phase has run it revises the issue's queries
-		// (reviseQueries), which the paragraph moved no record of, so that appends nothing.
+		// definition_version. Its write phase marks the issue's queries owed, and the drain it runs
+		// once it has committed (drainQueryMark) finds the paragraph moved no record, so that
+		// appends nothing.
 		Name: "docs/block_index.go#causeRoomFacts, a settlement of an issue's room", Database: r.database,
 		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode",
-			"docs/settlement.go#reviseQueries"},
+			"docs/query_marks.go#drainQueryMark"},
 		Ready: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
