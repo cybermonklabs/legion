@@ -688,6 +688,16 @@ export const CLIPPING_OVERFLOW: Record<string, true> = {
   scroll: true,
 };
 
+/** How far the view the reader sees `element` through has been scrolled: the offsets of every
+ *  box that clips it (`clippingBoxes`) and the window's own, added. Two readings of it tell a
+ *  view that moved under the reader - a commit's own anchoring moving a box - from one whose
+ *  edges changed around rows that stayed where they were. */
+export function viewScrollOf(element: Element): number {
+  let scrolled = window.scrollY;
+  for (const box of clippingBoxes(element)) scrolled += box.scrollTop;
+  return scrolled;
+}
+
 /** The boxes around `element` that clip what overflows them, nearest first: every ancestor whose
  *  overflow clips (`CLIPPING_OVERFLOW`), short of the body and the root, whose overflow is the
  *  viewport's. `clips` keeps whether each ancestor read clips, so a walk that measures many

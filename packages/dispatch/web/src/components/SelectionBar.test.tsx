@@ -1107,17 +1107,55 @@ test("a landing the commit dropped to the page's body takes the focus again once
   }
 });
 
-// INFRA-3135, round 28 (the tester's red rows `35bec491` and `4d4d86f3`): the landing was measured
-// before the press's rows and the bar went, and the commit can leave its mark out of the reader's
-// sight altogether - the rows above it move up, and the box's own sight grows by the room the bar
-// leaves at its foot. The least scroll then shows that mark whole, at its nearest edge. Here the
-// commit leaves CORE-14's mark 1,400 px down, below the window's 768 px.
-test("a landing the commit left out of sight is shown whole by the least scroll once the press's rows have gone", () => {
+// The same drop, one frame later: the engine draws the row again when it paints the commit, and
+// drops the focus then. The frame after the commit reads it once more and puts it back, so the
+// reader's place is theirs however late the drop lands. Measured in WebKit at 1440x900 (the
+// tester's builds Job `infra-3135-infra-3135-r29-rows-6w6ql`, its Snooze row at the head
+// `31388de3`, where the box had scrolled the cut and the mark stood whole while the body held
+// the focus).
+test("a landing dropped to the body in the frame after the commit takes the focus back in it", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  try {
+    pressInBar("Dismiss");
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    // The engine drops the focus as it paints that commit, after every effect of it has run.
+    act(() => {
+      (document.activeElement as HTMLElement).blur();
+    });
+    expect(document.body).toHaveFocus();
+    const painted = Promise.withResolvers<void>();
+    requestAnimationFrame(() => painted.resolve());
+    await act(async () => {
+      await painted.promise;
+    });
+    expect(rowBox("CORE-14")).toHaveFocus();
+  } finally {
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-3135, round 28 (the tester's red rows `35bec491` and the finding beside it): the landing
+// was measured before the press's rows went, and an engine's own anchoring can hold the box where
+// those rows went from, which moves the view away from the mark under the reader and leaves it out
+// of their sight. The least scroll then shows that mark whole again, at its nearest edge. Here the
+// view moves 120 px and the commit leaves CORE-14's mark 1,200 px down, below the window's 768 px.
+test("a landing the view moved away from under the reader is shown whole again by the least scroll", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
   const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   try {
     pressInBar("Dismiss");
     view.rerender(
@@ -1125,8 +1163,9 @@ test("a landing the commit left out of sight is shown whole by the least scroll 
     );
     expect(rowBox("CORE-14")).toHaveFocus();
     expect<readonly unknown[]>(scroll.mock.calls).toEqual([]);
-    // The commit leaves the list drawn from its first row, as a box the bar's going gave its foot
-    // back to can: the mark the landing chose stands below the window then.
+    // The commit holds the view where the rows went from: it moved under the reader, and the mark
+    // the landing chose stands below the window.
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 120 });
     laidOut();
     const relaid = layRowsOut("[data-row]", 0);
     try {
@@ -1139,8 +1178,47 @@ test("a landing the commit left out of sight is shown whole by the least scroll 
       relaid();
     }
   } finally {
+    if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
+    else Object.defineProperty(window, "scrollY", scrollY);
     scroll.mockRestore();
     view.unmount();
+  }
+});
+
+// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): where the view moved nowhere and the
+// box's own edges changed around rows that stayed - what the page draws in the bar's place takes
+// the room its foot had - a mark left out of the reader's sight is a landing they cannot see. It
+// is passed over, as the hand-off passes over a row out of sight, and the place is handed off
+// again from the rows the list holds now: the nearest row before it that the reader can see takes
+// the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
+// CORE-14's mark below it and cuts CORE-11's.
+test("a landing the box's own edges left out of sight is passed over, and the place is handed off again", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  try {
+    pressInBar("Dismiss");
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    // CORE-14's mark stands at 200 to 300 under a window that ends at 150; CORE-11's, at 100 to
+    // 200, is the nearest before it that the reader can see.
+    expect(focusedName()).toBe("Select CORE-11");
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 200 - 150 }]]);
+  } finally {
+    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", height);
+    scroll.mockRestore();
+    view.unmount();
+    laidOut();
   }
 });
 
