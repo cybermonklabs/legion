@@ -12,16 +12,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Three of the migrations that restate graph_edges after 20261109215947: the one that adds the
-// tuple arm's class `store` and the arm answering a finding's relations as `lens_block`, the
-// sibling branch's that restates the view from its own arms with every change of the
-// restatements before it, and the one that restates the view last, with the arms of both
-// branches (store.GraphEdgesView).
+// The migrations that restate graph_edges after 20261109215947: the one that adds the tuple arm's
+// class `store` and the arm answering a finding's relations as `lens_block`, the sibling branch's
+// that restates the view from its own arms with every change of the restatements before it, and
+// this branch's restatements after it, ending on the view this head ships (store.GraphEdgesView).
 const (
 	storeClassRestatement     = "20261117020856_graph_edges_asks_and_store_class"
 	storeClassLastRestatement = "20261121104002_graph_edges_store_class_last"
-	lastRestatement           = "20261123180000_issue_tree_graph_edges_after_store_class_last"
 )
+
+var laterRestatements = []string{
+	"20261123180000_issue_tree_graph_edges_after_store_class_last",
+	"20261125150001_issue_tree_graph_edges_block_node_listed",
+}
 
 // The ids of the rows writeEveryGraphEdgesArm writes that the tests read back.
 const (
@@ -49,10 +52,11 @@ const (
 )
 
 // The sibling branch's restatement of graph_edges (20261121104002) answers every row
-// 20261117020856's view answered, and no other. The database runs every migration but the last
-// restatement (lastRestatement), so 20261121104002 is the definition it holds. The fixture gives
-// every arm of that view at least one row. It holds a tuple of each kind of the class `store`
-// (changed_by_run, has_kind, triggered_by, constrained_by and prevented_by, and the part_of and
+// 20261117020856's view answered, and no other. The database runs every migration but this
+// branch's restatements after it (laterRestatements), so 20261121104002 is the definition it
+// holds. The fixture gives every arm of that view at least one row. It holds a tuple of each kind
+// of the class `store` (changed_by_run, has_kind, triggered_by, constrained_by and prevented_by,
+// and the part_of and
 // authored_by of a lens, a risk, a constraint and an interaction), a finding's relations, which
 // the arm after the tuple arm answers as `lens_block`, an ask's relations from the asks arms and
 // from the tuple arm, and tuples neither view answers. The test reads the view under that
@@ -62,8 +66,8 @@ const (
 func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsWithout(t, lastRestatement)); err != nil {
-		t.Fatalf("migrate without %s, so %s is the definition the database holds: %v", lastRestatement, storeClassLastRestatement, err)
+	if err := store.migrate(ctx, migrationsWithout(t, laterRestatements...)); err != nil {
+		t.Fatalf("migrate without %v, so %s is the definition the database holds: %v", laterRestatements, storeClassLastRestatement, err)
 	}
 	storeClassView, err := migrationFiles.ReadFile("migrations/" + storeClassRestatement + ".up.sql")
 	if err != nil {
@@ -130,16 +134,17 @@ func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered
 }
 
 // graph_edges ends on one definition whatever order a database ran its restatements in. The
-// first database runs the set without 20261117020856 and the last restatement, as a database that
-// ran 20261120122700, 20261121034242 and 20261121104002 before 20261117020856 did, and then the
-// whole set, so 20261117020856 runs after 20261121034242. The second runs the whole set from
-// empty, so 20261121034242 runs after 20261117020856. Both views have one definition, the last
-// restatement's.
+// first database runs the set without 20261117020856 and this branch's later restatements, as a
+// database that ran 20261120122700, 20261121034242 and 20261121104002 before 20261117020856 did,
+// and then the whole set, so 20261117020856 runs after 20261121034242 and this branch's
+// restatements run last. The second runs the whole set from empty, so 20261121034242 runs after
+// 20261117020856. Both views have one definition, the last restatement's.
 func TestGraphEdgesEndsOnOneDefinitionWhateverOrderItsRestatementsRan(t *testing.T) {
 	ctx := context.Background()
 	ranLaterRestatementsFirst := openEmptyTestStore(t)
-	if err := ranLaterRestatementsFirst.migrate(ctx, migrationsWithout(t, storeClassRestatement, lastRestatement)); err != nil {
-		t.Fatalf("migrate without %s and %s: %v", storeClassRestatement, lastRestatement, err)
+	omitted := append([]string{storeClassRestatement}, laterRestatements...)
+	if err := ranLaterRestatementsFirst.migrate(ctx, migrationsWithout(t, omitted...)); err != nil {
+		t.Fatalf("migrate without %v: %v", omitted, err)
 	}
 	if err := ranLaterRestatementsFirst.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the rest of the set: %v", err)

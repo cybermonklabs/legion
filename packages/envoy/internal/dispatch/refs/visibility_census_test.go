@@ -194,11 +194,13 @@ var readsWithoutAViewer = map[string]string{
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
+	"DaemonThreadParents":  serverWork + " - R2's daemon-thread step re-places under its issue each block it answers (docs.DaemonThreadStep), and the pre-deploy census, which a deployment runs as a one-off task under the service's own database credentials, prints them as that step's dry run (graphcensus.ReadDaemonThreadCensus)",
 	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
 	"DecisionIndexing.PlanAuthored": serverWork + " - a write that leaves a version's blocks to the reconciliation reads what the store " +
 		"holds of the requirements, checks and plan tasks it writes at once, and of the blocks above them",
 	"DocumentIsCited":      noNode,
 	"DocumentMentioning":   serverWork + " - rebuild-refs reads the document whose references it reconciles, to sign the mentions it states",
+	"DocumentWindowOwner":  "it answers a node id and nothing of any node: the key the windows of the one document its caller names are written and read under, the room that document is edited in (DocumentRoomSQL), which the write of its windows writes under (WriteDocumentWindows) and the read of its blocks reads their embedding states by (api's describeBlocks, BlockEmbeddingStates), so no reader is answered the key",
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
 	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
@@ -555,6 +557,12 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("StoredExcerpts", "StoredExcerpts of CORE-1", func() error {
 		_, err := StoredExcerpts(ctx, recorder, who, "issue", "CORE-1")
+		return err
+	})
+	// The name of a decision's ask reaches the caller a move refuses, so the read binds the ask's
+	// predicate in its one statement, whatever the decision holds.
+	record("DecisionFromAsk", "DecisionFromAsk of a decision", func() error {
+		_, _, err := DecisionFromAsk(ctx, recorder, who, "CORE-1/spec#no-such-decision")
 		return err
 	})
 	for _, kind := range []ItemKind{ItemComment, ItemAsk, ItemMessage} {
