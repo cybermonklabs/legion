@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { act, cleanup } from "@testing-library/react";
+import { act, cleanup, waitFor } from "@testing-library/react";
 
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
@@ -112,18 +112,24 @@ const STATEMENT_ROW = `[data-verification-body] ${nodeRowSelectorOf(blockNodeId(
 
 // The Verification view lands on the row an address names once every read the tree's rows come
 // from has settled, as the Spec view does. With the messages read out, the view draws its rows
-// from its own reads, and the stage puts the focus on the issue's row, the view's tab stop; the
-// statement's row does not take it. Once the messages answer every read has settled, and the
-// statement's row takes the focus. Drawn again, the reader presses a control outside the stage
-// while the messages are out, and once they answer the control keeps the focus: the landing
-// yields to a reader who acted since they followed the address.
+// from its own reads, and nothing in the stage takes the focus while the address's landing is
+// undecided (decision 413 of dispatch://INFRA-1196/artifact/part-decisions-md: an address moves
+// the focus once): neither the issue's row, the view's tab stop, nor the statement's row. Once the
+// messages answer every read has settled, and the statement's row takes the focus. Drawn again,
+// the reader presses a control outside the stage while the messages are out, and once they answer
+// the control keeps the focus: the landing yields to a reader who acted since they followed the
+// address.
 test("an address naming a statement on the Verification view lands the focus on that statement's row once the reads have settled", async () => {
   answerVerificationReads();
   const address = `#b-${STATEMENT}`;
   const messagesOut = Promise.withResolvers<[]>();
   spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
   const view = drawStage(address, { issue: verifiedIssue(), preset: "verification" });
-  await rowTakesFocus(view, ISSUE_ROW, "the Verification view with the messages out");
+  await waitFor(() => expect(view.container.querySelector(ISSUE_ROW)).not.toBeNull());
+  expect(
+    view.container.contains(document.activeElement),
+    `the Verification view with the messages out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+  ).toBe(false);
   // The frame a landing would have asked for as the rows were drawn.
   await act(() => nextFrame());
   expect(
@@ -140,11 +146,11 @@ test("an address naming a statement on the Verification view lands the focus on 
   const control = document.body.appendChild(document.createElement("button"));
   try {
     const acted = drawStage(address, { issue: verifiedIssue(), preset: "verification" });
-    await rowTakesFocus(
-      acted,
-      ISSUE_ROW,
-      "the Verification view drawn again with the messages out"
-    );
+    await waitFor(() => expect(acted.container.querySelector(ISSUE_ROW)).not.toBeNull());
+    expect(
+      acted.container.contains(document.activeElement),
+      `the Verification view drawn again with the messages out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+    ).toBe(false);
     act(() => {
       control.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       control.focus();
