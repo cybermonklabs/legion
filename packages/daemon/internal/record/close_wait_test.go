@@ -453,8 +453,11 @@ var cwFixtures = filepath.Join("..", "..", "..", "contracts", "fixtures", "dispa
 // Dispatch's answer and reason as Dispatch gave them, and a fail names its deciding result and its
 // commit. A pass followed by a newer fail is Dispatch's fail, whatever older pass the check's
 // results hold. An answer with no reason, which a Dispatch of the release before gives, is unknown.
+// The captured answers of the freshness cases are read by the predicate as Dispatch gave them: a
+// merge only in a linked repository, an issue merged into a branch that did or did not land on the
+// default branch, and a before_merge check whose merged head no subject names.
 func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
-	read := func(t *testing.T, fixture string) (dispatch.CheckBlock, []byte) {
+	resultsOf := func(t *testing.T, fixture string) (dispatch.IssueResults, []byte) {
 		t.Helper()
 		raw, err := os.ReadFile(filepath.Join(cwFixtures, fixture+".json"))
 		if err != nil {
@@ -464,6 +467,11 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 		if err := json.Unmarshal(raw, &results); err != nil {
 			t.Fatalf("decode %s as the client does: %v", fixture, err)
 		}
+		return results, raw
+	}
+	read := func(t *testing.T, fixture string) (dispatch.CheckBlock, []byte) {
+		t.Helper()
+		results, raw := resultsOf(t, fixture)
 		if len(results.Checks) != 1 {
 			t.Fatalf("%s holds %d checks, want 1", fixture, len(results.Checks))
 		}
@@ -495,6 +503,7 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 		{fixture: "live-no-deploy", answer: dispatch.PassStandsUnknown, state: CheckStateNoResult},
 		{fixture: "live-deploy-not-merged", answer: dispatch.PassStandsUnknown, state: CheckStateNoResult},
 		{fixture: "live-no-result-from-deploy", answer: dispatch.PassStandsUnknown, state: CheckStateNoResult},
+		{fixture: "before-merge-at-first-head", answer: dispatch.PassStandsYes, state: CheckStatePass},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			check, raw := read(t, tc.fixture)
@@ -543,4 +552,54 @@ func TestCloseCheckOfReadsOnlyDispatchsState(t *testing.T) {
 			t.Fatalf("CloseCheckOf of an answer with no reason = %+v, want %+v", got, want)
 		}
 	})
+	const (
+		linkedMerge = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+		elsewhere   = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+		firstHead   = "1111111111111111111111111111111111111111"
+	)
+	noResult := func(check string) CheckWait {
+		return CheckWait{Check: check, State: CheckStateNoResult, Answer: dispatch.PassStandsNo, Reason: dispatch.PassStandsReasonNoResult}
+	}
+	firstMerge := Merge{Number: 101, Head: firstHead, SHA: cwMergeSHA, Base: "main", Repo: cwRepo}
+	for _, tc := range []struct {
+		name    string
+		fixture string
+		// atHead is the fixture of the read at the merge's final head, "" for none.
+		atHead string
+		merge  Merge
+		want   CloseWait
+	}{
+		{name: "an issue whose only merge is linked: its after_merge check passes and its default_branch check has no result",
+			fixture: "code-linked-merge-only", merge: Merge{Number: 9, SHA: linkedMerge, Base: "main", Repo: "acme/tools"},
+			want: CloseWait{Checks: []CheckWait{noResult("k5")}}},
+		{name: "an issue merged into a branch that landed on the default branch",
+			fixture: "default-branch-merged-elsewhere-landed", merge: Merge{Number: 7, SHA: elsewhere, Base: "legion/ACME-0", Repo: cwRepo},
+			want: CloseWait{Checks: []CheckWait{noResult("k5")}}},
+		{name: "an issue merged into a branch that has not landed on the default branch",
+			fixture: "default-branch-merged-elsewhere-not-landed", merge: Merge{Number: 7, SHA: elsewhere, Base: "legion/ACME-0", Repo: cwRepo},
+			want: CloseWait{Checks: []CheckWait{noResult("k5"), noResult("k6")}}},
+		{name: "a before_merge check whose merged head no subject names, with a second pull request open",
+			fixture: "before-merge-second-pull-request-open", merge: firstMerge, want: CloseWait{Unread: true}},
+		{name: "that check beside the read at the merged head",
+			fixture: "before-merge-second-pull-request-open", atHead: "before-merge-at-first-head", merge: firstMerge},
+	} {
+		t.Run("the close reads: "+tc.name, func(t *testing.T) {
+			var answer CheckReadAnswer
+			answer.Results, _ = resultsOf(t, tc.fixture)
+			if tc.atHead != "" {
+				atHead, _ := resultsOf(t, tc.atHead)
+				answer.AtMergeHead = &atHead
+			}
+			encoded, err := json.Marshal(answer)
+			if err != nil {
+				t.Fatalf("encode the read's answer: %v", err)
+			}
+			at := cwEntered.Add(time.Minute)
+			facts := CloseFacts{Repo: cwRepo, Merge: tc.merge, Entered: cwEntered,
+				Read: &CheckRead{Issue: "ACME-1", ReadAt: at, Answer: encoded, RecordedAt: at}}
+			if got := CloseWaitOf(facts); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("CloseWaitOf(%s) =\n%+v\nwant\n%+v", tc.fixture, got, tc.want)
+			}
+		})
+	}
 }
