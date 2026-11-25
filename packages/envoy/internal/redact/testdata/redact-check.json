@@ -4010,31 +4010,6 @@
         "capture": "leakguard.visibility-words/curl-caller-unreached"
       },
       {
-        "row": "githubrest-api-url-get",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
-      },
-      {
-        "row": "githubrest-api-url-post",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
-      },
-      {
-        "row": "githubrest-api-url-pages",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
-      },
-      {
-        "row": "githubrest-api-url-pages-own-query",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
-      },
-      {
-        "row": "githubrest-api-address-no-base",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/githubrest/url_join_test.go"]
-      },
-      {
         "row": "githubrest-api-address-get",
         "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
         "files": ["packages/daemon/internal/githubrest/url_join_test.go"],
@@ -4053,40 +4028,10 @@
         "capture": "githubrest.api-address/pages"
       },
       {
-        "row": "leakguard-tarball-api-url",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/leakguard/source_url_join_test.go"]
-      },
-      {
         "row": "leakguard-tarball-api-address",
         "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
         "files": ["packages/daemon/internal/leakguard/source_url_join_test.go"],
         "capture": "leakguard.api-address/tarball"
-      },
-      {
-        "row": "appauth-base-url-app-slug",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
-      },
-      {
-        "row": "appauth-base-url-installed-on",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
-      },
-      {
-        "row": "appauth-base-url-installations",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
-      },
-      {
-        "row": "appauth-base-url-mint",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
-      },
-      {
-        "row": "appauth-base-url-viewer",
-        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
-        "files": ["packages/daemon/internal/appauth/base_url_join_test.go"]
       },
       {
         "row": "appauth-base-url-refused-app-slug",
