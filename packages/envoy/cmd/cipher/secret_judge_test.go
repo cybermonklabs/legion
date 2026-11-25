@@ -66,7 +66,7 @@ func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
 		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		longGuidance := strings.Repeat("g", policy.MaxGuidanceRunes+1)
 		for _, c := range []struct {
 			args   []string

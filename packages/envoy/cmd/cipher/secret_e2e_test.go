@@ -59,11 +59,9 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 	rig, local := awsRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
-	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-		return local, fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil, nil
-	}
-	t.Cleanup(func() { awsClients = restore })
+	awstest.UseClients(t, func(context.Context, string) (awsstore.WriterAPI, awsstore.STSAPI, []aws.CredentialSource, error) {
+		return local, awstest.STS{Account: "111122223333", ARN: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil, nil
+	})
 	stdin := secretStdin
 	secretStdin = strings.NewReader("fresh-v1")
 	t.Cleanup(func() { secretStdin = stdin })
@@ -84,7 +82,7 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 	rig, local := awsRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
-	useAWS(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
+	awstest.Use(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
 	for _, step := range []struct {
 		args []string
 		code int
@@ -118,7 +116,7 @@ func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	rig, local := awsRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	withNoBrokerIdentity(t)
-	useAWS(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
+	awstest.Use(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
 	useStdin(t, "fresh-v1")
 	stdout, stderr, code := runSecret("create", "FRESH_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") {

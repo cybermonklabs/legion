@@ -26,6 +26,7 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
@@ -41,7 +42,7 @@ func refusingWith(t *testing.T, code, message string) string {
 	return srv.URL
 }
 
-// useAWSWebIdentity leaves the rest of t with the real awsClients, signing in with a web identity:
+// useAWSWebIdentity leaves the rest of t with the real awsstore.Hooks.Clients, signing in with a web identity:
 // AWS_ROLE_ARN set and AWS_WEB_IDENTITY_TOKEN_FILE naming tokenFile, with no other source the SDK
 // could take (no keys, no profile, empty shared config and credentials files, no instance
 // metadata), and every STS call sent to a local stand-in that refuses AssumeRoleWithWebIdentity,
@@ -146,7 +147,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 	})
 	// A token file a long form read at its start and that is gone when the SDK reads it again, as
 	// it does at each refresh of the credentials: that read is the SDK's, through the retriever
-	// awsClients gives it, and it too names the variable alone.
+	// awsstore.Hooks.Clients gives it, and it too names the variable alone.
 	t.Run("a later read of the file, by the SDK", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), secret, "token")
 		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
@@ -156,7 +157,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		useAWSWebIdentity(t, file)
-		_, st, _, err := awsClients(context.Background(), "us-east-1")
+		_, st, _, err := awsstore.CurrentHooks().Clients(context.Background(), "us-east-1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -218,37 +219,11 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 		t.Run("control: "+variable+" naming a profile the files hold", func(t *testing.T) {
 			useProfiles(t)
 			t.Setenv(variable, "work")
-			if _, _, _, err := awsClients(context.Background(), "us-east-1"); err != nil {
-				t.Fatalf("awsClients refused a profile the files hold: %v", err)
+			if _, _, _, err := awsstore.CurrentHooks().Clients(context.Background(), "us-east-1"); err != nil {
+				t.Fatalf("the AWS clients refused a profile the files hold: %v", err)
 			}
 		})
 	}
-}
-
-// awsSignInOnly leaves t with no AWS source but static keys and no address setting, and one
-// attempt per call: each row of TestTheAWSSDKsSignInFailurePrintsNoSetting sets what it tests.
-func awsSignInOnly(t *testing.T) {
-	t.Helper()
-	for _, name := range []string{
-		"AWS_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
-		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS",
-		"AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
-		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-	} {
-		t.Setenv(name, "")
-	}
-	empty := filepath.Join(t.TempDir(), "empty")
-	if err := os.WriteFile(empty, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("AWS_CONFIG_FILE", empty)
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
-	t.Setenv("AWS_MAX_ATTEMPTS", "1")
-	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA"+"EXAMPLEKEY")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "not-a-"+"secret")
 }
 
 // TestTheAWSSDKsSignInFailurePrintsNoSetting: the AWS SDK's failure to load or to read the
@@ -420,7 +395,7 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			awsSignInOnly(t)
+			awstest.SignInOnly(t)
 			row.set(t)
 			_, stderr, code := runSecret("list")
 			if code != 1 {
@@ -538,7 +513,7 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			awsSignInOnly(t)
+			awstest.SignInOnly(t)
 			row.set(t)
 			_, stderr, code := runSecret("list")
 			if code != 1 {
@@ -561,7 +536,7 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, failingList{Local: local, err: refresh(row.code)}, testAccount, adaSignIn)
+			awstest.Use(t, failingList{Local: local, err: refresh(row.code)}, testAccount, adaSignIn)
 			_, stderr, code := runSecret("list")
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
@@ -569,37 +544,4 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, planted)
 		})
 	}
-}
-
-// TestTheWebIdentityTokenFileIsNamedByItsVariable: the web identity token file holds a token, so
-// the using line and a store's refusal name it by AWS_WEB_IDENTITY_TOKEN_FILE, never by its path,
-// which here carries a made-up credential, and so does a later failed read of it (awsFileName),
-// in a store call whose credential refresh reads it again as well as in the sign-in. Control: the
-// command a person pastes to run again still names the file, which signed in.
-func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:585).
-	planted := "hunter2pw-" + "webidpath-" + "31d0"
-	file := filepath.Join(t.TempDir(), planted, "token")
-	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
-		t.Setenv(name, "")
-	}
-	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", file)
-	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::111122223333:role/agent")
-	source := awsSourceOf(nil)
-	wantNamedNotPrinted(t, "the source's words", source.phrase+"; "+source.another, []string{"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names"}, planted)
-	wantNamedNotPrinted(t, "a later read's words", awsFileName(file), []string{"the file AWS_WEB_IDENTITY_TOKEN_FILE names"}, planted)
-	if !strings.Contains(source.prefix, file) {
-		t.Errorf("the command to paste %q does not name the file that signed in", source.prefix)
-	}
-	t.Run("a store call whose credential refresh cannot read the file again", func(t *testing.T) {
-		_, read := webIdentityToken(file).GetIdentityToken()
-		if read == nil {
-			t.Fatal("control: the token file was read, so the row is blind")
-		}
-		// The SDK's chain for a store call whose credential refresh failed to read the token.
-		failed := &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: "ListSecrets",
-			Err: fmt.Errorf("failed to refresh cached credentials, %w", fmt.Errorf("failed to retrieve jwt from provide source, %w", read))}
-		wantNamedNotPrinted(t, "the store call's words", awsStoreFailure("ListSecrets", failed).Error(),
-			[]string{"Secrets Manager ListSecrets: read the file AWS_WEB_IDENTITY_TOKEN_FILE names: open: no such file or directory"}, planted)
-	})
 }

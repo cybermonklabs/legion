@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
@@ -90,7 +91,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			case "aws":
 				local = awstest.NewLocal()
 				broker = startSecretBroker(t, servedBy(local))
-				useAWS(t, hungCreate{Local: local, release: release}, testAccount, adaSignIn)
+				awstest.Use(t, hungCreate{Local: local, release: release}, testAccount, adaSignIn)
 				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
 			}
 			useStdin(t, "shh")
@@ -184,7 +185,7 @@ func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
 				Credentials:  credentials.NewStaticCredentialsProvider("AKIDEXAMPLE", "not-a-secret", ""),
 			})
 			startSecretBroker(t, servedBy(awstest.NewLocal()))
-			useAWS(t, sm, testAccount, adaSignIn)
+			awstest.Use(t, sm, testAccount, adaSignIn)
 			useStdin(t, "shh")
 
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
@@ -249,11 +250,11 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 				local.Put(awstest.Secret("NEW_TEST", "ada@example.com", policy.TierAgent, "theirs"))
 			}
 			startSecretBroker(t, servedBy(local))
-			var sm secretsAPI = local
+			var sm awsstore.WriterAPI = local
 			if row.fail != nil {
 				sm = failedCreate{Local: local, stored: row.stored, err: row.fail}
 			}
-			useAWS(t, sm, testAccount, adaSignIn)
+			awstest.Use(t, sm, testAccount, adaSignIn)
 			useStdin(t, "shh")
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 			other := mayHold
@@ -279,7 +280,7 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
 	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +307,7 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:309); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
 	t.Setenv("AWS_PROFILE", "work")
 	useStdin(t, "shh")
 	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
@@ -327,7 +328,7 @@ func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
 	t.Cleanup(func() { valueReadWindow = restore })
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "shh")
 
 	if _, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent"); code != 0 {

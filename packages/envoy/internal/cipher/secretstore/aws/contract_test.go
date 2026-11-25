@@ -1,4 +1,4 @@
-package aws
+package aws_test
 
 import (
 	"maps"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 )
@@ -22,7 +23,7 @@ func TestAWSRunsTheStoreContract(t *testing.T) {
 		local := awstest.NewLocal()
 		name := func(slug string) string { return prefix + slug }
 		return secretstoretest.StoreRig{
-			Store: Store{Client: local, KMS: local, KeyARN: awstest.KeyARN}, Prefix: prefix, OffKey: true, Unfilled: true,
+			Store: awsstore.Store{Client: local, KMS: local, KeyARN: awstest.KeyARN}, Prefix: prefix, OffKey: true, Unfilled: true,
 			Put: func(_ *testing.T, f secretstoretest.Fixture) {
 				s := awstest.LocalSecret{Name: name(f.Slug), KmsKeyID: awstest.KeyARN, Tags: maps.Clone(f.Tags), Value: f.Value}
 				if f.Outside {

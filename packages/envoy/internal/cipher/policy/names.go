@@ -32,6 +32,19 @@ func NameToSlug(name string) (string, error) {
 	return slugOf(name), nil
 }
 
+// DisplayName is the NAME a session asks for the secret whose whole store name is id, under
+// prefix, or id itself when its name under the prefix maps to none (the broker refuses such a
+// secret as name-malformed). Every store's names map back to NAME the same way, from the prefix
+// alone.
+func DisplayName(prefix, id string) string {
+	slug := strings.TrimPrefix(id, prefix)
+	name := SlugToName(slug)
+	if back, err := NameToSlug(name); err != nil || back != slug {
+		return id
+	}
+	return name
+}
+
 // slugOf is the slug of name, a Name a load produced and so already of namePattern's form.
 func slugOf(name string) string {
 	return strings.ReplaceAll(strings.ToLower(name), "_", "-")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
@@ -44,6 +45,22 @@ type Settings struct {
 // that is not clean can repeat its credential in any field, so beside such an address no field
 // prints. Settings no client read (the zero answeredBy) print none of their text either.
 func (s Settings) words(text string) string { return s.answeredBy.Words(text) }
+
+// store is s as a store's writer and registry entry read them (secretstore.Settings): the store,
+// the prefix, each per-store field the broker answered by its JSON name, and how a field prints
+// (words).
+func (s Settings) store() secretstore.Settings {
+	fields := map[string]string{}
+	for name, value := range map[string]string{
+		"kms_key_arn": s.KMSKeyARN, "aws_account_id": s.AWSAccountID, "aws_region": s.AWSRegion,
+		"kms_key_name": s.KMSKeyName, "gcp_project": s.GCPProject,
+	} {
+		if value != "" {
+			fields[name] = value
+		}
+	}
+	return secretstore.Settings{Store: s.Store, Prefix: s.SecretsPrefix, Fields: fields, Words: s.words}
+}
 
 // JudgeKey is one key in Settings.JudgeKeys.
 type JudgeKey struct {

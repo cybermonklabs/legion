@@ -71,7 +71,7 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		for _, args := range [][]string{
 			{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--project-channels", "SLACK"},
 			{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--project-channels", "discord"},
@@ -104,7 +104,7 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 		plain := awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
 		local := awstest.NewLocal(tagged, plain)
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 
 		for _, tc := range []struct {
 			name, printed string

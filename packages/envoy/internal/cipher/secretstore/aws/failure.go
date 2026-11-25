@@ -1,10 +1,9 @@
-// packages/envoy/cmd/cipher/secret_aws_failure.go
-//
-// How the AWS forms word a failure of the AWS SDK's and of AWS's: a sign-in it could not load or
+// How the AWS writer words a failure of the AWS SDK's and of AWS's: a sign-in it could not load or
 // read, a store call AWS refused, and a profile the shared files do not hold. The SDK's own text
 // quotes what it was configured with and AWS's message is text whoever answers writes, so each
 // prints in words of this client's own, naming settings, never their values.
-package main
+
+package aws
 
 import (
 	"context"
@@ -18,13 +17,14 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	sdkconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sso"
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 	"github.com/aws/smithy-go"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -55,10 +55,10 @@ var awsProfileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}$`)
 func heldAWSProfiles() []string {
 	configFile, credentialsFile := os.Getenv("AWS_CONFIG_FILE"), os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
 	if configFile == "" {
-		configFile = config.DefaultSharedConfigFilename()
+		configFile = sdkconfig.DefaultSharedConfigFilename()
 	}
 	if credentialsFile == "" {
-		credentialsFile = config.DefaultSharedCredentialsFilename()
+		credentialsFile = sdkconfig.DefaultSharedCredentialsFilename()
 	}
 	var held []string
 	for _, file := range []struct {
@@ -102,7 +102,7 @@ func awsSignInFailure(what string, err error) error {
 // calls' errors reach the forms' refusals, and the SDK's text quotes AWS's own message and, for a
 // request that did not complete, the address AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_SECRETS_MANAGER
 // names, with its user, password and query. openSecretBackend wraps every AWS store in it.
-type awsStore struct{ api secretsAPI }
+type awsStore struct{ api WriterAPI }
 
 func (s awsStore) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, o ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
 	out, err := s.api.ListSecrets(ctx, in, o...)
@@ -215,22 +215,7 @@ var awsCallPermissions = map[string][]string{
 
 // awsPermissions are the IAM actions a message names by name (awsMissingPermission): every one
 // some call of awsCallPermissions needs, and no other.
-var awsPermissions = permissionsOf(awsCallPermissions)
-
-// permissionsOf is every permission some call of calls needs.
-func permissionsOf(calls map[string][]string) map[string]bool {
-	all := map[string]bool{}
-	for _, needs := range calls {
-		for _, permission := range needs {
-			all[permission] = true
-		}
-	}
-	return all
-}
-
-// permissionNotNamed is what a store's refusal prints in place of a permission its message names
-// that is none of the ones this client's calls need (awsPermissions, gcpPermissions).
-const permissionNotNamed = "a permission this client does not name (not printed)"
+var awsPermissions = secretstore.PermissionsOf(awsCallPermissions)
 
 // awsMissingPermission is the IAM action message, AWS's own text, says the caller is not
 // authorized to perform, where it names one in AWS's shape (awsPermission), else "": the action
@@ -246,7 +231,7 @@ func awsMissingPermission(message string) string {
 	case awsPermissions[match[1]]:
 		return match[1]
 	}
-	return permissionNotNamed
+	return secretstore.PermissionNotNamed
 }
 
 // awsCodes are the AWS error codes a message prints by name: the ones the forms act on
@@ -307,7 +292,7 @@ func awsWords(err error, failed string) string {
 	if words, ok := awsAPIWords(err); ok {
 		return words
 	}
-	var load config.SharedConfigLoadError
+	var load sdkconfig.SharedConfigLoadError
 	var path *fs.PathError
 	var request *url.Error
 	switch {
@@ -466,10 +451,10 @@ func awsFileName(path string) string {
 	if cached, err := ssocreds.StandardCachedTokenFilepath("x"); err == nil && filepath.Dir(path) == filepath.Dir(cached) {
 		return "the IAM Identity Center sign-in's cached token (run `aws sso login` to make it)"
 	}
-	if path == config.DefaultSharedConfigFilename() {
+	if path == sdkconfig.DefaultSharedConfigFilename() {
 		return "~/.aws/config"
 	}
-	if path == config.DefaultSharedCredentialsFilename() {
+	if path == sdkconfig.DefaultSharedCredentialsFilename() {
 		return "~/.aws/credentials"
 	}
 	return "a file the AWS SDK reads"

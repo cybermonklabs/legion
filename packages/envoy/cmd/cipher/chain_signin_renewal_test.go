@@ -309,7 +309,7 @@ func TestASecretFormsRereadPassesOverASignInThisMachineCannotRenew(t *testing.T)
 			t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_ID", "")
 			t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE", "")
 			row.setup(t, os.Getenv("XDG_STATE_HOME"))
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			useStdin(t, "v1")
 
 			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")

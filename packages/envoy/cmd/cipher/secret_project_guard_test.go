@@ -128,7 +128,7 @@ func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
 		local := awstest.NewLocal(listed)
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--project", "none"); code != 0 {
 			t.Fatalf("retag --project none: exit %d, stderr %q", code, stderr)
 		}
@@ -171,7 +171,7 @@ func TestShowPrintsRequestersWithoutTheGuard(t *testing.T) {
 	bare.Tags[policy.TagProject] = "PRIV"
 	local := awstest.NewLocal(guardedKey, bare)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	for _, c := range []struct {
 		name, requesters, line string
 		guard                  bool

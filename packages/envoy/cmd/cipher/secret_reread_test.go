@@ -39,7 +39,7 @@ func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "v1")
 	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 || !strings.Contains(stdout, "broker: serving NEW_KEY from ") {
@@ -63,7 +63,7 @@ func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 		local := awstest.NewLocal()
 		broker := startSecretBroker(t, servedBy(local))
 		withNoBrokerIdentity(t)
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		useStdin(t, "v1")
 		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 		if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") || strings.Contains(stdout, "broker: serving") ||
@@ -81,7 +81,7 @@ func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 		local := awstest.NewLocal()
 		broker := startSecretBroker(t, servedBy(local))
 		withNoBrokerIdentity(t)
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
 		stdout, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin)
 		requireTypeUnchecked(t, "create", stdout, stderr, code, errNoBrokerIdentity.Error())
@@ -203,7 +203,7 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 					}
 					planted := 0
 					args := typedWrite(t, local, form)
-					useAWS(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
+					awstest.Use(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
 					stdout, stderr, code := runSecret(args...)
 					if found != "" && planted != 1 {
 						t.Fatalf("planted %d times; want once, or the row tests nothing", planted)
@@ -267,7 +267,7 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 			local := awstest.NewLocal()
 			broker := startSecretBroker(t, servedBy(local))
 			broker.failSignedRereads(row.status, row.code)
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			useStdin(t, "v1")
 			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 			if code != 1 || !strings.Contains(stderr, "could not be asked to reread NEW_KEY, so it serves the change only from its next reload") || strings.Contains(stderr, "was not checked") {
@@ -306,7 +306,7 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 			}))
 			t.Cleanup(front.Close)
 			t.Setenv("AGENT_SECRETS_URL", front.URL)
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
 			useStdin(t, "v1")
 			if form == "a type secret's create" {
@@ -341,7 +341,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlock()
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "v1")
 	type result struct {
 		stdout, stderr string
@@ -386,7 +386,7 @@ func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testin
 	broker.lapseSignedRereads()
 	withNoBrokerIdentity(t)
 	dir := seedMachineCache(t)
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "v1")
 	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") ||
@@ -463,7 +463,7 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 				row.setup(t, broker)
 				planted := 0
 				args := typedWrite(t, local, "create")
-				useAWS(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
+				awstest.Use(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
 				stdout, stderr, code := runSecret(args...)
 				if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"LOGIN_KEY"}) {
 					t.Fatalf("the rereads that went with no proof were %v; want LOGIN_KEY's, so the write is served at once all the same (stderr %q)", unsigned, stderr)
@@ -505,7 +505,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
 			}
 			calls := recordBrokerCalls(t)
-			useAWS(t, local, testAccount, adaSignIn)
+			awstest.Use(t, local, testAccount, adaSignIn)
 			useStdin(t, "v1")
 			stdout, stderr := &cmdtest.LockedBuffer{}, &cmdtest.LockedBuffer{}
 			ended := make(chan struct{})
@@ -562,7 +562,7 @@ func TestATypedWriteReadsItsTypeTagBackWhenTheBrokerFailsItsReread(t *testing.T)
 			local := awstest.NewLocal()
 			row.broker(t, local)
 			planted := 0
-			useAWS(t, plantingStore{Local: local, t: t, found: policy.TypeGitHubApp, planted: &planted}, testAccount, adaSignIn)
+			awstest.Use(t, plantingStore{Local: local, t: t, found: policy.TypeGitHubApp, planted: &planted}, testAccount, adaSignIn)
 			useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
 			_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin)
 			want := "LOGIN_KEY's type tag there is " + policy.TypeGitHubApp + ", not " + policy.TypeGoogleLogin

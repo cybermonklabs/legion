@@ -73,7 +73,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	// IAM refuses a role that holds no read; the broker reads local itself.
 	signedIn := &valueReads{Local: local}
 	awsTypeStore{signedIn}.refuseValueReads(true)
-	useAWS(t, signedIn, testAccount, adaSignIn)
+	awstest.Use(t, signedIn, testAccount, adaSignIn)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
 
