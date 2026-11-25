@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { holdsMarker, marker } from "./gh-words";
 import {
   expectNoMissingHelpers,
   nameMissingHelpers,
@@ -34,16 +35,6 @@ const root = join(import.meta.dir, "..", "..", "..");
 const script = join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh");
 const assignment = scriptAssignments(script);
 const makeDir = temporaryDirectories("stage4b-gh-words");
-
-const marker = "not-a-secret-token";
-
-// holdsMarker: whether text holds a run of eight characters of the marker (redacttest.Piece's run).
-function holdsMarker(text: string): boolean {
-  for (let at = 0; at + 8 <= marker.length; at++) {
-    if (text.includes(marker.slice(at, at + 8))) return true;
-  }
-  return false;
-}
 
 // expectNoMarker fails the row, quoting what the site printed, when that holds the marker.
 function expectNoMarker(printed: string): void {

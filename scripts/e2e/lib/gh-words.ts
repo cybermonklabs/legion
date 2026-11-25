@@ -1,19 +1,17 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { MARKER, markerRuns } from "./marker-runs";
 
 // What a harness of lib/workflow.sh's and parked-decision-devbox.sh's gh calls shares: the marker
 // a stand-in gh puts in its stderr or its answer, the check that a run printed no run of it, and the
 // stand-in itself. Whatever answers gh in GitHub's place holds gh's token and writes both, so a
 // script prints neither (lib/workflow.sh, gh_kept).
 
-export const marker = "not-a-secret-token";
+export const marker = MARKER;
 
 /** Whether TEXT holds a run of eight characters of the marker (redacttest.Piece's run). */
 export function holdsMarker(text: string): boolean {
-  for (let at = 0; at + 8 <= marker.length; at++) {
-    if (text.includes(marker.slice(at, at + 8))) return true;
-  }
-  return false;
+  return markerRuns(text).length > 0;
 }
 
 /**
