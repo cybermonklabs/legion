@@ -2170,6 +2170,45 @@ test("a press on a statement's words passes its point to the outline's editing",
   }
 });
 
+// A press that drags across a statement's words selects them, as on any words of the page, and
+// the click that ends it on the same words opens no editor in their place: the selection stays,
+// for the reader to copy.
+test("a drag that selects a statement's words keeps the selection and opens no editor", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: "The page draws r1." }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = within(row).getByText("The page draws r1.");
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8, target: words },
+      { keys: "[/MouseLeft]", target: words },
+    ]);
+    expect(window.getSelection()?.toString(), "the drag selected no words").toBe("The page");
+    // The task an editor the press opened would open in.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(onEditing, "the drag opened the editor").not.toHaveBeenCalledWith(
+      "artifact-spec",
+      expect.any(Function)
+    );
+    expect(row.querySelector("[data-test-spec-editor]")).toBeNull();
+    expect(window.getSelection()?.toString(), "the drag's selection was lost").toBe("The page");
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R8: a press is counted in the editor's text. The view draws a reference to an issue by the
 // issue's key and title, while the editor holds the reference as it is written, hidden under a
 // title of its own that takes no caret (`@legion/proof-editor`'s `reference-decorations.ts`), so a
@@ -2178,67 +2217,29 @@ test("a press on a statement's words passes its point to the outline's editing",
 // written hidden in it. Counted as drawn, the press on "first" would put the caret 8 characters
 // into the words after the reference rather than 3.
 test("a press after a reference counts the reference as the editor holds it", async () => {
-  const user = userEvent.setup();
   const cited = "dispatch://CORE-2";
   const after = " first, then the rest.";
   const text = `Read ${cited}${after}`;
-  const editorView = new EditorView(null, {
-    state: EditorState.create({
-      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
-    }),
+  await pressAfterKind({
+    drawn: (words) => {
+      const link = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(link?.textContent).toBe("CORE-2 The other issue");
+      expect(link?.nextSibling?.textContent).toBe(after);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>CORE-2 The other issue</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other issue"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
   });
-  const onEditing: OnEditing = (artifactId, onEditor) => {
-    if (artifactId !== undefined) onEditor?.({ view: editorView });
-  };
-  const editor = (
-    <DocumentStage artifactId="artifact-spec">
-      <div contentEditable suppressContentEditableWarning>
-        <section data-block-id="r1">
-          <p>
-            {"Read "}
-            <span contentEditable={false}>CORE-2 The other issue</span>
-            <span hidden>{cited}</span>
-            {after}
-          </p>
-        </section>
-      </div>
-    </DocumentStage>
-  );
-  const { read, view } = drawBody(
-    issueTree([statement("r1", { text, tree: displayTree(text) })]),
-    [],
-    { editor, names: new Map([[cited, "The other issue"]]), onEditing }
-  );
-  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
-  try {
-    const row = rowOf(view, "spec#b-r1");
-    const link = await waitFor(() => {
-      const found = row.querySelector(`[data-node-words] a[data-row-reference="${cited}"]`);
-      expect(found?.textContent).toBe("CORE-2 The other issue");
-      return found;
-    });
-    const pressed = link?.nextSibling;
-    if (!(pressed instanceof Text) || pressed.parentElement === null) {
-      throw new Error("the statement draws no words after its reference");
-    }
-    expect(pressed.data).toBe(after);
-    // The press is on "first", 3 characters into the words after the reference.
-    const point = mock(() => ({ offsetNode: pressed, offset: 3 }));
-    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
-    await user.pointer({ keys: "[MouseLeft]", target: pressed.parentElement });
-    await waitFor(() => {
-      const words = row.querySelector('[data-block-id="r1"] p')?.lastChild;
-      expect(words?.textContent).toBe(after);
-      expect(window.getSelection()?.anchorNode).toBe(words);
-      expect(window.getSelection()?.anchorOffset).toBe(3);
-    });
-  } finally {
-    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
-    else Object.defineProperty(document, "caretPositionFromPoint", original);
-    view.unmount();
-    editorView.destroy();
-    read.mockRestore();
-  }
 });
 
 /**
@@ -2248,8 +2249,8 @@ test("a press after a reference counts the reference as the editor holds it", as
  * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
  * where one is given, and as stored where none is, with `names` as the page's batched read named
  * its references. A plain editable on the stage stands in for the editor's drawing of the
- * statement, as in the case above: `held` is its paragraph, each kind drawn as the editor draws
- * it. `drawn` reads the statement's drawn words before the press.
+ * statement: `held` is its paragraph, each kind drawn as the editor draws it. `drawn` reads the
+ * statement's drawn words before the press.
  */
 async function pressAfterKind({
   at,
@@ -2328,14 +2329,12 @@ async function pressAfterKind({
   }
 }
 
-// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
-// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
-// drawn, the press on "then" would put the caret 6 characters on, after "the".
-test("a press after inline html lands in the word pressed", async () => {
-  const after = " and then the rest.";
+/** Statement r1's words for `pressAfterKind` with a placeholder in inline HTML, `<name>`, before
+ *  the words `after`, drawn from the server's reading and held by the editor as an atom. */
+function withInlineHtml(after: string) {
   const text = `Kept by <name>${after}`;
-  await pressAfterKind({
-    drawn: (words) => {
+  return {
+    drawn: (words: HTMLElement) => {
       expect(words.querySelector('[data-type="html"]')?.textContent).toBe("<name>");
     },
     held: (
@@ -2347,11 +2346,26 @@ test("a press after inline html lands in the word pressed", async () => {
         {after}
       </>
     ),
-    into: 7,
     pressed: after,
     text,
     tree: displayTree(text),
-  });
+  };
+}
+
+// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
+// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
+// drawn, the press on "first," would put the caret 6 characters on, in "then": the word before
+// it is `<name>` in the view and "by" in the editor, so the word pressed is found nowhere to set
+// the count right.
+test("a press after inline html lands in the word pressed", async () => {
+  await pressAfterKind({ ...withInlineHtml(" first, then the rest."), into: 3 });
+});
+
+// The atom holds no text, so the end of the text before it and the start of the text after it
+// have one count. A press at the start of the text after it - on the left half of its first
+// character - puts the caret there, after the atom, and not before it.
+test("a press at the start of the text after inline html lands after it", async () => {
+  await pressAfterKind({ ...withInlineHtml(" first, then the rest."), into: 0 });
 });
 
 // A mention of a block is drawn as a chip by the block's words, while the editor holds the
@@ -2414,13 +2428,13 @@ test("a press after an image lands in the word pressed", async () => {
   }
 });
 
-// A hard break is a line break in both, which holds no text, so a press after it counts nothing
-// for it.
-test("a press after a hard break lands in the word pressed", async () => {
+/** Statement r1's words for `pressAfterKind` with a hard break between two lines, drawn from the
+ *  server's reading and held by the editor as a line break. */
+function withHardBreak() {
   const after = "Line two, then the rest.";
   const text = `Line one.\\\n${after}`;
-  await pressAfterKind({
-    drawn: (words) => {
+  return {
+    drawn: (words: HTMLElement) => {
       expect(words.querySelector("br")).not.toBeNull();
     },
     held: (
@@ -2430,11 +2444,23 @@ test("a press after a hard break lands in the word pressed", async () => {
         {after}
       </>
     ),
-    into: 6,
     pressed: after,
     text,
     tree: displayTree(text),
-  });
+  };
+}
+
+// A hard break is a line break in both, which holds no text, so a press after it counts nothing
+// for it.
+test("a press after a hard break lands in the word pressed", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 6 });
+});
+
+// The break holds no text, so the end of the line before it and the start of the line after it
+// have one count. A press at the start of the line after it - on the left half of its first
+// character - puts the caret there, after the break, and not at the end of the line before.
+test("a press at the start of the text after a hard break lands after the break", async () => {
+  await pressAfterKind({ ...withHardBreak(), into: 0 });
 });
 
 // A footnote's reference is drawn as its label, while the editor holds it as an atom the caret

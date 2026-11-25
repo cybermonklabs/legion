@@ -58,7 +58,7 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
  * With `at`, it places the caret where the press was instead (`placeAt`).
  */
-export function caretInBlock(host: HTMLElement, blockId?: string, at?: CaretAt): boolean {
+export function caretInBlock(host: HTMLElement, blockId: string | undefined, at?: CaretAt) {
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
@@ -150,10 +150,10 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
 
-/** A press on the row's words: its viewport coordinates, its count of the editor's characters
- *  before it, and the word pressed as drawn, the text to each neighbour's end and how far in. */
-export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: PressedWord }>;
-type PressedWord = readonly [before: string, word: string, after: string, into: number];
+/** A press on the row's words: where it was on screen, its count of the editor's characters before
+ *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text. */
+export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: Word; next?: true }>;
+type Word = readonly [before: string, word: string, after: string, into: number];
 
 /**
  * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
@@ -706,7 +706,7 @@ function keyAtBlock(
  * With `at`, it holds the box as above but scrolls only the box, to put the caret's line at `at.y`.
  * Answers what drops that second look.
  */
-export function holdEditorAtBlock(host: HTMLElement, blockId?: string, at?: CaretAt): () => void {
+export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined, at?: CaretAt) {
   const box = host.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
   if (box === null) return () => {};
   const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
@@ -819,9 +819,9 @@ function firstPlace(block: HTMLElement): Point {
   return [block, 0];
 }
 
-/** `at.offset` characters into the editable text of `block`, or its last editable place; where
- *  the text there is not the word pressed between its neighbours, as far into the nearest place
- *  that is, if one is. A press with no word reads an empty one, found at the count itself. */
+/** `at.offset` characters into the editable text of `block` (into the next text, where one ends
+ *  there, for a `next` press), or its last editable place; where the text there is not the word
+ *  pressed between its neighbours, as far into the nearest place that is, if one is. */
 function placeAt(block: HTMLElement, at: CaretAt): Point {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -836,7 +836,7 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
   const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
   let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
   for (const node of texts) {
-    if (remaining <= node.data.length) return [node, remaining];
+    if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
     remaining -= node.data.length;
   }
   return lastPlace(block);

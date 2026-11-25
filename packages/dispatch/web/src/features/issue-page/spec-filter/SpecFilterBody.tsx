@@ -59,7 +59,6 @@ import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
-import type { CaretAt } from "../node-caret";
 import { shortDay } from "../node-time";
 import { useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
@@ -78,7 +77,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
-import { FOCUSABLE, RowText, useOutOfTabOrder } from "../RowText";
+import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
@@ -89,6 +88,7 @@ import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
+import { focusedTreeItem, pressInWords, statementWordsAt } from "./pressed-words";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -545,7 +545,9 @@ export function SpecFilterBody({
     holdInPlaceOf(item, landingHold);
   };
   const pressedWords = useRef<HTMLElement | null>(null);
-  const openingFromPress = useRef<string | undefined>(undefined);
+  // The statement a press on its words is opening the editor in, from the click until the editor
+  // opens, which does not place itself on screen meanwhile (`Statement`'s `openingFromPress`).
+  const [openingFromPress, setOpeningFromPress] = useState<string | undefined>(undefined);
 
   useTreeKeymap({
     container: tree,
@@ -614,7 +616,6 @@ export function SpecFilterBody({
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
       editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
-      openingFromPress: openingFromPress.current === node.id,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
       ...(report?.row === node.id ? { report: report.line } : {}),
@@ -706,10 +707,13 @@ export function SpecFilterBody({
             return;
           }
           const rowKey = item.dataset.rowKey;
+          // A press on the focused statement's words opens the editor where it was; a drag that
+          // selected words opens none, and the selection stays.
           if (
             event.detail > 0 &&
             words !== null &&
             words === statementWordsAt(event.target) &&
+            window.getSelection()?.isCollapsed !== false &&
             rowKey !== undefined &&
             rowKey !== editingRow &&
             document.activeElement === item
@@ -719,11 +723,11 @@ export function SpecFilterBody({
             const at = pressInWords(words, event.clientX, event.clientY);
             // The press's focus can draw a frame before the editor opens. Neither places the
             // row on screen: the reader pressed words that were already on screen.
-            openingFromPress.current = node.id;
+            setOpeningFromPress(node.id);
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
-              openingFromPress.current = undefined;
+              setOpeningFromPress(undefined);
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
               edit(rowKey, node, at);
@@ -801,6 +805,7 @@ export function SpecFilterBody({
                 decision={decision}
                 key={statement.node.id}
                 marked={marked}
+                openingFromPress={openingFromPress === statement.node.id}
                 statement={statement}
               />
             )}
@@ -928,117 +933,6 @@ function treeItemOf(tree: HTMLElement | null, id: string): HTMLElement | null {
   return (
     tree?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"][role="treeitem"]`) ?? null
   );
-}
-
-/** The item containing the focus, if it belongs to this tree. */
-function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
-  const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]') ?? null;
-  return tree.contains(item) ? item : null;
-}
-
-/** Which statement's words a press hit, excluding their links, controls and chips. */
-function statementWordsAt(target: EventTarget): HTMLElement | null {
-  if (!(target instanceof Element)) return null;
-  const words = target.closest<HTMLElement>("[data-spec-statement] [data-node-words]");
-  const control = target.closest(
-    `${FOCUSABLE}, summary, [role="button"], [role="link"], [data-node-trail]`
-  );
-  return words !== null && !words.contains(control) ? words : null;
-}
-
-/** The mark of a reference's link in a node's drawn words, which holds the reference as its text
- *  wrote it (`row-references.ts`'s `ROW_WRITTEN`). */
-const REFERENCE_WRITTEN = "data-row-written";
-
-/**
- * What a statement's drawn words draw in place of text the statement's editor holds otherwise,
- * each counted as the editor holds it: its `REFERENCE_WRITTEN` text where it carries one, and
- * nothing where it does not. A statement holds paragraphs alone (the `requirement` block's
- * content), so these are the inline kinds whose drawing the two differ in:
- *
- * - A reference, and a mention of a document, a block or a post: the view's link pass
- *   (`row-references.ts`'s `linkRowReferences`) draws it as a link by its target's name - an
- *   issue's key and title, a chip's words - marked with the words it was written as; the editor
- *   holds those words as text, hidden under a title it draws as a widget the caret cannot enter
- *   (`@legion/proof-editor`'s `reference-decorations.ts`).
- * - Inline HTML (`<name>`) and a footnote's reference: both draw them by the schema's own
- *   `toDOM` (Milkdown's `span[data-type="html"]` holding its value, and `sup` holding its
- *   label), and the editor holds each as an atom ProseMirror draws `contenteditable="false"`.
- * - A picture of an artifact: the view draws it as a link (`markdown-serializer.ts`'s
- *   `pictureSerializer`) holding the picture, or its caption's link until it loads or where it
- *   fails (`DispatchPicture`); the editor holds it as an atom (`doc/picture-view.ts`), its
- *   picture or its fallback link with no text the caret can enter.
- *
- * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and what
- * the editor draws as a widget - a reference's title, a collaborator's cursor - stands outside
- * its editable text and is not drawn by the view. What the view draws differently with no mark
- * of it - the words of a statement drawn as stored, with no reading of them (`RowText`'s
- * `StoredText`) - is the pressed word's to find (`CaretAt`).
- */
-const HELD_OTHERWISE = [
-  `[${REFERENCE_WRITTEN}]`,
-  '[data-type="html"]',
-  '[data-type="footnote_reference"]',
-  "[data-dispatch-picture]",
-].join(", ");
-
-/** Reads the press before the editor replaces the words, as the count of the editor's text
- *  characters before it: text, not markup or lines, so a different wrap in the editor does not
- *  change the caret's place. What the view draws in place of the editor's text counts as the
- *  editor holds it (`HELD_OTHERWISE`), and a press inside one counts as at its start. With the
- *  count it reads the word pressed, from the words read the same way, for the editor to find
- *  where the count lands in another word (`pressedWord`). */
-function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
-  const doc = words.ownerDocument;
-  const position = doc.caretPositionFromPoint?.(x, y);
-  const range = position == null ? doc.caretRangeFromPoint?.(x, y) : undefined;
-  const node = position?.offsetNode ?? range?.startContainer;
-  if (node === undefined || !words.contains(node)) return { x, y, offset: 0 };
-  const end = doc.createRange();
-  end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
-  const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-  // The words as the editor holds them, and the press's place in them once it is passed.
-  let held = "";
-  let offset: number | undefined;
-  // The element drawn in place of the editor's text the last text counted belongs to, whose
-  // other texts count nothing more.
-  let counted: Element | null = null;
-  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-    if (text.parentElement?.closest("[data-node-trail]") != null) continue;
-    const other = text.parentElement?.closest(HELD_OTHERWISE) ?? null;
-    if (other !== null && other === counted) continue;
-    if (offset === undefined) {
-      if (other?.contains(node) === true || end.comparePoint(text, 0) >= 0) offset = held.length;
-      else if (text === node) offset = held.length + end.startOffset;
-    }
-    counted = other;
-    held += (other === null ? text.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
-  }
-  const at = offset ?? held.length;
-  return { x, y, offset: at, word: pressedWord(held, at) };
-}
-
-/** The word at `offset` in `text` - the run of characters that are no space around it - with
- *  the text from the start of the word before it and the text to the end of the word after it,
- *  and how far into the word `offset` is (`CaretAt`); none where `offset` stands in no word. */
-function pressedWord(text: string, offset: number): CaretAt["word"] {
-  // Where the run of spaces, or of characters that are no space, beside `from` ends: before it
-  // where `step` is -1, after it where `step` is 1. One step a character, so a long run of
-  // characters that are no space costs no more than its length.
-  const across = (from: number, step: -1 | 1, space: boolean): number => {
-    let at = from;
-    for (;;) {
-      const next = step < 0 ? at - 1 : at;
-      if (next < 0 || next >= text.length || /\s/.test(text.charAt(next)) !== space) return at;
-      at += step;
-    }
-  };
-  const start = across(offset, -1, false);
-  const end = across(offset, 1, false);
-  if (start === end) return undefined;
-  const before = text.slice(across(across(start, -1, true), -1, false), start);
-  const after = text.slice(end, across(across(end, 1, true), 1, false));
-  return [before, text.slice(start, end), after, offset - start];
 }
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
@@ -1483,7 +1377,6 @@ interface SpecRowProps {
   focused: boolean;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
-  openingFromPress: boolean;
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   rowKey: string | undefined;
@@ -1517,6 +1410,9 @@ function Statement({
   decision: SpecDecision | undefined;
   /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
+  /** Whether a press on its words is opening the editor in it, which leaves it where it stands
+   *  until the editor opens: the reader pressed words already on screen. */
+  openingFromPress: boolean;
   statement: SpecStatement;
 }): ReactNode {
   const node = statement.node;
