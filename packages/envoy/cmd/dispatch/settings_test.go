@@ -464,7 +464,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		})
 		request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 		response := httptest.NewRecorder()
-		routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+		// A database, as every deployment has: the read check resolves the signed-in caller's
+		// viewer from it before the route reads the broker, and a server with none reads every
+		// caller as the closed viewer, which no deployment-wide read admits.
+		routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/credential-requests: %d %s", response.Code, response.Body.String())
 		}
