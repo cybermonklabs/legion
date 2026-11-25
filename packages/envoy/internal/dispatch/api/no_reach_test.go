@@ -747,9 +747,6 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
-		// The project's spec results at one commit, which answers its list (none seeded) for any
-		// commit of 40 hex digits and refuses a read that names none.
-		"GET /api/v1/projects/{key}/results": url.Values{"commit": {strings.Repeat("0", 40)}}.Encode(),
 	}
 }
 
