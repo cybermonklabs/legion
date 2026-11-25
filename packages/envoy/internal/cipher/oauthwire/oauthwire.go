@@ -368,8 +368,8 @@ type Introspection struct {
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
-	// its person; every other exchanged token holds no scope, and a machine login's own token
-	// holds Scope.
+	// its person; the token the broker mints for a person's approve grant holds ScopeApprove alone;
+	// every other exchanged token holds no scope, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
 	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of

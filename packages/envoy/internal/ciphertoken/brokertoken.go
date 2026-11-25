@@ -208,9 +208,9 @@ type Caller struct {
 	// may call; it writes none of them.
 	ReadOnly bool
 	// ApproveOnly is true exactly when the verifier accepted an approve-only token: the project
-	// scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no service and no
-	// project (shapeOf) - the token the secrets broker mints for a person's approve grant and
-	// spends through its proxy, never released. Only a verifier built with
+	// scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no service, no
+	// project and no cut (approveShapeOf) - the token the secrets broker mints for a person's
+	// approve grant and spends through its proxy, never released. Only a verifier built with
 	// Options.ServesApproveOnly answers such a Caller, and the service that set the switch holds
 	// it to the routes that settle what a person settles.
 	ApproveOnly bool
@@ -269,9 +269,9 @@ type Options struct {
 	ServesReadOnly bool
 	// ServesApproveOnly is this service serving an approve-only token on the routes it chooses:
 	// the project scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no
-	// service and no project (shapeOf). A verifier built with it accepts that token and marks its
-	// Caller ApproveOnly, and the service holds every route it does not choose closed to such a
-	// caller. Only Dispatch sets it, whose approve list names those routes.
+	// service, no project and no cut (approveShapeOf). A verifier built with it accepts that token
+	// and marks its Caller ApproveOnly, and the service holds every route it does not choose closed
+	// to such a caller. Only Dispatch sets it, whose approve list names those routes.
 	//
 	// Without it an approve-only token is ErrNotASession: a service that leaves it unset reads no
 	// Caller.ApproveOnly, so admitting the token there would read it as its person's ordinary
@@ -540,8 +540,8 @@ const (
 	shapeReadOnly
 	// shapeApproveOnly is the token the broker mints for a person's approve grant and spends
 	// through its proxy: the project scope person, the scope exactly the one word approve, a
-	// person, and no service and no projects. A verifier accepts it only under
-	// Options.ServesApproveOnly.
+	// person, and no service, no projects and no cut (approveShapeOf). A verifier accepts it only
+	// under Options.ServesApproveOnly.
 	shapeApproveOnly
 )
 

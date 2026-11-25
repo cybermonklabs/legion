@@ -25,10 +25,11 @@ func approveOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection 
 // credential only to a verifier whose service asked for it (Options.ServesApproveOnly), which
 // answers its Caller marked approve-only, and is ErrNotASession to every other, so a service that
 // does not hold such a token to its approve routes never reads it as its person's ordinary token.
-// The rule is exact: approve beside another word, beside the named scope, with no person, with a
-// service, with a project in its list, with a cut (as_of), or under the project scope none or any
-// of the narrowed read words is refused by both verifiers; the person-scoped token with no approve
-// is the control both accept unmarked. Each row goes through Verify and through Live.
+// The rule is exact: approve beside another word, named twice, beside the named scope, with no
+// person, with a service beside its person, with a project in its list, with a cut (as_of), or
+// under the project scope none or any of the narrowed read words is refused by both verifiers; the
+// person-scoped token with no approve is the control both accept unmarked. Each row goes through
+// Verify and through Live.
 // SessionCaller, the NATS auth service's reading, serves no approve-only token.
 func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	caller := newSigner(t)
@@ -41,6 +42,10 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 	namedApprove.Scope = ciphertoken.ScopeApprove
 	noPerson := approveOnlyToken(caller.jkt, time.Hour)
 	noPerson.Person, noPerson.Service = "", "example-fleet"
+	withService := approveOnlyToken(caller.jkt, time.Hour)
+	withService.Service = "example-fleet"
+	approveTwice := approveOnlyToken(caller.jkt, time.Hour)
+	approveTwice.Scope = ciphertoken.ScopeApprove + " " + ciphertoken.ScopeApprove
 	withProject := approveOnlyToken(caller.jkt, time.Hour)
 	withProject.Projects = []string{"INFRA"}
 	withCut := approveOnlyToken(caller.jkt, time.Hour)
@@ -63,6 +68,8 @@ func TestAnApproveOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) 
 		{name: "approve beside another scope", answer: approveAndWrite},
 		{name: "approve beside the named scope", answer: namedApprove},
 		{name: "approve naming a service and no person", answer: noPerson},
+		{name: "approve naming a service beside its person", answer: withService},
+		{name: "approve named twice", answer: approveTwice},
 		{name: "approve naming a project", answer: withProject},
 		{name: "approve with a cut", answer: withCut},
 		{name: "approve under the project scope none", answer: underWord(ciphertoken.ProjectScopeNone)},

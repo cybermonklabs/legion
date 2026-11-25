@@ -49,10 +49,11 @@ const (
 // scope named or person it is no session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
 
-// ScopeApprove is the one OAuth scope an approve-only token holds: beside ProjectScopePerson and a
-// person it is the token the broker mints for a person's approve grant and spends through its
-// proxy, which a verifier accepts only under Options.ServesApproveOnly, and beside anything else it
-// is no session's credential (ErrNotASession).
+// ScopeApprove is the one OAuth scope an approve-only token holds: beside ProjectScopePerson, a
+// person, and no service, no projects and no cut (approveShapeOf) it is the token the broker mints
+// for a person's approve grant and spends through its proxy, which a verifier accepts only under
+// Options.ServesApproveOnly, and in any other shape it is no session's credential
+// (ErrNotASession).
 const ScopeApprove = oauthwire.ScopeApprove
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
