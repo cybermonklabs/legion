@@ -66,6 +66,8 @@
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
 # way, over a main that took the first branch as a squash: over its merge base with that main the
 # stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it;
+# over one that took the first branch with N+1's text reworded, where that text opens no entry file
+# and the refusal names the entry's constant, which the entry file declares too;
 # and the crossed branch with two merge bases with the first branch, converted, where the refusal
 # names both.
 # Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
@@ -510,6 +512,19 @@ squash=$(git commit-tree "$branch^{tree}" -p "$this" -m "convert-test: the first
 refused "the conversion of the stacked branch over a main that took its base branch as a squash" \
   "entry $k of this branch is $entry of $squash" "--base naming the base branch's last commit before the squash" \
   -- --base "$squash"
+
+step "a stacked branch whose base branch main took reworded as a squash is refused by the entry's constant"
+# The first branch's entry text changes after its conversion, in review, and main takes it so as a
+# squash. The stacked branch, which merged the first branch before that, still carries the old
+# text, which then opens no entry file of that main; the constant convertProbeContract, which its
+# entry declares, is the one the entry file declares.
+old_text=$(git rev-parse "$branch:$entry")
+new_text=$(git show "$branch:$entry" | sed '0,/the probe entry the conversion test adds/s//the probe entry, reworded in review, that the conversion test adds/' | git hash-object -w --stdin)
+[ "$new_text" != "$old_text" ] || fail "the reword changed nothing of $entry"
+reworded=$(git commit-tree "$(tree_with "$branch" --cacheinfo "100644,$new_text,$entry")" -p "$this" -m "convert-test: the first branch, reworded and taken as a squash")
+refused "the conversion of the stacked branch over a main that took its base branch reworded as a squash" \
+  "entry $k of this branch declares convertProbeContract, which $entry of $reworded declares too" \
+  "--base naming the base branch's last commit before the squash" -- --base "$reworded"
 
 step "a branch with two merge bases with its base branch is refused"
 # The first branch, converted, merges the commit the crossed branch merges: the crossed branch's
