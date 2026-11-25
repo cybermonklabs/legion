@@ -300,6 +300,46 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 	}
 }
 
+// TestAStoreCredentialsFileGooglesLibraryCannotReadIsRefused: an external_account credentials file
+// with a field Google's library reads, holding another JSON type than the library reads there, is
+// refused in the machine source's words, which name no field and no value of it. Control: Google's
+// library alone refuses each of the same files, so the words are true. Control: the same file with
+// that field of the right type loads.
+func TestAStoreCredentialsFileGooglesLibraryCannotReadIsRefused(t *testing.T) {
+	const want = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: it is not an external_account credential that Google's library reads"
+	top := `"type":"external_account","audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/oidc",` +
+		`"subject_token_type":"urn:ietf:params:oauth:token-type:jwt"`
+	source := `"credential_source":{"file":"/nowhere"}`
+	for _, row := range []struct{ name, credential string }{
+		{"a token_url that is a number", `{` + top + `,"token_url":5,` + source + `}`},
+		{"a credential_source that is a string", `{` + top + `,"token_url":"http://127.0.0.1:9/v1/token","credential_source":"x"}`},
+		{"headers that are a list", `{` + top + `,"token_url":"http://127.0.0.1:9/v1/token","credential_source":{"url":"http://127.0.0.1:9/subject","headers":["x"]}}`},
+		{"control: the same file with a token_url that is a string", `{` + top + `,"token_url":"http://127.0.0.1:9/v1/token",` + source + `}`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, libraryErr := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, []byte(row.credential),
+				&credentials.DetectOptions{Scopes: secretmanager.DefaultAuthScopes(), Logger: slog.New(slog.DiscardHandler)})
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(path, []byte(row.credential), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := gcpCredentialsFile(context.Background(), path)
+			if strings.HasPrefix(row.name, "control:") {
+				if libraryErr != nil || err != nil {
+					t.Fatalf("control: the library answered %v and gcpCredentialsFile %v; want the file loaded by both", libraryErr, err)
+				}
+				return
+			}
+			if libraryErr == nil {
+				t.Fatalf("control: Google's library alone loaded the file, so it is one the library reads")
+			}
+			if refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err); err == nil || refusal.Error() != want {
+				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			}
+		})
+	}
+}
+
 // TestNoStoreCredentialThatRepeatsAKeyStartsASigner: every credentials file repeatprobe writes,
 // which repeat a key at each level of the credentials file and of its certificate configuration,
 // in each spelling Go's JSON decoder matches, is refused by the secret forms' loader, and none

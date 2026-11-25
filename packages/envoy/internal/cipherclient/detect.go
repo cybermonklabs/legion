@@ -474,13 +474,14 @@ func credentialFileFailure(fields credentialFields) string {
 // words that print no path and no part of it, and "" where it may be. A file that is not JSON
 // (json.Valid) answers "", for its reader's own refusal, and so does a file of another type than
 // external_account, of which this client reads only its type, as every reader decodes it. An
-// external_account file is refused where it repeats a key (repeatsKey), or where the check cannot
-// read it in the types the library decodes it into, or where it is an X.509 certificate's whose
-// files cannot be used (certificateFailure). Any reader that hands a credentials file to the
-// library calls it first, on the bytes it hands over: the secret forms' sign-in (cmd/cipher), as
-// the machine source does in Token.
+// external_account file is refused where it repeats a key (repeatsKey), or where it does not
+// decode into the types the library decodes it into, so that the library refuses it too (a field
+// the library reads that holds another JSON type, such as a token_url that is a number), or where
+// it is an X.509 certificate's whose files cannot be used (certificateFailure). Any reader that
+// hands a credentials file to the library calls it first, on the bytes it hands over: the secret
+// forms' sign-in (cmd/cipher), as the machine source does in Token.
 func CredentialsFileFailure(credential []byte) string {
-	const unread = "it is JSON that this client cannot read as Google's library reads it"
+	const unread = "it is not an external_account credential that Google's library reads"
 	if !json.Valid(credential) {
 		return ""
 	}
