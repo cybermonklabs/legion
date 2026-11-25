@@ -120,7 +120,7 @@ func TestARelaunchDeliveryHoldsNoRootsWaitOnAPersonOverTheStore(t *testing.T) {
 			var run record.RoleRun
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
-				run, err = record.NewStore().RoleRun(t.Context(), tx, token, "LEGION-208", claim.RoleArchitect, 1)
+				run, err = record.NewStore().RoleRun(t.Context(), tx, token, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 1}, claim.RoleArchitect)
 				return err
 			})
 			if run.Claim == nil || run.Claim.Pending == nil {

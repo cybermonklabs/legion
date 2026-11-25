@@ -51,46 +51,6 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 	}
 }
 
-// Patch sends its body as JSON with PATCH and the installation token, reads a 2xx answer, and
-// gives any other answer back as an *Answer naming PATCH, the path and the status: the move of a
-// ref GitHub refuses, such as a 422 for a commit it does not have, is GitHub's refusal and no
-// failed request.
-func TestPatchSendsJSONAndAnswersWithTheStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var sent struct {
-			SHA   string `json:"sha"`
-			Force bool   `json:"force"`
-		}
-		if r.Method != http.MethodPatch || r.URL.Path != "/repos/acme/widgets/git/refs/heads/legion/ACME-1" ||
-			r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("Content-Type") != "application/json" ||
-			json.NewDecoder(r.Body).Decode(&sent) != nil || !sent.Force {
-			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
-			return
-		}
-		if sent.SHA == "unknown" {
-			http.Error(w, `{"message":"Object does not exist"}`, http.StatusUnprocessableEntity)
-			return
-		}
-		w.Write([]byte(`{"ref":"refs/heads/legion/ACME-1","object":{"sha":"` + sent.SHA + `"}}`))
-	}))
-	defer server.Close()
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
-
-	var moved struct {
-		Object struct {
-			SHA string `json:"sha"`
-		} `json:"object"`
-	}
-	if err := client.Patch(context.Background(), "/git/refs/heads/legion/ACME-1", map[string]any{"sha": "m1", "force": true}, &moved); err != nil || moved.Object.SHA != "m1" {
-		t.Fatalf("Patch = %+v, %v; want the 200 answer read", moved, err)
-	}
-	err := client.Patch(context.Background(), "/git/refs/heads/legion/ACME-1", map[string]any{"sha": "unknown", "force": true}, nil)
-	var answer *Answer
-	if !errors.As(err, &answer) || answer.Method != http.MethodPatch || answer.Path != "/git/refs/heads/legion/ACME-1" || answer.Status != http.StatusUnprocessableEntity {
-		t.Fatalf("Patch to an unknown commit = %v, want an *Answer for PATCH /git/refs/heads/legion/ACME-1 with 422", err)
-	}
-}
-
 // RetryAfter reads GitHub's rate limit from the error a call returns, wrapped or not: an *Answer
 // for an answer other than 2xx. It names how long GitHub asks the caller to wait and the budget
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose

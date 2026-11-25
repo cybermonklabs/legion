@@ -1749,7 +1749,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
 	case errors.Is(r.Err, runtime.ErrStartAtRefused):
 		msg = "supervise: the shim refused to start the working copy at the branch; the prompt was never sent and the delivery waits"
-		m.tellStartRefused(p, r.Err)
+		m.tellStartRefused(ctx, p, r.Err)
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()

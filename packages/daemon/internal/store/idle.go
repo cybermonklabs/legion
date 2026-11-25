@@ -415,9 +415,19 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row 
 }
 
 // ReleaseResumeRow builds the outbox row that brings one claim a cancelled release suspended
-// back, at the generation the cancel read of the issue. It is the caller's because the payload
-// is record's to encode, as every row of a release is (IdleReleaseRow).
-type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
+// back, from the issue's record as the cancel read it (IssueRun). It is the caller's because the
+// payload, and the generation a start of the role serves, are record's to say, as every row of a
+// release is (IdleReleaseRow).
+type ReleaseResumeRow func(role claim.Role, run IssueRun) (IdleReleaseRow, error)
+
+// IssueRun is what a cancel reads of its issue's record for the resumes it queues: the issue's
+// tree, its own generation, and its tree's run (issues.tree_generation), from which the row's
+// builder takes the generation each role's start serves (record.Issue.GenerationOf).
+type IssueRun struct {
+	Tree           string
+	Generation     uint64
+	TreeGeneration uint64
+}
 
 // CancelIssueRelease ends a release that did not finish, in one transaction: the resume of each
 // claim this release suspended and still holds is queued, and the mark goes with it. The two are
@@ -721,7 +731,7 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, r
 			}
 		}
 		for _, r := range roles {
-			row, err := resume(r.role, standing.generation)
+			row, err := resume(r.role, standing.run)
 			if err != nil {
 				return err
 			}
@@ -791,7 +801,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
 		if paused.Backstop > 0 && paused.OpenPhaseRole != nil &&
-			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
+			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.run.Generation {
 			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
@@ -802,25 +812,26 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 }
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
-// the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
-// and whether the issue and its tree root are both still the workflow's to run
+// the record the resume is built from (IssueRun), the phase whose worker a paused cancel arms a
+// backstop for, and whether the issue and its tree root are both still the workflow's to run
 // (pods.InWorkflowNotLingering).
 type issueStanding struct {
-	generation uint64
-	phase      phase.Phase
-	live       bool
+	run   IssueRun
+	phase phase.Phase
+	live  bool
 }
 
 // resumeStanding is issue's standing as a cancel reads it. An issue or a root the record no
 // longer holds is not live.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
-	var generation int64
+	var tree string
+	var generation, treeGeneration int64
 	var issuePhase, status, rootPhase, rootStatus string
 	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
+	err := tx.QueryRow(ctx, `select i.tree, i.generation, i.tree_generation, i.phase, i.status, i.linger_until is not null,
 		root.phase, root.status, root.linger_until is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+		&tree, &generation, &treeGeneration, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
@@ -831,7 +842,8 @@ func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow 
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
 		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	run := IssueRun{Tree: tree, Generation: uint64(generation), TreeGeneration: uint64(treeGeneration)}
+	return issueStanding{run: run, phase: phase.Phase(issuePhase), live: live}, nil
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the role
