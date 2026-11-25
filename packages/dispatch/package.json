@@ -27,7 +27,7 @@
     "e2e:stub": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=stub --project=stub-phone",
     "e2e:stub:record": "bun run build:contracts && bun run build:web && DISPATCH_E2E_STUB_RECORD=1 playwright test --config e2e/playwright.config.ts --project=stub --project=stub-phone",
     "e2e:install": "playwright install chromium webkit firefox",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
     "lint": "bunx biome check web/src e2e"
   },
   "devDependencies": {

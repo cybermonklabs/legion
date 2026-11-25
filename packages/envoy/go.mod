@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	authelia.com/provider/oauth2 v0.3.3
+	cloud.google.com/go/auth v0.24.1
 	cloud.google.com/go/iam v1.12.0
 	cloud.google.com/go/secretmanager v1.22.0
 	github.com/anthropics/anthropic-sdk-go v1.84.0
@@ -27,6 +28,7 @@ require (
 	github.com/go-logr/stdr v1.2.2
 	github.com/google/pprof v0.0.0-20261026192309-dbd0ed30aa88
 	github.com/google/uuid v1.6.0
+	github.com/googleapis/enterprise-certificate-proxy v0.3.24
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/grafana/ai-sdk v0.1.0-alpha.5
@@ -68,7 +70,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/auth v0.24.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
@@ -104,7 +105,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.24 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect

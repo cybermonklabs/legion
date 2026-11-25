@@ -463,6 +463,22 @@ TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
 
 
+def dispatch_api_types(step):
+    """What a typecheck that compiles packages/contracts/src/dispatch-api.generated.ts reads in its
+    place: git ignores that module, and the job's own `bun install` renders it (the root
+    package.json's postinstall runs packages/contracts/scripts/gen-api.ts over the OpenAPI
+    document), so a change to either file changes what `step` compiles, and no change carries the
+    module itself. ci_ts_listing.py's RENDERED lists the same two files in the module's place, so
+    check-ts-filters.sh holds the gate's filter to them."""
+    return reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{step} compiles packages/contracts/src/dispatch-api.generated.ts, which the job's bun install renders "
+         "from this document (package.json postinstall)"),
+        ("packages/contracts/scripts/gen-api.ts",
+         f"the job's bun install runs it (package.json postinstall) to render the module {step} compiles"),
+    )
+
+
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
     packages/cipher-client's with them. envoy-client's src/broker-credential.ts imports
@@ -789,10 +805,16 @@ FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
 FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
-# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
-ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
-ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+# The envoy steps, one per key, each with the packages it runs: one on the nats-server the
+# workspace links ("", no -server, so a go.mod that moves to a version with no hooks fails the
+# step), and one on 2.10.29. cmd/listener's forced-order row holds a point v2.10.29 has not
+# (internal/testnats/hooks.go's missing: its purge takes the lock its update holds, so the order
+# cannot happen there), where it would skip, and a package whose every forced-order test skipped
+# fails forced-order.sh, so that package runs on the linked server alone.
+ENVOY_FORCED_ORDER_PKGS = {
+    "": ["./internal/testnats/hooktest/", "./cmd/listener/"],
+    "2.10.29": ["./internal/testnats/hooktest/"],
+}
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
