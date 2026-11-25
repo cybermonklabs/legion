@@ -25,13 +25,13 @@ import type {
   Priority,
   PriorityRow,
 } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { writesOf } from "../writes/write-store";
 import { SAVE_AFTER_MS } from "./InPlaceField";
-import { issueProject } from "../../lib/issue-key";
 import { PriorityPage } from "./PriorityPage";
 import { PRIORITIES_PATH } from "./priority-routes";
 

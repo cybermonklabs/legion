@@ -685,15 +685,15 @@ func (g *goingReadRun) projectProgress(ctx context.Context, project string) (goi
 // every issue the filters match: the listing's own statement and scan.
 //
 // The arguments are listIssuesPageQuery's, in the order and the types listIssues builds them
-// (issue_queries.go, the $1..$16 of issueSummaryQuery): $1 project, $2 the status list (empty,
+// (issue_queries.go, the $1..$17 of issueSummaryQuery): $1 project, $2 the status list (empty,
 // every status), $3 parent, $4 updated-since, $5 labels, $6 open, $7 the priority list with $8 its
 // unset flag, $9/$10 the closed window, $11 the advances ids with $12/$13 the none/any keywords,
-// $14 the moved gate, and $15/$16 the page's limit and offset. Every filter but project, parent
-// and open is passed its "match everything" value; keep this list in step with listIssues, since a
-// column added to the query shifts these positions.
+// $14 the moved gate, $15 the own gate, and $16/$17 the page's limit and offset. Every filter but
+// project, parent and open is passed its "match everything" value; keep this list in step with
+// listIssues, since a column added to the query shifts these positions.
 func (s *server) goingIssuePage(ctx context.Context, project, parent string, open bool) ([]model.IssueSummary, int, error) {
 	arguments := []any{project, []string{}, parent, store.MicrosecondCeiling(nil), []string{}, open, []int16{}, false,
-		store.MicrosecondCeiling(nil), store.MicrosecondCeiling(nil), []string{}, false, false, false, goingReadIssueMax, 0}
+		store.MicrosecondCeiling(nil), store.MicrosecondCeiling(nil), []string{}, false, false, false, false, goingReadIssueMax, 0}
 	return s.scanIssuePage(ctx, listIssuesPageQuery, arguments)
 }
 

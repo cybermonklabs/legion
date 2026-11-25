@@ -39,7 +39,6 @@ import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
 import type { BarSeed, ReviewSeed, SeededReadMarks } from "./review-routes";
 import { sessionIds } from "./session-ids";
-import { sessionIds } from "./session-ids";
 import { asWorkspaceSession, reviewSessions, seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review

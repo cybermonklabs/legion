@@ -25,13 +25,13 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { SAVE_AFTER_MS } from "./InPlaceField";
-import { issueProject } from "../../lib/issue-key";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 // A closed row's excerpt is the projection the markdown engine makes of its description
