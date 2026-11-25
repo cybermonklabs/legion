@@ -12,6 +12,7 @@ import (
 // other event. A loop that stops early leaves the later events undecoded, so an event the walk
 // cannot decode after the stop is no error.
 func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
+	t.Parallel()
 	events := []json.RawMessage{
 		issueLogEvent(1, "issue.created", "user"),
 		logEvent(2, "comment.created", "user", `{"id":"c-1","body":"Looks right."}`),
@@ -51,6 +52,7 @@ func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
 // string, no payload field, or `null`), as the live decoder refuses each. The events before it are
 // given, and none after it.
 func TestWalkIssueEventsRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		bad  json.RawMessage

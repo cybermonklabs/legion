@@ -169,6 +169,7 @@ func issueConsumer(t *testing.T, stream jetstream.Stream, durable string, ackWai
 // reports it in progress for as long as it holds, and JetStream still delivers every event of
 // that backlog once and has every one of them prepared once.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *testing.T) {
+	// Not parallel: its counts hold only while the keeper's ticks, a third of its 2 s window apart, land inside that window: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	// Watched before the daemon opens, so no signal of the held fact's can be made before the
@@ -314,6 +315,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // design, so here the window alone says when the server makes the held message due again, and
 // this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	const ackWait = 2 * time.Second
 	publishHeldBacklog(t, js)
@@ -422,6 +424,7 @@ func (c *countedProgress) reported() int {
 // and the stop it hands back. The delivery is real, and fetched rather than consumed, so each
 // signal countedProgress passes on has a reply subject to go to.
 func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	publishIssueEvent(t, js, "CAPTURE-310", 1)
 	// A window far longer than the row runs: a redelivery would hand the row a second message and
@@ -589,6 +592,7 @@ func (h *heldNak) window() (time.Time, time.Time) {
 // looks, and the one thing between the two the row can hold is the line nakResolve writes there
 // (heldNak).
 func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
+	// Not parallel: it bounds the retry at a quarter of its 2 s window, 500 ms, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	progress := watchProgressSignals(t, js)
@@ -658,6 +662,7 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 // measures is the cut itself, the redelivery the nak after it brings, and the attributes of the
 // warn line that names the cut. It says nothing about the keeper.
 func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
+	// Not parallel: it bounds the cut fact's redelivery at twice its 600 ms limit, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}
@@ -731,6 +736,7 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // after the first, so a redelivered copy is handled in milliseconds and outlives no window of
 // its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
+	// Not parallel: its one line holds only while the keeper ticks inside consumerSpec's 200 ms window and a redelivered copy is handled within it: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
