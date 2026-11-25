@@ -76,6 +76,10 @@ func TestCommentBodyMentionDelivers(t *testing.T) {
 			created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 				"body": tc.body, "delivery": "btw",
 			}))
+			read := readCommentThread(t, handler, created.ID).Comment
+			if read.Body != tc.body {
+				t.Fatalf("%s: stored body = %q, want %q", tc.name, read.Body, tc.body)
+			}
 			if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" ||
 				created.Mentions[0].Delivery != "btw" {
 				t.Fatalf("%s: body mention = %#v, want one btw mention of session:s1", tc.name, created.Mentions)
@@ -274,64 +278,6 @@ func TestCommentPartySetRefusals(t *testing.T) {
 	}
 }
 
-// A target of a form the server does not take is refused where the request's `mentions` array
-// carries it (R4 keeps every refusal the array had), and stored where the body writes it. The
-// body's grammar is the wider one - text.IsSessionID takes every session id the Agents page
-// shows, `.` among them, where a session route is `session:[A-Za-z0-9_-]+` - so
-// `dispatch://agent/a.b` in a body is the writer's words (R8): the comment is stored with its
-// body as written, the party names somebody, so a delivery mode beside it is taken, and nothing
-// is resolved, delivered or sent for it. In a code context the address names nobody at all.
-func TestCommentBodyTargetOfNoRouteFormIsStoredAndDeliveredToNobody(t *testing.T) {
-	t.Parallel()
-	listener, sends := partyListener(t)
-	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
-	issue := createInteractionIssue(t, handler, "TEST", "Body target form", "before")
-
-	array := postMentionedComment(t, handler, issue.Key, map[string]any{
-		"body":     "Please look.",
-		"mentions": []map[string]any{{"target": "session:a.b"}},
-	})
-	if array.Code != http.StatusBadRequest ||
-		!strings.Contains(array.Body.String(), `"code":"MENTION_INPUT"`) ||
-		!strings.Contains(array.Body.String(), "mention target must be role:") {
-		t.Fatalf("the array target session:a.b: status=%d body=%s", array.Code, array.Body.String())
-	}
-	if rows := countCommentRows(t, handler, issue.Key); rows != 0 {
-		t.Fatalf("the refused array left %d comments, want none", rows)
-	}
-
-	for _, tc := range []struct {
-		name  string
-		input map[string]any
-	}{
-		{"an agent address no route reaches", map[string]any{"body": "[x](dispatch://agent/a.b) please look."}},
-		{"the same address beside a delivery mode", map[string]any{
-			"body": "[x](dispatch://agent/a.b) please look.", "delivery": "btw",
-		}},
-		{"the address in a code span", map[string]any{
-			"body": "The address is `dispatch://agent/a.b`, which names nobody.",
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, tc.input))
-			if created.Body != tc.input["body"] {
-				t.Fatalf("%s stored body = %q, want %q", tc.name, created.Body, tc.input["body"])
-			}
-			if len(created.Mentions) != 0 || len(created.Deliveries) != 0 {
-				t.Fatalf("%s = %#v / %#v, want neither", tc.name, created.Mentions, created.Deliveries)
-			}
-			if read := decodeBody[mentionedCommentRead](t, dispatchRequest(t, handler,
-				http.MethodGet, "/api/v1/comments/"+created.ID, nil, "alice")); len(read.Deliveries) != 0 {
-				t.Fatalf("%s deliveries = %#v, want none", tc.name, read.Deliveries)
-			}
-		})
-	}
-	if len(sends()) != 0 {
-		t.Fatalf("sends = %#v, want none", sends())
-	}
-}
-
 // A role reference always names a route the server takes: text reads a role token by the charset
 // model.ParseRoute reads `role:<token>` by, so the two readers agree and no role address can earn
 // the refusal an agent address of the wider grammar earns (partyTarget writes `role:` and the id).
@@ -405,8 +351,7 @@ func TestCommentBodyMentionInCodeIsNeverDelivered(t *testing.T) {
 			if len(created.Mentions) != 0 || len(created.Deliveries) != 0 {
 				t.Fatalf("%s = %#v / %#v, want neither", tc.name, created.Mentions, created.Deliveries)
 			}
-			if read := decodeBody[mentionedCommentRead](t, dispatchRequest(t, handler,
-				http.MethodGet, "/api/v1/comments/"+created.ID, nil, "alice")); len(read.Deliveries) != 0 {
+			if read := readCommentThread(t, handler, created.ID).Comment; len(read.Deliveries) != 0 {
 				t.Fatalf("%s deliveries = %#v, want none", tc.name, read.Deliveries)
 			}
 		})
@@ -491,12 +436,8 @@ func TestCommentBodyMentionOutsideCodeStillDelivers(t *testing.T) {
 	}
 }
 
-// The person of a party set is named by being one, never by being the party left over when no
-// route is written: commentPartiesOf reads the kind itself, so a party partyTarget writes no
-// delivery route for - an agent address of the wider body grammar, or a kind text.IsParty takes
-// that partyTarget does not know - names somebody and is in neither list, rather than passing
-// for a person. The rows are the three kinds IsParty takes today, with an agent address of the
-// wider body grammar beside them and an address in a code span, which names nobody.
+// A person is named by kind, not by elimination. A non-routable agent address is refused,
+// rather than treated as a person. An address in code names nobody.
 func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -505,17 +446,21 @@ func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
 		targets []string
 		people  []string
 		named   bool
+		refused bool
 	}{
-		{"an agent", "[p](dispatch://agent/s1) please look.", []string{"session:s1"}, nil, true},
-		{"a role", "[r](dispatch://role/reviewer) please look.", []string{"role:reviewer"}, nil, true},
-		{"a person", "[a](dispatch://person/alice@example.com) should see this.", nil, []string{"alice@example.com"}, true},
-		{"an agent address no route reaches", "[x](dispatch://agent/a.b) please look.", nil, nil, true},
-		{"an agent address in a code span", "`dispatch://agent/s1` names nobody.", nil, nil, false},
+		{"an agent", "[p](dispatch://agent/s1) please look.", []string{"session:s1"}, nil, true, false},
+		{"a role", "[r](dispatch://role/reviewer) please look.", []string{"role:reviewer"}, nil, true, false},
+		{"a person", "[a](dispatch://person/alice@example.com) should see this.", nil, []string{"alice@example.com"}, true, false},
+		{"an agent address no route reaches", "[x](dispatch://agent/a.b) please look.", nil, nil, false, true},
+		{"an agent address in a code span", "`dispatch://agent/s1` names nobody.", nil, nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(tc.body, ""))
+			if (err != nil) != tc.refused {
+				t.Fatalf("commentPartiesOf(%q) error = %v, want refusal: %v", tc.body, err, tc.refused)
+			}
 			if err != nil {
-				t.Fatalf("commentPartiesOf(%q) = %v, want no refusal", tc.body, err)
+				return
 			}
 			if !slices.Equal(parties.targets, tc.targets) || !slices.Equal(parties.people, tc.people) ||
 				parties.named != tc.named {
