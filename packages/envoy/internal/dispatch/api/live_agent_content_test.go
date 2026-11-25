@@ -123,7 +123,7 @@ func agentVerdict(t *testing.T, seed privateSeed, url string, caller privateCall
 	t.Helper()
 	client := seed.dialLive(t, url, seed.liveHeader(t, caller))
 	client.send(t, liveSubscribe("v", agentView(session), ""))
-	frame := client.next(t, eventFeedWait, string(caller)+"'s agent view of "+session)
+	frame := client.next(t, string(caller)+"'s agent view of "+session)
 	if agent, ok := frame.(LiveAgentFrame); ok {
 		return client, string(agent.Data)
 	}
@@ -165,7 +165,7 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 		}
 		return
 	}
-	replay := client.next(t, eventFeedWait, string(v.caller)+"'s replay of "+v.session)
+	replay := client.next(t, string(v.caller)+"'s replay of "+v.session)
 	if frame, ok := replay.(LiveAgentFrame); !ok || frame.Event != agentEventReplay || !strings.Contains(string(frame.Data), v.session) {
 		got, _ := json.Marshal(replay)
 		t.Errorf("%s, %s's agent view of %s sends %s after its verdict, want the session's replay", state, v.caller, v.session, got)
@@ -173,7 +173,7 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 	}
 	live := `{"v":1,"kind":"turn","session":"` + v.session + `","caller":"` + string(v.caller) + `"}`
 	rig.stream.Publish(v.session, agentstream.Frame(live))
-	if frame, ok := client.next(t, eventFeedWait, string(v.caller)+"'s live frame of "+v.session).(LiveAgentFrame); !ok || string(frame.Data) != live {
+	if frame, ok := client.next(t, string(v.caller)+"'s live frame of "+v.session).(LiveAgentFrame); !ok || string(frame.Data) != live {
 		t.Errorf("%s, %s's agent view of %s relays no frame the session published", state, v.caller, v.session)
 	}
 }
@@ -223,7 +223,7 @@ func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 		for _, session := range []string{contentCarolPodSession, contentSharedSession, contentBobUnlistedSession, contentBobSession} {
 			client := rig.seed.dialLive(t, rig.url, rig.seed.liveHeader(t, callerBobPrivToken))
 			client.send(t, liveSubscribe("v", agentView(session), ""))
-			if refusal, ok := client.next(t, eventFeedWait, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
+			if refusal, ok := client.next(t, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
 				t.Errorf("%s, bob's token that lists PRIV subscribes to %s's view as %+v, want %s", state, session, refusal, codeScopeRequired)
 			}
 		}
@@ -257,11 +257,11 @@ func TestARestrictedViewersOwnSessionEndsOnceAnotherPersonActsInIt(t *testing.T)
 	if got != agentViewResponding {
 		t.Fatalf("bob's agent view of his own unlisted session answers %s, want its responder: the row proves nothing", got)
 	}
-	_ = client.next(t, eventFeedWait, "bob's replay of his own session")
+	_ = client.next(t, "bob's replay of his own session")
 	rig.seed.asSessionOf(t, seedCarol, contentBobUnlistedSession, seedPublic, http.MethodPost,
 		"/api/v1/issues/"+rig.seed.issue[seedPublic]+"/comments", map[string]any{"body": "carol, as bob's session."}, http.StatusCreated)
 	rig.stream.Publish(contentBobUnlistedSession, agentstream.Frame(`{"v":1,"kind":"turn","after":"carol's write"}`))
-	frame := client.next(t, 5*time.Second, "bob's agent view after carol's write as his session")
+	frame := client.next(t, "bob's agent view after carol's write as his session")
 	if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 		sent, _ := json.Marshal(frame)
 		t.Errorf("bob's agent view of his own session after carol's credential wrote as it sends %s, want it ended (dropped) before any frame", sent)
@@ -322,9 +322,9 @@ func TestAnAccessChangeEndsAnAgentViewItsViewerNoLongerReads(t *testing.T) {
 		t.Fatalf("bob's agent view of his own PRIV session answers %s, want its responder", got)
 	}
 	// The replay the view sends after the verdict.
-	_ = client.next(t, eventFeedWait, "bob's agent view's replay")
+	_ = client.next(t, "bob's agent view's replay")
 	rig.seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
-	frame := client.next(t, 5*time.Second, "bob's agent view after he left PRIV's list")
+	frame := client.next(t, "bob's agent view after he left PRIV's list")
 	if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 		got, _ := json.Marshal(frame)
 		t.Errorf("bob's agent view after he left PRIV's list sends %s, want it ended (dropped)", got)

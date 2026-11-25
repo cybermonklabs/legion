@@ -34,7 +34,7 @@ func TestWithNoPrivateProjectTwoProjectsMadeTogetherEndNoEventsFeed(t *testing.T
 		subscribeEvents(t, clients[i], "feed", nil)
 	}
 
-	release := holdClusterTransactionID(t, eventFeedWait)
+	release := holdClusterTransactionID(t)
 	made := []string{"NEWA", "NEWB"}
 	for _, key := range made {
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": "Project " + key}, http.StatusCreated)

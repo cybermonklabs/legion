@@ -10,20 +10,21 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// heldReplay is an agent stream whose replay of one session waits, the first time it is asked,
+// heldFirstReplay is an agent stream whose replay of one session waits, the first time it is asked,
 // until the test has written what it wants written between the view's first ask of its rule and
 // the replay: asked is closed when the relay asks for the replay, and the replay answers once
 // release is closed, however long that takes, as a session that answers late but answers does.
-type heldReplay struct {
+type heldFirstReplay struct {
 	*agentstream.Memory
 	session        string
 	asked, release chan struct{}
 	first          *sync.Once
 }
 
-func (h heldReplay) Replay(ctx context.Context, session string) (agentstream.Frame, error) {
+func (h heldFirstReplay) Replay(ctx context.Context, session string) (agentstream.Frame, error) {
 	if session == h.session {
 		held := false
 		h.first.Do(func() { held = true })
@@ -48,7 +49,7 @@ func (h heldReplay) Replay(ctx context.Context, session string) (agentstream.Fra
 // Control: the replay sent without the re-ask; alice is sent dora's session's replay.
 func TestAnAgentViewAsksItsRuleAgainBeforeTheReplay(t *testing.T) {
 	t.Parallel()
-	held := heldReplay{session: contentDoraUnlistedSession, asked: make(chan struct{}), release: make(chan struct{}), first: new(sync.Once)}
+	held := heldFirstReplay{session: contentDoraUnlistedSession, asked: make(chan struct{}), release: make(chan struct{}), first: new(sync.Once)}
 	rig := newContentAgentRigWith(t, testServerOptions{agentWatchInterval: time.Hour, streamHeartbeat: time.Hour},
 		func(memory *agentstream.Memory) agentstream.Source {
 			held.Memory = memory
@@ -58,19 +59,15 @@ func TestAnAgentViewAsksItsRuleAgainBeforeTheReplay(t *testing.T) {
 	t.Cleanup(release)
 	client := rig.seed.dialLive(t, rig.url, rig.seed.liveHeader(t, callerAlice))
 	client.send(t, liveSubscribe("v", agentView(contentDoraUnlistedSession), ""))
-	select {
-	case <-held.asked:
-	case <-time.After(eventFeedWait):
-		t.Fatal("the relay never asked dora's session for its replay: the rule refused alice before the write, and the row proves nothing")
-	}
+	testwait.Receive(t, "the relay's ask of dora's session for its replay (none: the rule refused alice before the write, and the row proves nothing)", held.asked)
 	rig.seed.asSessionOf(t, seedCarol, contentDoraUnlistedSession, seedPublic, http.MethodPost,
 		"/api/v1/issues/"+rig.seed.issue[seedPublic]+"/comments", map[string]any{"body": "carol, as dora's session."}, http.StatusCreated)
 	release()
-	if frame, ok := client.next(t, eventFeedWait, "alice's responder of dora's session").(LiveAgentFrame); !ok || string(frame.Data) != agentViewResponding {
+	if frame, ok := client.next(t, "alice's responder of dora's session").(LiveAgentFrame); !ok || string(frame.Data) != agentViewResponding {
 		sent, _ := json.Marshal(frame)
 		t.Fatalf("alice's agent view of dora's session opens with %s, want its responder", sent)
 	}
-	frame := client.next(t, 5*time.Second, "alice's agent view of dora's session after carol's write")
+	frame := client.next(t, "alice's agent view of dora's session after carol's write")
 	if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 		sent, _ := json.Marshal(frame)
 		t.Errorf("alice's agent view of dora's session, tied to carol while its replay was asked for, sends %s, want it ended (dropped) before the replay", sent)
@@ -97,13 +94,13 @@ func TestAnAgentViewOfAnAllPublicDeploymentReadsWhetherAProjectIsPrivateBeforeEa
 	if got != agentViewResponding {
 		t.Fatalf("with no private project alice's agent view of carol's pod session answers %s, want its responder: the row proves nothing", got)
 	}
-	_ = client.next(t, eventFeedWait, "alice's replay of carol's pod session")
+	_ = client.next(t, "alice's replay of carol's pod session")
 	if _, err := rig.seed.database.Pool.Exec(t.Context(), `update projects set visibility = 'private' where key = $1`, seedPrivate); err != nil {
 		t.Fatalf("make PRIV private by SQL alone: %v", err)
 	}
 	after := `{"v":1,"kind":"turn","session":"` + contentCarolPodSession + `","after":"PRIV made private"}`
 	rig.stream.Publish(contentCarolPodSession, agentstream.Frame(after))
-	frame := client.next(t, 5*time.Second, "alice's agent view of carol's pod session after PRIV was made private")
+	frame := client.next(t, "alice's agent view of carol's pod session after PRIV was made private")
 	if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 		sent, _ := json.Marshal(frame)
 		t.Errorf("alice's agent view of carol's pod session, which wrote in PRIV, sends %s once PRIV is private, want it ended (dropped) before the frame", sent)
@@ -137,13 +134,13 @@ func TestAnAgentViewOfAListedSessionOutlivesItsStoredListenerAnswer(t *testing.T
 	if got != agentViewResponding {
 		t.Fatalf("alice's agent view of the listed session answers %s, want its responder: the row proves nothing", got)
 	}
-	_ = client.next(t, eventFeedWait, "alice's replay of the listed session")
+	_ = client.next(t, "alice's replay of the listed session")
 	if _, err := rig.seed.database.Pool.Exec(t.Context(), `update route_roster set expires_at = now() - interval '1 second'`); err != nil {
 		t.Fatalf("let the stored listener answer pass its expires_at: %v", err)
 	}
 	after := `{"v":1,"kind":"turn","session":"` + rosterListedSession + `","after":"the stored answer expired"}`
 	rig.stream.Publish(rosterListedSession, agentstream.Frame(after))
-	frame := client.next(t, 5*time.Second, "alice's agent view of the listed session after its stored answer expired")
+	frame := client.next(t, "alice's agent view of the listed session after its stored answer expired")
 	if agent, ok := frame.(LiveAgentFrame); !ok || string(agent.Data) != after {
 		sent, _ := json.Marshal(frame)
 		t.Errorf("alice's agent view of a session the listener still lists with PUB sends %s once the stored answer expired, want the session's frame", sent)

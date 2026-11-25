@@ -606,7 +606,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 			if route.Method != http.MethodGet || !slices.ContainsFunc(route.Reads, readsProjectRows) {
 				continue
 			}
-			target := walker.objects.fill(t, route.Pattern, readClasses[name].Probe)
+			target := walker.objects.fill(t, route.Pattern, readSources[name].Probe)
 			if query, takes := censusQueries[name]; takes {
 				target += "?" + query(walker.objects).Encode()
 			}

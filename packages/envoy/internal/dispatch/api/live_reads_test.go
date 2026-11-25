@@ -103,8 +103,8 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 	// first opens a socket as caller, subscribes the view, and answers the first frame it is sent.
 	// The events view's first frame, its events_start, stands behind the event horizon, which any
 	// transaction on the Postgres instance holds back, so its wait is the horizon's
-	// (eventFeedFrame); every other view answers from the server's own reads, under the hang guard
-	// of eventFeedWait.
+	// (eventFeedFrame); every other view answers from the server's own reads, bounded by the test
+	// binary's deadline.
 	first := func(caller privateCaller, kind, session string) (*socketClient, any) {
 		t.Helper()
 		client := seed.dialLive(t, url, seed.liveHeader(t, caller))
@@ -113,7 +113,7 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 		if kind == liveEventsView {
 			return client, eventFeedFrame(t, client, what)
 		}
-		return client, client.next(t, eventFeedWait, what)
+		return client, client.next(t, what)
 	}
 
 	for _, caller := range privateCallers {

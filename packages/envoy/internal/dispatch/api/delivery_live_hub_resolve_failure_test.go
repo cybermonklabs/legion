@@ -35,7 +35,7 @@ func TestADeliveryViewWhoseReaderNoLongerResolvesEnds(t *testing.T) {
 		}
 		return seed.server.readerFor(ctx, model.BrowserActor(seedAlice))
 	}})
-	conn.snapshot(t, 5*time.Second, "t")
+	conn.snapshot(t, "t")
 	rig.waitListening(t)
 	rig.settle(t)
 
@@ -44,8 +44,8 @@ func TestADeliveryViewWhoseReaderNoLongerResolvesEnds(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case frame := <-conn.frames:
-			if ended, ok := frame.(LiveEnded); ok {
+		case sent := <-conn.frames:
+			if ended, ok := sent.frame.(LiveEnded); ok {
 				if ended.Sub != "t" || ended.Reason != liveEndedDropped {
 					sent, _ := json.Marshal(ended)
 					t.Fatalf("alice's page is sent %s, want the timeline's sub ended (dropped)", sent)

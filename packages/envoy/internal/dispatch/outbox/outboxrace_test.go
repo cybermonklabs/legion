@@ -208,7 +208,7 @@ func TestANilPrivateHubsReadyLeavesTheTimersReadAsBefore(t *testing.T) {
 
 	tracer := &statementTracer{}
 	timerReads := func() []tracedStatement { return tracer.matching("select (extract(epoch from least(") }
-	stop := runDeps(t, Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: quietListen}, 5*time.Second)
+	stop := runDeps(t, Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: quietListen})
 	waitFor(t, 10*time.Second, "both events published and the retry timer read", func() bool {
 		return publishedAt(t, database, private.ID) != nil && publishedAt(t, database, public.ID) != nil && len(timerReads()) > 0
 	})

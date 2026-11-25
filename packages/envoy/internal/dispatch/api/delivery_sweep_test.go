@@ -408,7 +408,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries, nil, nil, nil)
+		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
 	}()
 	waitUntil(t, "the maintenance loop's send of the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()

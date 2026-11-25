@@ -275,7 +275,8 @@ func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 	s := &server{deps: Deps{Envoy: envoy.New(envoyURL)}}
 
 	response := httptest.NewRecorder()
-	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil), issueSubscriberBase("TEST-1"))
+	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil),
+		everyReader, issueSubscriberBase("TEST-1"), false)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

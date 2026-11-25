@@ -45,7 +45,7 @@ func TestADeliveryViewsChangePositionMovesOnlyWithRowsItsReaderSees(t *testing.T
 		views++
 		conn := newFakeLiveConn()
 		rig.hub.Subscribe(conn, deliverySubscription{Sub: "s", View: timelineRange(now.Add(-7*24*time.Hour), now.Add(time.Duration(views)*time.Minute), ""), Reader: who})
-		snapshot := conn.snapshot(t, 5*time.Second, "s")
+		snapshot := conn.snapshot(t, "s")
 		seq, err := strconv.ParseInt(snapshot.Seq, 10, 64)
 		if err != nil {
 			t.Fatalf("seq %q is no change position: %v", snapshot.Seq, err)

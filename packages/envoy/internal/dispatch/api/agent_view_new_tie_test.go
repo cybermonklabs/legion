@@ -41,12 +41,12 @@ func TestANewTieOrPairEndsAnAgentViewBeforeItsNextFrame(t *testing.T) {
 			if got != agentViewResponding {
 				t.Fatalf("alice's agent view of %s answers %s before the write, want its responder: the row proves nothing", row.session, got)
 			}
-			_ = client.next(t, eventFeedWait, "alice's replay of "+row.session)
+			_ = client.next(t, "alice's replay of "+row.session)
 			rig.seed.asSessionOf(t, seedCarol, row.session, row.project, http.MethodPost,
 				"/api/v1/issues/"+rig.seed.issue[row.project]+"/comments", map[string]any{"body": "carol, as this session."}, http.StatusCreated)
 			after := `{"v":1,"kind":"turn","session":"` + row.session + `","after":"carol's write"}`
 			rig.stream.Publish(row.session, agentstream.Frame(after))
-			frame := client.next(t, 5*time.Second, "alice's agent view of "+row.session+" after carol's write")
+			frame := client.next(t, "alice's agent view of "+row.session+" after carol's write")
 			if ended, ok := frame.(LiveEnded); !ok || ended.Reason != liveEndedDropped {
 				sent, _ := json.Marshal(frame)
 				t.Errorf("%s: alice's agent view of %s after carol's write as it in %s sends %s, want it ended (dropped) before any frame",

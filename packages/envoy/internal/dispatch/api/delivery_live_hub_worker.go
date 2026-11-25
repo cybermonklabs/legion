@@ -384,7 +384,7 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 	if !seen {
 		return nil, errorf(http.StatusNotFound, "NOT_FOUND", "not found")
 	}
-	answer, err := h.server.readLegionIssue(ctx, spec.issue)
+	answer, err := h.server.readLegionIssue(ctx, spec.reader, spec.issue)
 	if err != nil {
 		return nil, err
 	}

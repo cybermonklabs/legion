@@ -590,7 +590,7 @@ func TestAnUnmergedPullRequestsChangeMovesThePipelineView(t *testing.T) {
 	var body struct {
 		PRChecks json.RawMessage `json:"pr_checks"`
 	}
-	if err := json.Unmarshal(conn.snapshot(t, 5*time.Second, "p").Body, &body); err != nil {
+	if err := json.Unmarshal(conn.snapshot(t, "p").Body, &body); err != nil {
 		t.Fatalf("decode the snapshot: %v", err)
 	}
 	if got := checks("the snapshot", body.PRChecks); got != 1 {
@@ -599,7 +599,7 @@ func TestAnUnmergedPullRequestsChangeMovesThePipelineView(t *testing.T) {
 	rig.waitListening(t)
 	// The connection's own re-check (a notification may have gone by unheard while it was down)
 	// reads the view again; it runs before the write below, so only the write's change can.
-	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+	rig.waitFor(t, 0, "the re-check after the listener connected", func(note deliveryHubNote) bool {
 		return note.what == "readers rechecked"
 	})
 	rig.settle(t)
@@ -608,7 +608,7 @@ func TestAnUnmergedPullRequestsChangeMovesThePipelineView(t *testing.T) {
 		Repo: "acme/widgets", Number: 31, Title: "change 31", URL: "https://github.com/acme/widgets/pull/31",
 		Author: "octocat", Partial: true, IssueKey: new(seed.issue[seedPrivate]),
 	})
-	delta := conn.delta(t, 5*time.Second, "p")
+	delta := conn.delta(t, "p")
 	raw, set := delta.Set["pr_checks"]
 	if !set {
 		t.Fatalf("the delta after #31 was stored unmerged sets no pr_checks: %+v", delta)

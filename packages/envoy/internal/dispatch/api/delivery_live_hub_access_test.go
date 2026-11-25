@@ -40,11 +40,11 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
-	conn.snapshot(t, 5*time.Second, "t")
+	conn.snapshot(t, "t")
 	rig.waitListening(t)
 	// The connection's own re-check (a notification may have gone by unheard while it was down)
 	// runs before the change below, so only the change's announcement can read dave again.
-	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+	rig.waitFor(t, 0, "the re-check after the listener connected", func(note deliveryHubNote) bool {
 		return note.what == "readers rechecked"
 	})
 
@@ -73,7 +73,8 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case frame := <-conn.frames:
+		case sent := <-conn.frames:
+			frame := sent.frame
 			ids, raw := framePullRequests(frame)
 			if slices.Contains(ids, "acme/secret#7") {
 				t.Fatalf("dave, no longer on PRIV's list, was sent acme/secret#7, a pull request of PRIV: %.300s", raw)
@@ -149,9 +150,9 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 	// before the race below.
 	first := newFakeLiveConn()
 	rig.hub.Subscribe(first, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: func(context.Context) (model.Actor, error) { return sees, nil }})
-	first.snapshot(t, 5*time.Second, "t")
+	first.snapshot(t, "t")
 	rig.waitListening(t)
-	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+	rig.waitFor(t, 0, "the re-check after the listener connected", func(note deliveryHubNote) bool {
 		return note.what == "readers rechecked"
 	})
 
@@ -167,7 +168,7 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 		rig.hub.mu.Unlock()
 		g.readersStale.Store(true)
 		signal(g.wakeWork)
-		rig.waitFor(t, start, 5*time.Second, "the re-check the subscribe races", func(note deliveryHubNote) bool {
+		rig.waitFor(t, start, "the re-check the subscribe races", func(note deliveryHubNote) bool {
 			return note.what == "readers rechecked"
 		})
 		return saw, nil
@@ -179,8 +180,8 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case frame := <-conn.frames:
-			snapshot, ok := frame.(DeliveryLiveSnapshot)
+		case sent := <-conn.frames:
+			snapshot, ok := sent.frame.(DeliveryLiveSnapshot)
 			if !ok {
 				continue
 			}
@@ -211,7 +212,7 @@ func TestADeliveryViewIsReadAgainForItsReaderAtANewProject(t *testing.T) {
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: func(ctx context.Context) (model.Actor, error) {
 		return seed.server.readerFor(ctx, model.BrowserActor(seedAlice))
 	}})
-	conn.snapshot(t, 5*time.Second, "t")
+	conn.snapshot(t, "t")
 	rig.waitListening(t)
 	rig.settle(t)
 
@@ -227,7 +228,8 @@ func TestADeliveryViewIsReadAgainForItsReaderAtANewProject(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case frame := <-conn.frames:
+		case sent := <-conn.frames:
+			frame := sent.frame
 			if ids, _ := framePullRequests(frame); slices.Contains(ids, "acme/fresh#9") {
 				return
 			}

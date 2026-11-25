@@ -42,7 +42,7 @@ func TestAClosedHubStartsNoGoroutine(t *testing.T) {
 	})
 	first := newFakeLiveConn()
 	hub.Subscribe(first, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Reader: alice})
-	first.snapshot(t, 5*time.Second, "t")
+	first.snapshot(t, "t")
 
 	var resolved atomic.Int32
 	again := make(chan struct{}, 1)

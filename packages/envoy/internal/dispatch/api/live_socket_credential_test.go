@@ -46,7 +46,7 @@ func TestALiveSocketClosesWhenItsTokensListChanges(t *testing.T) {
 		map[string]any{"scopes": scopes, "projects": []string{seedPublic}}, seedCarol); response.Code != http.StatusOK {
 		t.Fatalf("carol narrows her token to PUB: %d %s", response.Code, response.Body.String())
 	}
-	closed := narrowedSocket.closeError(t, 3*time.Second)
+	closed := narrowedSocket.closeError(t)
 	if closed == nil || closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the socket of the token narrowed to PUB closed with %v, want 1008: it still reads under the list it was admitted with", closed)
 	}

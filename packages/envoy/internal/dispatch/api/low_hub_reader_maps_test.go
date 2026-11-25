@@ -3,7 +3,6 @@ package api
 import (
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -40,7 +39,7 @@ func TestTheHubForgetsAReaderWhoseLastViewHasGone(t *testing.T) {
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "c", View: presetView(deliveryLiveTimeline, 7, ""), Reader: carol})
 	// Each reader's first read sets its verdict silently, so the two snapshots come with none.
 	for answered := map[string]bool{}; len(answered) < 2; {
-		if snapshot, ok := conn.next(t, 5*time.Second, "the snapshots of a and c").(DeliveryLiveSnapshot); ok {
+		if snapshot, ok := conn.next(t, "the snapshots of a and c").(DeliveryLiveSnapshot); ok {
 			answered[snapshot.Sub] = true
 		}
 	}
