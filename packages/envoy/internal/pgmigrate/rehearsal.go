@@ -43,8 +43,8 @@ func (s RehearsalStep) String() string {
 //   - create table, of a table that is neither temporary nor joined to another (INHERITS,
 //     PARTITION OF), which holds no row;
 //   - create index, not concurrently, on a table an earlier create table of the migration made,
-//     written without IF NOT EXISTS, so the build reads that new table's rows alone, which are
-//     none;
+//     that create table written without IF NOT EXISTS, so the build reads that new table's rows
+//     alone, which are none;
 //   - an insert of a VALUES list of literal rows the census admits as a bounded write
 //     (boundedInsert, read with no catalog, so a cast or a call is no literal).
 //
