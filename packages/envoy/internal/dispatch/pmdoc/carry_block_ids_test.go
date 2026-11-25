@@ -621,6 +621,88 @@ func TestAnUploadGivesAChangedLeafAFreshID(t *testing.T) {
 	}
 }
 
+// An empty paragraph is shown by the live text as blank lines alone, so an upload of that text
+// holds no block for it. It costs no other block its id: the blocks after it, at its level and in
+// the containers that hold one, keep live's ids as they do in a document that holds none, and the
+// one changed paragraph takes a fresh id (INFRA-4345 R15, from INFRA-4224's tester on 2026-11-24,
+// whose document this is: four paragraphs emptied by doc-edit, two of them inside callouts' and
+// lists' neighbours and the last block of the document among them).
+func TestAnUploadKeepsTheIDsOfTheBlocksAfterAnEmptyParagraph(t *testing.T) {
+	t.Parallel()
+	const document = "## A\n\n- a1\n\n- a2\n\nTail A.\n\n## B\n\nIntro B.\n\n" +
+		":::callout{#k1 kind=\"note\" title=\"T\"}\n## C\n\n- c1\n\n- c2\n\nTail C.\n:::\n\n" +
+		"## E\n\nPlain E.\n\n:::callout{#k2 kind=\"note\" title=\"U\"}\n## F\n\n- f1\n\n- f2\n:::\n\n" +
+		"Tail after callout.\n\n## G\n\nBody.\n\n## D\n\n- d1\n\n- d2\n\nTail D.\n"
+	emptied := []string{"Tail A.", "Tail C.", "Tail after callout.", "Tail D."}
+	parsed, err := Parse(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empties := 0
+	Walk(parsed, func(node *Node) bool {
+		if node.Type == "paragraph" && slices.Contains(emptied, TextContent(node)) {
+			node.Children = nil
+			empties++
+		}
+		return true
+	})
+	if empties != len(emptied) {
+		t.Fatalf("emptied %d paragraphs, want %d", empties, len(emptied))
+	}
+	doc, frag, live := writeLiveDocument(t, parsed)
+	markdown, err := Render(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range emptied {
+		if strings.Contains(markdown, gone) {
+			t.Fatalf("the live text still holds %q:\n%s", gone, markdown)
+		}
+	}
+	const old, edited = "Plain E.", "Plain E, changed."
+	after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, old, edited, 1))
+	t.Logf("diff update %d bytes", diff)
+
+	// Live's blocks less its empty paragraphs, in document order, are the upload's blocks.
+	var kept, got []*Node
+	collect := func(into *[]*Node) func(*Node) bool {
+		return func(node *Node) bool {
+			if node.Type == "doc" || isInlineNodeType(node.Type) || node.Type == "text" ||
+				node.Type == "paragraph" && len(node.Children) == 0 {
+				return true
+			}
+			*into = append(*into, node)
+			return true
+		}
+	}
+	Walk(live, collect(&kept))
+	Walk(after, collect(&got))
+	if len(got) != len(kept) {
+		t.Fatalf("the upload holds %d blocks, want live's %d less its empty paragraphs", len(got), len(kept))
+	}
+	liveIDs := blockIDsOf(live)
+	changed := 0
+	for index, block := range got {
+		id := blockIDOfNode(t, block)
+		if block.Type != kept[index].Type {
+			t.Fatalf("block %d after the upload is a %s, want live's %s", index, block.Type, kept[index].Type)
+		}
+		if block.Type == "paragraph" && TextContent(block) == edited {
+			changed++
+			if slices.Contains(liveIDs, id) {
+				t.Errorf("the changed paragraph has live id %q, want a fresh one", id)
+			}
+			continue
+		}
+		if want := blockIDOfNode(t, kept[index]); id != want {
+			t.Errorf("the unchanged %s %q at block %d has id %q, want live's %q", block.Type, TextContent(block), index, id, want)
+		}
+	}
+	if changed != 1 {
+		t.Fatalf("found the changed paragraph %d times, want once", changed)
+	}
+}
+
 // writeLiveDocument writes tree into a fresh document's fragment and returns the document, the
 // fragment and the tree read back from it, as a room holds it.
 func writeLiveDocument(t *testing.T, tree *Node) (*crdt.Doc, *crdt.YXmlFragment, *Node) {
