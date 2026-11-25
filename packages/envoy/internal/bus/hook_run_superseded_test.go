@@ -57,13 +57,14 @@ func markHooksDue(c *Client) {
 // (onReconnect), and both lose their connection to a stopped server; the third covers the
 // reconnect that follows.
 func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
-	client, err := Connect([]string{uri}, WithName(t.Name()))
+	logs := captureLogs()
+	client, err := Connect([]string{uri}, WithName(t.Name()), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	logs := captureLogs(t)
 	var calls atomic.Int32
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
 		if calls.Add(1) <= 2 {
@@ -309,8 +310,10 @@ func (p *halfOpenProxy) forward(conn *proxiedConn) {
 // durable's push binding, for minutes. nats.go reconnects in place, and the durable ends bound and
 // handed what the stream takes.
 func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
-	owner, err := ConnectOwningStream([]string{uri}, WithName(t.Name()+"-owner"))
+	logs := captureLogs()
+	owner, err := ConnectOwningStream([]string{uri}, WithName(t.Name()+"-owner"), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("create the stream: %v", err)
 	}
@@ -330,7 +333,7 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	}
 
 	proxy := newHalfOpenProxy(t, strings.TrimPrefix(uri, "nats://"))
-	client, err := Connect([]string{"nats://" + proxy.addr()}, WithConnectInBackground(), WithName(t.Name()))
+	client, err := Connect([]string{"nats://" + proxy.addr()}, WithConnectInBackground(), WithName(t.Name()), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect in the background: %v", err)
 	}
@@ -342,7 +345,6 @@ func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) 
 	}, nats.Bind(Stream, consumer), nats.ManualAck()); err == nil {
 		t.Fatal("the durable was bound before the client's first connection; the test needs that connection's restore to bind it")
 	}
-	logs := captureLogs(t)
 	var calls atomic.Int32
 	cut := make(chan error, 1)
 	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {

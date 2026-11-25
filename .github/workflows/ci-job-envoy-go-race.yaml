@@ -42,11 +42,13 @@ jobs:
     # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
     # on a dev box, all of it in-process against oidctest's issuer. Each forced-order step then
     # compiles a hooked nats-server and the packages above it under the detector again, up to 5
-    # minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The
-    # script's own test compiles one more hooked build, of a fixture with one test that skips, up
-    # to 5 minutes, and runs it at once, so 71, and the service's crash-safety step adds its 2, so
-    # 73 in all.
-    timeout-minutes: 80
+    # minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The first
+    # of them also compiles cmd/listener, the heaviest package of the race step, against that
+    # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
+    # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
+    # test that skips, up to 5 minutes, and runs it at once, so 76, and the service's crash-safety
+    # step adds its 2, so 78 in all.
+    timeout-minutes: 85
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -63,7 +65,7 @@ jobs:
     # (internal/cipher/natscallout), which read the broker's hold row from Postgres and skip
     # without it; envoy-go's unit step runs the package again to count those skips.
     env:
-      JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 85 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -115,14 +117,18 @@ jobs:
       # version, so it hooks the nats-server the workspace links, which the hub runs; when go.mod
       # moves to a version internal/testnats/testdata/hooked has no hooks for, the script refuses
       # it and the step fails until the hooks are ported. The second step hooks v2.10.29. The
-      # script also fails a package that declares no such test. No
+      # script also fails a package that declares no such test. cmd/listener's row is the first
+      # step's alone: it holds the linked server where a stream update has re-armed its purge of
+      # remembered duplicate ids and not stored the new window yet, a point v2.10.29 has not
+      # (internal/testnats/hooks.go's missing), where the row would skip and leave the second step
+      # with a package whose every forced-order test skipped. No
       # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
       # of whose steps sets a GO* name.
       - name: Test forced-order.sh's refusals
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server the module links
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/
+        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/

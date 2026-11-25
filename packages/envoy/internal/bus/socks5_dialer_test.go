@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, err := connectWithContext(ctx, "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, connectCallbacks{}, nil)
+	conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, connectCallbacks{}, nil)
 	if err == nil {
 		conn.Close()
 		t.Fatal("a connect through a proxy that never answers succeeded")
@@ -92,7 +93,7 @@ func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(time.Duration(i) * 500 * time.Millisecond)
-			conn, err := connectWithContext(context.Background(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, connectCallbacks{}, nil)
+			conn, err := connectWithContext(context.Background(), slog.Default(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, connectCallbacks{}, nil)
 			if conn != nil {
 				conn.Close()
 			}

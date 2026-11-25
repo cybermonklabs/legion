@@ -140,7 +140,7 @@ func allOf(options ...nats.Option) nats.Option {
 // Once the connection has connected, nats.go reports each refusal to the async error callback,
 // which takes the line here in place of its own; before then it reports none, and
 // reportRefusalsUntilConnected logs them on the same throttle.
-func connectInBackground(name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
+func connectInBackground(logger *slog.Logger, name string, urls []string, refusals *reconnectErrThrottle, connected func(*nats.Conn)) nats.Option {
 	return func(o *nats.Options) error {
 		o.RetryOnFailedConnect = true
 		o.IgnoreAuthErrorAbort = true
@@ -157,7 +157,7 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 				<-*gate
 			}
 			refusals.reset()
-			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+			logger.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 			if connected != nil {
 				connected(nc)
 			}
@@ -171,7 +171,7 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 		o.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
 			if authorizationRefusal(err) {
 				if refusals.allow() {
-					logRefusal(name, urls, err)
+					logRefusal(logger, name, urls, err)
 				}
 				return
 			}
@@ -188,12 +188,12 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 // nats.go tells no callback of a refusal before a connection has first connected (it reports only
 // a dial that failed, through ReconnectErrCB), but keeps it as the connection's last error until
 // its next attempt, a reconnect wait later, so a read each second sees every run of refusals.
-func reportRefusalsUntilConnected(nc *nats.Conn, name string, urls []string, refusals *reconnectErrThrottle) {
+func reportRefusalsUntilConnected(logger *slog.Logger, nc *nats.Conn, name string, urls []string, refusals *reconnectErrThrottle) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for !nc.IsConnected() && !nc.IsClosed() {
 		if err := nc.LastError(); authorizationRefusal(err) && refusals.allow() {
-			logRefusal(name, urls, err)
+			logRefusal(logger, name, urls, err)
 		}
 		<-ticker.C
 	}
@@ -209,7 +209,7 @@ func reportRefusalsUntilConnected(nc *nats.Conn, name string, urls []string, ref
 // connection and is returned. connected, when not nil, runs on the first connection, and never
 // before install has returned: nats.go can connect the connection as soon as dial returns, and
 // connected may read what install records.
-func connectFirstInBackground(name string, urls []string, now func() time.Time, dial func(nats.Option) (*nats.Conn, error), connected func(*nats.Conn), install func(*nats.Conn) error) (*nats.Conn, error) {
+func connectFirstInBackground(logger *slog.Logger, name string, urls []string, now func() time.Time, dial func(nats.Option) (*nats.Conn, error), connected func(*nats.Conn), install func(*nats.Conn) error) (*nats.Conn, error) {
 	refusals := newReconnectErrThrottle(now)
 	installed := make(chan struct{})
 	defer close(installed)
@@ -219,7 +219,7 @@ func connectFirstInBackground(name string, urls []string, now func() time.Time, 
 			connected(nc)
 		}
 	}
-	nc, err := dial(connectInBackground(name, urls, refusals, first))
+	nc, err := dial(connectInBackground(logger, name, urls, refusals, first))
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func connectFirstInBackground(name string, urls []string, now func() time.Time, 
 			return nil, err
 		}
 	}
-	go reportRefusalsUntilConnected(nc, name, urls, refusals)
+	go reportRefusalsUntilConnected(logger, nc, name, urls, refusals)
 	return nc, nil
 }
 
@@ -303,8 +303,8 @@ func refusalItself(err error) bool {
 
 // logRefusal writes the line a refused credential is reported with, naming the servers as the
 // reconnect failure's line does (serverList).
-func logRefusal(name string, urls []string, err error) {
-	slog.Error("envoy nats authorization refused",
+func logRefusal(logger *slog.Logger, name string, urls []string, err error) {
+	logger.Error("envoy nats authorization refused",
 		slog.String("name", name),
 		slog.String("servers", serverList(urls)),
 		slog.String("error", err.Error()))
@@ -385,8 +385,9 @@ type connectCallbacks struct {
 // held and sent after its caller saw an error: a publish while reconnecting waits for the
 // reconnect instead (ensureConnWithContext), and a publish that fails was not sent. AsyncErrorCB
 // logs each error the connection reports on its own and then hands it to callbacks.asyncErr, where
-// the client reads the server's refusal of its core subscription (onAsyncError).
-func options(name string, urls []string, callbacks connectCallbacks, now func() time.Time) nats.Options {
+// the client reads the server's refusal of its core subscription (onAsyncError). Every line goes
+// to logger.
+func options(logger *slog.Logger, name string, urls []string, callbacks connectCallbacks, now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
 	// options is rebuilt for every dial attempt in connectTrying's loop and only the attempt
 	// that connects leaves its closures on the *nats.Conn, so one live connection has exactly one
@@ -412,9 +413,9 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 	opts.DisconnectedErrCB = func(nc *nats.Conn, err error) {
 		note(nc, false)
 		if err != nil {
-			slog.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", err.Error()))
+			logger.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", err.Error()))
 		} else {
-			slog.Info("envoy nats disconnected", slog.String("name", name))
+			logger.Info("envoy nats disconnected", slog.String("name", name))
 		}
 		if callbacks.disconnected != nil {
 			callbacks.disconnected()
@@ -423,10 +424,11 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 	// A reconnect attempt that fails is otherwise silent: nats.go retries in place forever, so a
 	// broker that is down leaves no line at all in the process's log. The servers come from urls,
 	// the list this client was configured with, never from the connection: nc.ConnectedUrl() is
-	// empty while reconnecting. The line goes through the package-level slog, like every other bus
-	// line, because a listener process test fails if a bus line stops being Go's text format
-	// (cmd/listener/startup_test.go, TestListenerLogsFromOtherPackagesKeepTheirHandlers, names the
-	// deployed metric filters). Each server is written without its userinfo
+	// empty while reconnecting. The line goes to logger, the client's (WithLogger), which in a
+	// deployed process is followsDefault and so writes where slog.Default() points, like every
+	// other bus line, because a listener process test fails if a bus line stops being Go's text
+	// format (cmd/listener/startup_test.go, TestListenerLogsFromOtherPackagesKeepTheirHandlers,
+	// names the deployed metric filters). Each server is written without its userinfo
 	// (natsURLWithoutUserinfo), because nats.go authenticates with a URL's userinfo, a token or a
 	// user and password, when the URL carries one. The NATS credential never reaches a line:
 	// options never sees it, since credential is applied to the options value afterwards
@@ -439,7 +441,7 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 		if err != nil {
 			text = err.Error()
 		}
-		slog.Warn("envoy nats reconnect attempt failed",
+		logger.Warn("envoy nats reconnect attempt failed",
 			slog.String("name", name),
 			slog.String("servers", serverList(urls)),
 			slog.String("error", text))
@@ -453,7 +455,7 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
 		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
 		// ConnectedUrlRedacted keeps a token, which is a user name alone.
-		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+		logger.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 		if callbacks.reconnected != nil {
 			callbacks.reconnected(nc)
 		}
@@ -466,7 +468,7 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 	}
 	opts.ClosedCB = func(nc *nats.Conn) {
 		note(nc, false)
-		slog.Info("envoy nats connection closed", slog.String("name", name))
+		logger.Info("envoy nats connection closed", slog.String("name", name))
 		if callbacks.closed != nil {
 			callbacks.closed(nc)
 		}
@@ -500,9 +502,9 @@ func options(name string, urls []string, callbacks connectCallbacks, now func() 
 			level = slog.LevelWarn
 		}
 		if sub != nil {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", err.Error()))
+			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", err.Error()))
 		} else {
-			slog.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", err.Error()))
+			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", err.Error()))
 		}
 		if callbacks.asyncErr != nil {
 			callbacks.asyncErr(nc, err)
@@ -526,8 +528,8 @@ const (
 	connectRetryWait = time.Second
 )
 
-func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (*nats.Conn, error) {
-	return connectWithContext(context.Background(), name, urls, settings, dialer, callbacks, now)
+func connect(logger *slog.Logger, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (*nats.Conn, error) {
+	return connectWithContext(context.Background(), logger, name, urls, settings, dialer, callbacks, now)
 }
 
 // connectWithContext dials urls with envoy's options, then settings when it is not nil: the NATS
@@ -546,8 +548,8 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
 // or a DNS name.
-func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (*nats.Conn, error) {
-	return connectTrying(ctx, connectTries, connectRetryWait, name, urls, settings, dialer, callbacks, now)
+func connectWithContext(ctx context.Context, logger *slog.Logger, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (*nats.Conn, error) {
+	return connectTrying(ctx, connectTries, connectRetryWait, logger, name, urls, settings, dialer, callbacks, now)
 }
 
 // connectTrying is connectWithContext dialling up to tries times in place of connectTries, and
@@ -556,7 +558,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 // its last failed dial, as it always has. The one is a try of a start that waits out refusals of
 // its credential, which dials once with no wait (tries 1, wait 0) and waits between its tries
 // itself (waitOutCredentialRefusals).
-func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (_ *nats.Conn, err error) {
+func connectTrying(ctx context.Context, tries int, wait time.Duration, logger *slog.Logger, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
 			if err != nil {
@@ -569,7 +571,7 @@ func connectTrying(ctx context.Context, tries int, wait time.Duration, name stri
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		next := options(name, urls, callbacks, now)
+		next := options(logger, name, urls, callbacks, now)
 		if settings != nil {
 			if err := settings(&next); err != nil {
 				return nil, err

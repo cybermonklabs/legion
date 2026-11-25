@@ -21,6 +21,7 @@ const dropUpdateAnswerMarksVersion = 20261113110610
 // claimSelect) reads it back with its round, its reasons, its answer and its head as they were,
 // and with an opening, which the reset below sets to the migration's moment.
 func TestTheClaimsUpdateAnswerMarksAreGoneAfter20261113110610(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, dropUpdateAnswerMarksVersion-1)
@@ -83,6 +84,7 @@ func TestTheClaimsUpdateAnswerMarksAreGoneAfter20261113110610(t *testing.T) {
 // answer and the round it left, and both read back as written, so after the reset this release
 // still asks no role that answered and waits for no claim that left the round's pod.
 func TestAnOpenPodRoundStartsItsClockAndItsAskAgainAt20261113110610(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, dropUpdateAnswerMarksVersion-1)

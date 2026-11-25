@@ -15,13 +15,15 @@ import (
 // tests wait on NATS, on proxies that never answer and on the bus's own request bounds, not on a
 // core, so go test's default of GOMAXPROCS (4 on CI's arm runner) left them waiting four at a time.
 // Every test calls t.Parallel except those that change or read back something the whole process
-// shares (t.Setenv, the default logger the bus logs through, lifeCheckEvery, connectedVersion,
-// connectionBuild, the process's goroutines) or that hold a wall-clock bound close to what they
-// wait for, which stay serial and run before the rest. A test that needs a server has a JetStream
-// account of its own on the shared one (testnats.URL) or a server of its own. The shared server
-// starts with testnats' own number of accounts (firstAccounts), since a server's start time grows
-// faster than its account count, and declares more by a reload when a test asks past them; that
-// reload holds every client while parallel tests run beside it (0.5-0.9 s, measured at -count=4).
+// shares (t.Setenv, lifeCheckEvery, connectedVersion, connectionBuild, the process's goroutines,
+// and the default logger itself in default_logger_test.go) or that hold a wall-clock bound close
+// to what they wait for, which stay serial and run before the rest. A test that reads log lines
+// gives the clients it reads them from a logger of its own (WithLogger), never the default one. A
+// test that needs a server has a JetStream account of its own on the shared one (testnats.URL) or
+// a server of its own. The shared server starts with testnats' own number of accounts
+// (firstAccounts), since a server's start time grows faster than its account count, and declares
+// more by a reload when a test asks past them; that reload holds every client while parallel tests
+// run beside it (0.5-0.9 s, measured at -count=4).
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const busTestParallelism = 8
