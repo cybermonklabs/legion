@@ -20,9 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The tree of dispatch://INFRA-5471's cases: a root a person moved out of the workflow and back,
-// and the members its re-admission leaves as they stood. LEGION-306 holds the one slot of the
-// cap, so the re-admitted root waits in the line until that slot frees.
+// A root leaves the workflow and returns with its members still in their previous states.
+// LEGION-306 holds the cap's one slot, so the re-admitted root waits in the line until that
+// slot frees.
 const (
 	rmRoot         = "LEGION-300"
 	rmImplementing = "LEGION-301"
@@ -68,9 +68,9 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 // to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
 // slot to LEGION-306; the todo re-admits it at generation 2, where it waits in the line.
 //
-// With cleaned false the root comes back inside its linger, so its tree's lifecycle stands open
-// under the workflow, as INFRA-3118's did on 2026-11-23. With cleaned true the tree's cleanup was
-// reserved between the backlog and the todo, as after a linger that ended.
+// With cleaned false the root returns during its linger, so its tree's lifecycle stays open.
+// With cleaned true the tree's cleanup was reserved between the backlog and the todo, as after
+// a linger that ended.
 func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, cleaned bool) {
 	t.Helper()
 	runningTree(t, pool, cleaned)
@@ -249,10 +249,9 @@ func assertMembersBack(t *testing.T, pool *pgxpool.Pool, admission *Admission, l
 	assertNoMemberUnclassified(t, pool, admission, lines, "tick-members-back", rmMembers...)
 }
 
-// INFRA-5471, case 1: a re-admitted root whose architect registers the spec a person already
-// approved before any promotion stops being a queued root at that registration, and its members
-// come back then, in the registration's own fact and with no daemon restart. A later pass starts
-// none of them again. On 2026-11-23 INFRA-3118's members waited from 18:30:41Z to 20:33:51Z.
+// A re-admitted root whose architect registers an approved spec before promotion stops being a
+// queued root at that registration. Its members return in the registration's own fact, with no
+// daemon restart, and a later pass starts none of them again.
 func TestReadmittedMembersComeBackWhenTheGateOpensFirst(t *testing.T) {
 	pool := migratedPool(t)
 	admission, lines := readmittedAdmission(t, 1)
@@ -277,9 +276,8 @@ func TestReadmittedMembersComeBackWhenTheGateOpensFirst(t *testing.T) {
 	}
 }
 
-// INFRA-5471, case 2, the control: the same tree promoted before its gate opens. The promotion
-// brings the members back as it always has, and the registration after it starts none of them
-// again. It passes before and after the change.
+// Promotion brings the members back before the root's gate opens. Registering the approved
+// spec after that starts none of them again.
 func TestReadmittedMembersComeBackOnceWhenThePromotionComesFirst(t *testing.T) {
 	pool := migratedPool(t)
 	admission, lines := readmittedAdmission(t, 1)
@@ -296,7 +294,7 @@ func TestReadmittedMembersComeBackOnceWhenThePromotionComesFirst(t *testing.T) {
 	}
 }
 
-// INFRA-5471, case 3: a root re-admitted after its tree's linger ended and the cleanup was
+// A root re-admitted after its tree's linger ended and the cleanup was
 // reserved has no open tree to run its members in. The registration of its approved spec leaves
 // it a queued root, so it keeps its place in the line; nothing of the tree starts, the released
 // child at admitted is offered no phase, and no member reads unclassified or at_work while it
@@ -361,11 +359,8 @@ func TestReadmittedMembersOfACleanedTreeWaitForThePromotion(t *testing.T) {
 	assertMembersBack(t, pool, admission, lines)
 }
 
-// INFRA-5471, case 4: a generation promoted before the change counts as brought back. A running
-// tree whose root was promoted by the release before, its members at work and one reopened at done,
-// starts nothing at the first pass after the change: the migration leaves such a root unmarked
-// (store's TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun), which is the
-// record this test starts from.
+// A promoted generation already counts as brought back. The root is unmarked, its members
+// are at work and one is reopened at done; an admission pass must start none of them again.
 func TestReadmittedMembersOfATreePromotedBeforeTheChangeStartNothing(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
