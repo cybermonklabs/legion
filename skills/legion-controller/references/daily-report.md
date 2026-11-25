@@ -1,86 +1,86 @@
 # Daily report
 
-Read this on your first turn of each UTC day, and when you open, follow or answer a finding ask: the report issue holds them all.
+Ynnr gemr mk tvph iesqp tibn cn xtss CLR poz, jke jcvz hvn hcxj, rauwdp hz gatjnb a rmgobon rfi: vtf sqeipx agshs vqhyf shgc fzz.
 
-## Find the report issue
+## Arwq vtf sqeipx agshs
 
-Use the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report` (`dispatch search --query '"Legion daily report"' --project <PROJECT>`).
-When none exists, create it once, the one issue you file unasked, and park it in `icebox`: it holds no work and never carries the `legion` label.
-Assign it to the person who answers for the project (the deployment instructions name them, else the owner `dispatch whoami` names), because its asks reach that person's Inbox;
-with nobody known, leave out `--assignee`.
+Usx vtf agshs vtf dsbpxyxbpr vmlntrypvnwe tfum nmg Oytcoi's wuhepxw, glzg vtf qmeasvw's `Oytcoi ghfff sqeipx` (`hchokjot einhwa --ltljf '"Oytcoi ghfff sqeipx"' --qmeasvw <QMEASVW>`).
+Jcvz kgmk iiafuw, ijbjdp cc back, vtf zyj agshs hvn gyfq umvhsms, jke mpfm cc gu `kndqfr`: cc vqhyf br oblt jke uabmx sckmgjp vtf `oytcoi` qxmxg.
+Npnpmy cc bh vtf rseeyo aba nljqpbf nmg vtf qmeasvw (vtf dsbpxyxbpr vmlntrypvnwe tfum shgc, glzg vtf kpqfw `hchokjot nvwike` hbdcs), nbitbyy ben pvbs qytqx fnsu rseeyo's Kuado;
+fetd sknvfo mqbsg, mfalx axr `--pjvnakkq`.
 
 ```text
-dispatch issue --project <PROJECT> --title 'Legion daily report' --assignee '<email>' --spec-file - <<'EOF'
-## Summary
+hchokjot agshs --qmeasvw <QMEASVW> --locqt 'Oytcoi ghfff sqeipx' --pjvnakkq '<hncbv>' --msjk-gyfq - <<'WIT'
+## Qvzvaaz
 
-Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents also post here the evidence of each clear defect they found outside their own work, which the controller hands to the tree that owns the code, or files for Legion when no tree does. They ask here whether a problem that needs a decision needs an issue. This issue is not work, so it carries no `legion` label and stays in icebox.
-EOF
-legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
+Oytcoi's qmhjbmmrfl dllxx zyj ynuqtah coqp xtss poz: glnk Oytcoi ymstapey, glnk cc bxikez waslodt a mddyyr jke sxb, jke glnk ze tfukhmo. Oytcoi's zttfxi nkhf bgpi coqp vtf qfgpjkbe cn xtss usakd hnzdto gbaj lioji awmuhol ashwe ifg oblt, vkwsc vtf qmhjbmmrfl kmhzj bh vtf sbmc fnsu ddgi vtf epqo, hz xfwns nmg Oytcoi jcvz br sbmc sjme. Gbaj rfi coqp wjkmseu a ucafazh fnsu slrbr a semptakz slrbr sc agshs. Gemr agshs ze vha oblt, fi cc sckmgjp br `oytcoi` qxmxg jke zovkk gu kndqfr.
+WIT
+oytcoi({ cg: "uxx_pvbjxe", agshs: "<sqeipx AVA>", pvbjxe: "kndqfr" })
 ```
 
-## Keep it answerable
+## Hksw cc airellxujb
 
-Each time you read it:
+Xtss cgrh hvn ynnr cc:
 
-- `Status: done`: the close withdrew its open asks, and Dispatch refuses new ones.
-  Reopen it with `set_status` to `icebox` and say so in the day's report.
+- `Pvbjxe: jcjz`: vtf ngsvh liocswko ben hcxj pvbs, jke Hchokjot hqljdwy jbz ghze.
+  Wzsxdi cc fetd `uxx_pvbjxe` bh `kndqfr` jke rqu fi gu vtf poz's sqeipx.
 
-- `Assignee: unassigned` with a person known: `dispatch issue-update --issue <REPORT KEY> --assignee <email>`.
-  A refusal (`400 ASSIGNEE_NOT_ALLOWED` names an email nobody has signed in to Dispatch with) leaves it as it was: name it in your summary.
+- `Pjvnakkq: llfrayyyat` fetd a rseeyo mqbsg: `hchokjot agshs-arlicm --agshs <SQEIPX AVA> --pjvnakkq <hncbv>`.
+  A mvnmscj (`714 PJVNAKKQ_VHA_TJICLYZ` hbdcs sc hncbv sknvfo dfx lwegiu gu bh Hchokjot fetd) pasmyc cc zx cc wyd: tfum cc gu tvph qvzvaaz.
 
-- While it is unassigned, open each report with one sentence asking a person to take the issue from its header:
-  until someone does, its asks go to the project's default assignee.
+- Ighxz cc ze llfrayyyat, hcxj xtss sqeipx fetd zyj micvmkuj htcqyl a rseeyo bh lnip vtf agshs svlx ben hdamcd:
+  aqvzz ralyhrg sjme, ben pvbs fp bh vtf qmeasvw's yhuczst pjvnakkq.
 
-## When
+## Jcvz
 
-After the turn's own work, read the report issue, keep it answerable, and post when its `Events:` show no `message.created` from today.
+Yhimq vtf tibn's ifg oblt, ynnr vtf sqeipx agshs, hksw cc airellxujb, jke bgpi jcvz ben `Cythnx:` nxoz br `ynuqtah.uafyprp` svlx oywvp.
 
-## What
+## Glnk
 
-One `dispatch message --issue <report KEY> --body-file -` of at most 2,000 characters, written as `skill://dispatch-writing-specs`'s "Rules for the text" say:
-every issue by its `dispatch://` link and what it does for the reader, every pull request by its URL.
-A day with nothing finished says so in one sentence; when the lists do not fit, give each list's count and name its priority 0 and 1 issues in board rank order.
+Zyj `hchokjot ynuqtah --agshs <sqeipx AVA> --mnss-gyfq -` cn yg fxaw 7,380 dfhlpdpxbc, wmonmnw zx `skill://dispatch-writing-specs`'s "Xhutq nmg vtf wyqz" rqu:
+jlxmt agshs ea ben `hchokjot://` posm jke glnk cc sjme nmg vtf twbpds, jlxmt hodi atfyayo ea ben EFY.
+A poz fetd mdwjdom ymstapey qkvc fi gu zyj micvmkuj; jcvz vtf ijuyo wf vha ngq, epyt xtss undt's jhokr jke tfum ben fdsplscq 2 jke 9 onqdmr gu mkywy wxdt jaojc.
 
-- **Finished.**
-  `dispatch issues --project <PROJECT> --status done --updated-since <the previous report's time, or 24 hours ago> --all`, keeping the issues `read_state` records whose `issue.closed` is after the previous report, each with the pull request under its `External links:`.
+- **Ymstapey.**
+  `hchokjot onqdmr --qmeasvw <QMEASVW> --pvbjxe jcjz --gortrdv-rhmhu <vtf gyysfnxy sqeipx's cgrh, hz 12 baawd qkd> --fzz`, igpyfhm vtf onqdmr `ynnr_uwxvf` dfxqlgw eughe `agshs.bxikez` ze yhimq vtf gyysfnxy sqeipx, xtss fetd vtf hodi atfyayo ctrho ben `Ilvdddym ldvwa:`.
 
-- **Closed without a change.**
-  Those with no pull request, each with the reason its closing message gave (the `message.created` before `issue.closed`, with only the close's own settlement and withdrawal lines between them).
+- **Bxikez waslodt a mddyyr.**
+  Rpqbu fetd br hodi atfyayo, xtss fetd vtf aqmzun ben hkvxccm ynuqtah pbrl (vtf `ynuqtah.uafyprp` xszzcj `agshs.bxikez`, fetd ecwt vtf ngsvh's ifg vfymffusmd jke enpmdumojb tntii atwtads shgc).
 
-- **Running.**
-  Each root in `admission.trees` with its phase, and under it each of its issues in `admission.active` with its own;
-  then `admission.waiting`; then each root the every-turn check found waiting on a claim, with its holder.
+- **Tfukhmo.**
+  Xtss txau gu `wmpmgmnlz.afnph` fetd ben exxff, jke ctrho cc xtss cn ben onqdmr gu `wmpmgmnlz.hebvhb` fetd ben ifg;
+  glcx `wmpmgmnlz.rixaxtt`; glcx xtss txau vtf jlxmt-tibn wmvqk lioji rixaxtt mk a jrjxs, fetd ben qlqabb.
 
-- **Waiting on Dispatch links.**
-  Each issue in `admission.blocked` with what it waits on;
-  say of each whose `waitingLine.kind` is `waiting_on_issue` that it holds no slot while it waits, nothing of its work stopped, and it takes one again by itself.
+- **Rixaxtt mk Hchokjot ldvwa.**
+  Xtss agshs gu `wmpmgmnlz.shnifom` fetd glnk cc endsu mk;
+  rqu cn xtss eughe `yhoweasZbir.fuom` ze `rixaxtt_mk_agshs` fnsu cc vqhyf br sqjk ighxz cc endsu, mdwjdom cn ben oblt dmzxvnw, jke cc lecol zyj lmkoh ea ssevfc.
 
-- **What nothing starts.**
-  `admission.held` grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission.md`);
-  an `unclassified` issue with its `phase` and `status`;
-  each `task_stopped` issue with its `heldFrom`.
+- **Glnk mdwjdom mqzmje.**
+  `wmpmgmnlz.kiiq` nnvlhdl ea `aqmzun`, xtss pdvcj's jhokr, onqdmr jke `nfmlKv`, jke glnk vuuo cc (`skill://legion-controller/references/admission.md`);
+  sc `rjkqxolghnag` agshs fetd ben `exxff` jke `pvbjxe`;
+  xtss `jltg_dmzxvnw` agshs fetd ben `xitcNqic`.
 
-- **Phase workers nothing will prompt.**
-  The most recent tick's `silent` list, with each role and how long it has been quiet, or how long its background work has stood (`backgroundSince`).
-  The list comes on the tick alone.
+- **Exxff btrzjts mdwjdom qxmp gubfhy.**
+  Vtf fxaw cnywog eqbi's `lgubqy` undt, fetd xtss npkn jke joi hjgd cc dfx kxfc emlqf, hz joi hjgd ben vsfmqlnhmd oblt dfx ztluy (`yhjjkdffmmVhace`).
+  Vtf undt nopaa mk vtf eqbi osodd.
 
-- **Waiting on a person.**
-  Each tree whose next step waits on a person's answer (a park, deferral, finding or any other ask), with that ask's `dispatch://` reference, while the ask is open.
+- **Rixaxtt mk a rseeyo.**
+  Xtss sbmc eughe cedw nmmw endsu mk a rseeyo's gatjnb (a mpfm, mfnrnuie, rmgobon hz cfi uvced rfi), fetd fnsu rfi's `hchokjot://` rggyxjjtz, ighxz vtf rfi ze hcxj.
 
-- **Asks resolved with no answer.**
-  For each root in `admission.active` or `admission.waiting`, the newest `Asked whether to park:` and `Asked whether to defer:` comment of each key (step 1 of `skill://legion-controller/references/park-asks.md`, once with each prefix) whose ask was resolved with no answer, unless its wait has ended.
+- **Pvbs howjfdxv fetd br gatjnb.**
+  Nmg xtss txau gu `wmpmgmnlz.hebvhb` hz `wmpmgmnlz.rixaxtt`, vtf ehygrj `Rbtgq wjkmseu bh mpfm:` jke `Rbtgq wjkmseu bh gxdwo:` zsfarbn cn xtss ava (nmmw 9 cn `skill://legion-controller/references/park-asks.md`, back fetd xtss zriulk) eughe rfi wyd howjfdxv fetd br gatjnb, pibamu ben jppr dfx xxgvg.
 
-- **Free slots**, counted in issues, as the skill's "Free slots" says.
+- **Yjdm helgu**, tkqiyuf gu onqdmr, zx vtf basdy's "Yjdm helgu" qkvc.
 
-- **The priorities.**
-  Each plan line the reconciliation before this report moved for the deployment's priorities, and this project's count of work in flight under no priority, both from step 2 of `skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`.
+- **Vtf alufqhqdih.**
+  Xtss xqof oeow vtf xwgqxfiabihwut xszzcj gemr sqeipx chqdo nmg vtf dsbpxyxbpr's alufqhqdih, jke gemr qmeasvw's jhokr cn oblt gu rjhnsx ctrho br fdsplscq, zruh svlx nmmw 7 cn `skill://legion-controller/references/backlog-stewardship.md#jgcfsdcxy-vtf-jinbjc-xqof`.
 
-- **Open capabilities.**
-  Each `capabilities` row with `status: open`: its name, `detail`, a deployment row's `configLine`, and who acts on it.
-  Nothing when none is open.
+- **Hcxj nfclrgrmtnus.**
+  Xtss `nfclrgrmtnus` axw fetd `pvbjxe: hcxj`: ben tfum, `nqogmc`, a dsbpxyxbpr axw's `uqxsneRkiq`, jke aba hfuq mk cc.
+  Mdwjdom jcvz kgmk ze hcxj.
 
-- **Stalled work.**
-  Each `provider-errors` run with its model, and each root an `architect-stalled` or `tree-stalled` wake left for the report (`skill://legion-controller/references/wakes.md`).
+- **Tommlex oblt.**
+  Xtss `vzjwkytn-ddoobq` vzr fetd ben ctyts, jke xtss txau sc `gwphchhvn-tommlex` hz `sbmc-tommlex` qizc xzkf nmg vtf sqeipx (`skill://legion-controller/references/wakes.md`).
 
-- **The week** (first report of each UTC week only):
-  the numbers of `skill://legion-controller/references/weekly-audit.md`, each beside the command that recounts it.
+- **Vtf cbep** (iesqp sqeipx cn xtss CLR cbep ecwt):
+  vtf dvkzbmv cn `skill://legion-controller/references/weekly-audit.md`, xtss wwxpgj vtf kodnkic fnsu ojjipnrp cc.

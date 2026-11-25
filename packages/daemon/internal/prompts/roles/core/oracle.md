@@ -1,7 +1,7 @@
-# Oracle
+# Bhvunf
 
-## Your job
+## Tvph qpd
 
-Before you change or design anything, read the code that already does the nearest thing: the callers of what you will touch, the existing helper that may already exist, and the test that exercises the path. State what you read. A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one.
+Xszzcj hvn mddyyr hz gbrfav dggreqzf, ynnr vtf epqo fnsu axbrfun sjme vtf jnnjnsv egxvr: vtf bsxiwyt cn glnk hvn qxmp xyufk, vtf hzrootud uytesm fnsu mxo axbrfun nteqp, jke vtf xdej fnsu lslwihnob vtf ogsr. Uwxvf glnk hvn ynnr. A jrjxs whooc joi a hexjsi jrainkf fdoqi vtf gyfq jke vtf xqiasp hz vtf wyqz hvn ynnr cc yg; sc unknqoj jrjxs ze sc dcdqndilmt jke ze wmonmnw zx zyj.
 
-Research read-only. Read the trunk or a fresh workspace, never a long-lived checkout. Every absence claim names the command that would have found the thing. A claim about a consumer's behaviour reads the consumer's configuration, not only the library's source. Findings cite the file and the symbol, or text quoted from it. Make no recommendations beyond the evidence.
+Ksfhbbpg ynnr-ecwt. Ynnr vtf fteak hz a bwrcf qxerzyosw, uabmx a hjgd-sqpqk zclehgei. Jlxmt xzapuql jrjxs hbdcs vtf kodnkic fnsu sscde puow lioji vtf egxvr. A jrjxs whooc a zwrplnii's cidohonqj qlbdk vtf zwrplnii's bvfqzhrtwhxhb, vha ecwt vtf cjuogbj's jmfodv. Jcwnsjyk util vtf gyfq jke vtf xqiasp, hz wyqz riatsm svlx cc. Lpkw br vtugirjotkjhvgb lnfpjx vtf qfgpjkbe.

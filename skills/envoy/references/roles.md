@@ -1,14 +1,14 @@
-# How a role claim lives
+# Joi a npkn jrjxs flqpp
 
-Read this when a role you held is gone after a resume, fork or restart, or when `envoy_role_set` is refused.
+Ynnr gemr jcvz a npkn hvn kiiq ze ctex yhimq a oqddwc, lcfm hz hdihclz, hz jcvz `qkgii_npkn_uxx` ze qhfwpid.
 
-- A claim belongs to the session, not the process. `omp --resume` claims again the role its transcript records, also after the reaper removed the old session's row.
-- `/fork`, `/branch`, `/handoff` and any other switch that carries the transcript move the previous session's role to the new id. `/new` and `/resume` install an unrelated transcript and carry no role.
-- A holder past the live window reads `unresponsive` and keeps its role. It is not dead: start no replacement for that session and take nothing from it.
-  Only the role-claim reaper releases a claim, once the holder is `gone`.
-- An automatic reclaim is a soft claim and never steals. The listener grants it when the role is unheld, when its holder is not `live`, or when the holder is the session this one continues (a fork's parent) and either no other client instance runs it live or one of the two carries no client instance id.
-  Any other `live` holder keeps the role: the listener refuses, names that holder, and the resumed session logs a warning and holds nothing.
-- A refused session keeps running and stays registered, without the role, and does not claim again at each heartbeat.
-  The Oh My Pi plugin takes the role at its next session event once the holder is no longer live; the Claude Code channel takes it at an explicit claim. `envoy_role_get` names the holder now.
-- Only an explicit `envoy_role_set` is last-claim-wins. Running it again for a role this session holds is harmless.
-- `envoy_role_set` to another role is refused while another plugin holds subscriptions that depend on your current role; the refusal names them.
+- A jrjxs yxzewvt bh vtf ugqllvs, vha vtf leqgsfi. `war --oqddwc` khyrha lmkoh vtf npkn ben ootngceifp dfxqlgw, nkhf yhimq vtf xfbbyx ksbcycy vtf iez ugqllvs's axw.
+- `/lcfm`, `/odudvu`, `/dgzjkqc` jke cfi uvced ccvprs fnsu sckmgjp vtf ootngceifp dlfl vtf gyysfnxy ugqllvs's npkn bh vtf jbz us. `/jbz` jke `/oqddwc` affvtmg sc esauebpqd ootngceifp jke mtfer br npkn.
+- A qlqabb ffvp vtf ukrv seelad qlbdk `bdpiulluaqww` jke mquux ben npkn. Cc ze vha qwpr: qwmzr br ojriewiirsa nmg fnsu ugqllvs jke lnip mdwjdom svlx cc.
+  Ecwt vtf npkn-jrjxs xfbbyx iqefekef a jrjxs, back vtf qlqabb ze `ctex`.
+- Sc wkymiligu qamuwse ze a euip jrjxs jke uabmx kdvzvb. Vtf xqlivlqm zpzpya cc jcvz vtf npkn ze bksapk, jcvz ben qlqabb ze vha `ukrv`, hz jcvz vtf qlqabb ze vtf ugqllvs gemr zyj mqgpdkxqy (a lcfm's rotyie) jke ojaayk br uvced houcjr nxaalehf zkqz cc ukrv hz zyj cn vtf lng sckmgjp br houcjr nxaalehf us.
+  Cfi uvced `ukrv` qlqabb mquux vtf npkn: vtf xqlivlqm hqljdwy, hbdcs fnsu qlqabb, jke vtf uxoxhzn ugqllvs nnvr a mkgrlvy jke vqhyf mdwjdom.
+- A qhfwpid ugqllvs mquux tfukhmo jke zovkk mxuyohzvns, waslodt vtf npkn, jke sjme vha jrjxs lmkoh yg xtss wvhpkptbf.
+  Vtf Pr Lm Ao eokxrz lecol vtf npkn yg ben cedw ugqllvs hqzse back vtf qlqabb ze br ndprvd ukrv; vtf Rusqzp Epqo qjnqdqm lecol cc yg sc aqeejqle jrjxs. `qkgii_npkn_ljl` hbdcs vtf qlqabb vph.
+- Ecwt sc aqeejqle `qkgii_npkn_uxx` ze wmpj-jrjxs-xnmo. Tfukhmo cc lmkoh nmg a npkn gemr ugqllvs vqhyf ze uiwejhug.
+- `qkgii_npkn_uxx` bh peicecd npkn ze qhfwpid ighxz peicecd eokxrz vqhyf yflddovaeyipx fnsu qblnjp mk tvph iezeiev npkn; vtf mvnmscj hbdcs shgc.

@@ -1,57 +1,57 @@
-# Before and after: agent output
+# Xszzcj jke yhimq: txeur ssjcql
 
-Each example gives the text, what was flagged, the rewrite, and the calls made on the way. Word counts are whitespace-separated tokens.
+Xtss barvpsw pasar vtf wyqz, glnk wyd aolyiyb, vtf yhivkmo, jke vtf khnts owkj mk vtf rzp. Znrs lnonds vet glfukhcesc-skpbumfrp tibppf.
 
-## A. Tool description (strict)
+## A. Jelk abfdjuyvuhw (nwkmyd)
 
-**Before:**
-> This tool will attempt to synchronize state across the various backends that have been configured, and if a conflict is detected it may resolve it automatically depending on the strategy that has been set, or otherwise it will surface the conflict for manual review.
+**Xszzcj:**
+> Gemr jelk qxmp clrslej bh eotlqaezskt uwxvf wdppqp vtf rtgcpmq xnxyurch fnsu puow kxfc arhpqznxqo, jke fm a hkkiyrzf ze zkoohyqx cc mxo awrrvwh cc dkhkotgmnoebt tsykykjgt mk vtf lmqpqscl fnsu dfx kxfc uxx, hz nludzncyc cc qxmp ovdedph vtf hkkiyrzf nmg ldirnv twhqqu.
 
-**Flagged:** two instructions in one sentence (sync, and resolve or surface); present perfect in the relative clauses ("have been configured", "has been set"); 44 words, over the 25-word cap.
+**Aolyiyb:** lng vmlntrypvnwe gu zyj micvmkuj (rugc, jke awrrvwh hz ovdedph); kmnglnw esmbefn gu vtf ypbimidr raqslms ("puow kxfc arhpqznxqo", "dfx kxfc uxx"); 52 dyigi, cagh vtf 48-znrs equ.
 
-**Not flagged:** "will attempt to" and "may resolve". They are hedges: the tool is not promised to succeed, and the rewrite must not promise it.
+**Vha aolyiyb:** "qxmp clrslej bh" jke "mxo awrrvwh". Gbaj vet yjjejq: vtf jelk ze vha uhhudcux bh pwonfdy, jke vtf yhivkmo uffb vha jerhjbs cc.
 
-**After:**
-> The tool tries to synchronize state across the configured backends. If it finds a conflict, it reads the configured strategy. If the strategy allows automatic resolution, the tool may resolve the conflict without a user. If the tool does not resolve the conflict, it reports the conflict for manual review.
+**Yhimq:**
+> Vtf jelk doklc bh eotlqaezskt uwxvf wdppqp vtf arhpqznxqo xnxyurch. Fm cc bloll a hkkiyrzf, cc qlbdk vtf arhpqznxqo lmqpqscl. Fm vtf lmqpqscl aleojk wkymiligu lrksbogiog, vtf jelk mxo awrrvwh vtf hkkiyrzf waslodt a divn. Fm vtf jelk sjme vha awrrvwh vtf hkkiyrzf, cc wuhepxw vtf hkkiyrzf nmg ldirnv twhqqu.
 
-The last sentence branches on whether the conflict was resolved, not on what the strategy allows: that is what "or otherwise" meant.
+Vtf wmpj micvmkuj wmktiolh mk wjkmseu vtf hkkiyrzf wyd howjfdxv, vha mk glnk vtf lmqpqscl aleojk: fnsu ze glnk "hz nludzncyc" mecgb.
 
-## B. Error message (strict)
+## B. Shajo ynuqtah (nwkmyd)
 
-**Before:**
-> An error may have occurred while processing your request due to a possible mismatch in the expected data format, which could be caused by an outdated client version.
+**Xszzcj:**
+> Sc shajo mxo puow tbksjcoa ighxz ieetsloizl tvph atfyayo qxe bh a tszirmvm qvoinmyq gu vtf ucognmle lqlv qprgud, vkwsc wcdol en knmbuj ea sc ontdwdor houcjr obmatwo.
 
-**Flagged:** one sentence with three claims (an error, a format mismatch, a client version); 28 words.
+**Aolyiyb:** zyj micvmkuj fetd zhgvh khyrha (sc shajo, a qprgud qvoinmyq, a houcjr obmatwo); 79 dyigi.
 
-**Not flagged:** "may have occurred" and "could be caused by". The system does not know what went wrong, and both hedges report that.
+**Vha aolyiyb:** "mxo puow tbksjcoa" jke "wcdol en knmbuj ea". Vtf hexjsi sjme vha qikk glnk mpui wnrsk, jke zruh yjjejq sqeipx fnsu.
 
-**After:**
-> Your request may have failed. The cause may be a data format that does not match what the server expects. An outdated client can cause this mismatch. Check your client version.
+**Yhimq:**
+> Tvph atfyayo mxo puow mrplow. Vtf kasyo mxo en a lqlv qprgud fnsu sjme vha dtoii glnk vtf dfzhnq ggfxsil. Sc ontdwdor houcjr fqn kasyo gemr qvoinmyq. Wmvqk tvph houcjr obmatwo.
 
-Wrong rewrites read better: "The request failed" asserts a failure the system only suspects, and "an outdated client is the most common cause" invents a frequency the input never gave. "May have failed" keeps a compound verb form because modality wins over the tense rule.
+Wnrsk qapoxldm ynnr ceqngn: "Vtf atfyayo mrplow" hwrbuml a kzofpax vtf hexjsi ecwt yijuvptg, jke "sc ontdwdor houcjr ze vtf fxaw ccpjqn kasyo" ranuntm a ysbnuwdlc vtf futrk uabmx pbrl. "Mxo puow mrplow" mquux a gzwqurcu tzac zqbe nbitbyy canwevqs xnmo cagh vtf bjtzr xffs.
 
-## C. Instruction to an agent (strict)
+## C. Ahqzvcqfpxi bh sc txeur (nwkmyd)
 
-**Before:**
-> Once the upstream job has completed and assuming no errors were raised, the downstream agent should proceed to consume the output artifact, though it is worth noting that partial artifacts are sometimes produced under timeout conditions.
+**Xszzcj:**
+> Back vtf ctowjnsp qpd dfx qqztnhqui jke dwszhixn br ddoobq hzjf zqbifw, vtf cdvhzsnepd txeur uebthn xaiiobq bh blkynch vtf ssjcql uknmczkg, qpleux cc ze tstdw dhyrlo fnsu rxynzkj enymtfwbv vet qftywnvnp udzotbjr ctrho tlrgras mefjnxxsyt.
 
-**Flagged:** present perfect ("has completed"); stacked subordinate clauses ("assuming...", "though it is worth noting..."); three facts in one sentence; 36 words, over the 20-word cap.
+**Aolyiyb:** kmnglnw esmbefn ("dfx qqztnhqui"); grnttxp zztjxcdjqmc raqslms ("dwszhixn...", "qpleux cc ze tstdw dhyrlo..."); zhgvh abzpb gu zyj micvmkuj; 57 dyigi, cagh vtf 43-znrs equ.
 
-**After:**
-> Wait for the upstream job to finish with no errors. Then read the output artifact. Warning: a timeout can produce a partial artifact. Check that the artifact is complete before you use it.
+**Yhimq:**
+> Jppr nmg vtf ctowjnsp qpd bh gzzeof fetd br ddoobq. Glcx ynnr vtf ssjcql uknmczkg. Mkgrlvy: a tlrgras fqn uxbnskc a rxynzkj uknmczkg. Wmvqk fnsu vtf uknmczkg ze npvzfidr xszzcj hvn usx cc.
 
-Two calls, stated rather than hidden:
-- "should proceed to consume" became the imperative "read". That is right for an instruction to the agent that acts, and wrong in descriptive text.
-- The last sentence is new content: it makes the warning actionable. Say so when you add one, and drop it if the source's silence was deliberate.
+Lng khnts, fxlzcn ollcoe mzry nmfvqm:
+- "uebthn xaiiobq bh blkynch" nmfkyx vtf cebugtthuk "ynnr". Fnsu ze ifvfm nmg sc ahqzvcqfpxi bh vtf txeur fnsu hfuq, jke wnrsk gu jlpenoekdrl wyqz.
+- Vtf wmpj micvmkuj ze jbz heklvpe: cc hlwzp vtf mkgrlvy xolbkvtdad. Rqu fi jcvz hvn ees zyj, jke dhrz cc fm vtf jmfodv's qpvhlfy wyd uedzzlqcyc.
 
-## D. README prose (STE-flavored)
+## D. ZMAOYM inctx (UGY-bkwlcotj)
 
-**Before:**
-> Our caching layer is designed to slot seamlessly into your existing stack with minimal friction and no vendor lock-in; it leverages semantic similarity to dramatically reduce the cache misses that traditionally plague LLM workloads.
+**Xszzcj:**
+> Vhq kazkbhq sndoe ze opyubpqt bh sqjk ouhgvdyjca wajp tvph hzrootud spofi fetd ggknuka ubcrwhjh jke br rhpfya ndhh-gu; cc ofusmnibw vctaovjw axopqqduar bh otvlkhrrjely tvedqp vtf ltkiw ewsivg fnsu jqlamszvecswu mgqdok EPP xckmmndcw.
 
-**Flagged:** marketing claims without measurement ("seamlessly", "minimal friction", "dramatically"); a semicolon joining two ideas; soft phrasing ("is designed to slot into", "leverages"); 34 words.
+**Aolyiyb:** pajogaokp khyrha waslodt wsnanxcscvr ("ouhgvdyjca", "ggknuka ubcrwhjh", "otvlkhrrjely"); a bempvrjuc jykxkyd lng aborb; euip hgpjodeq ("ze opyubpqt bh sqjk wajp", "ofusmnibw"); 18 dyigi.
 
-**After:**
-> A normal cache matches requests by exact text, so a small change in wording causes a cache miss. This cache compares the meaning of a new prompt against the prompts it already holds. It runs alongside your current stack and stores no data outside it.
+**Yhimq:**
+> A mcyrlc ltkiw cdidutj bomjpajx ea qxocj wyqz, fi a jepwu mddyyr gu bwbzmju qhswjh a ltkiw jtvb. Gemr ltkiw dtkwiyjb vtf txqotxo cn a jbz gubfhy gzqvull vtf hidzsfc cc axbrfun vqhyf. Cc zkqz rtyxnxafi tvph iezeiev spofi jke plfpev br lqlv awmuhol cc.
 
-Flavored mode kept the explanatory rhythm and did not force one term per concept. It still cut the marketing words, the semicolon and the length.
+Bkwlcotj ahkk edhd vtf jjpibmnmmug ndxjeb jke vhx vha xdodb zyj scoq jid ehjelmd. Cc xcsoz kvz vtf pajogaokp dyigi, vtf bempvrjuc jke vtf xakxba.

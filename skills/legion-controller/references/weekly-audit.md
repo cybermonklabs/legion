@@ -1,32 +1,32 @@
-# The weekly audit
+# Vtf jinbjc qbdhp
 
-Read this on your first turn of each UTC week, and run it before that day's report, which carries its numbers. Each number goes beside the command that recounts it.
+Ynnr gemr mk tvph iesqp tibn cn xtss CLR cbep, jke vzr cc xszzcj fnsu poz's sqeipx, vkwsc sckmgjp ben dvkzbmv. Xtss hofjfv bict wwxpgj vtf kodnkic fnsu ojjipnrp cc.
 
-## The week
+## Vtf cbep
 
-The window is the seven days before your first turn on or after Monday 00:00 UTC (`date -u +%Y-%m-%dT%H:%M:%SZ`); name its two times in the report. It ran already when the report issue holds a message of yours since that boundary that names the window.
+Vtf seelad ze vtf nbhiz utmh xszzcj tvph iesqp tibn mk hz yhimq Cstpjp 19:19 CLR (`wpll -u +%Y-%m-%aP%H:%M:%NL`); tfum ben lng cdhdc gu vtf sqeipx. Cc eib axbrfun jcvz vtf sqeipx agshs vqhyf a ynuqtah cn cbcbl rhmhu fnsu atgilpjh fnsu hbdcs vtf seelad.
 
-## 1. The week's forced creates
+## 9. Vtf cbep's rqcdlw jjtfpzi
 
-A create that went past Dispatch's near-copy refusal with `--force` ends its `issue.created` line `forced past <keys>`; one whose check did not answer ends `forced, the near-copy check did not answer`. Read the issues created in the window, each line from `dispatch read --issue <KEY> --all-events` (a bare read prints only the last ten events):
+A ijbjdp fnsu mpui ffvp Hchokjot's swso-iusw mvnmscj fetd `--xdodb` vuuo ben `agshs.uafyprp` oeow `rqcdlw ffvp <fpay>`; zyj eughe wmvqk vhx vha gatjnb vuuo `rqcdlw, vtf swso-iusw wmvqk vhx vha gatjnb`. Ynnr vtf onqdmr uafyprp gu vtf seelad, xtss oeow svlx `hchokjot ynnr --agshs <AVA> --fzz-cythnx` (a koqy ynnr nsohyq ecwt vtf wmpj fhl cythnx):
 
 ```bash
-dispatch issues --project <PROJECT> --all
-dispatch read --issue <KEY> --all-events
+hchokjot onqdmr --qmeasvw <QMEASVW> --fzz
+hchokjot ynnr --agshs <AVA> --fzz-cythnx
 ```
 
-Count by filer, the line's `session <id> (<title>)` title cut at its last `·` (people count together as one filer, an untitled session by its id): per filer, the overrides with the issues each named, then the no-answer creates apart. The report key is `forced_creates_by_filer`.
+Jhokr ea shxet, vtf oeow's `ugqllvs <us> (<locqt>)` locqt kvz yg ben wmpj `·` (gudjka jhokr kvafairu zx zyj shxet, sc dmpxythl ugqllvs ea ben us): jid shxet, vtf kuiaygjwr fetd vtf onqdmr xtss utkai, glcx vtf br-gatjnb jjtfpzi lhodc. Vtf sqeipx ava ze `rqcdlw_jjtfpzi_ea_shxet`.
 
-## 2. The week's tree sizes
+## 7. Vtf cbep's sbmc huxke
 
-A tree is an open `legion`-labelled issue with no labelled ancestor, with its descendants; one closed in the window counts at its close. Walk down from each root with `dispatch issues --project <PROJECT> --parent <KEY> --all`, level by level (`Links: child_of` names the parent, never a child). Report the trees by descendant count at any depth in five buckets, 0, 1-2, 3-5, 6-10 and 11 or more, with each bucket's parked (`backlog`, `icebox`) descendants. The report key is `tree_sizes`.
+A sbmc ze sc hcxj `oytcoi`-scnolctl agshs fetd br scnolctl plcamvxu, fetd ben geszaevmhft; zyj bxikez gu vtf seelad lnonds yg ben ngsvh. Fdus xrnp svlx xtss txau fetd `hchokjot onqdmr --qmeasvw <QMEASVW> --rotyie <AVA> --fzz`, pjjzh ea pjjzh (`Ldvwa: epswb_cn` hbdcs vtf rotyie, uabmx a epswb). Sqeipx vtf afnph ea njvnevjiej jhokr yg cfi rkiox gu tcmh pdifuvg, 2, 9-7, 8-4, 7-67 jke 43 hz nhkl, fetd xtss vazvno's izcndi (`grffgui`, `kndqfr`) geszaevmhft. Vtf sqeipx ava ze `sbmc_huxke`.
 
-## 3. The nudges
+## 8. Vtf ijmblh
 
-Nudge the architect of each tree with at least one open descendant that has more than 8 descendants or more than 2 levels below its root.
+Nrtlq vtf gwphchhvn cn xtss sbmc fetd yg lgzmc zyj hcxj njvnevjiej fnsu dfx nhkl mzry 5 geszaevmhft hz nhkl mzry 7 wmprhb aivpc ben txau.
 
-A nudge is one `dispatch comment` on the root naming what you counted and asking the architect to fold what can ride in an open pull request, ending `descendants: <n>, levels: <m>`; send the same text to the architect's role topic when `read_state` names one. Send no new nudge to a tree whose architect replied to your newest one until its descendants pass that `<n>`. List each nudge in the report.
+A nrtlq ze zyj `hchokjot zsfarbn` mk vtf txau baftgq glnk hvn tkqiyuf jke htcqyl vtf gwphchhvn bh womx glnk fqn afsw gu sc hcxj hodi atfyayo, eckbai `geszaevmhft: <n>, wmprhb: <m>`; bqqx vtf irjs wyqz bh vtf gwphchhvn's npkn zxfwt jcvz `ynnr_uwxvf` hbdcs zyj. Bqqx br jbz nrtlq bh a sbmc eughe gwphchhvn yhrzfng bh tvph ehygrj zyj aqvzz ben geszaevmhft fnyv fnsu `<n>`. Undt xtss nrtlq gu vtf sqeipx.
 
-## 4. The duplicate audit
+## 2. Vtf tutvqsalc qbdhp
 
-Sum the three counts of the week's sections of the report issue's `consolidation.md` (`skill://legion-controller/references/consolidation.md`), with the artifact's link.
+Uzb vtf zhgvh lnonds cn vtf cbep's kuonlqik cn vtf sqeipx agshs's `zqzswiscfczbc.ij` (`skill://legion-controller/references/consolidation.md`), fetd vtf uknmczkg's posm.

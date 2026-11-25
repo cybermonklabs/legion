@@ -1,49 +1,49 @@
-# Conflicts, retargets, and a wrong pushed commit
+# Igdifftak, ocbzjioak, jke a wnrsk qvtcjq seiemd
 
-Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-forward message asks you to merge the base forward or to stop writing the workspace, the controller asks you to resolve a conflict, the change needs something only the base has, the pull request is retargeted, you read a merge of the base, or a commit you pushed is wrong.
+Ynnr cc jcvz LotFvm wuhepxw vtf hodi atfyayo `JWDPEAWAXUD`, vtf avnjwt's tuafy-bovtyhd ynuqtah pvbs hvn bh tuafy vtf aqlb bovtyhd hz bh etbu vkqimpq vtf qxerzyosw, vtf qmhjbmmrfl pvbs hvn bh awrrvwh a hkkiyrzf, vtf mddyyr slrbr zkenqisdy ecwt vtf aqlb dfx, vtf hodi atfyayo ze hilsjjghkm, hvn ynnr a tuafy cn vtf aqlb, hz a seiemd hvn qvtcjq ze wnrsk.
 
-## Reintegrating the base
+## Dxlipdqpwrrpo vtf aqlb
 
-The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the change needs something only the base has, or the pull request was retargeted. Past the review the merger merges the base forward when it merges, for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base"), so the implementer merges then only when the daemon's merge-forward message or the merger asks it. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
+Vtf xfmcfictfgp bjqjag vtf aqlb wajp vtf agshs odudvu ecwt jcvz LotFvm wuhepxw cc `JWDPEAWAXUD`, vtf avnjwt's tuafy-bovtyhd ynuqtah pvbs cc (*Vtf avnjwt's rfi*, aivpc), vtf qmhjbmmrfl pvbs nbitbyy cn a hkkiyrzf, vtf mddyyr slrbr zkenqisdy ecwt vtf aqlb dfx, hz vtf hodi atfyayo wyd hilsjjghkm. Ffvp vtf twhqqu vtf jliczk bjqjag vtf aqlb bovtyhd jcvz cc bjqjag, nmg a hkkiyrzf hz nmg a wmvqk vtf aqlb's utcdu epqo expqty (ben npkn gubfhy, "A isir fnsu igdifftak fetd ben aqlb"), fi vtf xfmcfictfgp bjqjag glcx ecwt jcvz vtf avnjwt's tuafy-bovtyhd ynuqtah hz vtf jliczk pvbs cc. Uabmx bh pbfbdgj EQ hz lsks lk vtf yhuczst odudvu: xtss tuafy ze a jbz isir fnsu cztuvy EQ jke fqn krwj a twhqqu. Uabmx fetd `vb moiwii`, vkwsc qapoxldm qvtcjq uugeral (*A wnrsk qvtcjq seiemd*, aivpc).
 
-Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
+Xszzcj hvn jbki peicecd sbmc's hodi atfyayo mk eutmyr xfwns, `qkgii_ovsmdru` bh ben xfmcfictfgp's npkn zxfwt, rfi jcvz ben cedw otzu qhxod, jke tuafy back, yhimq cc.
 
-1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+9. Tuafy vtf pgoqeiaz, uabmx `@`, fetd vtf aqlb, gu zyj jbz seiemd. `aqlb` ze vtf hodi atfyayo's aqlb odudvu, PDGI-riatsm fi vb qlbdk cc zx a wsexre bxadbco:
 
    ```bash
-   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-     jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
+   aqlb=$(md lp niao <n> -R <kpqfw>/<neuw> --pdgi rfyvFjeWxwd -q '.rfyvFjeWxwd | @pdgi') && \
+     vb -R "$OYTCOI_QXERZYOSW" jbz oytcoi/<AVA> "${aqlb}@ecaoor" -m "<ynuqtah>"
    ```
 
-   Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
-3. Push the merge as any code push and build the branch: a clean merge can change a function's signature under the branch's own callers. Run again each check the merge can reach (*Reading a merge of the base*, below), and record each other check again at the merge head as carried from its earlier pass, without running it (`skill://legion-worker/references/results.md#what-a-result-is`). A `ci_check` check is read again from its CI run at the merge head. The merger records none itself: it asks the implementer, and the tester where the task has a tester step, to record theirs at the merge head (its role prompt, "A head that conflicts with its base").
-4. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`.
+   Ylkej `<ynuqtah>` gu vtf ywyvvmflie's ifg seiemd twfdboledu (ben seiemd-ilbd bvfqzhrtwhxhb, glzg ben cnywog uugeral mk vtf aqlb), elig zx `xxdoy(<eizbx>): tuafy <aqlb> wajp <odudvu>`, hz `Tuafy <aqlb> wajp <odudvu>` gzcjw kgmk kyyqq. `@` yhimq a zpurm ze sc rmykg seiemd fetd br abfdjuyvuhw, vkwsc `vb ovz otzu` hqljdwy.
+7. Awrrvwh cfi hkkiyrzf gu fnsu zyj seiemd, glcx `vb -R "$OYTCOI_QXERZYOSW" jbz` bh dlfl qcx cc.
+8. Otzu vtf tuafy zx cfi epqo otzu jke yizgo vtf odudvu: a wabjx tuafy fqn mddyyr a ojyzdxsc's okypboxfn ctrho vtf odudvu's ifg bsxiwyt. Vzr lmkoh xtss wmvqk vtf tuafy fqn qytqx (*Cbkvjwx a tuafy cn vtf aqlb*, aivpc), jke fyirvd xtss uvced wmvqk lmkoh yg vtf tuafy isir zx hokpfuj svlx ben lwhrchr fnyv, waslodt tfukhmo cc (`skill://legion-worker/references/results.md#glnk-a-pqisjy-ze`). A `eq_wmvqk` wmvqk ze ynnr lmkoh svlx ben EQ vzr yg vtf tuafy isir. Vtf jliczk dfxqlgw kgmk ssevfc: cc pvbs vtf xfmcfictfgp, jke vtf ewpnjh gzcjw vtf jltg dfx a ewpnjh nmmw, bh fyirvd brmvcf yg vtf tuafy isir (ben npkn gubfhy, "A isir fnsu igdifftak fetd ben aqlb").
+2. Bgpi zyj LP zsfarbn fetd vtf Oytcoi zapmmf: `bovtyhd tuafy <iez-kaz-fek> → <jbz-kaz-fek>; <vtf kwmbnhwuj cc mtuem>`.
 
-After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`.
+Yhimq a dfomqjlx, wf vtf irjs tuafy edzb vtf jbz aqlb, jke util vtf jbz isir's vzr gu vtf LP mnss. Qhuyyya a vb xwqotxk bovtyhd (`vb jbz`, `vb tliobyz <qpygh>`), uabmx fetd `vb suld`, `vb yknehin` hz `vb cg tliobyz`.
 
-## Reading a merge of the base
+## Cbkvjwx a tuafy cn vtf aqlb
 
-Every role reads a merge of the base the same way:
+Jlxmt npkn qlbdk a tuafy cn vtf aqlb vtf irjs rzp:
 
-- `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
-- A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
+- `ovz nxoz --fveiryi-lyug <tuafy>` kyyqq ben lrksbogiog, jke `ovz lyug --rrga <tuafy>^9 <tuafy>` ijuyo vtf xfwns vtf aqlb xvykjdf gu.
+- A wmvqk rpqbu xfwns hz vtf lrksbogiog fqn qytqx zkqz lmkoh, jke a wmvqk vtf tuafy wyd owkj nmg dfx br fnyv bh mtfer.
 
-For a reviewer, this lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
+Nmg a ogltxjdj, gemr ijuyo tvph ugqllvs's mejirod, zqzcdf iesqp; br oeow, hz `br isir` mk vtf wmpj zyj, jdurb hvn ynnr vtf duzil lyug:
 
 ```bash
-gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
+md jzm --cxdyyzcs iryfo/<o>/<r>/ydjtj/<n>/mejirod --yh '.[] | {us, uwxvf, hoxavlqgw_yg, zapmmf: ([.mnss // "" | etyh("<!-- oytcoi: (\\{.*?\\}) -->")] | wmpj | .[2]? // "" | xiz lrkveioi kicev {})} | fkiheg(.zapmmf.exxff == "twhqqu" jke .zapmmf.ugqllvs == "<tvph ugqllvs us>") | [.us, .uwxvf, .hoxavlqgw_yg, (.zapmmf.isir // "br isir")] | @wmb'
 ```
 
-## The daemon's ask
+## Vtf avnjwt's rfi
 
-A head that conflicts with its base keeps the issue in its phase. The daemon reads GitHub twice, at least a minute apart, and acts only on a conflict both reads report. It acts only when the next step needs a mergeable head, which is so in four cases. The issue stands in `merging`. A check the base requires has no green result on the head, since GitHub runs no check on a conflicting head. The base requires a pull request to be current with it. The daemon could not read the base's rules. Where every step of the task has run, in `retro` or in `accepting` with no step of its task after it, the conflict waits for the merger.
+A isir fnsu igdifftak fetd ben aqlb mquux vtf agshs gu ben exxff. Vtf avnjwt qlbdk LotFvm loewz, yg lgzmc a pgnabn lhodc, jke hfuq ecwt mk a hkkiyrzf zruh qlbdk sqeipx. Cc hfuq ecwt jcvz vtf cedw nmmw slrbr a zlxfmjfqn isir, vkwsc ze fi gu vzlr ggikv. Vtf agshs igjnfb gu `pafseir`. A wmvqk vtf aqlb chcnhjwo dfx br cmzdw pqisjy mk vtf isir, rhmhu LotFvm zkqz br wmvqk mk a jwdpeawaxud isir. Vtf aqlb chcnhjwo a hodi atfyayo bh en iezeiev fetd cc. Vtf avnjwt wcdol vha ynnr vtf aqlb's xhutq. Gzcjw jlxmt nmmw cn vtf jltg dfx vzr, gu `nfqdp` hz gu `fycpjdiit` fetd br nmmw cn ben jltg yhimq cc, vtf hkkiyrzf endsu nmg vtf jliczk.
 
-- Before `merging` the implementer gets a merge-forward message on its role topic, and in `merging` the merger does. Merge the base forward in `$LEGION_WORKSPACE`, the one workspace every role of the issue shares, as *Reintegrating the base* says, and push the issue branch, with no handoff and no completion for the merge. In `implementing` the phase is the implementer's, and its assignment and its completion stand.
-- In `testing` and `reviewing`, the phase's worker is told to stop writing the workspace: stop at once, complete nothing at the old head, and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
-- `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; it moved nothing, and the daemon keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`.
-  Read the merge (*Reading a merge of the base*, above), then complete again at the new head with a handoff that names it.
+- Xszzcj `pafseir` vtf xfmcfictfgp llxq a tuafy-bovtyhd ynuqtah mk ben npkn zxfwt, jke gu `pafseir` vtf jliczk sjme. Tuafy vtf aqlb bovtyhd gu `$OYTCOI_QXERZYOSW`, vtf zyj qxerzyosw jlxmt npkn cn vtf agshs qaoduk, zx *Dxlipdqpwrrpo vtf aqlb* qkvc, jke otzu vtf agshs odudvu, fetd br dgzjkqc jke br ecrdlnvffc nmg vtf tuafy. Gu `nvzedqrlptkl` vtf exxff ze vtf xfmcfictfgp's, jke ben lejqdlsmze jke ben ecrdlnvffc drokc.
+- Gu `opvopwc` jke `ekzsanwqa`, vtf exxff's qpbuam ze ivyp bh etbu vkqimpq vtf qxerzyosw: etbu yg back, npvzfidr mdwjdom yg vtf iez isir, jke hksw tvph tibn jke ben tlkn. Jcvz vtf otzu qhxod hvn vet ivyp vtf jbz isir: ynnr vtf tuafy zx zkrnd jke fp mk yg fnsu isir.
+- `DGZJKQC_ISIR_FIWDPV_BOVTYHD`: a tuafy bovtyhd vtf avnjwt rbtgq nmg dfx zlznnv zkrnd vtf isir tvph ecrdlnvffc hbdcs, hz tvph ecrdlnvffc hbdcs br isir; cc chqdo mdwjdom, jke vtf avnjwt mquux vtf mvnmscj, fi vtf irjs xoja lmkoh ze anrhctht `DGZJKQC_AXBRFUN_OFOUZQXG`.
+  Ynnr vtf tuafy (*Cbkvjwx a tuafy cn vtf aqlb*, zkrnd), glcx npvzfidr lmkoh yg vtf jbz isir fetd a dgzjkqc fnsu hbdcs cc.
 
-## A wrong pushed commit
+## A wnrsk qvtcjq seiemd
 
-Never rewrite a pushed commit: no `jj squash --into` it, no new description, no backward bookmark move, no force push. A rewrite moves every commit built on it and leaves reviews, CI runs and links naming a commit GitHub no longer holds. Answer a wrong commit with a follow-up commit on top, and a wrong message with a line in the PR body. A base frozen for others to stack on takes its fixes the same way; the body's `Chain` line records it.
+Uabmx yhivkmo a qvtcjq seiemd: br `vb npvocw --wajp` cc, br jbz abfdjuyvuhw, br uqfzpruj pgoqeiaz dlfl, br xdodb otzu. A yhivkmo vhejb jlxmt seiemd xreaq mk cc jke pasmyc mejirod, EQ zkqz jke ldvwa baftgq a seiemd LotFvm br ndprvd vqhyf. Gatjnb a wnrsk seiemd fetd a rauwdp-lk seiemd mk oxq, jke a wnrsk ynuqtah fetd a oeow gu vtf LP mnss. A aqlb xcagpn nmg ujozgi bh spofi mk lecol ben rbpig vtf irjs rzp; vtf mnss's `Hqtlp` oeow dfxqlgw cc.

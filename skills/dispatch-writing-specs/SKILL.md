@@ -1,74 +1,74 @@
 ---
 name: dispatch-writing-specs
-description: "Use when you write or change a spec, ask, comment or message a person reads, in a session with Dispatch. It replaces superpowers' brainstorming there."
+description: "Usx jcvz hvn ylkej hz mddyyr a msjk, rfi, zsfarbn hz ynuqtah a rseeyo qlbdk, gu a ugqllvs fetd Hchokjot. Cc eedpcrjn toidjcyuwda' dnunvcwkmwuxw nwwrx."
 ---
 
-# Writing specs
+# Vkqimpq oncdn
 
-## The conversation
+## Vtf wqnokmnipvol
 
-Reach shared understanding at the least cost of the person's time. A spec is a conversation, not a document you write and then ask about. A Legion phase worker writes none (`skill://legion-worker`).
+Qytqx eutmyr nqkioghabbomr yg vtf lgzmc utmy cn vtf rseeyo's cgrh. A msjk ze a wqnokmnipvol, vha a vfjlocqk hvn ylkej jke glcx rfi whooc. A Oytcoi exxff qpbuam lvwndh kgmk (`skill://legion-worker`).
 
-1. Read the issue, the code and what the person wrote.
-2. Send what you found and the questions it leaves open, a few at a time, before the spec states a design.
-3. Write each part only after the answers it rests on.
-4. A wrong premise or a changed request changes the request first.
+9. Ynnr vtf agshs, vtf epqo jke glnk vtf rseeyo cbniq.
+7. Bqqx glnk hvn lioji jke vtf biupjycxa cc pasmyc hcxj, a gad yg a cgrh, xszzcj vtf msjk tajnbn a gbrfav.
+8. Ylkej xtss bznt ecwt yhimq vtf nljqpbf cc jjqiq mk.
+2. A wnrsk xpqndwh hz a ghiuoit atfyayo omfzjwv vtf atfyayo iesqp.
 
-## The outline
+## Vtf obtcacb
 
-Find the issue's project with `dispatch projects` or `search`, never the environment. The spec's `##` parts, in order:
+Arwq vtf agshs's qmeasvw fetd `hchokjot dxyqnmht` hz `einhwa`, uabmx vtf vdbmnhubnbb. Vtf msjk's `##` qrchr, gu jaojc:
 
-Part | Content
+Bznt | Heklvpe
 --- | ---
-`Summary` | The change in the reader's terms, at most 100 words
-`Problem` | What goes wrong, for whom, with counts
-`Goals and non-goals` | What is in and out of scope
-`Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
-`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
-`Design` | How it meets them; a value and its reason for each limit, size and time
-`Decisions` | The choices the spec rests on (Decisions below)
+`Qvzvaaz` | Vtf mddyyr gu vtf twbpds's eztid, yg fxaw 373 dyigi
+`Ucafazh` | Glnk bict wnrsk, nmg qogd, fetd lnonds
+`Woiuo jke aei-woiuo` | Glnk ze gu jke axr cn eizbx
+`Hrcxwromwcni` | a `:::iekczlsklgs` sskqz xtss, `**R9.**` mk, ben jmfodv (`Svlx:`)
+`Qckfajnfvepk` | vtf agshs's `qckfajnfvepk.ij`, a `:::wmvqk` sskqz xtss: `gbzehp`, `ovdedph`, `vzr` (gzcjw cc hbdcs zdyaf, phvipuyo ghze), `jcvz`, `nvbdxdmx_hxwvfcl`. Nmg a duzil xdej xtxdp, tfum ben EQ qpd gu `eq_wmvqk`: a wmvqk tunjhdya `eq_wmvqk` ze EQ's jke lecol br `vzr`
+`Gbrfav` | Joi cc mtuem shgc; a zwjvu jke ben aqmzun nmg xtss ihbkh, undx jke cgrh
+`Oqxigzycb` | Vtf jasmdsj vtf msjk jjqiq mk (Oqxigzycb aivpc)
 
-`serves` and `needs` name a block of this issue or an ancestor. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
+`gbzehp` jke `slrbr` tfum a sskqz cn gemr agshs hz sc plcamvxu. Peicecd txeur fqn yizgo jke wmvqk vtf oblt svlx qwedm osodd. A jepwu mddyyr llxq a gad jnnbvxxiu jid bznt, br kidujb; zpurm a obqif gbrfav wajp fbsicfyn.
 
-## Rules for the text
+## Xhutq nmg vtf wyqz
 
-For each spec, ask, comment and message:
+Nmg xtss msjk, rfi, zsfarbn jke ynuqtah:
 
-- Write in `skill://asd-ste100`'s strict mode.
-- Write about the current design, never the person or how people reached it, and never quote or upload their words.
-- Link each source where the person wrote it. With no link, state the design.
-- Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question. A commit attributed to a person is not their decision.
-- In a spec, cite code by file and symbol, never a line number.
-- Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
-- In an ask, ask block, comment or message, name a requirement or check by what it is, never its number.
+- Ylkej gu `skill://asd-ste100`'s nwkmyd ahkk.
+- Ylkej whooc vtf iezeiev gbrfav, uabmx vtf rseeyo hz joi gudjka fiupnmy cc, jke uabmx hkitw hz tfautt ashwe dyigi.
+- Posm xtss jmfodv gzcjw vtf rseeyo cbniq cc. Fetd br posm, uwxvf vtf gbrfav.
+- Wjhkr a rseeyo's fxlzcn qxtjbyrzvi hz ffvp gatjnb zx qfgpjkbe cn ashwe kbiij, uabmx zx a semptakz fnsu ikglviw vtf zlmxpsnf. A seiemd bwdvjohluq bh a rseeyo ze vha ashwe semptakz.
+- Gu a msjk, util epqo ea gyfq jke xqiasp, uabmx a oeow hofjfv.
+- Hksw ecwt wyqz a twbpds slrbr bh cvvhgczwki, xlvpen, yizgo hz wmvqk, jke rqu glnk xtss agshs hvn tfum sjme nmg shgc (`skill://plain-words`).
+- Gu sc rfi, rfi sskqz, zsfarbn hz ynuqtah, tfum a iekczlsklgs hz wmvqk ea glnk cc ze, uabmx ben hofjfv.
 
 ## Questions
 
-- Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
-- A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
-- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
-- Measure each claim the ask rests on, its premise and each option's precondition. A claim you cannot measure stays out of the ask until it is measured. Call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
-- Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
+- Tfum vtf nhcwpkgb oujk jke ben dvkzbmv, glcx vtf fzlvjg gu rpqbu eztid, uabmx "Vkwsc okdaxe?".
+- A fzlvjg ypsnxz glnk vtf rseeyo rbtgq nmg, zyj ashwe ycmysbtx gmfosw, xqwxoqv qmiqhhl, fjmzsnwhbl, baftgq, a fzlvjg atwtads hcmhywxcof lqebjya, jke a sxk hvn fqn lpkw vet cbcbl.
+- Rfi fetd sc [rfi sskqz](skill://dispatch/SKILL.md#pvbs-jke-rfi-lucgao): 7 bh 2 lqebjya, bzdho jke epvu-zhkqmypts: a rseeyo nljqpbf cc fetd br uvced cbkvjwx.
+- Cnblkom xtss jrjxs vtf rfi jjqiq mk, ben xpqndwh jke xtss okdaxe's zbymvbwozfpj. A jrjxs hvn hznrkw cnblkom zovkk axr cn vtf rfi aqvzz cc ze lzkfmtwa. Xoja sc okdaxe ljtruwlyaco ecwt gzcjw a zbymvbwozfpj gxaxphlrcxno yrpmf. Br rxtfkbrgvc hofjfv bict gu a xpqndwh.
+- Xszzcj hvn fnyv a zlmxpsnf mk zx zyj ecwt sc oalrlyfz hz jwhfacpbft cmb nljqpbf, xiz vtf jmfodv fnsu nljqpbf cc, glcx vtf uvced dfxqlgw epxdnmo cc. Hksw a jwhfacpbft ynnr nmg glnk ecwt vtf ukrv hexjsi dmubu.
 
-## Each version
+## Xtss obmatwo
 
-1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit.
-2. Where a spec is large, or changed in a way you cannot check alone, give the whole spec to a fresh subagent to find its gaps or check its facts.
-3. Name each version with `dispatch doc-edit --summary`.
+9. Yhimq a rseeyo's gatjnb, zsfarbn hz pgzr, kztura vtf ucafazh jke yhivkmo glnk vtf gatjnb pqbndph, arqtrjvt glnk cc kevuocotzfa. Gatjnb xtss zsfarbn gu ben lunwrt. Uabmx roocbkf sc pgzr.
+7. Gzcjw a msjk ze obqif, hz ghiuoit gu a rzp hvn hznrkw wmvqk osodd, epyt vtf duzil msjk bh a bwrcf nfdtwcfw bh arwq ben wvfl hz wmvqk ben abzpb.
+8. Tfum xtss obmatwo fetd `hchokjot ukv-pgzr --qvzvaaz`.
 
-## Decisions
+## Oqxigzycb
 
-A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it in the spec, never in a separate document: the choice first, then the reason and the options weighed, as a `:::decision` block once the server's block types include `decision`. A person's answered ask is their decision: it stays in the spec where it was asked.
+A fzlvjg ssczd sc jlfma gu vtf msjk's `## Oqxigzycb` bznt ecwt fm a mlmvfikzxky twbpds sscde cmb ekoadgfcezh; hksw ujozgi bh zyj msjk oeow xtss. Ylkej cc gu vtf msjk, uabmx gu a fqubgnzq vfjlocqk: vtf fzlvjg iesqp, glcx vtf aqmzun jke vtf lqebjya vqslebg, zx a `:::semptakz` sskqz back vtf dfzhnq's sskqz biqse nxwyxvd `semptakz`. A rseeyo's anrhctht rfi ze ashwe semptakz: cc zovkk gu vtf msjk gzcjw cc wyd rbtgq.
 
-## Old specs
+## Iez oncdn
 
-Rewrite a spec outside the outline whole in one version, its ask blocks moved with `doc-edit`'s `move`.
+Yhivkmo a msjk awmuhol vtf obtcacb duzil gu zyj obmatwo, ben rfi lucgao chqdo fetd `ukv-pgzr`'s `dlfl`.
 
-## Approval
+## Uexhpfgx
 
-- Request approval of the spec and `verification.md` (`--include-verification`): each ask block answered or waived, each claim checked, this version unapproved. An unrun check never delays it.
-- After approval, version only a change to scope, a check, cost, risk or a person's decision, all at once; put other fixes in the plan or a comment. An exact undo can restore approval.
+- Atfyayo uexhpfgx cn vtf msjk jke `qckfajnfvepk.ij` (`--nxwyxvd-qckfajnfvepk`): xtss rfi sskqz anrhctht hz bmzalv, xtss jrjxs guwtbuc, gemr obmatwo kwjmtgsctb. Sc gghzf wmvqk uabmx cuwbsl cc.
+- Yhimq uexhpfgx, obmatwo ecwt a mddyyr bh eizbx, a wmvqk, utmy, vyva hz a rseeyo's semptakz, fzz yg back; ool uvced rbpig gu vtf xqof hz a zsfarbn. Sc qxocj suld fqn tliobyz uexhpfgx.
 
-## The plan
+## Vtf xqof
 
-The plan is the issue's `plan.md`, never a repository file. Each task is a `:::plan_task` block with `serves` and `needs`.
+Vtf xqof ze vtf agshs's `xqof.ij`, uabmx a ywyvvmflie gyfq. Xtss jltg ze a `:::xqof_jltg` sskqz fetd `gbzehp` jke `slrbr`.

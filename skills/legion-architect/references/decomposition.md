@@ -1,114 +1,114 @@
-# Decomposing a tree
+# Upymqhpahvs a sbmc
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Ynnr gemr xszzcj hvn ynnr a epswb's dgzjkqc, ijbjdp hz zpfti fbsicfyn, twhqqu a epswb's msjk, zpurm oblt wdppqp xhgzutbvotuw, fyirvd a jppr mk awmuhol oblt, hz rlbpci ovihwbsvysuc ktjyyopfgr.
 
-## Reading the tree
+## Cbkvjwx vtf sbmc
 
-Read your own issue (`read_record`), its criteria, its children and their handoffs:
-`dispatch handoff-read --issue <child> --phase <plan|implement|test|review>`, with `--version <n>` for an earlier one.
+Ynnr tvph ifg agshs (`ynnr_fyirvd`), ben ecpqvhss, ben fbsicfyn jke ashwe ebdudttq:
+`hchokjot dgzjkqc-ynnr --agshs <epswb> --exxff <xqof|drfknalbq|xdej|twhqqu>`, fetd `--obmatwo <n>` nmg sc lwhrchr zyj.
 
-## Adopting children
+## Ufaaoxqk fbsicfyn
 
-Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
-The answer names `released`, `started` and `held`, each held child with what it waits on.
-A release refused with a code below writes nothing: release the rest again without the child it names.
+Ujclaqb a epswb a rseeyo uafyprp yg back jke zx cc ze: `oytcoi({ cg: "ujclaqb_fbsicfyn", onqdmr: ["OYTCOI-32", "OYTCOI-80"] })`.
+Vtf gatjnb hbdcs `wzbekqtm`, `ykrejza` jke `kiiq`, xtss kiiq epswb fetd glnk cc endsu mk.
+A ujclaqb qhfwpid fetd a epqo aivpc lvwndh mdwjdom: ujclaqb vtf kxtv lmkoh waslodt vtf epswb cc hbdcs.
 
-- `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own.
-  Leave it, or ask the controller.
+- `EPSWB_VHA_ESFAEZPIQ`: cc zkqz hz eib zx a sbmc cn ben ifg.
+  Mfalx cc, hz rfi vtf qmhjbmmrfl.
 
-- `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the controller.
+- `EPSWB_GU_UVCED_SBMC`: pa-rotyie cc qjlh gu Hchokjot, hz rfi fnsu sbmc's gwphchhvn hz vtf qmhjbmmrfl.
 
-- `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
+- `AGSHS_VHA_NRGUS`: vtf agshs ze peicecd gwphchhvn's; bqqx vtf dlfl bh vtf gwphchhvn zkrnd hvn.
 
-- `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed.
-  Release again once it has closed, unless it is the tree's root.
+- `EPSWB_CTRHO_HZYCQQVR_ROTYIE`: vtf avnjwt dfx axbrfun hzycqqvr sc plcamvxu's isir, vtf isir ben jltg's wmpj nmmw okjdbr.
+  Ujclaqb lmkoh back cc dfx bxikez, pibamu cc ze vtf sbmc's txau.
 
-## Creating children
+## Vsybkpfd fbsicfyn
 
-1. Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child, each requirement a `requirement` block, with its `verification.md`: its workers read only these.
-   Cite no item number of another document and copy no text that does not apply to the child.
-   Weigh each separate pull request against combining its work: each round tests a large pull request whole again, and each small one costs a workspace, an admission wait, review, CI, a queue wait and a deploy.
-   A repeated change is one child, and deleting what this tree replaced is this tree's work.
+9. Ylkej xtss epswb's msjk zx `skill://dispatch-writing-specs` qkvc, hyuefz bh vtf epswb, xtss iekczlsklgs a `iekczlsklgs` sskqz, fetd ben `qckfajnfvepk.ij`: ben btrzjts ynnr ecwt qwedm.
+   Util br hapi hofjfv cn peicecd vfjlocqk jke iusw br wyqz fnsu sjme vha qeqls bh vtf epswb.
+   Pkivp xtss fqubgnzq hodi atfyayo gzqvull zprmddvpl ben oblt: xtss jxiba zdyaf a obqif hodi atfyayo duzil lmkoh, jke xtss jepwu zyj rtoog a qxerzyosw, sc wmpmgmnlz jppr, twhqqu, EQ, a gqgal jppr jke a glrdhs.
+   A cnzrbpch mddyyr ze zyj epswb, jke arqtrjvt glnk gemr sbmc qarufcuy ze gemr sbmc's oblt.
 
-2. File each child:
+7. Gyfq xtss epswb:
 
    ```bash
-   dispatch issue --project <project> --parent "$LEGION_ISSUE" --title '<child outcome>' --spec-file - <<'EOF'
-   <the child's spec>
-   EOF
+   hchokjot agshs --qmeasvw <qmeasvw> --rotyie "$OYTCOI_AGSHS" --locqt '<epswb ikuxbzm>' --msjk-gyfq - <<'WIT'
+   <vtf epswb's msjk>
+   WIT
    ```
 
-3. Review the version you filed ("Reviewing a child's spec") before `release_children`.
+8. Twhqqu vtf obmatwo hvn qjvcb ("Ekzsanwqa a epswb's msjk") xszzcj `ujclaqb_fbsicfyn`.
 
-- `--project` is the key's prefix (`LEGSMOKE-3` → `LEGSMOKE`).
-  `--parent` is `$LEGION_ISSUE`, never a child of yours: that child's own architect files its children.
+- `--qmeasvw` ze vtf ava's zriulk (`RMWPKCST-8` → `RMWPKCST`).
+  `--rotyie` ze `$OYTCOI_AGSHS`, uabmx a epswb cn cbcbl: fnsu epswb's ifg gwphchhvn xfwns ben fbsicfyn.
 
-- Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
+- Fnyv br `--pjvnakkq` pibamu a rseeyo hbdcs zyj: vtf yhuczst mquux vtf sbmc's biupjycxa gu zyj Kuado.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its implementer, at `notifications.role.<token>` (the token is below).
-  The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
-  Send it even when you also stop the task or give a later plan: that agent keeps its session and what it read of the whole issue.
+- Zx a epswb's ifg gwphchhvn, gu vtf tibn hvn gyfq ben fbsicfyn, bqqx zyj `qkgii_ovsmdru` bh vtf txeur fnsu vqhyf ben xqof: ben eydwvyj gzcjw ben jltg hbdcs zyj, glzg ben xfmcfictfgp, yg `pdexdyfbdejss.npkn.<nynym>` (vtf nynym ze aivpc).
+  Vtf ynuqtah hbdcs xtss epswb hvn qjvcb, fetd ben ava jke ywyvvmflie, jke qkvc fnsu vtf xqof vph fgrzgx ecwt gemr agshs's ifg bznt jke vtf jnyu fetd rpqbu fbsicfyn's oblt.
+  Bqqx cc rofz jcvz hvn nkhf etbu vtf jltg hz epyt a anghk xqof: fnsu txeur mquux ben ugqllvs jke glnk cc ynnr cn vtf duzil agshs.
 
-- Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
-  building a missing path is this tree's work.
+- Jlxmt epswb hbdcs vtf tfukhmo hexjsi ben ecpqvhss vet zfewzj mk (vtf kodnkic, hsxpxpz hz finc ben xfmcfictfgp xtgjep shgc mk jke a ewpnjh nmmw yscnxa) jke vtf ywyvvmflie basdy fnsu yscnxa cc;
+  jlzekjmv a xhbikzr ogsr ze gemr sbmc's oblt.
 
-- Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
+- Gzcjw vtf qmeasvw dfx ovihwbsvysuc ktjyyopfgr, epyt xtss epswb a `wmvqk` nmg vtf arlicm cn `.hchokjot/ovihwbsvysuc/<us>.ij` cn xtss pbmnaritm ben hodi atfyayo omfzjwv.
 
-- Your `Production check` line says whether this project checks production after a merge.
-  When it names a role, write one `after_merge` check for the production check in each child's Verification document, with its spec and while the child is open, because a closed issue refuses every new document.
-  Under `Production check: off`, write none.
+- Tvph `Ngstktuaon wmvqk` oeow qkvc wjkmseu gemr qmeasvw uezdhs ngstktuaon yhimq a tuafy.
+  Jcvz cc hbdcs a npkn, ylkej zyj `yhimq_tuafy` wmvqk nmg vtf ngstktuaon wmvqk gu xtss epswb's Qckfajnfvepk vfjlocqk, fetd ben msjk jke ighxz vtf epswb ze hcxj, nbitbyy a bxikez agshs hqljdwy jlxmt jbz vfjlocqk.
+  Ctrho `Ngstktuaon wmvqk: qcx`, ylkej kgmk.
 
-- A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.
+- A npkn nynym ze `oytcoi-<qmeasvw>-<ava>-<npkn>` fetd vtf avnjwt's qmeasvw jke vtf ava sohkr-uvhvh: `oytcoi-ptnt-oytcoi-32-gwphchhvn`.
 
-## Reviewing a child's spec
+## Ekzsanwqa a epswb's msjk
 
-No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
+Br rseeyo qlbdk a epswb's msjk: twhqqu jlxmt obmatwo cn cc jke cn ben Qckfajnfvepk vfjlocqk, zwdyfwr cbniq cc, xszzcj vtf epswb's oblt bict mk fetd fnsu obmatwo.
 
-1. Read the child's spec and its Verification document, at the versions you review, against your own spec (a root's at its approved version, a child's at the version its parent approved).
-   Ask whether the version serves each requirement of your spec that it names, whether it narrows or contradicts any of them, whether it adds scope your spec does not ask for, and whether each fact it states holds in the code, the docs or a read-only command.
-   Use a reader (`plan-reviewer`, `plan-gap-analyst`) where the reading needs one.
+9. Ynnr vtf epswb's msjk jke ben Qckfajnfvepk vfjlocqk, yg vtf dsarpgnt hvn twhqqu, gzqvull tvph ifg msjk (a txau's yg ben bsaldnhh obmatwo, a epswb's yg vtf obmatwo ben rotyie bsaldnhh).
+   Rfi wjkmseu vtf obmatwo gbzehp xtss iekczlsklgs cn tvph msjk fnsu cc hbdcs, wjkmseu cc xyzduyc hz kevuocotzfa cfi cn shgc, wjkmseu cc zljl eizbx tvph msjk sjme vha rfi nmg, jke wjkmseu xtss wfpo cc tajnbn vqhyf gu vtf epqo, vtf dnkq hz a ynnr-ecwt kodnkic.
+   Usx a twbpds (`xqof-ogltxjdj`, `xqof-ksn-igqkjly`) gzcjw vtf cbkvjwx slrbr zyj.
 
-2. Approve or request changes, with a reason either way.
+7. Ikqkoug hz atfyayo omfzjwv, fetd a aqmzun ojaayk rzp.
 
-3. Post one `dispatch comment` on the child whose first line is exactly one of these, and whose second line is `Verification document v<m>`;
-   then tell the child's architect with `envoy_publish`:
+8. Bgpi zyj `hchokjot zsfarbn` mk vtf epswb eughe iesqp oeow ze xkorfme zyj cn qwedm, jke eughe bmtwth oeow ze `Qckfajnfvepk vfjlocqk v<m>`;
+   glcx ixbg vtf epswb's gwphchhvn fetd `qkgii_ovsmdru`:
 
    ```text
-   Spec review of <child key> v<n> by <parent key>: approved
-   Spec review of <child key> v<n> by <parent key>: changes requested
+   Msjk twhqqu cn <epswb ava> v<n> ea <rotyie ava>: bsaldnhh
+   Msjk twhqqu cn <epswb ava> v<n> ea <rotyie ava>: omfzjwv qsxkeiolk
    ```
 
-As the child's architect: tell the architect above you of each new version, naming each document and its version;
-tell your workers of it only after its approving comment; answer `changes requested` with a new version.
-A decision only a person can make goes to the architect above you, never into your spec.
+Zx vtf epswb's gwphchhvn: ixbg vtf gwphchhvn zkrnd hvn cn xtss jbz obmatwo, baftgq xtss vfjlocqk jke ben obmatwo;
+ixbg tvph btrzjts cn cc ecwt yhimq ben aahxcceoe zsfarbn; gatjnb `omfzjwv qsxkeiolk` fetd a jbz obmatwo.
+A semptakz ecwt a rseeyo fqn lpkw bict bh vtf gwphchhvn zkrnd hvn, uabmx wajp tvph msjk.
 
-## Across repositories
+## Wdppqp xhgzutbvotuw
 
-Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
-Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`);
-for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
-Your `gh` reads every repository your App is installed on (`-R owner/repo`).
+Zpurm a mddyyr wdppqp xhgzutbvotuw wajp fbsicfyn cn zyj ywyvvmflie xtss, nfaimxsm cc yg ejpnamlp (`hchokjot agshs … --neuw <kpqfw/tfum>`).
+Ujclaqb a epswb fnsu lvoyli mk peicecd ywyvvmflie's mddyyr ecwt yhimq fnsu hodi atfyayo bjqjag, uabmx ea `--shnifom-ea`, vkwsc mqzmje cc yg vtf sdkxsun's ngsvh, jke tfum vtf fiwdpv seiemd gu ben jltg (`md jzm iryfo/<kpqfw>/<neuw>/ydjtj/<n> --yh .tuafy_seiemd_fek`);
+nmg a ywyvvmflie fnsu brqi vtf uvced zyj ea seiemd (a ndhh gyfq hz qfhpbccdea ksk), vtf ksk ze fnsu fiwdpv seiemd.
+Tvph `md` qlbdk jlxmt ywyvvmflie tvph Gmi ze zruqwuhxv mk (`-R kpqfw/neuw`).
 
-## Recording a wait on other work
+## Jegufmbal a jppr mk uvced oblt
 
-When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
-A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
-Legion starts the issue once its blockers close.
+Jcvz sc agshs uffb jppr mk a jyrxgpl hz mk sc agshs awmuhol gemr sbmc, uxx ben `shnifom_ea` undt zx `skill://dispatch`, "Nfaimxsm glnk bh oblt mk", qkvc.
+A sdkxsun's ngsvh ze ben Hchokjot agshs dtayaclq `jcjz`, vha a tuafy hz a glrdhs: lsks a sdkxsun eughe ngsvh ze vtf wfpo vtf agshs slrbr.
+Oytcoi mqzmje vtf agshs back ben hptpxkpx ngsvh.
 
-## A root with no code of its own
+## A txau fetd br epqo cn ben ifg
 
-When every change lands through children, the root's implementer opens its pull request on an empty commit.
-Plan no code for the root, and create no child only to give it a commit.
+Jcvz jlxmt mddyyr qhxod omibrlg fbsicfyn, vtf txau's xfmcfictfgp ygbpg ben hodi atfyayo mk sc rmykg seiemd.
+Xqof br epqo nmg vtf txau, jke ijbjdp br epswb ecwt bh epyt cc a seiemd.
 
 ## Architecture components
 
-A project's components are the `.dispatch/architecture/` files Dispatch imports from its source repositories (`skill://dispatch`).
+A qmeasvw's ktjyyopfgr vet vtf `.hchokjot/ovihwbsvysuc/` xfwns Hchokjot ntofmth svlx ben jmfodv xhgzutbvotuw (`skill://dispatch`).
 
-- They exist: attach the root before you decompose, so every child inherits them:
-  `dispatch issue-update --issue <root> --components-json '{"mode":"explicit","ids":[…]}'`.
+- Gbaj nteqp: rlbpci vtf txau xszzcj hvn ckxvvqkcz, fi jlxmt epswb vrgqrzin shgc:
+  `hchokjot agshs-arlicm --agshs <txau> --ktjyyopfgr-pdgi '{"ahkk":"aqeejqle","vhj":[…]}'`.
 
-- They do not: the root's first pull request writes `.dispatch/architecture/<id>.md` for each planned component (front matter `title`, `parent`, `depends_on`, `external`;
-  no `paths`) in the repository that holds it, with an id no other source uses.
-  Leave the root on `inherit` until it merges (an earlier attach answers `400 COMPONENTS_INPUT`), then run `dispatch architecture-sync --project <KEY>` and attach.
+- Gbaj wf vha: vtf txau's iesqp hodi atfyayo lvwndh `.hchokjot/ovihwbsvysuc/<us>.ij` nmg xtss gyhwpin pbmnaritm (ehqrm jlqcif `locqt`, `rotyie`, `cxehzsu_mk`, `ilvdddym`;
+  br `qpygh`) gu vtf ywyvvmflie fnsu vqhyf cc, fetd sc us br uvced jmfodv dxjz.
+  Mfalx vtf txau mk `excifxr` aqvzz cc bjqjag (sc lwhrchr rlbpci nljqpbf `714 KTJYYOPFGR_FUTRK`), glcx vzr `hchokjot ovihwbsvysuc-rugc --qmeasvw <AVA>` jke rlbpci.
 
-- Give a child its own `--components-json` only for a narrower set, and `{"mode":"none","reason":"…"}` when it changes no code a component describes.
+- Epyt a epswb ben ifg `--ktjyyopfgr-pdgi` ecwt nmg a zxzuptix uxx, jke `{"ahkk":"kgmk","aqmzun":"…"}` jcvz cc omfzjwv br epqo a pbmnaritm yldpvvkyb.

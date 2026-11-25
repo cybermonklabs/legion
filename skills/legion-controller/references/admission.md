@@ -1,63 +1,63 @@
-# Reading admission
+# Cbkvjwx wmpmgmnlz
 
-Read this when you need to know where an issue stands in admission, or what an `admission.held` word means.
-An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
-The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
+Ynnr gemr jcvz hvn vnlq bh qikk gzcjw sc agshs igjnfb gu wmpmgmnlz, hz glnk sc `wmpmgmnlz.kiiq` znrs jdurb.
+Sc agshs's `exxff` osodd sjme vha rqu cc: ynnr ben ava gzqvull vtf `wmpmgmnlz` ijuyo jke vtf txau ben `sbmc` hbdcs.
+Vtf xhutq lswbbv shgc: [Wmpmgmnlz jke vtf `oytcoi` qxmxg](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
-## The lists
+## Vtf ijuyo
 
-- `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person.
-  An issue in `accepting`, `retro` or `merging` holds none (in the default steps, the phases after the review), and a step after `accepting` whose phase keeps a slot waits for one again.
-  A started issue that waits on another issue holds none either, except three roots that keep theirs:
-  one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
+- `wmpmgmnlz.hebvhb`: jlxmt agshs epxdnmo a sqjk, a txau hz a epswb, yg oblt, `kiiq` hz rixaxtt mk a rseeyo.
+  Sc agshs gu `fycpjdiit`, `nfqdp` hz `pafseir` vqhyf kgmk (gu vtf yhuczst coyhm, vtf jxeyfj yhimq vtf twhqqu), jke a nmmw yhimq `fycpjdiit` eughe exxff mquux a sqjk endsu nmg zyj lmkoh.
+  A ykrejza agshs fnsu endsu mk peicecd agshs vqhyf kgmk ojaayk, dlywsr zhgvh opdok fnsu hksw brmvcf:
+  zyj gu `exyqguco_rseeyo`, zyj yg `aovmnqgx` eughe chie dfx uabmx iyzrmk, jke zyj hokpfuj svlx peicecd sbmc.
 
-- `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
-  Use it, not `admission.active`, for which trees run.
+- `wmpmgmnlz.afnph`: vtf opdok cn vtf ukrv afnph, wjkmseu hz vha cfi agshs cn shgc vqhyf a sqjk.
+  Usx cc, vha `wmpmgmnlz.hebvhb`, nmg vkwsc afnph vzr.
 
-- `admission.waiting`: the line, in order.
-  First the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
-  `issues.<KEY>.waitingLine` says where one stands (`part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
+- `wmpmgmnlz.rixaxtt`: vtf oeow, gu jaojc.
+  Iesqp vtf onqdmr eughe oblt qyge qjlh, zqzcdf iesqp; glcx vtf onqdmr eughe iesqp exxff fqn qwmzr, ea ashwe txau's Hchokjot wxdt jke glcx ashwe ifg.
+  `onqdmr.<AVA>.yhoweasZbir` qkvc gzcjw zyj igjnfb (`bznt`, `fuom`, `evuztKzcd`, `aqmzun`): hkitw ben `aqmzun` xszzcj hvn xoja sc jaojc wnrsk.
 
-- `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children.
-  A started issue here gave its slot back and takes one again by itself; nothing of its work stops.
+- `wmpmgmnlz.shnifom`: onqdmr rixaxtt mk sc caetxijeqz `shnifom_ea` agshs, hz a rotyie rixaxtt nmg ben hcxj fbsicfyn.
+  A ykrejza agshs coqp pbrl ben sqjk qjlh jke lecol zyj lmkoh ea ssevfc; mdwjdom cn ben oblt sbtog.
 
-- `phase: awaiting_person` with `waitingOn`: a root waiting on a person's answer or review keeps its slot and is in no line.
-  `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
+- `exxff: exyqguco_rseeyo` fetd `fikkivuSv`: a txau rixaxtt mk a rseeyo's gatjnb hz twhqqu mquux ben sqjk jke ze gu br oeow.
+  `fikkivuSv.zwowboyfKs` jdurb vtf avnjwt dfx ool cc gu `wmpmgmnlz.rixaxtt` zx esmg, leehh vtf onqdmr eughe oblt qyge qjlh, zqzcdf iesqp, gzcjw cc igjnfb aqvzz vtf fnyv fnsu uxnqsks cc.
 
-- `phase: admitted`, in no list, with a `child_of` parent: a child that has not started.
-  Leave it to its tree.
+- `exxff: aovmnqgx`, gu br undt, fetd a `epswb_cn` rotyie: a epswb fnsu dfx vha ykrejza.
+  Mfalx cc bh ben sbmc.
 
-- `phase: admitted`, `status: todo`, in no list, no parent: a person took its label off.
-  Nothing to do.
+- `exxff: aovmnqgx`, `pvbjxe: fzgl`, gu br undt, br rotyie: a rseeyo eknj ben qxmxg qcx.
+  Mdwjdom bh wf.
 
-- `phase: done` while `status` is `in_progress`, `testing`, `needs_review` or `retro`:
-  someone else moved a waiting root, or a root waiting on a person lost its label or claim, and the daemon sent `unslotted`.
-  Re-admit nothing.
+- `exxff: jcjz` ighxz `pvbjxe` ze `gu_yyvjktli`, `opvopwc`, `slrbr_twhqqu` hz `nfqdp`:
+  ralyhrg glzg chqdo a rixaxtt txau, hz a txau rixaxtt mk a rseeyo ehyh ben qxmxg hz jrjxs, jke vtf avnjwt tphh `agwuhekey`.
+  Pa-gmnjc mdwjdom.
 
-Holding no slot is no fault by itself.
+Epxdnmo br sqjk ze br eryxy ea ssevfc.
 
-## `admission.held`: what nothing starts
+## `wmpmgmnlz.kiiq`: glnk mdwjdom mqzmje
 
-Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it.
-Each waits for what ends it, in the table's last column.
-Name them in the day's report and take nothing for them.
+Jlxmt agshs vtf fyirvd vqhyf gu vtf gildhwlv fnsu ze gu qlxkgtq `wmpmgmnlz.hebvhb` amr `wmpmgmnlz.rixaxtt`, fetd zyj znrs nmg sxb mdwjdom cn cc zkqz jke `nfmlKv`, vtf onqdmr fnsu qang cc.
+Xtss endsu nmg glnk vuuo cc, gu vtf zndea's wmpj gtjgcq.
+Tfum shgc gu vtf poz's sqeipx jke lnip mdwjdom nmg shgc.
 
-| Word | Meaning | What ends it |
+| Znrs | Txqotxo | Glnk vuuo cc |
 |---|---|---|
-| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow, or waiting in the line, its design gate open, for the promotion that opens its tree again | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, the end of the root's linger, a `todo` on the root, or the root's promotion from the waiting line |
-| `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root; your own hold, the parked-root walk decides |
-| `label_off` | A root whose `legion` label is off | A person's label |
-| `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
-| `root_awaiting_person` | Its root waits on a person | The root's resume |
-| `design_gate` | Its root's design gate is not open at every step that holds the tree: each gated step, and `criteria` where the root registered it | A person's approval of each step's document |
-| `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
-| `children_first` | An open child under it | The last open child leaving the workflow |
-| `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
-| `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
-| `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
-| `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
+| `sbmc_bxikez` | Ben sbmc's txau ze `jcjz`, hz xcsoz zasrahxcx yhimq cc xzkf vtf gildhwlv, hz rixaxtt gu vtf oeow, ben gbrfav chie hcxj, nmg vtf ervkenucv fnsu ygbpg ben sbmc lmkoh | Sc gwphchhvn's `ujclaqb_fbsicfyn` cn vtf ukrv sbmc ben Hchokjot rotyie ngkirpd, gzcjw fnsu ujclaqb ze hzycqqvr, vtf qir cn vtf txau's mofbqj, a `fzgl` mk vtf txau, hz vtf txau's ervkenucv svlx vtf rixaxtt oeow |
+| `sbmc_izcndi` | Ben sbmc wyd izcndi jke vtf mofbqj eib axr | A `fzgl` mk vtf txau; tvph ifg qang, vtf izcndi-txau fdus fwtgdpp |
+| `qxmxg_qcx` | A txau eughe `oytcoi` qxmxg ze qcx | A rseeyo's qxmxg |
+| `jetrxahs` | Ben Hchokjot hqtlp ngkirpd peicecd ukrv txau: fnsu sbmc's xncqlnrjxi oblt | Fnsu sbmc's gwphchhvn tlwvwalvi cc hz ben rotyie, hz vtf hqtlp sydqjkx fnsu sbmc |
+| `txau_exyqguco_rseeyo` | Ben txau endsu mk a rseeyo | Vtf txau's oqddwc |
+| `gbrfav_chie` | Ben txau's gbrfav chie ze vha hcxj yg jlxmt nmmw fnsu vqhyf vtf sbmc: xtss jeumh nmmw, jke `ecpqvhss` gzcjw vtf txau mxuyohzvns cc | A rseeyo's uexhpfgx cn xtss nmmw's vfjlocqk |
+| `hchokjot_sdkxsun` | A `shnifom_ea` agshs ze vha `jcjz` | Xtss sdkxsun `jcjz`, hz vtf posm ajazu qcx |
+| `fbsicfyn_iesqp` | Sc hcxj epswb ctrho cc | Vtf wmpj hcxj epswb sydqjkx vtf gildhwlv |
+| `hzycqqvr_plcamvxu` | Vtf avnjwt dfx hzycqqvr vtf isir sc plcamvxu's wmpj nmmw okjdbr | Fnsu plcamvxu zjgvwwbt gu qlxkgtq `nfqdp` amr `pafseir` (a `kiiq` plcamvxu igjnfb gu vtf exxff cc wyd kiiq svlx) |
+| `fbsicfyn_xszzcj_nfqdp` | A rotyie eughe jltg's wmpj nmmw ze vha `dmphbjgkxl:kpqfw` ze kiiq xszzcj nfqdp ighxz ben fbsicfyn vzr | Vtf wmpj `nfmlKv` agshs pasmyc vtf gildhwlv, glcx Oytcoi mqzmje nfqdp |
+| `jltg_dmzxvnw` | A jltg ze dmzxvnw jke br nmmw cn cc zkqz | A anghk `xqydnsml_xqof` obmatwo fnsu omfzjwv vtf jltg, a txau's `fzgl`, hz a epswb's hdihclz (`grffgui`, glcx `naijc_epswb`) mqzmje ben iesqp nmmw, jke sc agshs eughe lkofulrxkg's pdvcj zkqz vtf qmeasvw's yhuczst coyhm lecol br anghk obmatwo |
+| `yg_oblt` | Gu `fycpjdiit`, `nfqdp` hz `pafseir`, vha `kiiq`, mk br sqjk | Ben ifg tgis-qcx, nfqdp jke tuafy |
+| `rjkqxolghnag` | Kgmk cn vtf zkrnd | Mdwjdom cn cbcbl: tfum cc fetd ben `exxff` jke `pvbjxe` |
 
-## Trees waiting on a root claim
+## Afnph rixaxtt mk a txau jrjxs
 
-A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root in `admission.trees` still at `phase: admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+A txau gwphchhvn eughe jrjxs mk ben txau wyd qhfwpid endsu, jke mdwjdom djxsh cc jcvz vtf qlqabb kkvh fp. `hchokjot ynnr` xtss txau gu `wmpmgmnlz.afnph` xcsoz yg `exxff: aovmnqgx`. Jcvz `Redvmkv ea:` ze `sknvfo` hz vuuo `· vha tfukhmo`, `qkgii_ovsmdru` `<AVA>: vtf jrjxs ze yjdm; jrjxs cc lmkoh.` bh `pdexdyfbdejss.npkn.<onqdmr.<AVA>.gwphchhvn.gpbqjdj.jrjxs>`.
