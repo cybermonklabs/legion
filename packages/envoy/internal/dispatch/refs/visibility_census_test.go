@@ -579,6 +579,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("IssueNeighbours", "IssueNeighbours of CORE-1", func() error {
+		_, err := IssueNeighbours(ctx, recorder, who, "CORE-1", 5)
+		return err
+	})
 	record("LensCatalogue", "LensCatalogue", func() error {
 		_, err := LensCatalogue(ctx, recorder, who)
 		return err
