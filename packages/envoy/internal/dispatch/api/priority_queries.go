@@ -116,19 +116,53 @@ const priorityProjectFilter = `(cardinality($2::text[]) = 0 or i.project_key = a
 
 // priorityBacklogTerms are the terms that read the second fault's issues, after priorityMemberTerms:
 // an open issue in `backlog` or `icebox` whose own row names a live priority that no issue above it
-// carries (advancesOriginTerms, the rule the listing's `?own=true` reads). A child that only
-// inherits a priority, or restates one an issue above it carries, is no fault. `backlog_keys` are
-// the issues of `stated`, a term of (key, issue) rows over which `i` stands for the issue, that
-// are open and stand in either status; the climb (`advances_above`) starts from them alone, so it
-// costs those issues' chains rather than the work under every priority. `advances_origins` is
-// each relation of members_seed such an issue originates.
+// carries, the rule the listing's `?own=true` reads through advancesOriginTerms. A child that only
+// inherits a priority, or restates one an issue above it carries, is no fault.
+//
+// `backlog_keys` are the issues of `stated`, a term of (key, issue) rows over which `i` stands for
+// the issue, that are open and stand in either status, and `backlog_stated` their own relations,
+// the rows of members_seed they state. `backlog_above` climbs from those issues alone to every
+// issue above them, bounded by parentDepthCap like every walk of the chain, so the climb costs
+// those issues' chains rather than the work under every priority. `backlog_carried` is each
+// priority an issue above one of them states, and `backlog_origins` each relation of
+// `backlog_stated` that no such issue states too.
+//
+// It is the priorities read's own writing of advancesOriginTerms' rule, which the listing keeps
+// for its own text: advancesOriginTerms tests each relation with a correlated `not exists` over the
+// climb and the relations, and under the generic plan of the summary the planner ran that test for
+// every one of the 1,600 relations of the corpus of production's counts before it kept the 393
+// of issues in backlog or icebox, scanning the relations again inside each test: 278 ms of the
+// summary's 294 (c-both-forms, Job infra5791-fin-both-forms-5rcm8, PostgreSQL 18.6,
+// 2026-11-25). Here the test is one anti-join against a set the planner builds once, from a climb
+// of a few rows, over relations already narrowed to those issues.
 func priorityBacklogTerms(stated string) string {
 	return `backlog_keys as (
 		select distinct s.key
 		from ` + stated + `
 		where i.closed_at is null
 			and i.status in (` + sqlStringList(priorityBacklogStatuses) + `)
-	), ` + advancesOriginTerms("members_seed", "backlog_keys")
+	), backlog_stated as materialized (
+		select s.key, s.priority
+		from members_seed s
+		where s.key in (select key from backlog_keys)
+	), backlog_above as (
+		select k.key, i.parent_key as above, 1 as depth
+		from backlog_keys k join issues i on i.key = k.key
+		where i.parent_key is not null
+		union all
+		select a.key, p.parent_key, a.depth + 1
+		from backlog_above a join issues p on p.key = a.above
+		where p.parent_key is not null and a.depth < ` + parentDepthCapSQL + `
+	), backlog_carried as (
+		select distinct a.key, up.priority
+		from backlog_above a
+		join members_seed up on up.key = a.above
+	), backlog_origins as (
+		select r.key, r.priority
+		from backlog_stated r
+		left join backlog_carried c on c.key = r.key and c.priority = r.priority
+		where c.key is null
+	)`
 }
 
 // priorityFaultRowColumns are the columns of a fault row, as the jsonb object pairs that
@@ -267,7 +301,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, ` + priorit
 	), ` + priorityBacklogTerms(`members_seed s join member_issue i on i.key = s.key`) + `, in_backlog as (
 		select p.key, p.title, p.project_key, p.status, p.assignee, p.claimed_by, p.claimed_at, p.updated_at
 		from member_issue p
-		where p.key in (select key from advances_origins)
+		where p.key in (select key from backlog_origins)
 	), ` + priorityBacklogListTerm + ` as (
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
 		from in_backlog p
@@ -319,7 +353,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, ` + priorit
 			'counts', (select coalesce(jsonb_object_agg(counted.priority, counted.total), '{}'::jsonb)
 			           from (
 			             select o.priority, count(*) as total
-			             from advances_origins o
+			             from backlog_origins o
 			             group by o.priority
 			           ) counted),
 			'rows', (select coalesce(jsonb_agg(jsonb_build_object(` + priorityFaultRowColumns + `,
@@ -338,7 +372,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, ` + priorit
 var prioritySummaryQuery = `with recursive ` + priorityMemberTerms + `, ` +
 	priorityBacklogTerms(`members_seed s join issues i on i.key = s.key and `+priorityProjectFilter) + `
 	select count(*) filter (where member_key.key is null),
-	       (select count(distinct key) from advances_origins)
+	       (select count(distinct key) from backlog_origins)
 	from issues i
 	left join (select distinct key from members) member_key on member_key.key = i.key
 	where i.closed_at is null

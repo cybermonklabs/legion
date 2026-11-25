@@ -312,8 +312,9 @@ var issueAdvancesFilterTerms = `advances_relations as (
 // rows, the live `advances` relations as the issues' own rows state them, and keys a term of the
 // issues to read. An issue carries every priority it or an issue above it states, so a relation
 // is carried from above exactly when an issue on the stating issue's parent chain states the same
-// priority. It is the one writing of the rule both the second fault of the priorities read
-// (priorityBacklogTerms) and the listing's `?own=true` (issueAdvancesFilterTerms) read.
+// priority. The listing's `?own=true` (issueAdvancesFilterTerms) reads it; the second fault of the
+// priorities read writes the same rule over its own seed, shaped for its plans
+// (priorityBacklogTerms).
 //
 // `advances_above` climbs from each key to every issue above it, bounded by parentDepthCap like
 // every walk of the chain, so a raced reparent that ever committed a cycle still terminates.
