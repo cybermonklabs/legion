@@ -728,8 +728,9 @@ test("with no filter the page is the conversation, each node edited once, every 
       rowOf(folded, seeded.key),
       "the outline draws a row for the issue itself"
     ).toBeUndefined();
-    const above =
-      (await childrenSection(page).count()) > 0 ? childrenSection(page) : filterRow(page);
+    // The seed files children under the issue, so the children's section stands above the
+    // outline (R14), and the view row above it where the issue has none.
+    const above = seeded.children.keys.length > 0 ? childrenSection(page) : filterRow(page);
     const aboveBox = await above.boundingBox();
     expect(aboveBox, "the page draws nothing above the outline").not.toBeNull();
     const firstTop = folded.find((row) => row.visible)?.box?.y ?? Number.POSITIVE_INFINITY;

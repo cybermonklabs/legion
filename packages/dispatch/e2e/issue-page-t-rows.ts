@@ -198,9 +198,15 @@ const PAGES_DRAWN_AT_MOST = 40;
  */
 async function drawEveryPage(page: Page): Promise<void> {
   const control = page.locator("[data-issue-page] [data-tree-page] button").first();
+  const rows = page.locator("[data-issue-page] [data-node-row]");
   for (let pressed = 0; pressed < PAGES_DRAWN_AT_MOST; pressed += 1) {
+    // The outline is settled on entry, and each press below waits until its rows are drawn.
     if ((await control.count()) === 0) return;
+    const before = await rows.count();
     await control.click();
+    await expect
+      .poll(() => rows.count(), { message: "a press of a page's control drew no more rows" })
+      .toBeGreaterThan(before);
   }
   await expect(control, "a page of children is still held back after every press").toHaveCount(0);
 }
