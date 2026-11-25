@@ -55,6 +55,7 @@ func exceptionPayloadOf(t *testing.T, exception contracts.Envelope) deliveryExce
 // one-line summary -- is carried whatever the payload's size. The delivery path passes no bound
 // and carries the payload whole, as it always has.
 func TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		payload string
@@ -92,6 +93,7 @@ func TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound(t *testing.T)
 // publish that fails is logged and nothing else -- no retry, and nothing of the answer changes. A
 // closed client is the failure every other cause reaches this branch the same way.
 func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	logs := &cmdtest.LockedBuffer{}
 	logger := logging.NewWithWriter("test", logs)
@@ -145,6 +147,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 // A non-live state outside roleholder is not a refusal reason the Legion daemon knows, so it raises
 // no exception. This keeps a third listener state from becoming a malformed role-lane exception.
 func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	item := refusedPublish("{}")
 	item.Topic = contracts.RoleTopicPrefix + "unknown-refusal"
@@ -170,6 +173,7 @@ func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
 // refusalExceptionBound reaches the exception lane of a live bus without its payload, and with the
 // fields a consumer of the refusal needs.
 func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	item := refusedPublish(strings.Repeat("p", refusalExceptionBound+1))
 	item.Topic = contracts.RoleTopicPrefix + "oversized-refusal"
@@ -208,6 +212,7 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 // exception follows it; a publish whose message the route kept instead is answered 202 and raises
 // nothing, because nothing was refused.
 func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const refused, kept = "refusal-exception-opted-out", "refusal-exception-kept"
 

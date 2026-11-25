@@ -268,15 +268,25 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
 /**
- * The code of the `403` for a request by an access token the secrets broker issued that holds
- * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
- * service and a session, no person and no project, and Dispatch serves it on the routes its read
- * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
- * runs and before its idempotency key is read, so the refused request claims no key and writes
- * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
- * the request possible for that token.
+ * The code of the `403` for a request by a read-only token to a route outside Dispatch's read
+ * class. Every token that holds `read` is read-only: one the secrets broker minted from a read
+ * entry or narrowed when its trade asked for `read`, and a personal token minted with `read`.
+ * Dispatch serves such a token on the GET routes it classes as reads and refuses it on every
+ * other route and on `GET /ws/live`, before the route's handler runs and before its idempotency
+ * key is read. So the refused request claims no key, and writes nothing but the record of the
+ * token's use: a broker token's spent DPoP proof, or a personal token's last use. No sign-in and
+ * no other scope makes the request possible for that token.
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
+
+/**
+ * The code of the `403` for a request by a read-only token that carries a cut (the broker's
+ * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
+ * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
+ * handler runs, and names the cut, rather than answer it with the present. On a route outside
+ * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ */
+export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
 /** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
  *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as

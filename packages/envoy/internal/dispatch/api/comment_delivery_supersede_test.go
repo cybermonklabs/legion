@@ -51,19 +51,16 @@ func copiesOfTheComment(
 	return copies
 }
 
-// awaitUnclaimedPendingAttempt waits, for at most 10 s, until the comment's first attempt for
-// target is pending with no claim on it: the shape a lane leaves an attempt it stood down from
-// because a later attempt was still in flight (claimCommentDeliveryAttempt).
+// awaitUnclaimedPendingAttempt waits until the comment's first attempt for target is pending with
+// no claim on it: the shape a lane leaves an attempt it stood down from because a later attempt was
+// still in flight (claimCommentDeliveryAttempt). Its one bound is the test binary's deadline
+// (waitUntil).
 func awaitUnclaimedPendingAttempt(t *testing.T, database *store.Store, commentID, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !unclaimedPending(t, database, commentID, target) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the attempt of %s for %s is not pending and unclaimed: the lane that reached it "+
-				"while a later attempt was in flight neither stood down nor gave its claim back", commentID, target)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the attempt of "+commentID+" for "+target+" to be pending and unclaimed: the lane that reached it "+
+		"while a later attempt was in flight to stand down and give its claim back", func() bool {
+		return unclaimedPending(t, database, commentID, target)
+	})
 }
 
 // mentionAttemptSplit is how the delivery sweep and the outbox each count the comment's attempt

@@ -1408,18 +1408,13 @@ func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
 		_, _, _, _, err := ProcessBatch(ctx, Deps{Store: database, Embedder: embedder})
 		done <- err
 	}()
-	waiting := storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second)
-	if waiting >= 1 {
-		time.Sleep(scanHeld)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
+	time.Sleep(scanHeld)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Errorf("release the scan: %v", err)
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("ProcessBatch: %v", err)
-	}
-	if waiting < 1 {
-		t.Fatal("the scan never waited on the held lock: the interleaving did not happen")
 	}
 	if embedder.calls == 0 || embedder.err != nil {
 		t.Fatalf("%d calls; reading the claim in the first: %v", embedder.calls, embedder.err)

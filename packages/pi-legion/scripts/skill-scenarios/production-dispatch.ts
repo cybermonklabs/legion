@@ -66,17 +66,20 @@ export interface DispatchCredentials {
 /**
  * Dispatch as the calling session finds it (`dispatchSettings` over the envoy.json that
  * `envoyConfigPath("command", env)` chooses, and the checkout's `.envoy/envoy.json` under `cwd`).
- * Throws `Dispatch is not configured: <why>` when no server or no token resolves. The message
+ * Rejects `Dispatch is not configured: <why>` when no server or no token resolves. The message
  * names the file or the variable that is missing, never a token.
  */
-export function resolveDispatch(env: DispatchEnvironment, cwd: string): DispatchCredentials {
+export async function resolveDispatch(
+  env: DispatchEnvironment,
+  cwd: string
+): Promise<DispatchCredentials> {
   let file: string;
   try {
     file = envoyConfigPath("command", env);
   } catch (error) {
     throw new Error(`Dispatch is not configured: ${messageFor(error)}`);
   }
-  const resolution = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+  const resolution = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
   if (!resolution.enabled) {
     throw new Error(`Dispatch is not configured: ${resolution.error ?? resolution.notice}`);
   }

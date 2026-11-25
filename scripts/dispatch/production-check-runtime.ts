@@ -109,9 +109,9 @@ export type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
 
 /** Dispatch as every command resolves it, or null when it is off. Its warnings name file paths,
  * so they are not printed. */
-export function resolveDispatch(): DispatchConfig | null {
+export async function resolveDispatch(): Promise<DispatchConfig | null> {
   try {
-    const { dispatch } = sessionDispatchSettings(
+    const { dispatch } = await sessionDispatchSettings(
       sessionConfigFile("command", process.env),
       process.env,
       { cwd: process.cwd() }
@@ -166,11 +166,11 @@ export type Prelude<Options> =
  * that is off prints the word that check spells for it. Both go to stderr and answer 2, since a
  * check that could not be run at all is unavailable.
  */
-export function readCommandLine<Options>(
+export async function readCommandLine<Options>(
   argv: readonly string[],
   parse: (argv: readonly string[]) => Options,
   unavailable: Category
-): Prelude<Options> {
+): Promise<Prelude<Options>> {
   let options: Options;
   try {
     options = parse(argv);
@@ -179,7 +179,7 @@ export function readCommandLine<Options>(
     console.error(`usage: ${error.message}`);
     return { ready: false, code: 2 };
   }
-  const config = resolveDispatch();
+  const config = await resolveDispatch();
   if (config === null) {
     console.error(`unavailable: ${unavailable}`);
     return { ready: false, code: 2 };

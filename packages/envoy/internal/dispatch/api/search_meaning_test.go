@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"math"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -27,6 +30,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeEmbedder is a deterministic, text-keyed stand-in for Cohere (LEGION-549's tests use a fake
@@ -50,6 +55,15 @@ type fakeEmbedder struct {
 	// the context's error then. It models a model service slower than its caller allows (the
 	// related-item check's meaning allowance).
 	delay time.Duration
+	// holdDocuments, once set, holds every InputDocument call before it answers: the call is
+	// counted in holding, says so on documentsHeld (without waiting for a reader), and waits until
+	// releaseDocuments is closed or its context ends, then answers as it would have. It models
+	// background work held in its call to the model service. A test makes the two channels before
+	// any call can reach them, and sets holdDocuments after.
+	holdDocuments    atomic.Bool
+	documentsHeld    chan struct{}
+	releaseDocuments chan struct{}
+	holding          atomic.Int32
 
 	callsMu sync.Mutex
 	calls   int
@@ -59,6 +73,18 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 	f.callsMu.Lock()
 	f.calls++
 	f.callsMu.Unlock()
+	if inputType == embed.InputDocument && f.holdDocuments.Load() {
+		f.holding.Add(1)
+		select {
+		case f.documentsHeld <- struct{}{}:
+		default:
+		}
+		select {
+		case <-f.releaseDocuments:
+		case <-ctx.Done():
+		}
+		f.holding.Add(-1)
+	}
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -319,7 +345,11 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
 // their InputQuery calls go straight to the unwrapped fake embedder and are never subject to
-// that backoff at all.
+// that backoff at all. That a live search never waits behind the background work is shown by the
+// searches answering while the drain is held in its call to the model service, with everything
+// it holds there: its claim on the pending rows, its share of the token budget and its limiter's
+// slot. A search that waited behind that work would not answer until the drain was let go, which
+// happens only once every search has answered.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
@@ -340,11 +370,14 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	// for the rest of the test - exactly a saturating background drain in progress.
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
+	embedder.documentsHeld = make(chan struct{}, 1)
+	embedder.releaseDocuments = make(chan struct{})
 	createInteractionIssue(t, handler, "SAT", "Other bulk content that never finishes embedding", "Body.")
 
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
+	floor := backgroundDeps.PaceIntervalForTest()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -354,20 +387,47 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			}
 		}
 	}()
-	// The drain runs until the searches below are done, then stops: waiting out bgCtx's own
-	// deadline would only idle the test.
+	// The drain runs until the searches below are done, then stops.
 	defer func() { cancel(); <-done }()
 
-	// Give the background goroutine a moment to actually hit a throttle and start backing off
-	// (its very first call is unpaced, at RateLimitedEmbedder's own floor interval).
-	time.Sleep(50 * time.Millisecond)
+	// The background drain is backing off once a call of it came back throttled, which lengthens
+	// its pacing interval past the floor it starts at (RateLimitedEmbedder).
+	testwait.Until(t, "the background drain to back off from a throttled call (its pacing interval)", func() (time.Duration, bool) {
+		select {
+		case <-done:
+			t.Fatal("the background drain stopped before any call of it was throttled")
+		default:
+		}
+		interval := backgroundDeps.PaceIntervalForTest()
+		return interval, interval > floor
+	})
+
+	// The drain's next call of the model service is held there until every search has answered.
+	release := sync.OnceFunc(func() { close(embedder.releaseDocuments) })
+	defer release()
+	embedder.holdDocuments.Store(true)
+	testwait.Until(t, "the background drain's next call of the model service to be held (the calls held)", func() (int32, bool) {
+		select {
+		case <-embedder.documentsHeld:
+			return embedder.holding.Load(), true
+		case <-done:
+			t.Fatal("the background drain stopped before its next call of the model service was held")
+		default:
+		}
+		return embedder.holding.Load(), false
+	})
 
 	for i := range 5 {
-		started := time.Now()
-		response := searchResponse(t, handler, "q=wibbleflorp")
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Errorf("search request %d took %v while embedqueue was throttled/backing off, want well under 1s - it must never wait behind background work", i, elapsed)
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- searchRequestOn(t, handler, "/api/v1/search", "q=wibbleflorp") }()
+		raw := testwait.Receive(t, fmt.Sprintf("live search request %d to answer while the background drain is held in its call of the model service", i), answered)
+		if embedder.holding.Load() == 0 {
+			t.Fatalf("search request %d answered once the background drain's call was no longer held, which shows nothing", i)
 		}
+		if raw.Code != http.StatusOK {
+			t.Fatalf("search request %d: status=%d body=%s", i, raw.Code, raw.Body.String())
+		}
+		response := decodeBody[model.SearchResponse](t, raw)
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}
@@ -1565,13 +1625,11 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // minute learning that, so the savepoint bounds its own wait
 // (embeddingProjectKeysFilledLockWait).
 //
-// The bound asserted here is far looser than the setting and far tighter than the one it
-// replaces: a search that answers inside it is one that gave up waiting, and a search that
-// waits the statement bound out cannot pass it however loaded the server is. The page is
-// asserted too, because a short answer that lost the project's rows would be no better than a
-// slow one.
+// The page is asserted too, because a short answer that lost the project's rows would be no
+// better than a slow one. Which bound ended the read is the one the read's own failure names: a
+// read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
+// waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
-	t.Parallel()
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	ctx := context.Background()
@@ -1588,12 +1646,30 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 	}
 
 	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
-	started := time.Now()
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
-	waited := time.Since(started)
-	if waited > 5*time.Second {
-		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
-			waited)
+	var ended []string
+	for _, record := range records.Records() {
+		if !strings.HasPrefix(record.Message, "dispatch: a project-scoped meaning search could not read the embeddings project_key fill's progress") {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key != "error" {
+				return true
+			}
+			var failure *pgconn.PgError
+			if err, ok := attr.Value.Any().(error); ok && errors.As(err, &failure) {
+				ended = append(ended, failure.Code)
+			} else {
+				ended = append(ended, attr.Value.String())
+			}
+			return true
+		})
+	}
+	if len(ended) == 0 || slices.ContainsFunc(ended, func(code string) bool { return code != "55P03" }) {
+		t.Errorf("the scoped search's reads of the fill's progress row behind an ACCESS EXCLUSIVE lock ended with %q, want each to end at its own lock bound (embeddingProjectKeysFilledLockWait), lock_not_available (55P03): a read the statement bound ends (57014) waited out the 15 s the server allows a meaning statement",
+			ended)
 	}
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
@@ -1607,13 +1683,12 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // default). A deployment's connections hold such a plan after one search apiece; a database a
 // test has just opened holds none, and the failure
 // TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned covers is only raised
-// on a connection that does.
+// on a connection that does. The read's one bound is the test's own context, which ends only with
+// the test.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	var done bool
-	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+	if err := database.Pool.QueryRow(t.Context(), embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
 		t.Fatalf("read the fill's progress to prepare its plan: %v", err)
 	}
 }
