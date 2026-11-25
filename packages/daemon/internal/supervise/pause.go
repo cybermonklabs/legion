@@ -365,29 +365,93 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 }
 
 // stopWaitsForResult is whether the end of the claim's turn leaves a project pause's held
-// suspension waiting for the result of the turn's prompt (turnEnded): the hold is a pause's, and
-// Oh My Pi has not said yet how that prompt's work ended (resultPending: the prompt's send is
-// still unanswered, or it was acknowledged and its result is still to come). The result is what
-// decides the task — a turn that finished it retires it, and a provider's refusal of it takes it
-// back for another prompt (providerErrored) — so a stop made at the turn's end would retire a
-// refused task and leave the role owed nothing at the resume (check k1 of dispatch://INFRA-3759: a
-// role whose turn a provider refuses keeps its task). Oh My Pi writes the result right behind the
-// turn's end, and a process that dies before it does ends the hold through its death (died). A
-// send that is refused or lost brings no result, and its refusal runs the stop (refused).
+// suspension waiting for the answer of the task's prompt rather than running it (turnEnded): the
+// hold is a pause's, and Oh My Pi has not said yet how that prompt fared (resultPending).
+// stopAtResult states the rule that wait follows.
 func (m *Machine) stopWaitsForResult() bool {
 	return m.held != nil && m.held.Pause != 0 && m.resultPending()
 }
 
-// pauseHoldAtResult is whether a project pause's held suspension waited for the result that has
-// just come in, or for a send's answer that brings none (stopWaitsForResult): the turn it was held
-// for is over, and the hold still stands, so its pause is still the open one (dropEndedPauseHold
-// dropped it at the start of this decision had that pause ended).
-func (m *Machine) pauseHoldAtResult() bool {
-	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0
+// pauseHoldWaits is whether a project pause's held suspension stands waiting, past the end of the
+// turn it was held for, for the answer of the task's prompt (stopWaitsForResult): the claim is
+// idle, and that answer is what runs the hold (stopAtResult).
+func (m *Machine) pauseHoldWaits() bool {
+	return m.claim.State == StateIdle && m.stopWaitsForResult()
 }
 
-// stopAtResult runs the project pause's held suspension that waited for this result, or for this
-// refused send (pauseHoldAtResult), once it has decided the task, and does nothing otherwise.
+// pauseStopWaits is whether request, a project pause's stop that reaches the claim now, is held for
+// the answer of the task's prompt rather than run (suspend). It is when the claim's turn has ended
+// with that answer still to come (resultPending) over a task the turn confirmed, and no suspension
+// is held yet: stopped now, the task the turn confirmed would be retired as a finished turn's, as
+// stopAtResult says. A suspension already held is the stop asked again, which is not held a second
+// time: it is the bound on the wait (pauseStopWait in internal/daemon).
+func (m *Machine) pauseStopWaits(request RequestSuspend) bool {
+	p := m.claim.Pending
+	return request.Pause != 0 && !request.NeverHold && m.held == nil && m.claim.State == StateIdle &&
+		p != nil && !p.ConfirmedAt.IsZero() && m.resultPending()
+}
+
+// pauseHoldAtResult is whether a project pause's held suspension that waited for the answer of the
+// task's prompt is due (stopAtResult): the turn it was held for is over, so the claim is idle;
+// nothing of the task's prompts is still to come (resultPending); and the hold still stands, so
+// its pause is still the open one (dropEndedPauseHold dropped it at the start of this decision had
+// that pause ended).
+func (m *Machine) pauseHoldAtResult() bool {
+	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0 && !m.resultPending()
+}
+
+// stopAtResult runs a project pause's held suspension that waited for the answer of the task's
+// prompt, once that answer has been decided (pauseHoldAtResult), and does nothing otherwise. This
+// is the one statement of the rule for that hold, and every decision that can be the answer ends
+// by it.
+//
+// The hold waits because the turn's end does not say whose turn it was (stopWaitsForResult,
+// resultPending): a stop made there would retire, as a finished turn's, a task the provider
+// refused or the agent never ran, and leave the role owed nothing at the resume (check k1 of
+// dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). Oh My Pi writes the
+// answer right behind the turn's end. The hold ends at each answer that leaves the claim idle with
+// nothing of the task's prompts still to come:
+//
+//   - a result that says the prompt ran a turn (promptResulted);
+//   - a result that says it ran none, or a refusal of the prompt after its acknowledgement
+//     (promptResulted, waitedOutAnswer, lateRefused, refusedElsewhere);
+//   - a send that did not go: the agent refused the prompt, the shim refused to adopt the working
+//     copy ahead of it, or the daemon could not mint the role's identity for it (refused); and
+//   - the loss of that send to the transport (refused).
+//
+// An answer that leaves the claim working (Oh My Pi's busy answer, which names a turn still
+// running) or another prompt of the task outstanding ends nothing: the hold waits for that turn's
+// end or that prompt's answer.
+//
+// One reading decides what becomes of the task at every one of them, and it is made where the
+// stop is written (putStop): a task no turn has taken is kept, and the stop owes the role the
+// launch that delivers it (holdsTask); a task a turn took is that turn's, and the settle that
+// follows the decision retires it (settle). The answer has said which before this runs. A result
+// that says the turn ran with no provider error leaves the task its confirmation. Every other
+// answer takes the confirmation back: a provider's refusal of the turn (providerErrored), a prompt
+// that ran no turn (takeBackPending), and a send refused or lost (refused).
+//
+// A lost send is the one answer that does not say whether the prompt ran: the transport loses the
+// answer and not always the prompt (stream.Conn.Prompt), so the agent may be running it. The stop
+// ends the process that would have said so, and a stopped claim reads no result, so the task is
+// kept and goes again at the resume, where the agent may be given a second time a task it ran.
+// That is the cost every let-go of a confirmation in doubt accepts (untellInFlight): twice, never
+// not at all.
+//
+// A pause's stop that reaches the claim after the turn's end, with the answer still to come, is
+// held the same way (pauseStopWaits, suspend), where it would otherwise stop at once and retire
+// the task as a finished turn's.
+//
+// What ends the hold with no answer is the held suspension's own to say (holdSuspension). A stop
+// that takes the task back first keeps it by that take-back: the end of the process (died,
+// replaceNow, and wakeNow through takeBackAtTurn, each through interrupted), the compaction that
+// aborts the turn (compactStart, compactEnded) and a prompt retirement (chargePrompt, which
+// follows the take-back that charged it). A stop made with no answer to come is the turn's end the
+// only answer there will be (resultPending): the pause's stop asked again, which bounds the wait
+// (suspend), and the hold's deadline (suspendAtTimeout). The stopped process is told nothing
+// more, so settle retires a task a turn confirmed, and a task no turn took is kept. The end of
+// the pause drops the hold and stops nothing (dropEndedPauseHold). A ready the agent says again
+// while the hold waits ends nothing (reready).
 func (m *Machine) stopAtResult(ctx context.Context) error {
 	if !m.pauseHoldAtResult() {
 		return nil

@@ -424,7 +424,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			// The case holds the news task's send at the door while its turn starts and ends, so
 			// the send's own deadline is a hang guard here and no part of what the case reads.
 			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
-			var pauseID atomic.Int64
+			flag := &pauseFlag{}
 			if tc.pause {
 				st := r.sup.deps.Store.(*store.Store)
 				pods, err := st.PodRecordsOf("LEGION")
@@ -436,10 +436,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 					pods: pods, project: "LEGION", token: "legion", now: time.Now,
 					log: quietLogger(), workflow: &workflowRuntime{},
 				}
-				r.sup.deps.Paused = func() (int64, bool) {
-					id := pauseID.Load()
-					return id, id != 0
-				}
+				r.sup.deps.Paused = flag.Paused
 				r.sup.deps.PauseStopped = pauses.stopped
 			}
 			r.told(pathRoot, record.AudienceHolder, 3)
@@ -458,7 +455,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			}
 			if tc.pause {
 				id := openLegionPause(t, r.pool, time.Now())
-				pauseID.Store(id)
+				flag.id.Store(id)
 				err := reviewer.Handle(r.ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByReleased, Pause: id})
 				if !errors.Is(err, supervise.ErrSuspendHeld) {
 					t.Fatalf("pause stop during the news task's turn = %v, want it held", err)
@@ -501,8 +498,8 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 				if pending {
 					t.Fatal("the store still holds the delivery, so the told version might only be its temporary credit")
 				}
-				endLegionPause(t, r.pool, pauseID.Load(), time.Now())
-				pauseID.Store(0)
+				endLegionPause(t, r.pool, flag.id.Load(), time.Now())
+				flag.id.Store(0)
 			}
 			r.wantTold("after the news task's result and acknowledgement", pathRoot, record.AudienceHolder, 4, false)
 			r.sweepNews()

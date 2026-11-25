@@ -621,8 +621,8 @@ func TestAnAcknowledgementReadAfterItsTurnEndedArmsNoWaitForATurn(t *testing.T) 
 
 	gated.release <- struct{}{}
 	h.m.Wait()
-	if live := h.clock.Live(); live != 0 {
-		t.Errorf("%d timers armed after the acknowledgement of a task whose turn had ended, want none", live)
+	if h.armed(TimerTurn) {
+		t.Error("a wait for a turn is armed after the acknowledgement of a task whose turn had ended, want none")
 	}
 	h.advance(3 * testRPC)
 	h.wantBudgets(Budgets{})

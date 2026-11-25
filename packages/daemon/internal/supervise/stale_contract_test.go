@@ -1,6 +1,10 @@
 package supervise
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+)
 
 // A live claim whose registration declared a plugin contract below PodUpdateContract — a worker
 // started from the image of the release before this one, which is what every roll of this
@@ -163,6 +167,77 @@ func TestAStalePluginRelaunchThatDecidesNothingStillSendsTheWaitingTask(t *testi
 	released := h.wantPrompts(sent + 1)[sent]
 	if released.Message != "review the pull request" {
 		t.Errorf("the task sent after the turn = %q, want the one that waited behind the relaunch", released.Message)
+	}
+}
+
+// A relaunch held for a turn that ends before the task's send is answered waits for that answer,
+// as everything the turn's end holds does (turnEnded, resultPending): a result runs it. A send
+// that is lost brings no result, so its refusal runs the relaunch (refused), and the relaunch
+// alone: a refused send is not sent again on the spot. Left to the next sweep's post, the stale
+// process stayed the claim's for another minute, and a re-send the shim's hello had asked for
+// went to it first: here the task goes to the process the relaunch starts.
+func TestAStalePluginRelaunchHeldPastItsTurnsEndRunsWhenTheSendIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// hello is the shim's hello while the send is out, which asks for a re-send should that
+		// send fail.
+		hello bool
+	}{
+		{name: "the send is lost"},
+		{name: "the send is lost after a hello asked for a re-send", hello: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract-1)
+			h.reach(StateReady)
+			recorded := h.locator()
+			gated := newGatedConn()
+			gated.FailPrompt(errBoom)
+			h.conns.Register(h.token, gated)
+			handle := func(ev Event) {
+				t.Helper()
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatalf("handle %T: %v", ev, err)
+				}
+			}
+			handle(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+			testwait.Receive(t, "the send", gated.entered)
+			if tc.hello {
+				handle(StreamHello{Claim: h.token, Generation: h.generation()})
+			}
+			handle(StreamTurnStart{Claim: h.token})
+			h.m.deps.PluginContract = PodUpdateContract
+			handle(StalePlugin{Claim: h.token, Trigger: "sweep"})
+			if h.m.staleRelaunch == nil {
+				t.Fatal("no relaunch is held for the turn")
+			}
+			handle(StreamTurnEnd{Claim: h.token})
+			h.wantState(StateIdle)
+			h.wantCalls("Resume", 0)
+			if h.m.staleRelaunch == nil {
+				t.Fatal("the relaunch ran at the turn's end, want it held for the answer of the send still out")
+			}
+
+			// The send is lost. A re-send, where one is made, goes straight through the gate and is
+			// lost as well, so the count of prompts below says whether one was made.
+			gated.release <- struct{}{}
+			gated.release <- struct{}{}
+			h.m.Wait()
+
+			h.wantState(StateLaunching)
+			resume := h.wantCalls("Resume", 1)[0]
+			if resume.Previous == nil || *resume.Previous != recorded {
+				t.Errorf("resumed over %+v, want the stale process %+v", resume.Previous, recorded)
+			}
+			if h.m.staleRelaunch != nil {
+				t.Errorf("the relaunch is still held after it ran: %q", *h.m.staleRelaunch)
+			}
+			if sent := gated.Prompts(); len(sent) != 1 {
+				t.Errorf("prompts on the stale process's connection = %+v, want the one lost send: the task goes to the process the relaunch starts", sent)
+			}
+			if p := h.pending(); p.Task != "implement the plan" || !p.ConfirmedAt.IsZero() {
+				t.Errorf("pending after the relaunch = %+v, want the task kept, unconfirmed, for the new process", p)
+			}
+		})
 	}
 }
 

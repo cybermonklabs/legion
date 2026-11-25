@@ -452,10 +452,12 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 //     right for a stale-plugin relaunch there, because nothing was written for it: only a launch
 //     that starts a process writes the mark (wake.pluginMark, launchNow).
 //   - A turn the process it replaces may have started is taken back first (interrupted), exactly
-//     as replaceProcess takes one back before it relaunches. The gate let this wake park over a
-//     live process, and that process can have confirmed a task since: letting it go without the
-//     take-back would leave a confirmed task in a launching claim, which settle retires as served
-//     though no turn of it ever finished (retirePending). The other half of that race is a
+//     as replaceProcess takes one back before it relaunches (takeBackAtTurn). The gate let this
+//     wake park over a live process, and that process can have confirmed a task since: letting it
+//     go without the take-back would leave a confirmed task in a launching claim, which settle
+//     retires as served though no turn of it ever finished (retirePending). A held suspension
+//     ends the same process, so it takes the task back first as well, and the stop keeps the task
+//     and owes the launch for it (stopAtResult states the rule). The other half of that race is a
 //     delivery sent inside the wait, which sendPending holds back for as long as a launch waits
 //     over the process it would reach (launchWaits, delivery.go).
 //
@@ -483,12 +485,26 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
+		if err := m.takeBackAtTurn(ctx); err != nil {
+			return err
+		}
 		return m.endHeld(ctx, true, stopOwed)
 	}
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, waiting, pause)
 	}
 	return m.runWake(ctx, waiting, true)
+}
+
+// takeBackAtTurn takes the task the claim's process confirmed back from that process, at the turn
+// a launch's wake has come, before the process is let go: by the launch (runWake) and by a held
+// suspension that ends it in the launch's place (wakeNow). A claim that records no process has
+// none to take it from, and a task no turn confirmed is left as it is (interrupted).
+func (m *Machine) takeBackAtTurn(ctx context.Context) error {
+	if m.claim.Locator == nil {
+		return nil
+	}
+	return m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd)
 }
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
@@ -581,10 +597,8 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 			m.watchAgain()
 			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
-		if m.claim.Locator != nil {
-			if err := m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd); err != nil {
-				return err
-			}
+		if err := m.takeBackAtTurn(ctx); err != nil {
+			return err
 		}
 	}
 	// Past both steps the launch runs, so the intent this wake carried goes back to the machine
