@@ -190,6 +190,12 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 		{"control: the token service refuses the exchange", func(t *testing.T) map[string]any {
 			return map[string]any{"file": subjectTokenFile(t, "the.workload.credential")}
 		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
+		// Google's library makes an X.509 certificate's exchange on its own client, which no
+		// refusal recorder wraps, and quotes the answer in its error's text; this row fails when a
+		// release of the library words that text differently (libraryAnswer).
+		{"control: the token service refuses an X.509 certificate's exchange", func(t *testing.T) map[string]any {
+			return x509Missing(t, nil, "")
+		}, "the token service the credential names: the server answered HTTP 400 invalid_grant"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			identity := &ExternalAccountIdentity{CredentialsJSON: externalAccountJSON(t, sts, row.source(t)), ServiceAccount: "deploy-bot@example-project.iam.gserviceaccount.com",

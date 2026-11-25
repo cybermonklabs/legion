@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -76,7 +78,7 @@ func DetectMachineIdentity(ctx context.Context, audience string) (Source, []Skip
 	} else if err != nil {
 		return nil, skipped, err
 	}
-	return NewMetadataIdentity(audience), skipped, nil
+	return &MetadataIdentity{Audience: audience, FromBroker: true}, skipped, nil
 }
 
 // externalAccountFor is the external_account credential GOOGLE_APPLICATION_CREDENTIALS names,
@@ -283,23 +285,38 @@ type certificateSource struct {
 // its credential_source names (a url, or AWS's metadata) - and the status and registered code its
 // answer carried (redact.Answered); any other failure prints as its class (redact.Class). An X.509
 // certificate's exchange goes out on the library's own client, which answered does not see, so
-// the security token service's refusal of it prints as its class.
+// the status and body of the security token service's answer are read from the library's error
+// text instead (libraryAnswer), and only its registered code printed.
 func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Recorder, err error) string {
 	if reason := credentialFileFailure(fields); reason != "" {
 		return reason
 	}
-	if answered.Status/100 <= 2 {
+	tokenURL, _ := url.Parse(fields.TokenURL)
+	status, body, host := answered.Status, answered.Answer(), answered.Host
+	if text := err.Error(); status == 0 && fields.Source.Certificate != nil && tokenURL != nil {
+		if quoted := libraryAnswer.FindStringSubmatchIndex(text); quoted != nil {
+			status, _ = strconv.Atoi(text[quoted[2]:quoted[3]])
+			body, host = []byte(text[quoted[1]:]), tokenURL.Host
+		}
+	}
+	if status/100 <= 2 {
 		return redact.Class(err).Error()
 	}
 	service := "the subject token source its credential_source names"
-	switch tokenURL, _ := url.Parse(fields.TokenURL); {
-	case answered.Host == "sts.googleapis.com":
+	switch {
+	case host == "sts.googleapis.com" || host == "sts.mtls.googleapis.com":
 		service = "Google's security token service"
-	case tokenURL != nil && answered.Host == tokenURL.Host:
+	case tokenURL != nil && host == tokenURL.Host:
 		service = "the token service the credential names"
 	}
-	return service + ": " + redact.Answered(answered.Status, answered.Answer())
+	return service + ": " + redact.Answered(status, body)
 }
+
+// libraryAnswer is how cloud.google.com/go/auth quotes, in its error, the answer of a security
+// token service that refused an exchange: `credentials: status code <status>: <body>`
+// (credentials/internal/stsexchange). TestAnExternalAccountMintsFailureSaysWhatFailed fails where
+// a release of the library words it otherwise.
+var libraryAnswer = regexp.MustCompile(`credentials: status code ([0-9]{3}): `)
 
 // credentialFileFailure is why a file the credential's credential_source names cannot be read,
 // and "" where each can: the subject token file, or an X.509 certificate's files

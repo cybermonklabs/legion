@@ -40,9 +40,9 @@ const (
 // --credential-cert-configuration-output-file` writes it) or takes the default one
 // (use_default_certificate_config, as `create-cred-config` writes it otherwise, which
 // GOOGLE_API_CERTIFICATE_CONFIG names here). A client that presents no certificate is refused in
-// the handshake, so the mint fails. The service's refusal of such an exchange prints as its class:
-// the library makes that call on its own client, which no refusal recorder wraps, and its error
-// quotes the answer's body.
+// the handshake, so the mint fails. The service's refusal of such an exchange prints its status and
+// registered code, read from the text of the library's error (libraryAnswer), and never the rest of
+// its body.
 func TestAnX509CredentialPresentsItsCertificateToTheTokenService(t *testing.T) {
 	if path := os.Getenv(x509ChildCredential); path != "" {
 		mintAsX509Child(t, path)
@@ -57,7 +57,7 @@ func TestAnX509CredentialPresentsItsCertificateToTheTokenService(t *testing.T) {
 		{"certificate_config_location", false, false, "minted robot-identity-token"},
 		{"use_default_certificate_config", true, false, "minted robot-identity-token"},
 		{"a refusal of the exchange", false, true, "refused: mint a federated access token with the external_account credential " +
-			credentialsFileVar + " names, to act as robot@example.iam.gserviceaccount.com: the request failed"},
+			credentialsFileVar + " names, to act as robot@example.iam.gserviceaccount.com: the token service the credential names: the server answered HTTP 403 access_denied"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			var mu sync.Mutex
