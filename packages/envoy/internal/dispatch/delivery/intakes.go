@@ -81,10 +81,12 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 //
 // The returned stop, called once ctx is cancelled, waits for both intakes' Runs and the cache's,
 // closes both clients, then waits for a hand-back finalizer each Run left behind. A Run can return
-// at its stop deadline with a hand-back still waiting for NATS; close settles that hand-back, sent
-// in the client's close flush or dropped with its connection, and its finalizer releases the hold
-// through the still-open pool before stop returns. A message in its handler finishes and is
-// acknowledged before the Run returns; messages behind it are handed back while the hold
+// at its stop deadline with a hand-back still waiting for NATS, or written and not confirmed; close
+// settles that hand-back, which reaches the server before the close or is dropped with the socket
+// the close resets (bus.Client.MarkUnconfirmed), so none of its bytes is sent after the release, and
+// its finalizer releases the hold through the still-open pool before stop returns. A message in its
+// handler finishes and is acknowledged before the Run returns; messages behind it are handed back
+// while the hold
 // covers them, and the next process takes the durable over at once rather than at the
 // hold's lapse. Each Run's stop has one deadline, intakeStopBudget after ctx ends (stopContext), which a take-over under way at that
 // moment spends rather than extends: the handlers still running then are given up and their
@@ -102,6 +104,12 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
+}
+
+// startIntakes is StartIntakes with both intakes timed by tuning: production's values from
+// StartIntakes, or a test's.
+func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -116,9 +124,9 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
 	settings := newSettingsCache(pool, settingsWake)
-	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, attributor)
+	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
-	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
+	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })
@@ -129,8 +137,10 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 }
 
 // stopIntakes waits for their Runs, closes their NATS clients through each durable, then waits for
-// any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle, and
-// it releases its hold through the still-open database pool before this stop returns (StartIntakes).
+// any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle: its
+// close reset each socket that carried an unconfirmed hand-back (bus.Client.MarkUnconfirmed), so the
+// finalizer releases its hold through the still-open database pool before this stop returns, with
+// none of that hand-back's bytes left to send (StartIntakes).
 func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
 	running.Wait()
 	for _, durable := range durables {

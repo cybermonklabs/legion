@@ -24,10 +24,10 @@ func blockPointerTestSchema(attributes BlockAttributes) BlockSchema {
 		attributes = oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}})
 	}
 	return BlockSchema{
-		Version: active.schema.Version,
-		Nodes:   active.schema.Nodes,
-		Marks:   active.schema.Marks,
-		Types: append(slices.Clone(active.schema.Types),
+		Version: active.Load().schema.Version,
+		Nodes:   active.Load().schema.Nodes,
+		Marks:   active.Load().schema.Marks,
+		Types: append(slices.Clone(active.Load().schema.Types),
 			BlockTypeSchema{Name: "claim", Content: BlockContentParagraphs, Render: "host", Attributes: attributes},
 		),
 	}
@@ -39,9 +39,11 @@ func oneAttribute(name string, attr BlockAttributeSchema) BlockAttributes {
 }
 
 // useTestBlockSchema makes value the block schema for the rest of t, restoring the one before by
-// a t.Cleanup (pmdoctest.UseBlockSchema, which this package's tests cannot import).
+// a t.Cleanup (pmdoctest.UseBlockSchema, which this package's tests cannot import). The schema is
+// the whole process's, so a test that calls this runs alone (runsAlone).
 func useTestBlockSchema(t testing.TB, value BlockSchema) {
 	t.Helper()
+	runsAlone(t)
 	restore, err := SetBlockSchemaForTest(value)
 	if err != nil {
 		t.Fatalf("use test block schema: %v", err)
@@ -110,6 +112,7 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 // DISPATCH_BLOCK_POINTER_VALUES, which `packages/contracts/src/dispatch-block-ref.test.ts` holds
 // this file to.
 func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("testdata/block-pointer-values.json")
 	if err != nil {
 		t.Fatalf("read table: %v", err)
@@ -168,6 +171,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 // (RenderWithBlockOffsets, which GET /api/v1/artifacts/{id}/blocks lists) holds for the corpus is
 // one, and a list item or a table's row or cell, which it never holds, is not.
 func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
+	t.Parallel()
 	paths, err := filepath.Glob("testdata/corpus/*.md")
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("corpus: %v (%d documents)", err, len(paths))
@@ -198,12 +202,12 @@ func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 		}
 	}
 	for nodeType := range listed {
-		if !builtInBlockNode(active.schema, nodeType) {
+		if !builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("the block list holds %s, which a block[] attribute cannot target", nodeType)
 		}
 	}
 	for _, nodeType := range []string{"list_item", "table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
-		if builtInBlockNode(active.schema, nodeType) {
+		if builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("a block[] attribute can target %s, which no block list holds", nodeType)
 		}
 	}

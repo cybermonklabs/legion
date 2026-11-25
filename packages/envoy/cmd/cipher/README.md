@@ -116,8 +116,8 @@ final line feed, which it has always done, so `echo` and a file that ends in a n
 value without one.
 
 `--type` names what the broker mints a release from rather than releasing the stored value as it
-is: `github-app`, `google-login`, `azure-login`, `google-service-account` or
-`anthropic-federation`, or `none` for a stored secret. The docs site's
+is: `github-app`, `github-installations`, `google-login`, `azure-login`, `google-service-account`
+or `anthropic-federation`, or `none` for a stored secret. The docs site's
 [Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#requests-and-grants) page says
 what each type's value holds and what its release returns.
 

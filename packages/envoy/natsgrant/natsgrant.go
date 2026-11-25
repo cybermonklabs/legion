@@ -61,7 +61,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     the calls nats.go's KV makes and the raise a start sends (KVWrite): the bucket's stream
 //     info, create and update, direct and stream message gets, writes to its keys, its watchers'
 //     consumer create and delete, and their flow-control replies;
-//   - the purge of the interest bucket, which its delete-marker collection sends.
+//   - the purge of the interest bucket, which its delete-marker collection sends, and of the
+//     known-session bucket, which the purge of its replaced chunks' markers sends. NATS grants a
+//     purge by stream alone (the subject a purge filters to is in its request), so each reaches
+//     the whole bucket; a user that holds the bucket's writes can already delete or roll up every
+//     key of it, so neither removes a record that user could not.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -88,7 +92,7 @@ func listenerGrant(machineID string) Permissions {
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, KVWrite(bucket)...)
 	}
-	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket)
+	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket, jsAPI+"STREAM.PURGE."+kvStream+bus.KnownSessionBucket)
 	return Permissions{
 		Publish: publish,
 		Subscribe: []string{
@@ -244,8 +248,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the purges of the interest bucket and of the
+// known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
+// session consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -430,14 +435,15 @@ func Dispatch(machineID string) Permissions {
 }
 
 // session is the grant of the session sessionID names, which SessionPattern fills with * and
-// Session with one session's id. Publish: reply inboxes (the receipt of each relay frame), then the
-// session's agent stream frames (contracts.AgentStreamFramesSubject). Subscribe: its relay subject
-// (bus.DeliverSubject), the subject the listener that owns the session publishes every message of
-// the session's consumer (bus.SessionConsumerName) on, then its agent stream's control subject
-// (contracts.AgentStreamControlSubject), and no other subject.
-func session(sessionID string) Permissions {
+// Session with one session's id. Publish: replies (the receipt of each relay frame, the answer to
+// the listener's connection probe and to Dispatch's agent stream replay), on the subjects replies
+// names, then the session's agent stream frames (contracts.AgentStreamFramesSubject). Subscribe:
+// its relay subject (bus.DeliverSubject), the subject the listener that owns the session publishes
+// every message of the session's consumer (bus.SessionConsumerName) on, then its agent stream's
+// control subject (contracts.AgentStreamControlSubject), and no other subject.
+func session(sessionID, replies string) Permissions {
 	return Permissions{
-		Publish: []string{inboxes, contracts.AgentStreamFramesSubject(sessionID)},
+		Publish: []string{replies, contracts.AgentStreamFramesSubject(sessionID)},
 		Subscribe: []string{
 			bus.DeliverSubject(sessionID),
 			contracts.AgentStreamControlSubject(sessionID),
@@ -449,8 +455,9 @@ func session(sessionID string) Permissions {
 // renders for the sessions that share it. A session subscribes to no notification topic that
 // carries a message: it receives what its consumer delivers, on the relay subject, and nothing
 // else. The listener's connection probe (cmd/listener) asks on that same relay subject and is
-// answered on a reply inbox, so it needs no rule of its own; the README names the entries that
-// carry it (packages/envoy/infra/README.md, "Permission sets").
+// answered on a reply subject under _INBOX. that names the session (bus.SessionReplySubject),
+// which this set's _INBOX.> publish admits, so it needs no rule of its own; the README names the
+// entries that carry it (packages/envoy/infra/README.md, "Permission sets").
 //
 // A Legion controller session needs nothing added for its project's notice lane
 // (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic): it registers
@@ -460,21 +467,27 @@ func session(sessionID string) Permissions {
 // this set rightly refuses.
 //
 // What this set does not solve: every session on a shared user holds the same set, so the relay
-// subject carries * and one session can read another's relay frames. A session the auth service
-// admits holds Session instead, which names its own id alone.
+// subject carries * and one session can read another's relay frames and answer them. A session the
+// auth service admits holds Session instead, which names its own id alone.
 func SessionPattern() Permissions {
-	return session("*")
+	return session("*", inboxes)
 }
 
 // Session is the grant of one session, sessionID: SessionPattern's entries with that id in place
 // of *, so the session subscribes its own relay subject and control subject and publishes its own
-// frames, and no other session's. An id that is not one subject token (SessionToken) is refused
-// naming it, because a dot, a wildcard or a space in it would reach other sessions' subjects.
+// frames, and no other session's. It publishes replies under its own id alone
+// (bus.SessionReplies, _INBOX.*.<session id>.>), where SessionPattern publishes to every _INBOX.
+// subject: every request a session answers - each relay frame, the listener's connection probe,
+// Dispatch's agent stream replay - asks on a reply subject naming the session it asks
+// (bus.SessionReplySubject), so the session answers all of them and can answer no other session's
+// request, nor publish into a requester's own inbox. An id that is not one
+// subject token (SessionToken) is refused naming it, because a dot, a wildcard or a space in it
+// would reach other sessions' subjects.
 func Session(sessionID string) (Permissions, error) {
 	if !SessionToken(sessionID) {
 		return Permissions{}, fmt.Errorf("session id %q is not one subject token", sessionID)
 	}
-	return session(sessionID), nil
+	return session(sessionID, bus.SessionReplies(sessionID)), nil
 }
 
 // SessionToken reports whether id is one NATS subject token that names nothing but itself:

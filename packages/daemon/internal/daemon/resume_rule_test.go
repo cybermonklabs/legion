@@ -108,11 +108,34 @@ func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
 	return made
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 // The boot's start of a daemon-suspended phase owner resumes it by rule. If that owner can never
 // launch, the resume spends its launch budget and the claim fails; the start row then finishes
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched
 // exactly the budget's times however many ticks follow, and stays failed for the boot report.
 func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -130,8 +153,10 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	clock := time.Now()
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
 		now: func() time.Time { return clock }}
+	// The row the boot's resume by rule writes, carrying the task the engine composes for it.
+	engine := workflow.New(records, workflow.Config{Project: issue.Project}, quietLogger())
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, clock))
+		Generation: 1, Phase: phase.Testing, Task: resumeTaskOf(t, pool, engine, issue.Key), ResumeTask: true, RuleResume: true}, clock))
 
 	for tick := range 6 {
 		if err := runner.RunOnce(context.Background()); err != nil {
@@ -152,6 +177,7 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 // at the stop timeout cuts off what the turn was doing. The linger's own expiry, which closes the
 // tree whatever its claims are doing, bounds the wait.
 func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
@@ -203,6 +229,7 @@ func operatorSuspend(t *testing.T, sup *supervisor, token claim.Token) {
 // Stage 4b's child-reentered control reads), and once the operator resumes the claim, its task is
 // given.
 func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -267,6 +294,7 @@ func suspendedBefore0038(t *testing.T, sup *supervisor, tree, issue string, role
 // rows are the daemon's own (a lingering tree, a parked child, a re-entry's interrupted worker), so
 // holding them for the operator would leave the trees main ran again parked.
 func TestAStartResumesAClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -295,6 +323,7 @@ func TestAStartResumesAClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
 // 0038 recorded who suspended it is relaunched, as main relaunched it; one the operator suspended
 // stays suspended until the operator resumes it.
 func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		by      supervise.SuspendSource
@@ -393,6 +422,7 @@ func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *f
 // root's architect, and the worker of the child's own phase, each relaunch their sessions, rather
 // than the tree inheriting claims that never run again.
 func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
+	t.Parallel()
 	rt, sup, architect, implementer, readmit, _ := readmissionRig(t, func(sup *supervisor, token claim.Token) {
 		machine, _ := sup.Machine(token)
 		if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "the tree of LEGION-208 lingers", By: supervise.SuspendedByDaemon}); err != nil {
@@ -415,6 +445,7 @@ func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
 // so the architect's own launch is read out of the calls by its claim rather than counted
 // against their number.
 func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T) {
+	t.Parallel()
 	rootArchitect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
 	var rt *fake.Runtime
 	var sup *supervisor
@@ -473,6 +504,7 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 // operator resumes each claim, and then go on, the child's worker given the task to carry its
 // phase on.
 func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T) {
+	t.Parallel()
 	rt, sup, architect, implementer, readmit, tick := readmissionRig(t, func(sup *supervisor, token claim.Token) { operatorSuspend(t, sup, token) })
 	readmit()
 	for _, token := range []claim.Token{architect, implementer} {
@@ -494,12 +526,12 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 }
 
-// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue, the
-// admission slot its phase keeps (record.KeepsSlot: none past its review) and its tree's lifecycle,
-// as admission leaves a root it promoted — and each of claims, bound to that lifecycle as the
-// daemon binds a claim it admits, its pending delivery written too when it carries one (AdmitClaim
-// alone writes only the claim row). Each tree takes the next free slot, so a test may seed more
-// than one running tree.
+// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue,
+// the admission slot its phase keeps (record.KeepsSlot: none in accepting, retro or merging) and
+// its tree's lifecycle, as admission leaves a root it promoted — and each of claims, bound to that
+// lifecycle as the daemon binds a claim it admits, its pending delivery written too when it
+// carries one (AdmitClaim alone writes only the claim row). Each tree takes the next free slot,
+// so a test may seed more than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)
@@ -515,7 +547,7 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -557,6 +589,7 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 // else will, since the phase's start already ran before the restart. The resumed worker relaunches
 // its own session and is told to carry its phase on.
 func TestABootResumesASuspendedClaimThatOwnsItsIssuesPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.PostgresDSN = pool.Config().ConnString()

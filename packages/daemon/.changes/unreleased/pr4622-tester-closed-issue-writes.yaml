@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The tester's prompt no longer says that a closed issue refuses every write but a result for an
+  `after_merge` or `default_branch` check, a comment and a message. A closed issue also takes a
+  reopening status and the other writes `PATCH /api/v1/issues/{key}` allows on it.

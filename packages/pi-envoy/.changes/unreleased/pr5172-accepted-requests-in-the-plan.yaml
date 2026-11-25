@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `dispatch-first` records a request an agent accepts as a task, or a task's new text, in the
+  issue's plan when it is the issue's work, and as an issue or an ask otherwise. Before a turn
+  ends the agent reads the plan, its issues and its open asks. The skill no longer offers a line
+  in an `open-items.md` document.
+time: 2026-11-23T03:13:45Z
+custom:
+    Issue: pr5172

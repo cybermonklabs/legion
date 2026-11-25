@@ -970,7 +970,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build event %d's envelope: %v", read.event.ID, err)
 		}
-		_, _, _ = eventDestinations(ctx, reading, &batchEvent{pendingEvent: read, item: item}, want)
+		_, _ = eventDestinations(ctx, reading, &batchEvent{pendingEvent: read, item: item}, want)
 	}
 	counted := &countingQueryer{queryer: database.Pool}
 	if _, err := loadLookups(ctx, counted, want); err != nil {

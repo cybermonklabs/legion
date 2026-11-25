@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A claim refresh whose statement commits and whose answer is lost - the connection drops after
@@ -27,6 +28,7 @@ import (
 // database are the real ones; its connections run through lossyConns, which drops the one that
 // carries the refresh's UPDATE once the server has committed it. The control row's answer arrives.
 func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		lose bool
@@ -62,7 +64,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh whose answer is lost", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			<-timers
+			testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			recorded := func() time.Time {
 				sender.mu.Lock()
@@ -114,6 +116,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 // never trust a claim its row does not carry. The server, its statements and its database are the
 // real ones, its connections running through lossyConns; each control row's answer arrives.
 func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// outage fails a refresh before it commits, and its re-read, before the claim ages.
@@ -168,7 +171,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
 			parkedOne := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: parkedOne, target: "session:s1", attempt: 1}
 			if tc.outage {
 				down.Store(true)

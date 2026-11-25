@@ -36,6 +36,7 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 // resolved one. Its own is any `owner/name`, whether or not it is any project's default. Only a
 // value that is not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -129,6 +130,7 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 // A project with no default and an issue chain naming none resolves to none: null on list, detail and
 // events, never an error.
 func TestIssueRepoResolvesToNoneWithoutADefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Alone"}, "alice"))
@@ -165,6 +167,7 @@ func createChain(t *testing.T, handler http.Handler, project, parent string, len
 // resolves to the repository its root names, in its detail, every list row and its creation
 // event; an issue one link deeper is refused, 409 PARENT_INPUT.
 func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -196,6 +199,7 @@ func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
 // A reparent counts the moved issue's subtree: it is refused when the subtree's deepest issue
 // would sit more than 32 links below its new root, even though neither chain alone is that deep.
 func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	top := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Top"}, "alice"))
@@ -216,6 +220,7 @@ func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
 // migration 0113 refuses to apply while one exists, so after it only a direct database write, or an
 // earlier release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "LEG", "name": "Legacy"}, "alice")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -246,6 +251,7 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 // 0113 refuses to apply while one exists, so after it only a direct database write, or an earlier
 // release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestProject(t, handler, "DEEP")
@@ -260,22 +266,34 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	// The walk's cost is its steps, the rows its recursive term makes (repo_chain): one for each
+	// issue and one per link above it up to the cap, so the issue n links below the root costs
+	// min(n, parentDepthCap)+1 of them. A walk that climbed every chain to its root would make
+	// 2,001,000 here rather than the 65,472 a capped one makes.
+	var steps int
+	if err := database.Pool.QueryRow(ctx, `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		`+refs.IssueRepoTerms+`
+		select count(*) from repo_chain`).Scan(&steps); err != nil {
+		t.Fatalf("count the steps of the walk of %d issues: %v", length, err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '10s'`); err != nil {
-		t.Fatalf("set statement_timeout: %v", err)
+	want := 0
+	for below := range length {
+		want += min(below, parentDepthCap) + 1
+	}
+	if steps != want {
+		t.Fatalf("the walk of a %d-issue chain took %d steps, want %d: one per issue and one per link within %d links above it",
+			length, steps, want, parentDepthCap)
 	}
 	started := time.Now()
-	rows, err := tx.Query(ctx, `
+	rows, err := database.Pool.Query(ctx, `
 		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
 		`+refs.IssueRepoTerms+`
 		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}
+	defer rows.Close()
 	resolved, refused := 0, 0
 	for rows.Next() {
 		var key string
@@ -295,7 +313,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("walk %d issues in a %d-link chain within 10s: %v", length, length-1, err)
+		t.Fatalf("walk %d issues in a %d-link chain: %v", length, length-1, err)
 	}
 	t.Logf("walked %d issues of a %d-link chain in %s", length, length-1, time.Since(started))
 	if resolved != parentDepthCap+1 || refused != length-parentDepthCap-1 {
@@ -311,6 +329,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 // A parent chain that loops (which no API write can make) has no answer: the read fails loudly
 // rather than giving the project's default.
 func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -328,6 +347,7 @@ func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
 
 // The claim and its release are issue events too, and carry the repository as the others do.
 func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
@@ -345,6 +365,7 @@ func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 
 // A closed issue takes no repository write, as it takes no other field but its rank and components.
 func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestProject(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Done"}, "alice"))
@@ -363,6 +384,7 @@ func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
 // given. A link resent under the old name to a closed issue is the link it has, so the closed
 // issue takes it.
 func TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{
 		renames: refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}),
 	})

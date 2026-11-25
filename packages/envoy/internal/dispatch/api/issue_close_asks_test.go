@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Closing an issue withdraws every open ask it holds, whoever closes it: each is recorded resolved
@@ -169,6 +171,7 @@ func sessionCloser(name, id string) closer {
 // settlement's versions move the issue's sequence past the close's, so the reopen is sent against
 // a read taken after that settlement, as a client that reads the issue before it writes sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
+	t.Parallel()
 	for _, closer := range closers {
 		t.Run(closer.name, func(t *testing.T) {
 			f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
@@ -357,6 +360,7 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 // to withdraw, but the close still leaves it reading resolved, and the reopen's settlement opens
 // it as its author's ask.
 func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
+	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
 		name := "settled by the close"
 		if settlementFails {
@@ -437,6 +441,7 @@ const pastedCloseDecision = ":::ask{#close-decision urgency=\"med\" multiple=\"f
 // sweep still leaves it reading resolved beside that block, and the reopen's settlement stamps it
 // and opens it as a new ask, beside the restored one.
 func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.T) {
+	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
 		name := "settled by the close"
 		if settlementFails {
@@ -588,6 +593,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 // block would only be marked resolved by the close's sweep, with no ask and no record of who
 // closed it.
 func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
@@ -655,6 +661,7 @@ func (d *peerInsertDocs) WriteIssueAskStates(ctx context.Context, issueKey strin
 // close's sweep, once the rooms are closed, leaves it reading resolved, and the settlement that
 // then runs on the closed issue saves it so, still with no ask (reconcileAskBlocks).
 func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	wrapper := &peerInsertDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -693,6 +700,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 
 // Every close withdraws the asks open at that close, and every reopen restores them, once each.
 func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
@@ -847,23 +855,20 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement.
+// awaitSettled waits until none of documents owes a settlement. Its one bound is the test binary's
+// deadline (testwait.UntilPolling): a settlement a loaded machine starts late still ends the wait,
+// and one that never runs fails it by name, with the count still owed.
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("documents %v to owe no settlement (the count of their pending settlements)", documents), func() (int, bool) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
 		`, documents).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}
-		if pending == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("documents %v still owe %d settlements", documents, pending)
-		}
-	}
+		return pending, pending == 0
+	})
 }
 
 // askRowTexts is each ask's whole row as the database stores it.
@@ -1000,6 +1005,7 @@ func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKe
 // reopen while the sweep waits; a sweep that read the issue before the lock would write the
 // closed issue's ask states into the documents of an issue that is open again.
 func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
 	ctx := context.Background()
@@ -1031,13 +1037,8 @@ func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the reopen: %v", err)
 	}
-	select {
-	case err := <-swept:
-		if err != nil {
-			t.Fatalf("the sweep: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep never returned once the reopen committed")
+	if err := testwait.Receive(t, "the sweep's answer once the reopen committed", swept); err != nil {
+		t.Fatalf("the sweep: %v", err)
 	}
 	if writes := counted.writes.Load(); writes != 0 {
 		t.Fatalf("the sweep wrote the ask states of %s %d time(s) after a reopen committed while it waited: it "+

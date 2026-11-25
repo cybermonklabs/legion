@@ -380,6 +380,7 @@ func recallListed(ctx context.Context, srv *server, project, query string, resul
 // replayed and printed; the pairs with a done target are counted apart.
 // DISPATCH_RECALL_REQUIRE_NO_LOSS=1 fails it if the check lists fewer targets than the old query.
 func TestRelatedRecallOnDuplicates(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("DISPATCH_RECALL_CORPUS")
 	if path == "" {
 		t.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")
@@ -488,6 +489,7 @@ func TestRelatedRecallOnDuplicates(t *testing.T) {
 // corpus's words: p50, p95 and max over 20 runs each, after one untimed run. It also times five
 // more refreshes of the project's term statistics.
 func TestRelatedCheckLatencyOnRecallCorpus(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("DISPATCH_RECALL_CORPUS")
 	if path == "" {
 		t.Skip("DISPATCH_RECALL_CORPUS must name a file scripts/related-recall.sh wrote")

@@ -1,16 +1,18 @@
-import { describe, expect, test } from "bun:test"
-import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { describe, expect, setDefaultTimeout, test } from "bun:test"
+import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { agentStreamControlSubject } from "@legion/contracts"
+import { agentStreamControlSubject, IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import type { Subprocess } from "bun"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
-import { callingThread } from "../src/codex/codex-server"
+import { callingThread, dispatchToolDefinition } from "../src/codex/codex-server"
 import {
   codexHome,
   codexPluginDataDirectory,
@@ -27,6 +29,10 @@ import {
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
 import { FakeNats, waitFor } from "./channel-session-harness"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const directory = temporaryDirectory("codex-session")
 
@@ -69,12 +75,18 @@ describe("the Codex session record", () => {
     expect(recordOfProcess(record, exited)).toBe(false)
   })
 
-  test("Codex's shared app server is told apart from a codex process of its own", () => {
-    // `sleep 5; :` so the shell cannot exec sleep in its own place, which would drop app-server
-    // from its arguments. `-c` takes a value for codex as for sh, so the subcommand is app-server.
-    const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
-    const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
+  test("Codex's shared app server is told apart from a codex process of its own", async () => {
+    // Each shell waits on a read of its stdin, a pipe nothing writes, so it neither execs anything
+    // in its own place, which would drop app-server from its arguments, nor ends before the test
+    // kills it. `-c` takes a value for codex as for sh, so the subcommand is app-server. Both start
+    // before either is waited for, so the `finally` kills each of them whichever wait fails.
+    const sharedArgv = ["sh", "-c", "read line; :", "app-server"]
+    const ownArgv = ["sh", "-c", "read line; :"]
+    const shared = Bun.spawn(sharedArgv, { stdin: "pipe" })
+    const own = Bun.spawn(ownArgv, { stdin: "pipe" })
     try {
+      await untilListedAs(shared, sharedArgv)
+      await untilListedAs(own, ownArgv)
       expect(sharedAppServer(shared.pid)).toBe(true)
       expect(sharedAppServer(own.pid)).toBe(false)
     } finally {
@@ -154,6 +166,42 @@ describe("the Codex session record", () => {
     ).toBe(process.ppid)
   })
 })
+
+/** Whether this machine lists its processes under /proc, as Linux does. */
+const HAS_PROC = existsSync("/proc/self/cmdline")
+
+/** Whether the machine lists process `pid` as running `argv`: exactly, from /proc/<pid>/cmdline,
+ *  or where there is no /proc, from the space-separated list `ps` prints. */
+function listedAs(pid: number, argv: readonly string[]): boolean {
+  if (HAS_PROC) {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8") === argv.map((arg) => `${arg}\0`).join("")
+    } catch {
+      return false
+    }
+  }
+  const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)])
+  return ps.exitCode === 0 && ps.stdout.toString().trim() === argv.join(" ")
+}
+
+/**
+ * Waits until the machine lists `child` as running `argv`, the arguments it was started with. On
+ * Linux, Bun.spawn returns from a vfork while the child is still inside its execve, and until that
+ * exec has laid out the new arguments, /proc/<pid>/cmdline reads the test process's own arguments
+ * or nothing at all: right after a spawn, on a loaded box, the read was empty in most of a
+ * thousand tries. The child tells nobody when its exec is done, so the wait polls. The row's own
+ * deadline is its only bound, and a child that ends first fails the row by name.
+ */
+async function untilListedAs(child: Subprocess, argv: readonly string[]): Promise<void> {
+  while (!listedAs(child.pid, argv)) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `${JSON.stringify(argv)} ended (${child.exitCode ?? child.signalCode}) before the machine listed it as running`,
+      )
+    }
+    await Bun.sleep(5)
+  }
+}
 
 /** A connection that records what is published, the subjects subscribed and given up, and hands
  *  control messages to the stream. `closeForGood` closes it as nats.js closes one for good. */
@@ -458,12 +506,24 @@ describe("the Codex live view", () => {
   }, 15_000)
 })
 
+/** The Dispatch message every frame of these rows delivers. */
+const MESSAGE = "33333333-3333-4333-8333-333333333333"
+
+/** A reply to MESSAGE Dispatch made and gave no copy of its answer for: what every reply of a
+ *  harness built with `repliesLand` throws, and whose message the line about it carries. */
+const REPLY_LANDED = new DispatchWriteLandedError(
+  IDEMPOTENCY_KEY_COMMITTED,
+  409,
+  "POST",
+  `https://dispatch.test/api/v1/messages/${MESSAGE}/reply`,
+)
+
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
   const delivery = {
     attempt: 1,
     body,
     broadcastId: undefined,
-    id: "33333333-3333-4333-8333-333333333333",
+    id: MESSAGE,
     issueKey: null,
     mode,
     resource: "message",
@@ -477,12 +537,24 @@ function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
 }
 
 describe("the Codex router of a person's messages", () => {
-  async function harness(body: string) {
+  async function harness(
+    body: string,
+    options: {
+      /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded,
+       *  then thrown (`REPLY_LANDED`). */
+      readonly repliesLand?: boolean
+      /** What the accept throws instead of answering with `body`. */
+      readonly acceptThrows?: Error
+    } = {},
+  ) {
     const stateFile = userTurnStateFile(directory, `router-${Math.random()}`)
     const delivered: CodexInboxItem[] = []
     const replies: { body?: string; error?: string }[] = []
     const expected: string[] = []
     const asked: string[] = []
+    const warnings: string[] = []
+    /** Settles at the first warning: the last thing a BTW or a `/` reply that failed does. */
+    const warned = Promise.withResolvers<void>()
     const router = createCodexUserTurnRouter({
       ask: async (question) => {
         asked.push(question)
@@ -491,23 +563,26 @@ describe("the Codex router of a person's messages", () => {
       deliver: async (item) => {
         delivered.push(item)
       },
-      dispatch: () =>
+      dispatch: async () =>
         ({
-          acceptMessageDelivery: async (id: string) => ({
-            body,
-            delivery: "steer",
-            message_id: id,
-          }),
+          acceptMessageDelivery: async (id: string) => {
+            if (options.acceptThrows !== undefined) throw options.acceptThrows
+            return { body, delivery: "steer", message_id: id }
+          },
         }) as unknown as DispatchClient,
       expect: (text, id) => expected.push(`${id}:${text}`),
       reply: async (_delivery, result) => {
         replies.push(result)
+        if (options.repliesLand) throw REPLY_LANDED
       },
       sessionId: () => "s1",
       state: userTurnState(stateFile, await readUserTurnState(stateFile)),
-      warn: () => undefined,
+      warn: (text) => {
+        warnings.push(text)
+        warned.resolve()
+      },
     })
-    return { asked, delivered, expected, replies, router }
+    return { asked, delivered, expected, replies, router, warned: warned.promise, warnings }
   }
 
   test("a Send puts the body Dispatch stored into the session as the person's message", async () => {
@@ -538,6 +613,53 @@ describe("the Codex router of a person's messages", () => {
     await Bun.sleep(10)
     expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
     expect(delivered).toEqual([])
+  })
+
+  // A reply Dispatch made and gave no copy of its answer for answered the attempt: an error reply
+  // after it would answer the person a second time with the error of a write that was made, and
+  // the line says it landed, never that it did not reach Dispatch.
+  test("a BTW answer that landed with no answer back is followed by no error reply", async () => {
+    const { replies, router, warned, warnings } = await harness("unused", { repliesLand: true })
+    expect(await router.route(frame("btw", "which file?"))).toBe(true)
+    await warned
+    expect(replies).toEqual([{ body: "answer to which file?" }])
+    expect(warnings).toEqual([
+      `a BTW answer to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
+    ])
+  })
+
+  test("a reply to a / message that landed with no answer back is not said to have missed Dispatch", async () => {
+    const { replies, router, warned, warnings } = await harness("/model gpt-y", {
+      repliesLand: true,
+    })
+    expect(await router.route(frame("steer", "/model gpt-y"))).toBe(true)
+    await warned
+    expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
+    expect(warnings).toEqual([
+      `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
+    ])
+  })
+
+  // An accept Dispatch recorded and gave no copy of its answer for spent the attempt as this
+  // session's, and the stored body a turn is made of is not in hand: the frame keeps its card, and
+  // the line says the accept was recorded and why no turn follows, never that Dispatch did not
+  // accept it.
+  test("an accept that landed with no answer back keeps the card, saying the accept was recorded", async () => {
+    const landed = new DispatchWriteLandedError(
+      IDEMPOTENCY_KEY_COMMITTED,
+      409,
+      "POST",
+      `https://dispatch.test/api/v1/messages/${MESSAGE}/deliveries/1/accept`,
+    )
+    const { delivered, replies, router, warnings } = await harness("unused", {
+      acceptThrows: landed,
+    })
+    expect(await router.route(frame("steer", "ship it"))).toBe(false)
+    expect(delivered).toEqual([])
+    expect(replies).toEqual([])
+    expect(warnings).toEqual([
+      `Dispatch recorded this session's accept of message ${MESSAGE} and gave no copy of its answer (${landed.message}), so no turn follows; it arrives as a card`,
+    ])
   })
 })
 
@@ -601,5 +723,18 @@ describe("the Codex thread a tool call comes from", () => {
     expect(callingThread({ progressToken: 1 })).toBeUndefined()
     expect(callingThread(undefined)).toBeUndefined()
     expect(callingThread({ threadId: "" })).toBeUndefined()
+  })
+})
+
+// The `dispatch` command exits 2 for a usage error and 1 for every other failure, a Dispatch it
+// cannot reach as much as a refusal (runDispatchCli in packages/envoy-client/src/dispatch-cli.ts),
+// so the Codex tool that runs it says so and no longer reads exit 1 as a refusal alone.
+describe("the Codex dispatch tool's description", () => {
+  test("says exit 1 is any failure but a usage error", () => {
+    const { description } = dispatchToolDefinition()
+    expect(description).toContain(
+      "0 written or read, 2 a usage error, 1 any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.",
+    )
+    expect(description).not.toContain("1 refused by Dispatch")
   })
 })

@@ -19,9 +19,9 @@ import (
 // bound was stated over, which is also the page BenchmarkTheActivityFeedsWarmRead measures warm.
 const coldFeedComments = 200
 
-// coldFeedDisplayCache empties the display trees a restart empties, by filling it: one value of
-// exactly its bound evicts everything else and is itself evicted by the first tree the read puts
-// (bytelru.Put), so the read measured after this one starts from nothing and nothing of this call
+// coldFeedDisplayCache empties the display trees a restart empties, by filling it: one value the
+// cache charges exactly its bound evicts everything else and is itself evicted by the first tree
+// the read puts, so the read measured after this one starts from nothing and nothing of this call
 // is left to measure. The filler's bytes are the caller's one allocation, handed back here under
 // a key of their own each round, since a key the cache already holds is only marked used again.
 //
@@ -48,9 +48,10 @@ func coldFeedUnstoredTrees(b *testing.B, database *store.Store) {
 	}
 }
 
-// coldFeedFiller is the value coldFeedDisplayCache empties the display cache with: exactly the
-// cache's bound, which is the largest value it keeps at all.
-func coldFeedFiller() json.RawMessage { return make(json.RawMessage, pmdoc.DisplayCacheBytes) }
+// coldFeedFiller is the value coldFeedDisplayCache empties the display cache with: the longest
+// tree the cache keeps at all, which with its key and its entry is charged exactly the cache's
+// bound. Its array is made exactly that long, so its capacity is that length.
+func coldFeedFiller() json.RawMessage { return make(json.RawMessage, pmdoc.DisplayTreeLongestKept) }
 
 // BenchmarkTheActivityFeedsColdRead measures GET /api/v1/issues/{key}/events as a server answers
 // it when nothing it kept is there to answer from. Every arm goes through the mux Register
@@ -127,7 +128,7 @@ func BenchmarkTheActivityFeedsColdStages(b *testing.B) {
 	benchmarkFeedProject(b, database, "FEED")
 	key := benchmarkColdFeedIssue(b, handler)
 	ctx := b.Context()
-	events, err := server.readEvents(ctx, issueOwner(key), eventListOptions{descending: true, limit: coldFeedComments})
+	events, err := server.readEvents(ctx, model.Actor{}, issueOwner(key), eventListOptions{descending: true, limit: coldFeedComments})
 	if err != nil {
 		b.Fatalf("read the feed of %s: %v", key, err)
 	}

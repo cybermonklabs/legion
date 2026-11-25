@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +28,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The copy's subjects (manifests/listener.yaml, cluster.sh mint_identity), and one the listener
 // lists nowhere.
@@ -222,17 +225,19 @@ func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 // a verifier that takes anything.
 func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T) {
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Every read below - the discovery, each verify, the refusals and the 404 - carries the shared
+	// wait's context and is asked again while the issuer has not answered it (issuerAnswered), so
+	// no read of the `sh serve.sh` issuer this test starts has a span that decides the row.
+	ctx := testwait.Context(t)
 
 	// Built as cmd/listener builds it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE
 	// (oidc.NewLazyVerifier), with the discovery its background run makes done here first.
 	verifier := oidc.NewLazyVerifier(issuer, testMintAudience)
-	if err := verifier.Discover(ctx); err != nil {
-		t.Fatalf("the listener's verifier could not discover the copy's issuer: %v", err)
-	}
+	issuerRead(t, "the listener's verifier to discover the copy's issuer", func() error { return verifier.Discover(ctx) })
 	for _, subject := range []string{testDispatchSubject, testRunnerSubject} {
-		claims, err := verifier.Verify(ctx, run.tokens[subject])
+		claims, err := issuerAnswered(t, "the copy's issuer to answer the verify of "+subject+"'s token", func() (oidc.Claims, error) {
+			return verifier.Verify(ctx, run.tokens[subject])
+		})
 		if err != nil {
 			t.Fatalf("the listener's verifier refused %s's token: %v", subject, err)
 		}
@@ -242,24 +247,79 @@ func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T)
 	}
 
 	other := mintSubjects(t, issuer, testDispatchSubject)
-	if _, err := verifier.Verify(ctx, other.tokens[testDispatchSubject]); !errors.Is(err, oidc.ErrSignature) {
+	if _, err := issuerAnswered(t, "the copy's issuer to answer the verify of a token of another run's key", func() (oidc.Claims, error) {
+		return verifier.Verify(ctx, other.tokens[testDispatchSubject])
+	}); !errors.Is(err, oidc.ErrSignature) {
 		t.Errorf("a token of a key the issuer does not serve was answered %v, not a signature failure", err)
 	}
 	elsewhere := oidc.NewLazyVerifier(issuer, "another-audience")
-	if err := elsewhere.Discover(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := elsewhere.Verify(ctx, run.tokens[testDispatchSubject]); !errors.Is(err, oidc.ErrAudience) {
+	issuerRead(t, "a verifier of another audience to discover the copy's issuer", func() error { return elsewhere.Discover(ctx) })
+	if _, err := issuerAnswered(t, "the copy's issuer to answer the verify at a verifier of another audience", func() (oidc.Claims, error) {
+		return elsewhere.Verify(ctx, run.tokens[testDispatchSubject])
+	}); !errors.Is(err, oidc.ErrAudience) {
 		t.Errorf("a minted token at a verifier of another audience was answered %v, not an audience failure", err)
 	}
 
-	response, err := http.Get(issuer + "/elsewhere")
-	if err != nil {
-		t.Fatal(err)
+	answered := testwait.Until(t, "the copy's issuer to answer a path it serves nothing at", func() (statusRead, bool) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/elsewhere", nil)
+		if err != nil {
+			t.Fatalf("build the request for a path the issuer serves nothing at: %v", err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return statusRead{Err: err}, false
+		}
+		_ = response.Body.Close()
+		return statusRead{Status: response.StatusCode}, true
+	})
+	if answered.Status != http.StatusNotFound {
+		t.Errorf("the issuer answered %d for a path it serves nothing at, not 404", answered.Status)
 	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Errorf("the issuer answered %d for a path it serves nothing at, not 404", response.StatusCode)
+}
+
+// statusRead is one read of a path of the copy's issuer: the status it answered, or the transport
+// error that read ended with. Its fields are exported so that a wait that gives up prints the error
+// itself, not a pointer: fmt calls no Error() on an error it reaches through an unexported field.
+type statusRead struct {
+	Status int
+	Err    error
+}
+
+// issuerAnswer is one read of the copy's issuer through the listener's verifier: what it returned,
+// and its error. Exported for the reason statusRead's fields are.
+type issuerAnswer[T any] struct {
+	Value T
+	Err   error
+}
+
+// issuerAnswered asks read until the copy's issuer has answered it, and returns that answer. A read
+// the issuer did not answer ended in a transport error, a *url.Error somewhere in its chain: the
+// connection was refused, or the verifier's own attempt bound ended it (internal/oidc:
+// discoveryAttemptTimeout 10 s, no second discovery within discoveryRetrySpacing 5 s, the key
+// read's FetchTimeout; go-oidc returns the request's error as it is, and Keys.read wraps it with
+// %w). Such a read is no verdict, since a loaded machine can end it, and the row asks again. Every
+// other answer is the issuer answering and is returned at once: the refusals this row reads, and a
+// fault the issuer answered, such as a discovery document or a key set served at the wrong path,
+// that does not parse, or that names another issuer. oidc.ErrIssuerUnavailable is not the class to
+// ask again on, because discovery wraps every one of those answered faults in it as well. The wait's
+// one bound is the test binary's deadline.
+func issuerAnswered[T any](t *testing.T, what string, read func() (T, error)) (T, error) {
+	t.Helper()
+	got := testwait.Until(t, what, func() (issuerAnswer[T], bool) {
+		var a issuerAnswer[T]
+		a.Value, a.Err = read()
+		var unanswered *url.Error
+		return a, !errors.As(a.Err, &unanswered)
+	})
+	return got.Value, got.Err
+}
+
+// issuerRead is issuerAnswered for a read whose answer is its error alone, such as Discover, and
+// fails the test, naming the fault, when the issuer answered it with anything but success.
+func issuerRead(t *testing.T, what string, read func() error) {
+	t.Helper()
+	if _, err := issuerAnswered(t, what, func() (struct{}, error) { return struct{}{}, read() }); err != nil {
+		t.Fatalf("%s: the issuer answered with a fault: %v", what, err)
 	}
 }
 

@@ -271,7 +271,7 @@ func (r *olderLauncherRig) restart() {
 // agent the decision launches waits in the runtime (fake.Runtime.OnSpawn): that Spawn alone waits
 // for its context to end, as the Sandbox runtime's Spawn waits on a pod that is coming up, and then
 // answers that context's error, so the call is recorded and nothing is started. The launch is cut
-// short, and writes nothing after the write its try made before its start (launchNow).
+// short, and writes nothing after the write its try made before its start (launchTries).
 func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 	r.t.Helper()
 	waiting := make(chan struct{})
@@ -284,7 +284,7 @@ func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	ctx, stop := context.WithCancel(r.ctx)
+	ctx, stop := context.WithCancel(store.ForConcurrentWorker(r.ctx))
 	defer stop()
 	decided := make(chan error, 1)
 	go func() { decided <- r.machine.Handle(ctx, ev) }()
@@ -377,7 +377,8 @@ func resumedByAgent(call fake.Call) bool {
 //
 // The claim is stored queued at a generation above zero, so the boot restores it launch_uncertain
 // (supervise.Claim.ReleasedLaunch), and it is released to queued before the spawn, as the daemon's
-// own path for an unfinished launch does (launchUnfinishedClaim). That release keeps its session.
+// own path for an unfinished launch does (releaseUnfinishedClaim, launchUnfinished). That release
+// keeps its session.
 func (r *olderLauncherRig) startByAgentLookup() fake.Call {
 	r.t.Helper()
 	if r.claim().State == supervise.StateLaunchUncertain {
@@ -619,6 +620,7 @@ func (r *olderLauncherRig) publishedOn(topic string) []outboxPublish {
 // since that launcher read no row to say it was not; the claim's next launch, a resume of the
 // recorded file, says nothing of it (state-table rows 1 and 2).
 func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 
 	byAgent := r.startByAgentLookup()
@@ -666,6 +668,7 @@ func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *test
 // next try forgets the session, charged nothing either, so a claim one launch failure below its
 // limit does not fail (state-table rows 3 to 7).
 func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t *testing.T) {
+	t.Parallel()
 	// seeded is the launch failures the claim carries: one below the rig's limit of two, so a
 	// charge of the end or of the forget would fail the claim.
 	const seeded = 1
@@ -713,6 +716,7 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 // the session was lost or that no store holds it: the session was not looked up, and a store may
 // hold it still (state-table row 7).
 func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 	r.startByAgentLookup()
 	from := len(r.rt.Calls())
@@ -782,6 +786,7 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 // names the session forgotten, so the second forget's fact is the first's (workflowRuntime's
 // sessionLost).
 func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 	r.startByAgentLookup()
 

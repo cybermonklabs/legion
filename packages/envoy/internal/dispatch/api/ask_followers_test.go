@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func followerSessions(followers []model.AskFollower) []string {
@@ -58,6 +59,7 @@ func replyToAskAs(t *testing.T, handler http.Handler, issueKey, askID, sessionID
 }
 
 func TestEveryoneWhoWritesToAnAskFollowsIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Followers", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")
@@ -119,6 +121,7 @@ func askSessionsOf(t *testing.T, payload map[string]any) ([]string, bool) {
 // since it wrote it. An ask a person wrote that no session follows names [], and a comment outside
 // an ask's thread carries no ask_sessions at all.
 func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask sessions", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -177,6 +180,7 @@ func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
 }
 
 func TestApprovalAskFollowsItsRequestingSession(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approval followers", "A spec")
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{
@@ -196,6 +200,7 @@ func TestApprovalAskFollowsItsRequestingSession(t *testing.T) {
 }
 
 func TestApprovalHandBackFollowsItsActorWithoutChangingTheRequester(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -259,6 +264,7 @@ func TestApprovalHandBackFollowsItsActorWithoutChangingTheRequester(t *testing.T
 }
 
 func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -277,24 +283,21 @@ func TestAskBlockWrittenBySessionFollowsThatSession(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	askID := testwait.UntilPolling(t, 10*time.Millisecond, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != "block-ask" {
-				continue
+			if ask.BlockID != nil && *ask.BlockID == "block-ask" {
+				return ask.ID, true
 			}
-			if got := readAskFollowers(t, handler, ask.ID); strings.Join(got, ",") != "s-writer" {
-				t.Fatalf("ask block followers = %v, want [s-writer]", got)
-			}
-			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		return "", false
+	})
+	if got := readAskFollowers(t, handler, askID); strings.Join(got, ",") != "s-writer" {
+		t.Fatalf("ask block followers = %v, want [s-writer]", got)
 	}
-	t.Fatal("typed ask block did not settle into the inbox")
 }
 
 func followerRequest(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
@@ -310,6 +313,7 @@ func followerRequest(t *testing.T, handler http.Handler, method, target string, 
 }
 
 func TestASessionFollowsAndUnfollowsOnlyItself(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Self follow", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")
@@ -399,6 +403,7 @@ func TestASessionFollowsAndUnfollowsOnlyItself(t *testing.T) {
 }
 
 func TestAHumanAddsAndRemovesAnyFollower(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Human follow", "A spec")
 	askID := openAskAs(t, handler, issue.Key, "s1", "Ship it?")

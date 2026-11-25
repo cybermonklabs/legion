@@ -34,7 +34,11 @@ func (s *server) getMessageBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
-	answer, err := s.itemBlocks(r.Context(), kind, r.PathValue("id"))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	answer, err := s.itemBlocks(r.Context(), who, kind, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -50,12 +54,12 @@ func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind re
 // the stored body is the one the index split, so its split holds each indexed block where the row
 // says. Were the parser to read the body otherwise since, the two disagree and the item reads as
 // not indexed, as an owed one does, until the reconciliation indexes it again.
-func (s *server) itemBlocks(ctx context.Context, kind refs.ItemKind, id string) (model.ItemBlocks, error) {
+func (s *server) itemBlocks(ctx context.Context, who model.Actor, kind refs.ItemKind, id string) (model.ItemBlocks, error) {
 	stored, err := readItemBlockRows(ctx, s.deps.Store.Pool, kind, id)
 	if err != nil {
 		return model.ItemBlocks{}, err
 	}
-	item, found, err := refs.Node(ctx, s.deps.Store.Pool, string(kind), id, false)
+	item, found, err := refs.Node(ctx, s.deps.Store.Pool, who, string(kind), id, false)
 	if err != nil {
 		return model.ItemBlocks{}, err
 	}
@@ -143,8 +147,10 @@ type storedItemBlocks struct {
 	rows       []itemBlockRow
 }
 
-// itemBlockRow is one current block row of an item; a message block has no changed revision or
-// time.
+// itemBlockRow is one current block row of an item; a message's query reads neither changed
+// fact, since a message records no revisions and its blocks route answers neither
+// (model.ItemBlock), though message_blocks.changed_at stands at the edit that last rewrote the
+// block and the block's graph node carries it (refs/item_block_nodes.go).
 type itemBlockRow struct {
 	blockID, nodeType, textSHA256 string
 	position                      int

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // iapSocketAudience is the audience IAP signs for the test's load balancer backend service.
@@ -82,6 +83,9 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // assertion, which is judged again: the expired one opens nothing, and a fresh one opens a socket.
 // The control, the same person on a nine-minute assertion, stays open throughout.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
+	// Not parallel: both sockets must answer the server's ping inside the 200 ms heartbeat's
+	// window to stay open, and among this package's parallel tests under the race detector a
+	// client read goroutine missed it and the control socket was cut with 1006.
 	database := storetest.Open(t)
 	iap := newIAPSocketKeys(t, database)
 	const heartbeat = 200 * time.Millisecond
@@ -91,7 +95,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	short := rig.dial(t, expiring)
 	long := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 
-	closed := short.closeError(t, 6*time.Second)
+	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
 		t.Fatalf("the socket whose upgrade's assertion expired closed with %d %q, want %d %q, which a page answers by reopening at once",
 			closed.Code, closed.Text, contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
@@ -108,7 +112,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	}
 	reopened := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 	reopened.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-	reopened.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+	reopened.refusal(t, "", "INVALID_FRAME")
 }
 
 // switchedIdentity is a Dispatch's IAP identity, which a test swaps while sockets are open, so a
@@ -157,6 +161,7 @@ var iapChanges = []iapChange{
 // fresh assertion is judged again and refused. The heartbeat is 3 s, so by the first one the
 // upgrade's assertion, which had one to two seconds left, is past its exp and the skew.
 func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -165,7 +170,7 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: 3 * time.Second, identity: switched}, nil)
 			socket := rig.dial(t, iap.expiring(t, time.Second))
 			switched.swap(change.apply(t, iap))
-			if closed := socket.closeError(t, 8*time.Second); closed.Code != gws.ClosePolicyViolation {
+			if closed := socket.closeError(t); closed.Code != gws.ClosePolicyViolation {
 				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
 					change.name, closed.Code, closed.Text, gws.ClosePolicyViolation)
 			}
@@ -255,16 +260,13 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
 // assertion, keeps its socket open and answering its editor.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	rig := newIAPDocumentRig(t, heartbeat)
 	short := rig.openDocument(t, rig.iap.expiring(t, 3*time.Second))
 	long := rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute)))
 
-	select {
-	case <-short.connection().Ended:
-	case <-time.After(8 * time.Second):
-		t.Fatal("the document socket whose upgrade's assertion expired is still open after 8 s")
-	}
+	testwait.Receive(t, "the end of the document socket whose upgrade's assertion expired", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
 		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d, on which the provider reconnects",
 			code, contracts.DocumentAdmissionRevokedCloseCode)
@@ -284,16 +286,13 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 // frame (1006), never the 4412 on which the provider reconnects as after a rotation. The heartbeat
 // is 4 s, so by the first one the upgrade's assertion, which had 2 to 3 s left, is past its exp.
 func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			rig := newIAPDocumentRig(t, 4*time.Second)
 			peer := rig.openDocument(t, rig.iap.expiring(t, 2*time.Second))
 			rig.switched.swap(change.apply(t, rig.iap))
-			select {
-			case <-peer.connection().Ended:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the document socket whose upgrade's assertion expired, %s, is still open after 10 s", change.name)
-			}
+			testwait.Receive(t, "the end of the document socket whose upgrade's assertion expired, "+change.name, peer.connection().Ended)
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
 				t.Fatalf("the document socket whose upgrade's assertion expired, %s, closed with %d, want %d: it is refused, not rotated",
 					change.name, code, gws.CloseAbnormalClosure)
@@ -305,6 +304,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
 // under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation.
 func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error

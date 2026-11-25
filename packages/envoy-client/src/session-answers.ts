@@ -2,12 +2,14 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
+import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
+import { jsonLineRecord } from "./json-line-record";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 /**
@@ -68,11 +70,12 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
  * the person wrote it, the person (with the agent that wrote it for them, through
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
- * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
- * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
- * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ * that replaced one, `edited <time>` on an edited comment or message, and the mark every read
+ * prints for a post its author withdrew (`deletedMark`), whose words the server sends empty); its
+ * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
+ * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
+ * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
+ * with the sentences Dispatch wrote for the asking agent; then the person's words in full.
  *
  * The person's own words and Dispatch's stand on lines of their own, the label naming whose
  * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
@@ -83,7 +86,10 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   const phrase = sessionAnswerRelationPhrase(item.relation);
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
-  if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
+  if (item.edited_at !== undefined) head.push(editedMark(item.edited_at));
+  // No read of a deleted post gives any part of its body: the server sends its text empty, so no
+  // words line prints, and the head line ends with the one mark every read prints.
+  if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);
   const where =
     item.ref === null
@@ -131,14 +137,15 @@ function windowOf(
  * its kind, id, author and times, the options chosen, the words and its relation.
  * `readSessionAnswers` gives it for every item Dispatch sent inside the read's 72-hour window,
  * the ones its list shows and the ones the character cap left out, so a host comparing two reads
- * (`sessionAnswersChanged`) tells a new item, an answer or comment a person changed, or an item
- * that became or stopped being the session's own, from a list that only lost items to the window
- * or changed what the session or Dispatch says around them (an issue's title, an ask's question,
- * a cached list's header). An item the cap leaves out counts too: a newest item longer than the
- * cap, or a comment an edit made too long to fit, is shown to nobody, and a host that compared
- * only the items shown would go on showing the person's old words as current. Dispatch cuts the
- * list itself (`max_chars`) after the first item that takes its count past the cap, so it sends
- * such an item; the items after its cut, which no list shows, reach the host only as `total`.
+ * (`sessionAnswersChanged`) tells a new item, an answer, comment or message a person changed, or
+ * an item that became or stopped being the session's own, from a list that only lost items to the
+ * window or changed what the session or Dispatch says around them (an issue's title, an ask's
+ * question, a cached list's header). An item the cap leaves out counts too: a newest item longer
+ * than the cap, or a comment an edit made too long to fit, is shown to nobody, and a host that
+ * compared only the items shown would go on showing the person's old words as current. Dispatch
+ * cuts the list itself (`max_chars`) after the first item that takes its count past the cap, so it
+ * sends such an item; the items after its cut, which no list shows, reach the host only as
+ * `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
@@ -156,6 +163,7 @@ export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
       actorActText(item.author.id, item.author.act),
       item.at,
       item.edited_at ?? null,
+      item.deleted_at ?? null,
       item.selected ?? null,
       item.text,
       item.relation,
@@ -178,9 +186,9 @@ function wordTime(word: string): number {
 
 /**
  * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
- * did not: an item new to it, an answer or comment a person changed, or an item whose relation to
- * the session changed (a string `shown` lacks); or an item `shown` held that is gone from the read
- * while its time is still inside the read's window, at or after `since`
+ * did not: an item new to it, an answer, comment or message a person changed, or an item whose
+ * relation to the session changed (a string `shown` lacks); or an item `shown` held that is gone
+ * from the read while its time is still inside the read's window, at or after `since`
  * (`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
  * removed. An item gone because its time left the window is no change: the window moved, and
  * nothing a person wrote did. A string whose time cannot be read, or a read with no `since`,
@@ -451,6 +459,16 @@ export interface SessionAnswersRead {
   readonly notice?: string;
 }
 
+/** Tests only: the file each wait below appends `{ armedMs, endedBy }` to, one JSON line each, so
+ *  a test across the process boundary reads the deadline a request's read was given and what
+ *  ended it rather than timing the request. Unset, as every deployment runs, nothing is written. */
+export const ANSWERS_WAIT_RECORD_FILE = "ENVOY_ANSWERS_WAIT_RECORD_FILE";
+
+const recordWait = jsonLineRecord<{
+  readonly armedMs: number;
+  readonly endedBy: "deadline" | "aborted" | "answered";
+}>(process.env, ANSWERS_WAIT_RECORD_FILE);
+
 /** `promise`'s value, or which came first of `ms` passing and `signal` aborting. */
 async function settleWithin<T>(
   promise: Promise<T>,
@@ -466,7 +484,12 @@ async function settleWithin<T>(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([promise, stop]);
+    const outcome = await Promise.race([promise, stop]);
+    recordWait?.({
+      armedMs: ms,
+      endedBy: outcome === "deadline" ? "deadline" : outcome === "aborted" ? "aborted" : "answered",
+    });
+    return outcome;
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);

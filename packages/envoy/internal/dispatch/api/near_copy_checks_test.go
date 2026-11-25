@@ -50,6 +50,7 @@ func sha256Hex(text string) string {
 // Every state of the gate leaves its row: the refusal, which writes nothing else anywhere, keeps
 // the text it refused and what it named; each create that went in names its issue.
 func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -135,6 +136,7 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 
 // A nudge is recorded as one, with the closest issue below the refusal bar.
 func TestNearCopyChecksRecordANudge(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", (duplicateNudgeScore+duplicateRefuseScore)/2)
 
@@ -158,6 +160,7 @@ func TestNearCopyChecksRecordANudge(t *testing.T) {
 // A create whose check did not answer is recorded as not made, with why; a create naming a
 // GitHub issue runs no gate and leaves no row.
 func TestNearCopyChecksRecordACheckNotMadeAndNoneForAnExternalCreate(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -222,6 +225,7 @@ func createWaitsForNearCopyChecks(t *testing.T, database *store.Store) bool {
 // unchecked: its answer names the issue the refusal would have named, and its row, written in the
 // create's own transaction, waits for the table and commits with the create.
 func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -246,13 +250,9 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	// The refusal's write waits for the table until its bound ends it, and only then does the
 	// create's transaction begin; the table is let go once that transaction's write waits, so the
 	// refusal's write cannot have landed and the create's write is the one that lands.
-	deadline := time.Now().Add(30 * time.Second)
-	for !createWaitsForNearCopyChecks(t, database) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the create's transaction did not wait for near_copy_checks in 30 s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the create's transaction to wait for near_copy_checks", func() bool {
+		return createWaitsForNearCopyChecks(t, database)
+	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release near_copy_checks: %v", err)
 	}
@@ -297,6 +297,7 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 // own id stands for that insert, and the refusal's write, which errs, for an answer the server
 // could not read (putUnseenRefusal).
 func TestNearCopyChecksARefusalRowTheServerCannotConfirmGivesWayToTheCreate(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -365,6 +366,7 @@ func putUnseenRefusal(t *testing.T, database *store.Store, id, title string) {
 // when that row cannot replace the refused one, the create is not admitted at all, and the refused
 // row stands beside no issue. So the refusal and the issue never both stand.
 func TestNearCopyChecksACreateWhoseRowCannotReplaceTheRefusalIsNotAdmitted(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -414,6 +416,7 @@ func TestNearCopyChecksACreateWhoseRowCannotReplaceTheRefusalIsNotAdmitted(t *te
 
 // The route pages by id, refuses a cursor that is no row of the project, and needs a project.
 func TestNearCopyChecksPagesAndRefusesBadQueries(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
@@ -498,6 +501,7 @@ func nearCopyOutcomesOf(t *testing.T, database *store.Store, issue string) []str
 // once, and the row is written once the lock is released. The lock is held until the first
 // attempt's insert is cancelled, so the row is the retry's.
 func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -511,13 +515,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	}
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 10s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		waitUntil(t, what, done)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -574,6 +572,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 // A write that finds a row under its id holding the very answer it writes - an earlier attempt that
 // landed though nobody read its answer - has landed. Another answer under that id has not.
 func TestNearCopyChecksAWriteThatFindsItsOwnRowHasLanded(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	passed := &nearCopyCheck{outcome: nearCopyPassed}

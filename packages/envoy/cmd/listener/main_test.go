@@ -5,15 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3448,7 +3445,10 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 // not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
 // left this process -- a raw nats.ErrTimeout is what the client's flush returns
 // while a reconnecting or stalled connection still buffers it. No forward draws
-// a receipt (startRoleForward), so none is reported receipt_timeout.
+// a receipt (startRoleForward), so none is reported receipt_timeout. Only a
+// forward whose window ended before it was published (bus.ErrWindowEndedBeforePublish)
+// carries "window_ended_before_publish":true on its line; the same text from a window
+// that ended after the publish carries no mark.
 func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -3456,11 +3456,15 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 		forwardErr error
 		reason     string
 		logMessage string
+		// beforePublish is whether the line carries "window_ended_before_publish":true.
+		beforePublish bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed", false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed", false},
+		{"a window that ended before the publish", fmt.Errorf("bus: window elapsed before the publish to \"agent.x\" was flushed: %w: %w", context.DeadlineExceeded, bus.ErrWindowEndedBeforePublish), "delivery_failed", "listener role forward failed", true},
+		{"a window that ended after the publish", errors.New(`bus: window elapsed before the publish to "agent.x" was flushed`), "delivery_failed", "listener role forward failed", false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3498,6 +3502,9 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 			}
 			if strings.Contains(logs, "receipt") {
 				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)
+			}
+			if marked := strings.Contains(logs, `"window_ended_before_publish":true`); marked != tc.beforePublish {
+				t.Fatalf("the failure line carries the window_ended_before_publish mark: %v, want %v:\n%s", marked, tc.beforePublish, logs)
 			}
 		})
 	}
@@ -4103,9 +4110,9 @@ func (h listenerDeliveryHarness) registerConsumerTarget(t *testing.T, sessionID,
 
 // inlineForward is a role forward seam (listenerDeliveryHandlerConfig.forwardRole) whose publish
 // always succeeds and whose wait is forward: a test that stands in for the stream's answer.
-func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		return func() error { return forward(subject, item, msgID, timeout) }, nil
+func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, forward(subject, item, msgID, timeout) }, nil
 	}
 }
 
@@ -5136,25 +5143,17 @@ func setupTestNATS(t *testing.T) *bus.Client {
 // spends most of its time waiting on NATS, a listener process or Postgres, not on a core, and each
 // has a JetStream account of its own (testnats.URL) or a server of its own. go test's default of
 // GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account, rig
-// and Dispatch database at once would swamp the one shared server.
+// and Dispatch database at once would swamp the one shared server. TestMain (testmain_test.go)
+// sets it.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8
 
 // listenerTestAccounts is how many accounts the package's shared NATS server declares when it
-// starts. A run asks for about 600, one for each test and subtest that calls testnats.URL; a server
-// that starts with fewer declares more by a reload, which holds every client of the server for up
-// to 1.7 s while parallel tests run beside it (testnats.Accounts).
+// starts (TestMain, testmain_test.go). A run asks for about 600, one for each test and subtest that
+// calls testnats.URL; a server that starts with fewer declares more by a reload, which holds every
+// client of the server for up to 1.7 s while parallel tests run beside it (testnats.Accounts).
 const listenerTestAccounts = 1024
-
-// TestMain sets the package's default -parallel and removes the NATS server the package's tests
-// share (testnats.Main), which it starts with listenerTestAccounts accounts.
-func TestMain(m *testing.M) {
-	if err := flag.Set("test.parallel", strconv.Itoa(listenerTestParallelism)); err != nil {
-		panic("set this package's default -parallel: " + err.Error())
-	}
-	os.Exit(testnats.Main(m, testnats.Accounts(listenerTestAccounts)))
-}
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays
 // connected: deleting the bucket's stream makes the watcher's ordered consumer fail to reset.

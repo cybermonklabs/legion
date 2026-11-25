@@ -46,7 +46,14 @@ func (c *stateClock) advance(d time.Duration) {
 // where a stalled session's record still stands to be read as unresponsive.
 func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	return stalledSessionsRigOn(t, testnats.URL(t))
+}
+
+// stalledSessionsRigOn is stalledSessionsRig on the server uri names, one the test can stop
+// answering under live connections (testnats.Server.Freeze).
+func stalledSessionsRigOn(t *testing.T, uri string) (*listenerDeps, *stateClock) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
 	}

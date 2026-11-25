@@ -17,6 +17,7 @@ import (
 )
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
+	requireForegroundRead(t)
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("started-in-background=%t", background), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -49,6 +50,8 @@ func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
 // A stop the prompt takes while it waits in the background, before its label,
 // discards nothing: nothing has been typed for it yet.
 func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
+	requireSignalDispositions(t)
+	requireForegroundRead(t)
 	s := newPromptShell(t)
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
@@ -105,6 +108,7 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 // that signal at once, without fg: the terminal is the shell's then, and a restore from the
 // background would stop the job until fg.
 func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
+	requireForegroundRead(t)
 	for _, tc := range []struct{ signal, report string }{{"TERM", "Terminated"}, {"HUP", "Hangup"}} {
 		t.Run(tc.signal, func(t *testing.T) {
 			s := newPromptShell(t)
@@ -125,7 +129,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 					break
 				}
 				if waitsGaveUp(t) {
-					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, promptJobMargin, stat, s.out.String())
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, waitMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0
@@ -733,12 +737,20 @@ func TestPromptJobShellGoneRefuses(t *testing.T) {
 
 // A prompt started with & that reaches the terminal only after its shell has exited finds a
 // terminal that is no longer its controlling one: it refuses as when the shell exits under it,
-// rather than take the terminal for one job control never applied to.
+// rather than take the terminal for one job control never applied to. It needs a kernel that takes
+// the terminal from the session as the shell, its leader, exits; the helper reads which, once the
+// shell has exited (TERMINAL_AFTER_SHELL_EXIT).
 func TestPromptJobShellGoneBeforeThePromptStartsRefuses(t *testing.T) {
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_AFTER_SHELL_EXIT=1 "
 	s.start(false, true)
 	s.send("exit\r")
+	marker, at := s.waitFrom(0, "TERMINAL_AFTER_SHELL_EXIT=gone", "TERMINAL_AFTER_SHELL_EXIT=kept")
+	s.waitFrom(at, "\r\n") // the rest of the helper's line, which names what TIOCGPGRP answered
+	line, _, _ := strings.Cut(s.out.String()[at-len(marker):], "\r\n")
+	requireKernel(t, marker == "TERMINAL_AFTER_SHELL_EXIT=gone",
+		"a session leader's exit to take the terminal from its session (TIOCGPGRP on it then answers ENOTTY)",
+		"made the helper print "+line+" once the shell had exited")
 	s.wait("RETURNED no shell can bring the value prompt to the foreground of this terminal; pipe the value in: agent-secrets secret set DEMO_KEY < FILE")
 	s.wait("LABEL_HELD=false")
 	if strings.Contains(s.out.String(), "Value for") {
@@ -798,6 +810,8 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 			if _, err := controller.Write([]byte("private-value")); err != nil {
 				t.Fatal(err)
 			}
+			meter := startStallMeter(t)
+			sent := time.Now()
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
@@ -816,20 +830,28 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
+			// The process ends on the signal; the one bound of this wait is the moment every wait
+			// of these tests gives up (waitsGaveUp). Its end is then timed from the signal against
+			// no deadline of its own (requireCommandOnTime), except SIGABRT's: Go's
+			// GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can make
+			// that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			for ended := false; !ended; time.Sleep(time.Millisecond) {
+				select {
+				case <-done:
+					ended = true
+				default:
+					if waitsGaveUp(t) {
+						_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+						state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
+						t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+					}
+				}
+			}
+			allowed := time.Duration(0)
 			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
+				allowed = 10 * time.Second
 			}
-			select {
-			case <-done:
-			case <-time.After(exitWithin):
-				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
-			}
+			requireCommandOnTime(t, meter, "the prompt after "+sig.String(), sent, allowed)
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -483,8 +484,9 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 }
 
 // edgesOutsideNodes is how many issues the outside graph holds, and under them as many
-// documents, asks, comments and messages, each with one block and one link from it: the least
-// number of rows every table the statements read holds.
+// documents, asks, comments and messages, each with one block and one link from it, and as many
+// nodes and values the store holds beside its own (writeOutsideStoreNodes): the least number of
+// rows every table the statements read holds.
 const edgesOutsideNodes = 10000
 
 // edgesProbeDocuments is how many documents mention the issue of the probe case, each in its own
@@ -496,13 +498,13 @@ const edgesProbeDocuments = 100
 const edgesWholeDocumentRead = "whole document"
 
 // edgesProbeCarryingReads is the list "The in reads that carry heldByABlock's probe" of the plan of
-// the graph read's one-hop change: refs.Edges' in read of a node of every kind nodeLoaders
+// the graph read's one-hop change: refs.Edges' in read of a node of every kind nodeRegistry
 // resolves, whose first arm carries the probe for every kind, and the whole-document read, which
 // carries none. The kinds case compares it with nodeKinds first, so a kind a later build resolves
 // fails it until it is listed here, and the fixture writes a node of each.
 var edgesProbeCarryingReads = []string{
 	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component", "issue",
-	"message", "message_block", "session", edgesWholeDocumentRead,
+	"message", "message_block", "page", "person", "role", "session", edgesWholeDocumentRead,
 }
 
 // edgesPlanSettings are the two settings each plan is read under: sequential scans off, which
@@ -558,18 +560,49 @@ func (a edgesBlockArm) String() string {
 
 // edgesBlockArms is the list "The arms that can end at a block" of the plan of this change: the
 // arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs;
-// block_refs, whose typed pointer is listed only where block_ref_listed allows its target;
+// block_refs, whose typed pointer is listed only where block_ref_listed allows its target, over
+// the rows that name no node; the store's own arm over graph_tuples, which answers a document
+// block's link once its block_refs row names its node, and only while that row carries it;
 // comment_block_refs, message_block_refs and ask_block_refs, each joined to its source block, which
 // must hold a position; a comment's reply to a comment's block and to an ask's part, told apart by
 // the ask/ that starts an ask part's node id; and a message's reply to a message's block.
-// refs.Edges' in read reads each of them by the node's block ids, and the fixture writes a link of
-// each into each read node's blocks. The arms case holds the view to this list, so an arm a later
-// migration adds fails it until it is listed here, read by block ids and written in the fixture.
+// refs.Edges' in read reads each of them by the node's block ids, the two arms over a document
+// block's links through the one block_refs row of each link (blockRefListed), and the fixture
+// writes a link of each table into each read node's blocks. The arms case holds the view to this
+// list, so an arm a later migration adds fails it until it is listed here, read by block ids and
+// written in the fixture.
 var edgesBlockArms = []edgesBlockArm{
 	{arm: graphViewArm{table: "refs"}, from: "FROM refs"},
 	{
 		arm:  graphViewArm{table: "block_refs", fromKind: "block"},
-		from: "FROM block_refs WHERE block_refs.to_types IS NULL OR block_ref_listed(block_refs.to_types, block_refs.to_id)",
+		from: "FROM block_refs WHERE (block_refs.to_types IS NULL OR block_ref_listed(block_refs.to_types, block_refs.to_id)) AND block_refs.node_kind IS NULL",
+	},
+	{
+		arm: graphViewArm{table: "graph_tuples"},
+		from: "FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, " +
+			"tuple.from_id) tuple.from_kind, tuple.from_id, CASE WHEN tuple.kind = 'in_document'::text " +
+			"THEN 'part_of'::text ELSE tuple.kind END AS kind, tuple.to_kind, tuple.to_id, tuple.at AS " +
+			"created_at, tuple.legacy_source_seq AS source_seq, tuple.kind AS stated, tuple.asserted, " +
+			"CASE WHEN tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text THEN " +
+			"'block'::text WHEN tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text THEN " +
+			"'block_ref'::text WHEN tuple.from_kind = 'comment'::text AND (tuple.kind = ANY " +
+			"(ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'comment'::text ELSE NULL::text END AS " +
+			"projects FROM graph_tuples tuple WHERE tuple.to_kind <> 'value'::text AND (tuple.from_kind " +
+			"= 'block'::text AND tuple.kind = 'in_document'::text OR tuple.from_kind = 'block'::text AND " +
+			"tuple.kind <> 'part_of'::text OR tuple.from_kind = 'comment'::text AND (tuple.kind = ANY " +
+			"(ARRAY['anchored_to'::text, 'owned_by'::text]))) ORDER BY tuple.to_kind, tuple.to_id, " +
+			"tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge JOIN graph_nodes node ON " +
+			"node.kind = edge.from_kind AND node.id = edge.from_id WHERE edge.asserted AND node.state <> " +
+			"'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text OR " +
+			"block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE " +
+			"edge.projects WHEN 'block'::text THEN (EXISTS ( SELECT 1 FROM document_blocks projected " +
+			"WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET " +
+			"0)) WHEN 'block_ref'::text THEN (EXISTS ( SELECT 1 FROM block_refs projected WHERE " +
+			"projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id AND " +
+			"projected.kind = edge.stated AND projected.to_kind = edge.to_kind AND projected.to_id = " +
+			"edge.to_id OFFSET 0)) WHEN 'comment'::text THEN (EXISTS ( SELECT 1 FROM comments projected " +
+			"WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET " +
+			"0)) ELSE NULL::boolean END",
 	},
 	{
 		arm:  graphViewArm{table: "comment_block_refs", fromKind: "comment_block"},
@@ -672,11 +705,11 @@ type edgesRead struct {
 }
 
 // edgesStatement is query's in statement: the statement readEdgeRows sends, the first refs.Edges
-// sends.
+// sends, as somebody who proves no author reads it, for whom no node of the fixture is reserved.
 func edgesStatement(t *testing.T, q Queryer, query Query) recordedStatement {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: q}
-	if _, err := readEdgeRows(context.Background(), recorder, query); err != nil {
+	if _, err := readEdgeRows(context.Background(), recorder, model.Actor{}, query); err != nil {
 		t.Fatalf("read the edge rows of %+v: %v", query, err)
 	}
 	if len(recorder.statements) != 1 {
@@ -1327,6 +1360,7 @@ func newEdgesFixture(t *testing.T) edgesFixture {
 
 	database := storetest.Open(t)
 	loadFixture(t, database.Pool, edgesFixtureTables, w.rows)
+	writeOutsideStoreNodes(t, database.Pool, edgesOutsideNodes)
 
 	partOf, mentions := []string{"part_of"}, []string{"mentions"}
 	reads := []edgesRead{
@@ -1822,13 +1856,13 @@ func (w *edgesFixtureWriter) kindsComponent() Target {
 // mentions n in its own text and from its current block b1, and a document E that mentions n in
 // its text alone; for a document, an ask, a comment and a message, D and E also mention a current
 // block of n in the same two ways. Each read is the Query GET /api/v1/references?to=<n> sends with
-// no ?kind= (api.parseReferencesQuery), a session's, which no reference names, with no filter, and
-// the whole-document read as refs.ReferencedBy sends it. Each is held to main's statement for that
-// Query: mainEdgesInIssue with n's kind bound as $1 for the seven kinds with no arm over blocks,
-// and the held text of its read for a document, an ask, a comment, a message and the whole
-// document. Main lists E's mentions and those of D's block, and hides D's own behind its block's,
-// which a probe of D's block links found; the whole-document read lists D and E by their own
-// mentions and no block.
+// no ?kind= (api.parseReferencesQuery), a session's, a person's, a role's and a page's, which no
+// reference names, with no filter, and the whole-document read as refs.ReferencedBy sends it.
+// Each is held to main's statement for that Query: mainEdgesInIssue with n's kind bound as $1 for
+// the ten kinds with no arm over blocks, and the held text of its read for a document, an ask, a
+// comment, a message and the whole document. Main lists E's mentions and those of D's block, and
+// hides D's own behind its block's, which a probe of D's block links found; the whole-document
+// read lists D and E by their own mentions and no block.
 func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 	t.Helper()
 	members := make([]edgesRead, 0, len(edgesProbeCarryingReads))
@@ -1849,8 +1883,8 @@ func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 			node, blocks = Target{Kind: string(kind), ID: id}, []Target{{Kind: kind.BlockKind(), ID: block}}
 		case "component":
 			node = w.kindsComponent()
-		case "session":
-			node = Target{Kind: "session", ID: "session-kinds"}
+		case "session", "person", "role", "page":
+			node = Target{Kind: name, ID: name + "-kinds"}
 		default:
 			t.Fatalf("the kinds case writes no node for the read %q", name)
 		}

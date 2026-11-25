@@ -23,6 +23,7 @@ import (
 // so the attempt is recorded failed only when every try of that window missed; this listener
 // misses every one until the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -53,8 +54,9 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// The send lands; the answer misses the client's window.
-				time.Sleep(400 * time.Millisecond)
+				// The send lands; the answer misses the client's window, since it is written only
+				// once the client has given up on the call, however late its timer fires.
+				<-r.Context().Done()
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"mention-envelope-2","recipient":"s1","duplicate":true}`))
@@ -116,6 +118,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // carries that promise. deliveryErrorText is shared between the two, which is why this is its
 // own test rather than a line in the one above.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
+	t.Parallel()
 	held := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && (r.URL.Path == "/v1/registry/s1" || r.URL.Path == "/v1/sessions") {

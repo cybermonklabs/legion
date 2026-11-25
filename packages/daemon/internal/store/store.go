@@ -32,12 +32,16 @@ import (
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
 
+// pingAfterIdle is how long a connection sits idle in the pool before an acquire pings it, which
+// is pgxpool's own default (pgx v5.13.0 pgxpool/pool.go:278-279). PoolConfig's ShouldPing keeps it
+// for every acquire but a bounded one, whose BEGIN is the check (Pool.BeginTx).
+const pingAfterIdle = time.Second
+
 // sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
 // of the connection's session, and the close of a connection whose reset failed
-// (releaseMigrationConn). Five seconds, as for the state route's rollback (internal/api,
-// stateRollbackBound). Each step is one or two round trips to a server that has just answered. So
-// the bound stops only a wait for a server that no longer answers, and a longer bound would only
-// hold the boot.
+// (releaseMigrationConn). Five seconds. Each step is one or two round trips to a server that has
+// just answered. So the bound stops only a wait for a server that no longer answers, and a longer
+// bound would only hold the boot.
 const sessionResetBound = 5 * time.Second
 
 // idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open
@@ -112,6 +116,16 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // test that builds a pool of its own does too (testpg.ClonePool), so what the test writes passes
 // the rule the daemon's writes pass.
 //
+// It gives a bounded transaction's connection the bounds BoundAfterAcquire states. A dial such a
+// transaction waits for runs under the transaction's write bound: BeforeConnect lowers the connect
+// timeout pgxpool gives every dial (two minutes where dsn names none) to it, reading the bound
+// from the dial's context, which keeps the values of the acquiring one (puddle's constructor
+// context). And it pings no connection a bounded transaction is handed: that transaction's BEGIN,
+// under its write bound, is the check, and Pool.BeginTx replaces a connection the BEGIN finds the
+// server closed, as the ping would. Without these a database that stops answering in the middle of
+// a dial or a ping held such a transaction for the whole of its wait in the pool's queue. Every
+// other connection keeps pgxpool's own dial timeout and its ping after pingAfterIdle.
+//
 // It refuses a dsn whose default_query_exec_mode is exec or simple_protocol. The codec rule picks
 // the text rule or the JSON rule by the type of each parameter, and pgx learns that type from the
 // server only in the three other modes: cache_statement (pgx's default), cache_describe and
@@ -131,6 +145,15 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 		mode = "simple_protocol"
 	default:
 		config.AfterConnect = registerStorableCodecs
+		config.BeforeConnect = func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+			if bound := afterAcquireOf(ctx); bound != nil && bound.write < connConfig.ConnectTimeout {
+				connConfig.ConnectTimeout = bound.write
+			}
+			return nil
+		}
+		config.ShouldPing = func(ctx context.Context, params pgxpool.ShouldPingParams) bool {
+			return afterAcquireOf(ctx) == nil && params.IdleDuration > pingAfterIdle
+		}
 		return config, nil
 	}
 	return nil, fmt.Errorf("default_query_exec_mode=%s is refused: the store's text rule needs the type "+
@@ -225,18 +248,6 @@ func (s *Store) Pool() *Pool {
 	return s.pool
 }
 
-// Tx runs fn inside one transaction: committed when fn returns nil, rolled back
-// when it does not, and fn's own error is what the caller gets back.
-func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, s.pool, fn)
-}
-
-// BeginTx begins a caller-owned transaction. The API uses it for its one read-only state
-// projection transaction; workflow intake uses Tx for its commit-or-rollback boundary.
-func (s *Store) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	return s.pool.BeginTx(ctx, options)
-}
-
 // Migrate applies every embedded migration this database has not recorded, in
 // version order, and reports how many it applied. A migration and its
 // schema_version row commit together, so a half-applied schema is not a state
@@ -271,7 +282,7 @@ func (s *Store) migrate(ctx context.Context, all []migrations.Migration) (int, e
 // one of the numbered migrations, or the 14-digit UTC timestamp of a migration
 // added since — and 0 for a database no daemon has migrated yet.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
-	return schemaVersion(ctx, s.pool)
+	return ReadOnly(ctx, s.pool, "read schema_version", schemaVersion)
 }
 
 // SchemaVersionTx reads the schema version through the caller's transaction.
@@ -279,8 +290,8 @@ func (s *Store) SchemaVersionTx(ctx context.Context, tx pgx.Tx) (int, error) {
 	return schemaVersion(ctx, tx)
 }
 
-func schemaVersion(ctx context.Context, db queryRower) (int, error) {
-	recorded, err := schemaVersionExists(ctx, db)
+func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
+	recorded, err := schemaVersionExists(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
@@ -291,7 +302,7 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 	// has, so a connection that read the version before a timestamped migration
 	// widened it is not left with a cached plan whose result type changed.
 	var version int
-	if err := db.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
+	if err := tx.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
 		return 0, fmt.Errorf("read schema_version: %w", err)
 	}
 	return version, nil
@@ -302,10 +313,12 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 // out; a row with no stopped_at is a boot that never shut down.
 func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx,
-		"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
-		project, at,
-	).Scan(&id)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
+			project, at,
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("record the boot of %s: %w", project, err)
 	}
@@ -315,11 +328,16 @@ func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (i
 // StopBoot stamps the end of one boot. An id no row carries is refused rather
 // than ignored: the caller is stamping a boot that was never recorded.
 func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
-	tag, err := s.pool.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+	var found bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+		found = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stop boot %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("stop boot %d: no boot has that id", id)
 	}
 	return nil
@@ -329,7 +347,15 @@ func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
 // them — the two durable facts a restart is proved by. A project that never
 // booted reads 0 and the zero time.
 func (s *Store) Boots(ctx context.Context, project string) (int, time.Time, error) {
-	return boots(ctx, s.pool, project)
+	type counted struct {
+		count int
+		first time.Time
+	}
+	read, err := ReadOnly(ctx, s.pool, "read the boots of "+project, func(ctx context.Context, tx pgx.Tx) (counted, error) {
+		count, first, err := boots(ctx, tx, project)
+		return counted{count: count, first: first}, err
+	})
+	return read.count, read.first, err
 }
 
 // BootsTx reads boot history through the caller's transaction.
@@ -337,10 +363,10 @@ func (s *Store) BootsTx(ctx context.Context, tx pgx.Tx, project string) (int, ti
 	return boots(ctx, tx, project)
 }
 
-func boots(ctx context.Context, db queryRower, project string) (int, time.Time, error) {
+func boots(ctx context.Context, tx pgx.Tx, project string) (int, time.Time, error) {
 	var count int
 	var firstBootAt *time.Time
-	err := db.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		"select count(*), min(started_at) from daemon_boot where project = $1", project,
 	).Scan(&count, &firstBootAt)
 	if err != nil {
@@ -500,28 +526,9 @@ func versionRecorded(ctx context.Context, tx pgx.Tx, version int) (bool, error) 
 	return recorded, nil
 }
 
-// queryRower is the part of a pool and of a transaction this package reads
-// through.
-type queryRower interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// rowsQuerier is the part of a pool and of a transaction this package reads many rows through.
-// It is its own interface rather than queryRower, which carries QueryRow alone and so cannot
-// carry a read of more than one row; every read of rows in this package — claims, pod resumes —
-// takes this one, because the shape is the same wherever the rows come from.
-type rowsQuerier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-
-// execer is the part of a pool and of a transaction this package writes through.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
-func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
+func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var exists bool
-	if err := db.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
 		return false, fmt.Errorf("look for schema_version: %w", err)
 	}
 	return exists, nil

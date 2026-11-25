@@ -71,7 +71,12 @@ type renamePass struct {
 	// each spelling of the old name its rows hold and the pair's own (workspace.Location keeps
 	// the case it is handed).
 	keep renameKeep
-	log  *slog.Logger
+	// written is the hook each write that wrote or deleted a row registers on its commit
+	// (store.OnCommit): the refresher's read of the live records (wakeLive), so the cache set and
+	// the heard set name the new names. A write whose reply is lost and that the store says
+	// committed still wakes it, and its retry, which finds no row on the `from`, wakes nothing.
+	written func()
+	log     *slog.Logger
 }
 
 // renameKeep is a rename pass's live-pod rule (renamePass.keep).
@@ -128,9 +133,10 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 // moment, so the pass of a close under keep_volume may leave the write to the next boot, which
 // errs toward keeping.
 //
-// The rule does not ask whether the runtime holds the Sandbox (IssueSandbox): the informer's store
-// can still hold a Sandbox that the teardown has just deleted, and a keep on that Sandbox would
-// hold the write of an ordinary release, with keep_volume off, until the next boot.
+// The rule does not ask whether the runtime holds the Sandbox (IssueSandbox). That answers a
+// Sandbox this runtime's own delete took absent at once, but the informer's store can still hold a
+// Sandbox that another hand deleted outright, which it answers present until the watch delivers
+// the deletion, and a keep on that Sandbox would hold the write until the next boot.
 // IssueKeepsVolume reads the same stored Sandbox, but it is true only for one that owns a kept
 // volume, so such a deleted Sandbox keeps nothing. Under tmux, whose tree cleanup does nothing and
 // which suspends no issue, P2's workspace-directory rule decides (workspaceKeep).
@@ -182,19 +188,18 @@ type renameTally struct {
 }
 
 // run runs the pass over every issue of the project whose rows name a pair's `from`, or over keys
-// alone when keys is not nil, and answers whether it wrote a row. Each pair's rows are read first
-// (candidates), and a pair is decided (transferred) only where a row of them still names its
-// `from`, at boot and at the end of a pod alike: for a pair no row names, the pass sends GitHub no
-// request and logs no line of its own, so once no row names a pair's `from`, no pass reads GitHub
-// for that pair. A pair whose transfer GitHub shows is written in GitHub's spelling of its `to`,
-// and every other pair is left as it is, with one line naming it and why (renameLeftLine). It logs
-// one line per table (renameTableLine) whenever it runs at boot, and at the end of a pod only
-// where the pod's issues named a `from`, so that every pod end after the stored names are
-// rewritten logs nothing.
-func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
+// alone when keys is not nil. Each pair's rows are read first (candidates), and a pair is decided
+// (transferred) only where a row of them still names its `from`, at boot and at the end of a pod
+// alike: for a pair no row names, the pass sends GitHub no request and logs no line of its own, so
+// once no row names a pair's `from`, no pass reads GitHub for that pair. A pair whose transfer
+// GitHub shows is written in GitHub's spelling of its `to`, and every other pair is left as it is,
+// with one line naming it and why (renameLeftLine). It logs one line per table (renameTableLine)
+// whenever it runs at boot, and at the end of a pod only where the pod's issues named a `from`, so
+// that every pod end after the stored names are rewritten logs nothing.
+func (p renamePass) run(ctx context.Context, keys []string) {
 	pairs := p.renames.Pairs()
 	if len(pairs) == 0 {
-		return false
+		return
 	}
 	tallies := make(map[record.RenameTable]*renameTally, len(record.RenameTables))
 	for _, table := range record.RenameTables {
@@ -206,7 +211,7 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 		candidates, err := p.candidates(ctx, from, keys)
 		if err != nil {
 			if ctx.Err() != nil {
-				return wrote
+				return
 			}
 			p.log.Warn(renameUnreadLine, "from", from, "to", pair.To.String(), "error", err)
 			continue
@@ -217,7 +222,7 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 		named = true
 		to, left := p.transferred(ctx, pair)
 		if ctx.Err() != nil {
-			return wrote
+			return
 		}
 		if left != "" {
 			p.log.Warn(renameLeftLine, "from", from, "to", pair.To.String(), "reason", left)
@@ -225,22 +230,20 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 		}
 		for _, candidate := range candidates {
 			if ctx.Err() != nil {
-				return wrote
+				return
 			}
-			if p.rename(ctx, candidate, from, to.String(), tallies) {
-				wrote = true
-			}
+			p.rename(ctx, candidate, from, to.String(), tallies)
 		}
 	}
 	if keys != nil && !named {
-		return wrote
+		return
 	}
 	for _, pair := range pairs {
 		from := pair.From.String()
 		left, err := p.candidates(ctx, from, nil)
 		if err != nil {
 			if ctx.Err() != nil {
-				return wrote
+				return
 			}
 			p.log.Warn(renameUnreadLine, "from", from, "to", pair.To.String(), "error", err)
 			continue
@@ -258,19 +261,19 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 		tally := tallies[table]
 		p.log.Info(renameTableLine, "table", string(table), "written", tally.written, "failed", tally.failed, "left", tally.left)
 	}
-	return wrote
 }
 
 // rename writes to over from on candidate's rows unless keep keeps them, counting what it did on
-// tallies, and answers whether it wrote or deleted a row.
-func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate, from, to string, tallies map[record.RenameTable]*renameTally) bool {
+// tallies from what the write's transaction answered, never from a hook, so a hook the watcher runs
+// later changes no count of the pass.
+func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate, from, to string, tallies map[record.RenameTable]*renameTally) {
 	names := candidate.Spellings
 	if !slices.Contains(names, from) {
 		names = append(slices.Clone(names), from)
 	}
 	if why := p.keep(candidate.Issue, names); why != "" {
 		p.log.Info(renameKeptLine, "issue", candidate.Issue, "from", from, "to", to, "reason", why)
-		return false
+		return
 	}
 	written, err := p.write(ctx, candidate.Issue, from, to)
 	if err != nil {
@@ -278,45 +281,55 @@ func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate
 		for table, rows := range candidate.Rows {
 			tallies[table].failed += rows
 		}
-		return false
+		return
 	}
-	wrote := false
 	for table, rows := range written.Rows {
 		tallies[table].written += rows
-		wrote = wrote || rows > 0
 	}
-	if deleted := written.Deleted; deleted != nil {
-		wrote = true
-		p.log.Warn(renameDeletedLine, "issue", deleted.Issue, "kept", deleted.Holder, "repo", deleted.Repo, "to", deleted.To,
-			"branch", deleted.Branch, "number", deleted.Number)
-	}
-	return wrote
 }
 
 // candidates is each issue of the project, or of keys, whose rows name from
-// (record.RenameCandidates), read in a transaction of its own bounded by bootTimeout.
+// (record.RenameCandidates), read in a read-only transaction of its own bounded by bootTimeout.
 func (p renamePass) candidates(ctx context.Context, from string, keys []string) ([]record.RenameCandidate, error) {
 	read, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
 	var candidates []record.RenameCandidate
-	err := pgx.BeginFunc(read, p.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(read, p.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		candidates, err = record.RenameCandidates(read, tx, p.project, from, keys)
+		candidates, err = record.RenameCandidates(ctx, tx, p.project, from, keys)
 		return err
 	})
 	return candidates, err
 }
 
 // write writes to over from on issue's rows (record.RenameIssueRepository) in one transaction
-// under the lock every fact applies under (serializedTx), bounded by bootTimeout.
+// under the lock every fact applies under (serializedTx), bounded by bootTimeout. The line of a
+// pull request row it deleted, and the written hook, are hooks of its commit.
 func (p renamePass) write(ctx context.Context, issue, from, to string) (record.RenameWrite, error) {
 	attempt, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
 	var written record.RenameWrite
-	err := serializedTx(attempt, p.pool, "serialize the rename of "+issue+" with every fact", func(tx pgx.Tx) error {
+	err := serializedTx(attempt, p.pool, "serialize the rename of "+issue+" with every fact", func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		written, err = record.RenameIssueRepository(attempt, tx, issue, from, to)
-		return err
+		if written, err = record.RenameIssueRepository(ctx, tx, issue, from, to); err != nil {
+			return err
+		}
+		wrote := written.Deleted != nil
+		for _, rows := range written.Rows {
+			wrote = wrote || rows > 0
+		}
+		if !wrote {
+			return nil
+		}
+		deleted := written.Deleted
+		store.OnCommit(ctx, func() {
+			if deleted != nil {
+				p.log.Warn(renameDeletedLine, "issue", deleted.Issue, "kept", deleted.Holder, "repo", deleted.Repo, "to", deleted.To,
+					"branch", deleted.Branch, "number", deleted.Number)
+			}
+			p.written()
+		})
+		return nil
 	})
 	return written, err
 }
@@ -333,7 +346,7 @@ func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
 	if log == nil {
 		log = slog.Default()
 	}
-	return renamePass{pool: w.pool, project: w.dispatchProject, renames: renames, transferred: w.renameTransfer, keep: keep, log: log}
+	return renamePass{pool: w.pool, project: w.dispatchProject, renames: renames, transferred: w.renameTransfer, keep: keep, written: w.wakeLive, log: log}
 }
 
 // renameTransfer is whether GitHub shows that pair's transfer has happened, the rename pass's
@@ -413,26 +426,23 @@ func stillInstalledOn(apps appInstallations, from string) string {
 // renameAtBoot runs the rename pass over every issue of the project at boot, under rt's live-pod
 // rule (bootKeep): after supervision opened and the worker image passed its probe, so the runtime
 // answers for the pods it holds, and before the consumers open, so no fact and no launch reads a
-// record while the pass writes it. After a pass that wrote a row, the refresher reads the live
-// records again (wakeLive), so the cache set and the heard set name the new names.
+// record while the pass writes it. Each write that wrote a row asks the refresher to read the
+// live records again at its commit (renamePass.written), so the cache set and the heard set name
+// the new names.
 func (w *workflowRuntime) renameAtBoot(ctx context.Context, rt runtime.Runtime) {
-	if w.renamePass(bootKeep(rt, w.stateDir)).run(ctx, nil) {
-		w.wakeLive()
-	}
+	w.renamePass(bootKeep(rt, w.stateDir)).run(ctx, nil)
 }
 
 // podEndsOn is what the end of issues' pods under rt runs (outbox.podEnded): it drops the
 // repository kept for each of them (dropLaunchedRepository), so the next launch reads it again,
-// and runs the rename pass over them under podEndKeep's rule, waking the refresher's read of the
-// live records (wakeLive) after a pass that wrote a row.
+// and runs the rename pass over them under podEndKeep's rule, whose writes wake the refresher's
+// read of the live records at their commit (renamePass.written).
 func (w *workflowRuntime) podEndsOn(rt runtime.Runtime) func(context.Context, []string) {
 	pass := w.renamePass(podEndKeep(rt, w.stateDir))
 	return func(ctx context.Context, issues []string) {
 		for _, issue := range issues {
 			w.dropLaunchedRepository(issue)
 		}
-		if pass.run(ctx, issues) {
-			w.wakeLive()
-		}
+		pass.run(ctx, issues)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 )
@@ -108,6 +107,7 @@ func writeAs(tb testing.TB, handler http.Handler, method, target string, body an
 // are exactly the bytes the same request is answered without the header. Nothing else about the
 // answer changes: same status, same headers but Content-Encoding.
 func TestAnAnswerIsGzippedForACallerThatTakesGzip(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	target := "/api/v1/issues/" + issueWithComments(t, handler, "GZIP", 4) + "/comments"
 
@@ -160,6 +160,7 @@ func TestAnAnswerIsGzippedForACallerThatTakesGzip(t *testing.T) {
 // about the other. A handler that names no type is the case the table exists for - no route of
 // the table answers that way today, and this says what the layer does when one does.
 func TestEveryAnswerCarriesNosniffAndAMediaType(t *testing.T) {
+	t.Parallel()
 	answers := []struct {
 		name  string
 		serve http.HandlerFunc
@@ -227,6 +228,7 @@ func TestEveryAnswerCarriesNosniffAndAMediaType(t *testing.T) {
 // that names other encodings, and one that refuses gzip outright are each written the bytes they
 // were written before this layer existed.
 func TestOnlyAnAcceptEncodingThatTakesGzipIsAnsweredWithIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	target := "/api/v1/issues/" + issueWithComments(t, handler, "ENCO", 4) + "/comments"
 	plain := answerUnder(t, handler, target, "").Body.Bytes()
@@ -273,6 +275,7 @@ func TestOnlyAnAcceptEncodingThatTakesGzipIsAnsweredWithIt(t *testing.T) {
 // An answer too small to be worth a compressor - a refusal, a 404, the small writes a page makes
 // while a person types - goes out as it is however the caller asks.
 func TestAnAnswerUnderTheThresholdIsNotCompressed(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const target = "/api/v1/issues/GONE-1"
 
@@ -294,6 +297,7 @@ func TestAnAnswerUnderTheThresholdIsNotCompressed(t *testing.T) {
 // A download is the stored bytes themselves, under the type they were stored as - an image, an
 // archive, a PDF - and is never compressed, whatever the caller takes.
 func TestADownloadIsNotCompressed(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := issueWithComments(t, handler, "DOWN", 0)
 	pixels := strings.Repeat("pixels, and plenty of them, all alike. ", 100)
@@ -318,18 +322,20 @@ func TestADownloadIsNotCompressed(t *testing.T) {
 // The live socket still upgrades for a caller that takes gzip, and carries its frames: the
 // upgrade hijacks the connection, which a wrapper that swallowed http.Hijacker would break.
 func TestTheLiveSocketUpgradesForACallerThatTakesGzip(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)
 	header := asUser("alice")
 	header.Set("Accept-Encoding", "gzip")
 	client := rig.dial(t, header)
 	client.send(t, deliverySubscribe("live", presetView(deliveryLiveTimeline, 7, "")))
-	client.snapshot(t, 10*time.Second, "live")
+	client.snapshot(t, "live")
 }
 
 // A handler that takes the connection reaches the connection through this layer: the upgrade's
 // own answer goes out, and the frames after it are the socket's.
 func TestAHandlerThatHijacksReachesTheConnection(t *testing.T) {
+	t.Parallel()
 	upgrader := gws.Upgrader{}
 	upgrades := make(chan error, 1)
 	server := httptest.NewServer(compressAnswers(func(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +349,7 @@ func TestAHandlerThatHijacksReachesTheConnection(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
+	conn, response, err := dialLive(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
 	if err != nil {
 		t.Fatalf("upgrade through the compression layer: %v", err)
 	}

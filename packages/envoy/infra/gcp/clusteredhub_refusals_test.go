@@ -316,14 +316,20 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a user's machine id with a slash", func(a *A) { a.Users[0].MachineID = str("a/b") }, "users[0].machineId", []string{"users[0].machineId contains '/'"}},
 		{"a session user with no nkey", func(a *A) { a.SessionUser.NKey = "" }, "sessionUser", []string{"sessionUser.nkey is required"}},
 		{"a session user named as a user", func(a *A) { a.SessionUser.Name = "example-host-a" }, "sessionUser", []string{"name repeats users[0]"}},
+		// The clustered hub names its listener's user after the listener's machineId, an input the
+		// listener holds, so a user of users taking that name names the listener, as core does.
+		{"a user named after the listener's machine id", func(a *A) { a.Users[1].Name = "envoy-hub" }, "tailnet.listener",
+			[]string{`listener "envoy-hub": name repeats users[1]`}},
 	})
 }
 
-// clusteredSeedRow is one string input holding a seed: edit puts it there, and input is the path
-// the refusal names.
+// clusteredSeedRow is one string input holding a seed: edit puts it there, path is where the
+// refusal's message says the seed is, and input is the input its core.InputError names: an entry of
+// a list of strings by the list's own name, as gcp:NatsHub, gcp:Dispatch and core.CheckAllowedHosts
+// name it, and a user's machine id by its path.
 type clusteredSeedRow struct {
-	name, input string
-	edit        func(a *gcp.ClusteredNatsHubArgs, seed string)
+	name, path, input string
+	edit              func(a *gcp.ClusteredNatsHubArgs, seed string)
 }
 
 // clusteredSeedRows has a row for each string input the hub itself refuses a seed in, and one for
@@ -334,93 +340,104 @@ func clusteredSeedRows() []clusteredSeedRow {
 	str := pulumi.StringRef
 	digest := "@sha256:" + strings.Repeat("0", 64)
 	return []clusteredSeedRow{
-		{"namespace", "namespace", func(a *A, s string) { a.Namespace = s }},
-		{"name", "name", func(a *A, s string) { a.Name = strings.ToLower(s) }},
-		{"serviceName", "serviceName", func(a *A, s string) { a.ServiceName = "nats-" + s }},
-		{"natsImage", "natsImage", func(a *A, s string) { a.NatsImage = "example.invalid/" + s + digest }},
-		{"reloaderImage", "reloaderImage", func(a *A, s string) { a.ReloaderImage = "example.invalid/" + strings.ToLower(s) + digest }},
-		{"exporterImage", "exporterImage", func(a *A, s string) { a.ExporterImage = "example.invalid/" + splitSeed(s, ".") + digest }},
-		{"storageClassName", "storageClassName", func(a *A, s string) { a.StorageClassName = str(strings.ToLower(s)) }},
-		{"natsCpu", "natsCpu", func(a *A, s string) { a.NatsCpu = str(s) }},
-		{"natsMemory", "natsMemory", func(a *A, s string) { a.NatsMemory = str(s + "Gi") }},
-		{"priorityClassName", "priorityClassName", func(a *A, s string) { a.PriorityClassName = str("envoy-" + strings.ToLower(s)) }},
-		{"clientNamespaces", "clientNamespaces[1]", func(a *A, s string) { a.ClientNamespaces[1] = strings.ToLower(s) }},
-		{"monitorNamespaces", "monitorNamespaces[0]", func(a *A, s string) { a.MonitorNamespaces = []string{splitSeed(s, "-")} }},
-		{"metricsNamespaces", "metricsNamespaces[0]", func(a *A, s string) { a.MetricsNamespaces = []string{s} }},
-		{"a user's machine id", "users[0].machineId", func(a *A, s string) { a.Users[0].MachineID = str("host-" + s) }},
-		{"a user's Dispatch machine id", "users[2].dispatchMachineId", func(a *A, s string) { a.Users[2].DispatchMachineID = str(splitSeed(s, " ")) }},
-		{"tailnet.serviceName", "tailnet.serviceName", func(a *A, s string) { a.Tailnet.ServiceName = strings.ToLower(s) }},
-		{"tailnet.tailnetDnsName", "tailnet.tailnetDnsName", func(a *A, s string) { a.Tailnet.TailnetDnsName = strings.ToLower(s) + ".ts.net" }},
-		{"tailnet.tags", "tailnet.tags[0]", func(a *A, s string) { a.Tailnet.Tags = []string{"tag:" + s} }},
-		{"tailnet.tailscaleImage", "tailnet.tailscaleImage", func(a *A, s string) { a.Tailnet.TailscaleImage = "example.invalid/" + s + digest }},
-		{"tailnet.listener.image", "tailnet.listener.image", func(a *A, s string) { listener(a).Image = "example.invalid/" + s + digest }},
-		{"tailnet.listener.machineId", "tailnet.listener.machineId", func(a *A, s string) { listener(a).MachineID = str(s) }},
-		{"tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName", func(a *A, s string) { listener(a).SeedSecretName = strings.ToLower(s) }},
-		{"tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", func(a *A, s string) { listener(a).SeedSecretKey = s }},
-		{"tailnet.listener.allowedHosts", "tailnet.listener.allowedHosts[0]", func(a *A, s string) {
+		{"namespace", "namespace", "namespace", func(a *A, s string) { a.Namespace = s }},
+		{"name", "name", "name", func(a *A, s string) { a.Name = strings.ToLower(s) }},
+		{"serviceName", "serviceName", "serviceName", func(a *A, s string) { a.ServiceName = "nats-" + s }},
+		{"natsImage", "natsImage", "natsImage", func(a *A, s string) { a.NatsImage = "example.invalid/" + s + digest }},
+		{"reloaderImage", "reloaderImage", "reloaderImage", func(a *A, s string) { a.ReloaderImage = "example.invalid/" + strings.ToLower(s) + digest }},
+		{"exporterImage", "exporterImage", "exporterImage", func(a *A, s string) { a.ExporterImage = "example.invalid/" + splitSeed(s, ".") + digest }},
+		{"storageClassName", "storageClassName", "storageClassName", func(a *A, s string) { a.StorageClassName = str(strings.ToLower(s)) }},
+		{"natsCpu", "natsCpu", "natsCpu", func(a *A, s string) { a.NatsCpu = str(s) }},
+		{"natsMemory", "natsMemory", "natsMemory", func(a *A, s string) { a.NatsMemory = str(s + "Gi") }},
+		{"priorityClassName", "priorityClassName", "priorityClassName", func(a *A, s string) { a.PriorityClassName = str("envoy-" + strings.ToLower(s)) }},
+		{"clientNamespaces", "clientNamespaces[1]", "clientNamespaces", func(a *A, s string) { a.ClientNamespaces[1] = strings.ToLower(s) }},
+		{"monitorNamespaces", "monitorNamespaces[0]", "monitorNamespaces", func(a *A, s string) { a.MonitorNamespaces = []string{splitSeed(s, "-")} }},
+		{"metricsNamespaces", "metricsNamespaces[0]", "metricsNamespaces", func(a *A, s string) { a.MetricsNamespaces = []string{s} }},
+		{"a user's machine id", "users[0].machineId", "users[0].machineId", func(a *A, s string) { a.Users[0].MachineID = str("host-" + s) }},
+		{"a user's Dispatch machine id", "users[2].dispatchMachineId", "users[2].dispatchMachineId", func(a *A, s string) {
+			a.Users[2].DispatchMachineID = str(splitSeed(s, " "))
+		}},
+		{"tailnet.serviceName", "tailnet.serviceName", "tailnet.serviceName", func(a *A, s string) { a.Tailnet.ServiceName = strings.ToLower(s) }},
+		{"tailnet.tailnetDnsName", "tailnet.tailnetDnsName", "tailnet.tailnetDnsName", func(a *A, s string) {
+			a.Tailnet.TailnetDnsName = strings.ToLower(s) + ".ts.net"
+		}},
+		{"tailnet.tags", "tailnet.tags[0]", "tailnet.tags", func(a *A, s string) { a.Tailnet.Tags = []string{"tag:" + s} }},
+		{"tailnet.tailscaleImage", "tailnet.tailscaleImage", "tailnet.tailscaleImage", func(a *A, s string) { a.Tailnet.TailscaleImage = "example.invalid/" + s + digest }},
+		{"tailnet.listener.image", "tailnet.listener.image", "tailnet.listener.image", func(a *A, s string) { listener(a).Image = "example.invalid/" + s + digest }},
+		{"tailnet.listener.machineId", "tailnet.listener.machineId", "tailnet.listener.machineId", func(a *A, s string) { listener(a).MachineID = str(s) }},
+		{"tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName", func(a *A, s string) {
+			listener(a).SeedSecretName = strings.ToLower(s)
+		}},
+		{"tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", func(a *A, s string) { listener(a).SeedSecretKey = s }},
+		{"tailnet.listener.allowedHosts", "tailnet.listener.allowedHosts[0]", "tailnet.listener.allowedHosts", func(a *A, s string) {
 			listener(a).AllowedHosts = []string{strings.ToLower(s) + ".example.com"}
 		}},
-		{"tailnet.listener.cpu", "tailnet.listener.cpu", func(a *A, s string) { listener(a).Cpu = str(s) }},
-		{"tailnet.listener.memory", "tailnet.listener.memory", func(a *A, s string) { listener(a).Memory = str(s) }},
-		{"tailnet.listener.clientNamespaces", "tailnet.listener.clientNamespaces[0]", func(a *A, s string) {
+		{"tailnet.listener.cpu", "tailnet.listener.cpu", "tailnet.listener.cpu", func(a *A, s string) { listener(a).Cpu = str(s) }},
+		{"tailnet.listener.memory", "tailnet.listener.memory", "tailnet.listener.memory", func(a *A, s string) { listener(a).Memory = str(s) }},
+		{"tailnet.listener.clientNamespaces", "tailnet.listener.clientNamespaces[0]", "tailnet.listener.clientNamespaces", func(a *A, s string) {
 			listener(a).ClientNamespaces = []string{strings.ToLower(s)}
 		}},
-		{"tailnet.listener.oidcIssuer", "tailnet.listener.oidcIssuer", func(a *A, s string) { listener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com" }},
-		{"tailnet.listener.oidcAudience", "tailnet.listener.oidcAudience", func(a *A, s string) { listener(a).OidcAudience = s }},
-		{"tailnet.listener.oidcAccounts", "tailnet.listener.oidcAccounts[0]", func(a *A, s string) {
+		{"tailnet.listener.oidcIssuer", "tailnet.listener.oidcIssuer", "tailnet.listener.oidcIssuer", func(a *A, s string) {
+			listener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com"
+		}},
+		{"tailnet.listener.oidcAudience", "tailnet.listener.oidcAudience", "tailnet.listener.oidcAudience", func(a *A, s string) { listener(a).OidcAudience = s }},
+		{"tailnet.listener.oidcAccounts", "tailnet.listener.oidcAccounts[0]", "tailnet.listener.oidcAccounts", func(a *A, s string) {
 			listener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
 		}},
-		{"tailnet.listener.consumerNames", "tailnet.listener.consumerNames", func(a *A, s string) { listener(a).ConsumerNames = "fresh-" + s }},
-		{"listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
-		{"listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
-		{"listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
-		{"listener.seedSecretKey", "listener.seedSecretKey", func(a *A, s string) { ownListener(a).SeedSecretKey = s }},
-		{"listener.clientNamespaces", "listener.clientNamespaces[0]", func(a *A, s string) {
+		{"tailnet.listener.consumerNames", "tailnet.listener.consumerNames", "tailnet.listener.consumerNames", func(a *A, s string) { listener(a).ConsumerNames = "fresh-" + s }},
+		{"listener.image", "listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
+		{"listener.machineId", "listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
+		{"listener.seedSecretName", "listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
+		{"listener.seedSecretKey", "listener.seedSecretKey", "listener.seedSecretKey", func(a *A, s string) { ownListener(a).SeedSecretKey = s }},
+		{"listener.clientNamespaces", "listener.clientNamespaces[0]", "listener.clientNamespaces", func(a *A, s string) {
 			ownListener(a).ClientNamespaces = []string{splitSeed(strings.ToLower(s), "-")}
 		}},
-		{"listener.allowedHosts", "listener.allowedHosts[0]", func(a *A, s string) {
+		{"listener.allowedHosts", "listener.allowedHosts[0]", "listener.allowedHosts", func(a *A, s string) {
 			ownListener(a).AllowedHosts = []string{strings.ToLower(s) + ".example.com"}
 		}},
-		{"listener.cpu", "listener.cpu", func(a *A, s string) { ownListener(a).Cpu = str(s) }},
-		{"listener.memory", "listener.memory", func(a *A, s string) { ownListener(a).Memory = str(s) }},
-		{"listener.oidcIssuer", "listener.oidcIssuer", func(a *A, s string) { ownListener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com" }},
-		{"listener.oidcAudience", "listener.oidcAudience", func(a *A, s string) { ownListener(a).OidcAudience = s }},
-		{"listener.oidcAccounts", "listener.oidcAccounts[0]", func(a *A, s string) {
+		{"listener.cpu", "listener.cpu", "listener.cpu", func(a *A, s string) { ownListener(a).Cpu = str(s) }},
+		{"listener.memory", "listener.memory", "listener.memory", func(a *A, s string) { ownListener(a).Memory = str(s) }},
+		{"listener.oidcIssuer", "listener.oidcIssuer", "listener.oidcIssuer", func(a *A, s string) {
+			ownListener(a).OidcIssuer = "https://" + strings.ToLower(s) + ".example.com"
+		}},
+		{"listener.oidcAudience", "listener.oidcAudience", "listener.oidcAudience", func(a *A, s string) { ownListener(a).OidcAudience = s }},
+		{"listener.oidcAccounts", "listener.oidcAccounts[0]", "listener.oidcAccounts", func(a *A, s string) {
 			ownListener(a).OidcAccounts = []string{"system:serviceaccount:legion:" + strings.ToLower(s)}
 		}},
-		{"listener.consumerNames", "listener.consumerNames", func(a *A, s string) { ownListener(a).ConsumerNames = strings.ToLower(s) }},
-		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
-		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
-		{"authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {
+		{"listener.consumerNames", "listener.consumerNames", "listener.consumerNames", func(a *A, s string) { ownListener(a).ConsumerNames = strings.ToLower(s) }},
+		{"authCallout.issuer", "authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
+		{"authCallout.xkey", "authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
+		{"authCallout.serviceUser", "authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {
 			a.AuthCallout = authCallout()
 			a.AuthCallout.ServiceUser = splitSeed(s, "-")
 		}},
-		{"routeAuthorization.secretName", "routeAuthorization.secretName", func(a *A, s string) {
+		{"routeAuthorization.secretName", "routeAuthorization.secretName", "routeAuthorization.secretName", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.SecretName = strings.ToLower(s)
 		}},
-		{"routeAuthorization.secretKey", "routeAuthorization.secretKey", func(a *A, s string) {
+		{"routeAuthorization.secretKey", "routeAuthorization.secretKey", "routeAuthorization.secretKey", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.SecretKey = s
 		}},
-		{"routeAuthorization.stage", "routeAuthorization.stage", func(a *A, s string) {
+		{"routeAuthorization.stage", "routeAuthorization.stage", "routeAuthorization.stage", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.Stage = s
 		}},
 		// core's refusals, passed on: a seed in a name names the user; a seed as an nkey is refused
-		// as no public key, without quoting it.
-		{"a user's name", "users", func(a *A, s string) { a.Users[1].Name = s }},
-		{"a user's nkey", "users", func(a *A, s string) { a.Users[1].NKey = s }},
-		{"the session user's name", "sessionUser", func(a *A, s string) { a.SessionUser.Name = strings.ToLower(s) }},
-		{"the session user's nkey", "sessionUser", func(a *A, s string) { a.SessionUser.NKey = s }},
-		{"tailnet.listener.nkey", "tailnet.listener", func(a *A, s string) { listener(a).NKey = s }},
-		{"listener.nkey", "listener", func(a *A, s string) { ownListener(a).NKey = s }},
+		// as no public key, without quoting it. Their messages are core's, so path is unused.
+		{"a user's name", "users", "users", func(a *A, s string) { a.Users[1].Name = s }},
+		{"a user's nkey", "users", "users", func(a *A, s string) { a.Users[1].NKey = s }},
+		{"the session user's name", "sessionUser", "sessionUser", func(a *A, s string) { a.SessionUser.Name = strings.ToLower(s) }},
+		{"the session user's nkey", "sessionUser", "sessionUser", func(a *A, s string) { a.SessionUser.NKey = s }},
+		{"tailnet.listener.nkey", "tailnet.listener", "tailnet.listener", func(a *A, s string) { listener(a).NKey = s }},
+		{"listener.nkey", "listener", "listener", func(a *A, s string) { ownListener(a).NKey = s }},
 	}
 }
 
-// A seed in any string input is refused as a core.InputError naming the input by its path, never
-// its value, before any other refusal of that input could quote it: the hub's own check runs first
-// over every plain string input it carries, and core refuses one in a user's name or nkey.
+// A seed in any string input is refused as a core.InputError naming the input, a list by its own
+// name, and its message names the input by its path, never its value, before any other refusal of
+// that input could quote it: the hub's own check runs first over every plain string input it
+// carries, and core refuses one in a user's name or nkey.
 func TestClusteredNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 	seed, _ := testnats.User(t)
 	for _, row := range clusteredSeedRows() {
@@ -428,12 +445,10 @@ func TestClusteredNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 			args := clusteredArgs()
 			row.edit(args, seed)
 			_, err := gcp.ResolveClusteredNatsHub(args)
-			var input *core.InputError
-			require.ErrorAs(t, err, &input)
-			require.Equal(t, row.input, input.Input, "%v", err)
 			if !slices.Contains([]string{"users", "sessionUser", "tailnet.listener", "listener"}, row.input) {
-				require.EqualError(t, err, row.input+" holds an nkey seed (not echoed)")
+				require.EqualError(t, err, row.path+" holds an nkey seed (not echoed)")
 			}
+			requireInputError(t, err, row.input)
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
 		})
 	}

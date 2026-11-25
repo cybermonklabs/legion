@@ -106,6 +106,22 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
+	// registrationBudget is the store work budget of POST /v1/interests/subscribe
+	// (subscribeHandler), timed from the request's arrival: zero is sendRequestBudget, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside that
+	// budget, as a session's consumer lock it holds while it writes, or a hook a pass calls: such a
+	// test gives the registration what is left of the test binary's deadline here, so the budget
+	// does not count the test's work, which a loaded machine slows as it slows the bus.
+	registrationBudget time.Duration
+}
+
+// registrationBudgetOr is the registration's store work budget (registrationBudget):
+// sendRequestBudget unless a test set one.
+func (d *listenerDeps) registrationBudgetOr() time.Duration {
+	if d.registrationBudget == 0 {
+		return sendRequestBudget
+	}
+	return d.registrationBudget
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -144,19 +160,22 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 }
 
 // sessionMayBeLive is the reapers' test of a session: it answers false only for a session that is
-// gone (session.Gone), and the session bucket itself is what says so (liveSessionEntry: a record
-// the cache holds, or else a read of the session's own key). So a reaper takes nothing from a
-// session that has merely stopped answering - its interests and its role claims stand for the
-// whole gone horizon - nor from one another listener registered a moment ago, nor from one the
-// session cache does not hold because it has not read its bucket yet or is reading it again. Its
-// error is a read that did not answer, on which the reaper keeps what it would have removed for
-// its next cycle.
+// gone (session.Gone), and the session bucket's stream leader is what says so (liveSessionEntry: a
+// record the cache holds, or else a read of the session's own key from the leader,
+// session.SessionRegistry.RefreshFromLeader). A direct get would not do: on a replicated bucket a
+// copy that has not applied a registration made a moment ago answers that the session has no
+// record, and the reaper would delete a live session's interest or release its role. So a reaper
+// takes nothing from a session that has merely stopped answering - its interests and its role
+// claims stand for the whole gone horizon - nor from one another listener registered a moment
+// ago, nor from one the session cache does not hold because it has not read its bucket yet or is
+// reading it again. Its error is a read that did not answer, on which the reaper keeps what it
+// would have removed for its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
 // with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
 // waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
+	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -661,7 +680,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
 		defer cancel()
-		if err := d.client.Conn.FlushWithContext(ctx); err != nil {
+		if err := busAnswers(ctx, d); err != nil {
 			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "nats unavailable"}, issuers)
 			return
 		}
@@ -773,8 +792,16 @@ func roleClaimRepairHealthOf(report store.RoleClaimRepairReport) roleClaimRepair
 	return health
 }
 
-// healthzBudget bounds the bus checks of one /healthz answer.
+// healthzBudget bounds the bus checks of one /healthz answer, and /readyz's one check.
 const healthzBudget = 3 * time.Second
+
+// busAnswers is the bus check /healthz and /readyz share: a flush of the listener's connection, a
+// core PING its server must answer within ctx. Its failure is what /healthz answers 503 "nats
+// unavailable" for, first of its checks, and what /readyz answers 503 "unavailable" for once /v1
+// is open, since then /v1's routes answer bus-unavailable 503s (readyzHandler).
+func busAnswers(ctx context.Context, d *listenerDeps) error {
+	return d.client.Conn.FlushWithContext(ctx)
+}
 
 // healthzPing is cache's Ping as a /healthz request holding ctx waits for it (bus.Bounded): nats.go's
 // KV Status takes no context, so a ping that has not answered when ctx ends is answered false, with
@@ -831,28 +858,37 @@ type webhookRoute struct {
 	handler func(webhook.Publisher, *cistore.Store) http.Handler
 }
 
+// webhookBodyRefusedMetric counts the webhook deliveries the body budget turned away with a 503
+// (webhook.BodyBudget), by route path, so a sustained fill of the budget shows as a rate.
+const webhookBodyRefusedMetric = "envoy_webhook_body_refused_total"
+
 // webhookRoutes lists the webhook routes the configuration enables. main registers the paths
 // before NATS is up, so they answer 503 while it connects, and builds the handlers once NATS and,
 // for the GitHub route, the CI store are open.
 //
+// Every route reads its bodies against one budget of cfg.BodyBudget bytes, made here once for the
+// listener (webhook.BodyBudget), so what anonymous senders can make the listener hold before any
+// signature is checked is bounded across every route at once, not per route.
+//
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
+func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webhookRoute {
+	bodies := webhook.NewBodyBudget(cfg.BodyBudget, refused)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
-			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore)
+			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, github.VerdictAppID, publisher, ciStore, bodies)
 		}})
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.SlackHandler(slack.Secret, publisher)
+			return webhook.SlackHandler(slack.Secret, publisher, bodies)
 		}})
 	}
 	if ghostWispr := cfg.GhostWispr; ghostWispr != nil {
 		routes = append(routes, webhookRoute{"/webhook/ghostwispr", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher)
+			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies)
 		}})
 	}
 	return routes
@@ -870,64 +906,6 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-}
-
-// startingGate answers 503 "service starting" until open hands it the mux to serve, and logs each
-// request it refuses: that line is the listener's only record of a caller it turned away while it
-// started. main builds each gate's mux only once every dependency of its handlers is open, so a
-// request never reaches a handler over a dependency that is not there. The two list reads, GET
-// /v1/sessions and GET /v1/interests/, get the refilling answer the routes give while their copies
-// cannot be served (writeListRefilling), since before /v1 opens no copy has been read: a caller
-// reads one answer for "the list is not ready" whether the gate or the route gives it.
-type startingGate struct {
-	name   string
-	logger *logging.Logger
-	mux    atomic.Pointer[http.ServeMux]
-}
-
-// newStartingGate returns a closed gate whose refusals log under name.
-func newStartingGate(name string, logger *logging.Logger) *startingGate {
-	return &startingGate{name: name, logger: logger}
-}
-
-func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
-
-// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
-// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
-// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
-// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
-// a session id, or any other text a caller writes into a path, never becomes a series of its own.
-func (g *startingGate) route(r *http.Request) string {
-	if mux := g.mux.Load(); mux != nil {
-		if _, pattern := mux.Handler(r); pattern != "" {
-			return pattern
-		}
-	}
-	return r.Pattern
-}
-
-func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	mux := g.mux.Load()
-	if mux == nil {
-		g.logger.Warn("request refused while starting",
-			slog.String("gate", g.name),
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-		)
-		if isListRead(r) {
-			writeListRefilling(w)
-			return
-		}
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
-		return
-	}
-	mux.ServeHTTP(w, r)
-}
-
-// isListRead reports whether r is one of the two list reads, GET /v1/sessions or GET
-// /v1/interests/, whose closed-gate answer is the refilling one.
-func isListRead(r *http.Request) bool {
-	return r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions" || r.URL.Path == "/v1/interests/")
 }
 
 // openWebhooks builds the webhook routes over the publisher they publish through and the CI store
@@ -1173,6 +1151,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	logger.Info(webhook.DescribeBodyBudget(webhookCfg.BodyBudget))
 	// The renames a deployment configures belong beside the other settings lines: an operator who
 	// reads from the top sees from them alone whether ENVOY_GITHUB_REPOSITORY_RENAMES took, and a
 	// value that configures none logs nothing, as every other repository's publishing is unchanged.
@@ -1275,9 +1254,11 @@ func main() {
 	// (the two /v1 list reads the refilling answer, startingGate), each behind its own gate: the
 	// webhooks once NATS and, for the GitHub route, the CI store are (Phase 5), /v1 once the
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
-	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
+	// only /healthz reads. The webhook paths reach their gate bare. /v1 reaches its gate through
+	// v1API, which answers the closed gate before apiAuth judges any credential, so a starting
+	// listener spends no request's DPoP proof.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
-	hooks := webhookRoutes(webhookCfg)
+	hooks := webhookRoutes(webhookCfg, met.NewCounter(webhookBodyRefusedMetric, "Webhook deliveries answered 503 because their body found no room in the listener's webhook body budget within the route's room wait, by route path"))
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}
@@ -1285,9 +1266,14 @@ func main() {
 	apiAuthConfig.requests = newListenerRequests(met)
 	registerIssuerGauge(met, apiAuthConfig)
 	apiAuthConfig.route = v1Gate.route
-	v1Handler := apiAuth(apiAuthConfig, v1Gate)
+	v1Handler := v1API(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
+	// /readyz says whether /v1 can serve: it is the path a load balancer's health check reads (the
+	// edge's), so a starting pod takes no request before its /v1 can serve one, and a pod whose bus
+	// is down takes none until it is back (readyzHandler). /healthz stays as it is for the probes
+	// that read it.
+	mux.HandleFunc("/readyz", readyzHandler(v1Gate, &v1Deps))
 
 	// Phase 4: Start HTTP server on the listener Phase 2 holds.
 	server := newHTTPServer(mux)
@@ -1362,7 +1348,16 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+		verify, err := ciVerifySetting(os.Getenv(ciVerifyEnv))
+		if err != nil {
+			log.Fatal(err)
+		}
+		if verify {
+			logger.Info(ciVerifyEnv + "=on: a CI settlement is published only after Dispatch's CI reconcile has read the head from GitHub after the listener asked")
+		} else {
+			logger.Info(ciVerifyEnv + "=off: a CI settlement is published from the webhooks alone, with no GitHub read before it")
+		}
+		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour), cistore.WithVerify(verify))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
@@ -2130,9 +2125,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// 1. Relay sockets — an edge listener closes each with 1012, on which its client opens it
 	//    again at once on another replica, and refuses every upgrade after it. The HTTP server's
 	//    shutdown below does not wait for a hijacked connection, so nothing else would close them.
-	// 2. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	// 2. Session relays — stop relaying: each run is cancelled and, if it was pulling, returns the
 	//    messages it holds to the server with a nak (sessionRelays.release), so they are
-	//    delivered again at once rather than after their ack wait.
+	//    delivered again at once rather than after their ack wait, and the stop waits for the
+	//    relay loop and every run within shutdownCtx. When shutdownCtx ends first, the stop warns
+	//    and the shutdown goes on, and a run still going may publish a frame, have one acked on
+	//    the session's done reply (onReply) or nak what it holds (sessionRelays.stop).
 	// 3. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
@@ -2160,17 +2158,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// in-flight deliveries without reconnecting, end the retired watchers and delete their
 	// consumers (endListenerKVWatchers, the drain hook main adds), and drain the connection, but
 	// never let a blocked NATS request pin the process after its HTTP listener is gone.
-	if loops.monitorDone != nil {
-		select {
-		case <-loops.monitorDone:
-		case <-shutdownCtx.Done():
-			logger.Warn("self-health monitor still running at shutdown")
-		}
+	if loops.monitorDone != nil && !closedWithin(shutdownCtx, loops.monitorDone) {
+		logger.Warn("self-health monitor still running at shutdown")
 	}
 	for _, done := range loops.kvLoopsDone {
-		select {
-		case <-done:
-		case <-shutdownCtx.Done():
+		if !closedWithin(shutdownCtx, done) {
 			logger.Warn("a KV bucket pass still running at shutdown")
 		}
 	}

@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The answers of PATCH /api/v1/comments/{id} and of POST /api/v1/comments/{id}/resolve, /api/v1/comments/{id}/accept, /api/v1/comments/{id}/reject and /api/v1/comments/{id}/reopen now list the mentions and the deliveries that a read of the comment lists, where each answered empty lists. The anchor''s position stays out of these answers: a read computes it from the document.'
+time: 2026-11-17T04:03:17.000000000Z
+custom:
+    Issue: pr3512

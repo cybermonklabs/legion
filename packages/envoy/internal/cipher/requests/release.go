@@ -11,9 +11,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -101,6 +104,9 @@ type releaseRead struct {
 	// airlockOnly leaves every name the airlock does not hold back out of the read: no value of
 	// it is read, and none is minted.
 	airlockOnly bool
+	// narrowing is a release body's github_app field (ValuesNarrowed), nil for none: each name is
+	// minted as narrowedServed hands it over, and none is held back by the airlock.
+	narrowing *GitHubAppNarrowing
 }
 
 // releasedName is one granted name as a release read it.
@@ -154,10 +160,28 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
 		// binds at least one host (proxyrules.Validate), so an entry is a name the airlock holds back.
 		entry := m.Airlock.Lookup(g.name)
+		// A name under an entry of kind dpop is a capability the broker mints and holds, and never
+		// a stored secret's release: it is refused before anything of it is read.
+		if entry != nil && entry.Kind == proxyrules.KindDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrMintedOnly)
+		}
+		// A grant made from a github_app field releases only through that field: its recorded
+		// read_only is what cut the token, and a release that dropped the field would hand over
+		// the profile's own, wider, value. The session's release refuses it (its caller answers
+		// ErrGitHubAppFieldRefused), and so does the proxy's, which holds no such name anyway.
+		if want.narrowing == nil && g.gitHubAppField {
+			return nil, gitHubAppFieldRefused("the grant of " + g.name + " was made from a github_app field, so its release carries that field")
+		}
+		if want.narrowing != nil {
+			entry = nil
+		}
 		if entry == nil && want.airlockOnly {
 			continue
 		}
 		served := checked.set.Secrets[g.name]
+		if want.narrowing != nil {
+			served = narrowedServed(served, *want.narrowing)
+		}
 		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
 		if err != nil {
 			return nil, err
@@ -197,6 +221,9 @@ func gitHubValueOf(served policy.Secret) string {
 // give-back that waited on GitHub, up to its bound for each installation of each value, could
 // hold a session's release past the time its client gives the call. Each GiveBack bounds its own
 // revokes; one a stopping broker cuts short leaves its token to lapse, as before the give-back.
+// A GiveBack that panics leaves its value to lapse too, logged (recoverGiveBack), and the
+// give-back goes on to the next value: net/http recovers a panic only on a handler's own
+// goroutine, so one here would end the broker.
 func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	type minted struct {
 		giveBack          GiveBack
@@ -216,9 +243,36 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	go func() {
 		defer m.givingBack.Done()
 		for _, each := range back {
-			each.giveBack(detached, each.name, each.value, each.form)
+			func() {
+				defer recoverGiveBack(each.name)
+				each.giveBack(detached, each.name, each.value, each.form)
+			}()
 		}
 	}()
+}
+
+// giveBackPanickedMessage is logged, at ERROR, each time a GiveBack panics (recoverGiveBack),
+// followed by name=<the secret's name>, error=<what panicText says of the panic> and stack=<the
+// goroutine's stack>, which hold no part of the value it was giving back. That value is left to
+// lapse.
+const giveBackPanickedMessage = "broker: a give-back of a minted value panicked; the value is left to lapse"
+
+// recoverGiveBack, deferred directly around one value's GiveBack (giveBack), logs a panic there
+// (giveBackPanickedMessage) and lets the give-back go on to the next value.
+func recoverGiveBack(name string) {
+	if p := recover(); p != nil {
+		slog.Error(giveBackPanickedMessage, "name", name, "error", panicText(p), "stack", string(debug.Stack()))
+	}
+}
+
+// panicText is what a log line or an error says of the panic p, from code that may hold a secret
+// value or a token: a runtime error's message, which names types and indexes and no data, or else
+// the panic value's type alone, since a value a panic was given can be anything that code held.
+func panicText(p any) string {
+	if err, ok := p.(runtime.Error); ok {
+		return err.Error()
+	}
+	return fmt.Sprintf("a panic of type %T", p)
 }
 
 // heldBack is the names in read the airlock holds back. A session's release reads or mints each

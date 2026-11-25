@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestClaimReleaseRecordsServeAPodTheProjectsWindow(t *testing.T) {
 	registered := h.registered(bootToken, "ses_implementer")
 
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	releaseID, err := h.store.RecordPodRelease(h.ctx, store.PodRelease{
+	releaseID, _, err := h.store.RecordPodRelease(h.ctx, store.PodRelease{
 		Project: testProject, Issue: "LEGION-208", Generation: 3,
 		Roles: []string{"implementer", "tester"}, At: released, BundleBytes: 4096,
 	})
@@ -39,7 +40,7 @@ func TestClaimReleaseRecordsServeAPodTheProjectsWindow(t *testing.T) {
 	}
 	woke := released.Add(30 * time.Minute)
 	var resumeID int64
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		resumeID, _, err = store.RecordPodWakeTx(h.ctx, tx, store.PodResume{
 			Release: releaseID, Project: testProject, Issue: "LEGION-208", Role: "implementer",
@@ -61,7 +62,7 @@ func TestClaimReleaseRecordsServeAPodTheProjectsWindow(t *testing.T) {
 		}
 	}
 	// A release before the window the caller names is not in the answer.
-	if _, err := h.store.RecordPodRelease(h.ctx, store.PodRelease{
+	if _, _, err := h.store.RecordPodRelease(h.ctx, store.PodRelease{
 		Project: testProject, Issue: "LEGION-207", At: released.Add(-2 * time.Hour),
 	}); err != nil {
 		t.Fatalf("record the older release: %v", err)

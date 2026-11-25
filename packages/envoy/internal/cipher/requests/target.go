@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// gitHubScope is the scope a release of name, served as profile, mints for target (the zero
+// gitHubScope is the scope a release of name, served as served, mints for target (the zero
 // record.Target for none), and nil for a name that is no GitHub profile. Its repositories are
 // account/name entries (githubname.Entry), as the profiles file writes them
 // (secrets.GitHubScope), so the minter sends each account its own.
@@ -39,8 +39,13 @@ import (
 // words; for a profile that names no repository it names it as the target does. A target outside
 // the profile and a target on a name with no github block are refused (ErrTargetRefused), naming
 // the target (record.Target.String) and the profile's accounts and repositories: Create answers
-// that refusal before anybody is asked (checkTarget), and a release mints nothing for it.
-func gitHubScope(name string, profile *policy.Profile, target record.Target) (*secrets.GitHubScope, error) {
+// that refusal before anybody is asked (checkTarget), and a release mints nothing for it. A
+// profile served from a github-installations secret (policy.TypeGitHubInstallations) hands over
+// tokens a minter made ahead of the request, which cannot be cut once they are minted, so a
+// target of it names its account alone, and one naming repositories is refused
+// (ErrTargetRepositoriesRefused).
+func gitHubScope(name string, served policy.Secret, target record.Target) (*secrets.GitHubScope, error) {
+	profile := served.Profile
 	if profile == nil || profile.GitHub == nil {
 		if target.Account != "" {
 			return nil, fmt.Errorf("%w: %s has no github block, so it names no GitHub account or repository a target could narrow", ErrTargetRefused, name)
@@ -48,10 +53,15 @@ func gitHubScope(name string, profile *policy.Profile, target record.Target) (*s
 		return nil, nil
 	}
 	block := profile.GitHub
+	minted := served.Type() == policy.TypeGitHubInstallations
 	scope := &secrets.GitHubScope{Accounts: block.Accounts, Permissions: block.Permissions, Value: block.Value}
 	if target.Account == "" {
 		if block.Value == githubname.ValueToken && len(block.Accounts) > 1 {
-			return nil, fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target ACCOUNT[/REPOSITORY]", ErrTargetRefused, name, profileWords(block))
+			form := "ACCOUNT[/REPOSITORY]"
+			if minted {
+				form = "ACCOUNT"
+			}
+			return nil, fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target %s", ErrTargetRefused, name, profileWords(block), form)
 		}
 		scope.Repositories = block.Repositories
 		return scope, nil
@@ -77,6 +87,9 @@ func gitHubScope(name string, profile *policy.Profile, target record.Target) (*s
 	scope.Repositories = reached
 	if len(target.Repositories) == 0 {
 		return scope, nil
+	}
+	if minted {
+		return nil, fmt.Errorf("%w: %s: name the account alone, --target %s", ErrTargetRepositoriesRefused, name, target.Account)
 	}
 	// The target's repositories as account/name entries, each the profile's own entry for it
 	// where the profile names repositories. Two names of the target that differ only in case give
@@ -111,7 +124,7 @@ func checkTarget(set *policy.Set, names []string, target record.Target) error {
 		if !ok {
 			continue
 		}
-		if _, err := gitHubScope(name, served.Profile, target); err != nil {
+		if _, err := gitHubScope(name, served, target); err != nil {
 			return err
 		}
 	}

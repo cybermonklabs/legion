@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -143,6 +144,7 @@ var sweepRoutes = map[string]sweepRoute{
 // drops if the first frame did land; a second pass sends nothing more, and the dead sender's late
 // outcome changes nothing.
 func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
+	t.Parallel()
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
 			listener := newHoldingListener(t)
@@ -184,12 +186,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				_ = response.Body.Close()
 				answered <- response.StatusCode
 			}()
-			var key string
-			select {
-			case key = <-listener.started:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the write never sent its attempt")
-			}
+			key := testwait.Receive(t, "the write's attempt sent to the listener", listener.started)
 			owner, _, _ := strings.Cut(key, ":")
 			if route.atCommit {
 				if status := <-answered; status != http.StatusCreated {
@@ -267,6 +264,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 // connection while a mention is still being sent leaves that send to finish, and its attempt
 // settles as what the listener answered rather than as cut off or pending.
 func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
+	t.Parallel()
 	for name, path := range map[string]func(issue, document string) string{
 		"an issue comment":   sweepRoutes["a comment's mention"].path,
 		"a document comment": sweepRoutes["a document comment's mention"].path,
@@ -319,18 +317,14 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			<-sending
 			abort()
 			letProceed()
-			deadline := time.Now().Add(10 * time.Second)
-			var state string
-			for time.Now().Before(deadline) {
+			state := testwait.UntilPolling(t, 20*time.Millisecond, "the mention's attempt to settle sent (its state)", func() (string, bool) {
+				var state string
 				if err := database.Pool.QueryRow(context.Background(),
 					`select coalesce(min(state), '') from comment_deliveries`).Scan(&state); err != nil {
 					t.Fatal(err)
 				}
-				if state == "sent" {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return state, state == "sent"
+			})
 			server.Close()
 			served.detached.wait()
 			if state != "sent" || len(keysOf(sends)) != 1 {
@@ -344,6 +338,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 // later retry overtook, one opened inside the last minute that its writer has not claimed yet, and
 // one past the window a repeat is recognised in are each left alone.
 func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -391,6 +386,7 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 // The maintenance loop's pass is what runs the sweep: started as cmd/dispatch starts it, with the
 // server's resume, it sends what a dead process owed without anybody asking.
 func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -414,10 +410,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 		defer close(done)
 		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	for len(keysOf(sends)) == 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitUntil(t, "the maintenance loop's send of the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()
 	<-done
 	served.detached.wait()
@@ -558,16 +551,17 @@ func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned b
 
 // INFRA-258, INFRA-448. The sweep never sticks on an attempt nothing can send. A closed issue is
 // no longer one of those: every sender takes a delivery there (lockIssue,
-// lockedCommentForDelivery), so the attempts a dead process left on a closed issue - a message's,
-// a keyed send with no attempt at all, a comment mention's - are sent like any other, each under
-// its own attempt number. What nothing can send is a mention attempt whose comment no longer
-// holds its mention, settled failed with that cause and the receipt its row owes instead of being
-// picked again on every pass, and one whose document is no longer a project's, which the pass
-// reads with its own cause (undeliverableDocumentGone) and keeps out of what it sends. However
-// many of either there are, they never crowd what can be sent out of a pass's batch: a batch's
-// worth and one more of each cause, all older than the closed issue's three sendable attempts. A
-// second pass changes nothing.
+// lockedCommentAllowingClosed), so the attempts a dead process left on a closed issue - a
+// message's, a keyed send with no attempt at all, a comment mention's - are sent like any other,
+// each under its own attempt number. What nothing can send is a mention attempt whose comment no
+// longer holds its mention, settled failed with that cause and the receipt its row owes instead
+// of being picked again on every pass, and one whose document is no longer a project's, which the
+// pass reads with its own cause (undeliverableDocumentGone) and keeps out of what it sends.
+// However many of either there are, they never crowd what can be sent out of a pass's batch: a
+// batch's worth and one more of each cause, all older than the closed issue's three sendable
+// attempts. A second pass changes nothing.
 func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}
@@ -683,6 +677,7 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 // retry's to answer, and its sender settles it superseded once its own send has landed
 // (supersedeOvertakenAttempts); a message's is left as it stands.
 func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
+	t.Parallel()
 	t.Run("a comment's mention", func(t *testing.T) {
 		listener, sends := newBroadcastListener(t, agentSessions)
 		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -772,6 +767,7 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 // whatever its indexes: the assertion is that the index serves the query, as the custom plan a
 // statement's first runs get and as the generic plan Postgres may cache for it afterwards.
 func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -817,6 +813,7 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 // holding no transaction id. The test holds the lock and requires exactly that, then lets the
 // settle through and requires the attempt settled failed.
 func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := sweepRig{t: t, database: database}
 	issue := createTestIssue(t, handler, "STUCK", "A mention that is gone")
@@ -853,13 +850,8 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	select {
-	case got := <-settled:
-		if got.err != nil || !got.settled {
-			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the settle never answered once the owner lock was released")
+	if got := testwait.Receive(t, "the settle's answer once the owner lock was released", settled); got.err != nil || !got.settled {
+		t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
 	}
 	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {
 		t.Fatalf("%d attempts of the stranded mention are failed, want its one", failed)

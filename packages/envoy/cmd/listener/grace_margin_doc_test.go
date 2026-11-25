@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/envoy/infra/README.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+//ci:reads packages/envoy/infra/docs/nats-hub.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+
 import (
 	"os"
 	"path/filepath"

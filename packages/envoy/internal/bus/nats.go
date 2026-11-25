@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -55,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -85,6 +87,34 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 		o.apply(&opts)
 	}
 	return opts
+}
+
+// connectionBuild is the build every connection of this binary names after its name
+// (buildversion.ConnectionBuild): legion@<commit>, or "" for a build that holds no commit. A test of
+// this package replaces it.
+var connectionBuild = buildversion.ConnectionBuild
+
+// PrivacyRequiredSuffix is natsgrant.PrivacyRequiredSuffix, spelled here because natsgrant imports
+// this package and this one cannot import it back; natsgrant's tests hold the two equal. The auth
+// service admits a listener on a hub with private projects only when its client name ends with
+// it, so connectionName keeps it last.
+const PrivacyRequiredSuffix = " privacy-required"
+
+// connectionName is the name a connection presents: the client's name, then a space and this
+// binary's build when it has one, before PrivacyRequiredSuffix when the client's name ends with it
+// (`<name> legion@<commit> privacy-required`). legacy-subjects-gate.sh reads each connection's
+// build from the end of its name in the hub's census of connections ($SYS.REQ.SERVER.PING.CONNZ),
+// the last word or the one before a trailing privacy-required, and a connection that names none
+// keeps the gate from opening.
+func connectionName(name string) string {
+	build := connectionBuild()
+	if build == "" {
+		return name
+	}
+	if client, required := strings.CutSuffix(name, PrivacyRequiredSuffix); required {
+		return client + " " + build + PrivacyRequiredSuffix
+	}
+	return name + " " + build
 }
 
 // streamConfig is the stream ConnectOwningStream ensures: streamCfg at the deployment's replica
@@ -170,11 +200,12 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.environment = lookup })
 }
 
-// WithName names the client, in place of "envoy": the name the NATS server's connection listings
-// (its /connz endpoint, `nats server report connections`) show for the connection the client dials
-// first and for each one it dials to replace a closed one, and the name field of the client's
-// lifecycle log lines (`envoy nats disconnected`, `envoy nats recovery attempt` and the rest). Dial
-// takes its name as a parameter, and not this option.
+// WithName names the client, in place of "envoy": the name, with this binary's build after it or
+// before its trailing PrivacyRequiredSuffix (connectionName), that the NATS server's connection
+// listings (its /connz endpoint, `nats server report connections`, $SYS.REQ.SERVER.PING.CONNZ)
+// show for the connection the client dials first and for each one it dials to replace a closed
+// one, and the name field of the client's lifecycle log lines (`envoy nats disconnected`, `envoy
+// nats recovery attempt` and the rest). Dial takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
 }
@@ -323,7 +354,10 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
+	Conn *nats.Conn
+	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
+	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
+	severable                   atomic.Pointer[severableConnection]
 	js                          nats.JetStreamContext
 	urls                        []string
 	name                        string
@@ -456,6 +490,9 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -490,6 +527,7 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	name = connectionName(name)
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -575,7 +613,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	}
 	c := &Client{
 		urls:                        urls,
-		name:                        opts.name,
+		name:                        connectionName(opts.name),
 		connectionSettings:          opts.connectionSettings(credential),
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
@@ -585,6 +623,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
 	}
@@ -687,6 +726,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	}
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
+	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -1773,15 +1813,17 @@ func (c *Client) Close() {
 // watchers with requests of their own while the connection still carries them, even when the
 // deliveries ran out their share of the timeout (drainHookReserve) or failed to drain. Only then
 // does it drain the connection, whose Drain only starts the drain, and waits for it to close
-// itself. A connection that is reconnecting is closed at once and runs no hook: nothing it sends
-// reaches the server, so no subscription would drain and a reconnect would re-send them. A bind in
-// flight at the stop is not waited for: one that ends while the subscriptions drain installs its
-// own, which the next pass drains, and one that ends after the last pass drains its own, which the
-// connection's drain takes (endBind). The close ends one still in flight. A reconnect nats.go
-// reports once the client has stopped closes the connection only when it came after the stop
-// (closeStopped). The stop ends the keeper too, which Drain waits for once the connection is
-// closed (awaitKeeper). The stop also takes the client out of the registry of live clients
-// (forgetClient), as Close does, since the connection it owns is going.
+// itself. A connection that is reconnecting is closed at once, once the hooks have run on a
+// context that has already ended: nothing it sends reaches the server, so no subscription would
+// drain and a reconnect would re-send them, but each hook still ends what it holds and says what
+// it left to the server. A bind in flight at the stop is not waited for: one that ends while the
+// subscriptions drain installs its own, which the next pass drains, and one that ends after the
+// last pass drains its own, which the connection's drain takes (endBind). The close ends one
+// still in flight. A reconnect nats.go reports once the client has stopped closes the connection
+// only when it came after the stop (closeStopped). The stop ends the keeper too, which Drain
+// waits for once the connection is closed (awaitKeeper). The stop also takes the client out of
+// the registry of live clients (forgetClient), as Close does, since the connection it owns is
+// going.
 func (c *Client) Drain(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	deliveriesDeadline := deadline.Add(-min(drainHookReserve, timeout*3/10))
@@ -1801,6 +1843,12 @@ func (c *Client) Drain(timeout time.Duration) error {
 	defer c.awaitKeeper()
 	defer conn.Close()
 	if conn.IsReconnecting() {
+		// Nothing sent while reconnecting reaches the server, so no subscription would drain and
+		// a reconnect would re-send them: the connection is closed at once. The drain hooks still
+		// run first, on a context that has already ended (runDrainHooks reads the connection as
+		// lost), so each ends what it holds and says what it left to the server; a drain that ran
+		// none ended no KV watcher and said nothing of any.
+		c.runDrainHooks(conn, deadline)
 		return fmt.Errorf("drain NATS: %w", nats.ErrConnectionReconnecting)
 	}
 	if err := c.drainDeliveries(deliveriesDeadline); err != nil {
@@ -1991,6 +2039,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
+		c.noteSeverable(nc)
 		c.js = c.readsOwnRefusals(nc, js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
@@ -2062,9 +2111,10 @@ func (c *Client) ReachesNoSession(topic string) bool {
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
-// published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// published, or a KV key or value refused however often a call names it, so a caller answers it as
+// a refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrNoForwardMsgID, or internal/kvchunk's ReservedKey, a KV key under the chunk keys' prefix that
+// a store laying its records out in chunks takes for no record.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that
@@ -2077,7 +2127,8 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 
 // ErrTooLarge is the ErrRefused of an envelope too large to publish whole: a message past the NATS
 // server's max payload, which nats.go refuses before sending it, a subject past maxSubjectBytes, a
-// KV key whose subject would be, or a CI record or settlement past the bound its store keeps below
+// KV key whose subject would be, a KV value past the server's max payload or its bucket's largest
+// value (KeyValue.tooLarge), or a CI record or settlement past the bound its store keeps below
 // those. Its error names the size and the bound.
 var ErrTooLarge error = refusal("too large to publish whole")
 
@@ -2247,6 +2298,24 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
+}
+
+// PublishEachWithin publishes item on its own topic as PublishAckWithin does, and once the
+// publish succeeds calls published, when it is not nil, with that topic and the stream's
+// acknowledgement: its duplicate verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. It is the webhook
+// handlers' publisher (webhook.Publisher), which a publisher that also puts copies on other
+// topics implements by calling published once for each topic it published on
+// (ghrename.Publisher).
+func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	ack, err := c.PublishAckWithin(ctx, item)
+	if err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, ack.Duplicate, ack.Resent)
+	}
+	return nil
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
@@ -2510,13 +2579,15 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is. A refusal that wraps
-// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went unanswered
-// (sendStored), and that first send may have stored this write, so it is no proof the write stored
-// nothing.
+// not match as the ErrCursorMoved it is, and returns any other error as it is. The refusal is
+// either code JetStream answers a lost conditional write with (IsCASConflict): on a stream of more
+// than one copy a write that meets another listener's cursor write still being replicated is
+// answered 10164, not 10071, and has lost the cursor all the same. A refusal that wraps
+// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went
+// unanswered (sendStored), and that first send may have stored this write, so it is no proof the
+// write stored nothing.
 func cursorMoved(err error) error {
-	var apiErr *nats.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence && !errors.Is(err, ErrUnacknowledged) {
+	if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err
@@ -2657,14 +2728,19 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that. A clustered stream's refusal of a forward whose Nats-Msg-Id an
-// earlier forward still has in process wraps ErrDuplicateInProcess too, since the same forward
-// sent again once the earlier one is stored is acknowledged as its duplicate (cmd/listener's
-// publishPastInProcess).
-func (f *PendingForward) Wait() error {
+// ends, releases its reply subscription, and returns the stream's acknowledgement: the sequence
+// of the copy it holds under the forward's Nats-Msg-Id, and Duplicate where an earlier forward
+// stored that copy. No acknowledgement by the deadline is ErrForwardNotStored, wrapping, when
+// publishConfirmed could not confirm the publish, the reason for that. The stream's error answer,
+// the server's no-responders answer (nothing captured the subject), and the stream's duplicate
+// acknowledgement that names no sequence are each ErrForwardNotStored wrapping that answer. A
+// clustered stream's refusal of a forward whose Nats-Msg-Id an earlier forward still has in
+// process wraps ErrDuplicateInProcess too, since the same forward sent again once the earlier one
+// is stored is acknowledged as its duplicate (cmd/listener's publishPastInProcess). The duplicate
+// that names no sequence wraps ErrDuplicateWithoutSequence, which says the stream answered and no
+// later reply comes, so a caller that answers for the forward can say so at once rather than wait
+// out its window. Any other reply is not the stream's acknowledgement and is passed over.
+func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.replies.Unsubscribe()
 	for {
 		remaining := time.Until(f.deadline)
@@ -2678,32 +2754,46 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
-			return err
+			return StoredAck{}, err
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
+			// A stream's duplicate with sequence 0 names no copy (nats-server v2.10.29 sent one for
+			// an id it had staged at 0; the 2.11 line answers that with the in-process error, and
+			// later lines stage nothing): nothing says the forward is stored, and no later reply
+			// comes. Any other reply that is no acknowledgement (readPublishAcknowledgement) is
+			// passed over.
+			if ack.Stream != "" && ack.Duplicate {
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
+			}
 			continue
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, duplicateInProcess(ack.Error))
+			return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, duplicateInProcess(ack.Error))
 		}
-		return nil
+		return StoredAck{Sequence: ack.Seq, Duplicate: ack.Duplicate}, nil
 	}
 	if f.unconfirmed != nil {
-		return fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
+		return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
 	}
-	return ErrForwardNotStored
+	return StoredAck{}, ErrForwardNotStored
 }
 
-// publishAcknowledgement is a stream's answer to a publish it captured: the stream and the sequence
-// it stored the message at (a duplicate's earlier sequence), or its error.
+// ErrDuplicateWithoutSequence is wrapped by a forward's Wait when the stream answered it as a
+// duplicate of a copy it named no sequence of, so no copy can be read back (PendingForward.Wait).
+var ErrDuplicateWithoutSequence = errors.New("the stream acknowledged a duplicate with no sequence")
+
+// publishAcknowledgement is a stream's answer to a publish it captured: the stream, the sequence
+// it stored the message at (a duplicate's earlier sequence) and whether it was a duplicate, or its
+// error.
 type publishAcknowledgement struct {
-	Stream string         `json:"stream"`
-	Seq    uint64         `json:"seq"`
-	Error  *nats.APIError `json:"error"`
+	Stream    string         `json:"stream"`
+	Seq       uint64         `json:"seq"`
+	Duplicate bool           `json:"duplicate"`
+	Error     *nats.APIError `json:"error"`
 }
 
 // readPublishAcknowledgement reads data as a stream's publish acknowledgement, reporting false for

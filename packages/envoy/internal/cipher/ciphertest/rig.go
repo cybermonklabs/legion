@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -230,9 +231,13 @@ func WithAccessLifetime(d time.Duration) Option {
 	return func(c *rigConfig) { c.accessLifetime = d }
 }
 
-// WithProjectAccess holds every token exchange to what access answers about the projects its
-// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
-// checks no project, and so refuses every trade that names one.
+// WithProjectAccess gives the broker access, a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch in cmd/cipherd/main.go: every token
+// exchange is held to what access answers about the projects its token names, and the enrollment
+// and the request machine ask it, the machine login reading it through that enrollment. By
+// default the broker checks no project, and so refuses every trade that names one, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
 func WithProjectAccess(access projectaccess.Access) Option {
 	return func(c *rigConfig) { c.projectAccess = access }
 }
@@ -271,8 +276,9 @@ func WithPersonPod(account, service, person string) Option {
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
 // no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
-// (storetest.Open's own contract).
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
+// when the calling package's TestMain does not run its tests through storetest.Main or
+// storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
@@ -342,6 +348,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -355,7 +362,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
@@ -420,6 +427,10 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+// DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
+// person's decision (oauth.Config.DeviceLifetime), as long as cmd/cipherd's pending machine login.
+const DeviceLifetime = 15 * time.Minute
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -462,7 +473,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
+		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
@@ -477,9 +488,13 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 	return provider
 }
 
-// request issues method against baseURL+path through client, with an optional body (marshaled to
-// JSON) and headers, and answers the status and the body bytes. It asserts no status itself: a
-// caller does that, so a mismatch names the actual body.
+// request issues method against baseURL+path through client on ctx, with an optional body
+// (marshaled to JSON) and headers, and answers the status and the body bytes. It asserts no
+// status itself: a caller does that, so a mismatch names the actual body.
+//
+// ctx carries the request's one bound, the test binary's deadline less testwait's margin
+// (testwait.Context): a broker a loaded machine slows is waited for, and one that never answers
+// fails the test there.
 //
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
 // name, the client they go out on, and at — the process a failure is about, " (at host:port)"
@@ -487,6 +502,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 // has one broker and so nothing to tell apart.
 func request(
 	t *testing.T,
+	ctx context.Context,
 	client *http.Client,
 	baseURL, method, path string,
 	headers map[string]string,
@@ -502,7 +518,7 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -529,7 +545,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(t, testwait.Context(t), http.DefaultClient, r.URL, method, path, headers, body, "")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the

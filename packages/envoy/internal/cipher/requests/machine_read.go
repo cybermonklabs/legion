@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -368,6 +370,13 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 // sees. The session that holds the grant is checkRelease's alone, which ends a grant of a private
 // project the session no longer names for good.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call ReleaseCall) (Release, error) {
+	return m.values(ctx, grantID, enrollmentID, call, nil)
+}
+
+// values is Values, and with narrowing, a release body's github_app field, ValuesNarrowed
+// (github_app.go): the grant's one name is minted as narrowedServed hands it over, outside the
+// airlock, and answered under the name of the stored secret it is a profile of.
+func (m *Machine) values(ctx context.Context, grantID, enrollmentID string, call ReleaseCall, narrowing *GitHubAppNarrowing) (Release, error) {
 	if err := m.hideGrantFromSession(ctx, grantID, enrollmentID); errors.Is(err, pgx.ErrNoRows) {
 		return Release{}, ErrGrantNotLive
 	} else if err != nil {
@@ -377,7 +386,13 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 	if err != nil {
 		return Release{}, err
 	}
-	read, err := m.readRelease(ctx, grantID, checked, releaseRead{})
+	asked := ""
+	if narrowing != nil {
+		if asked, err = m.narrowedRelease(ctx, checked, *narrowing); err != nil {
+			return Release{}, err
+		}
+	}
+	read, err := m.readRelease(ctx, grantID, checked, releaseRead{narrowing: narrowing})
 	if err != nil {
 		return Release{}, err
 	}
@@ -395,6 +410,10 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 			// The real value goes no further than the loop that read it: the session is given
 			// the placeholders airlockRelease mints for the slots the split found.
 			splits[released.name] = released.split
+			continue
+		}
+		if narrowing != nil {
+			values[asked] = released.value
 			continue
 		}
 		values[released.name] = released.value
@@ -420,6 +439,9 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 		return Release{}, err
 	}
 	m.giveBack(ctx, heldBack(read))
+	if narrowing != nil {
+		logGitHubAppAnswer(ctx, "release", asked, checked.granted[0].name, checked.enr, *narrowing, "grant", grantID)
+	}
 	return release, nil
 }
 
@@ -606,7 +628,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	// the profile's own. Create refused a target the profile cannot serve (checkTarget), and an
 	// edit of the profile since ends the grant (checkRelease), so a refusal here is one no release
 	// reaches; it is answered rather than minted, since a scope it cannot build is never widened.
-	scope, err := gitHubScope(g.name, served.Profile, g.target)
+	scope, err := gitHubScope(g.name, served, g.target)
 	if err != nil {
 		return secrets.Minted{}, err
 	}
@@ -626,7 +648,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		// line is safe to log; the session sees the same words as MINT_FAILED.
 		slog.Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version, secretType)
+			m.Policy.RefuseValue(ctx, g.name, version, secretType, err)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
@@ -684,6 +706,14 @@ func trimmedValue(value, name string) string {
 type requestedSecret struct {
 	name, source, decision, profileDigest string
 	target                                record.Target
+	// gitHubAppField is true for a name of a request an earlier agent-secrets made with a
+	// github_app field, and gitHubAppReadOnly what that field's read_only said, nil for every
+	// other name. A release that carries the field is answered only for such a grant, with the
+	// same read_only (narrowedRelease); one that carries none is refused for it, so dropping the
+	// field widens nothing (readRelease); and a live grant is reused only for a request of the
+	// same kind and read_only (sameGitHubAppField).
+	gitHubAppField    bool
+	gitHubAppReadOnly *bool
 }
 
 // requestedSecrets reads request requestID's names that the policy did not deny, in name order:
@@ -691,7 +721,7 @@ type requestedSecret struct {
 // waits to have approved (currentPolicyAdmits, and Create's join of a pending request), since one
 // denied name denies the whole request.
 func requestedSecrets(ctx context.Context, q querier, requestID string) ([]requestedSecret, error) {
-	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories
+	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories, github_app_field, github_app_read_only
 		from request_secrets where request_id=$1 and decision <> 'deny' order by name`, requestID)
 	if err != nil {
 		return nil, err
@@ -700,7 +730,7 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories); err != nil {
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories, &g.gitHubAppField, &g.gitHubAppReadOnly); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)
@@ -714,6 +744,20 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 // a request of several names records none on any of them.
 func sameTarget(requested []requestedSecret, target record.Target) bool {
 	return !slices.ContainsFunc(requested, func(g requestedSecret) bool { return !g.target.Equal(target) })
+}
+
+// sameGitHubAppField reports whether requested, a grant's names, were
+// asked for the way narrowing says (nil for a request with no github_app field): the same kind of
+// request, and for a narrowed one the same read_only. A --target request never takes a narrowed
+// request's grant, whose release hands a token past the airlock, and a narrowed one never takes a
+// --target grant.
+func sameGitHubAppField(requested []requestedSecret, narrowing *GitHubAppNarrowing) bool {
+	return !slices.ContainsFunc(requested, func(g requestedSecret) bool {
+		if narrowing == nil {
+			return g.gitHubAppField
+		}
+		return !g.gitHubAppField || g.gitHubAppReadOnly == nil || *g.gitHubAppReadOnly != narrowing.ReadOnly
+	})
 }
 
 // neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
@@ -1331,7 +1375,7 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target, facts projectFacts) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target, facts projectFacts, narrowing *GitHubAppNarrowing) (Request, bool, error) {
 	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -1354,7 +1398,7 @@ candidates:
 		if err != nil {
 			return Request{}, false, err
 		}
-		if !sameTarget(granted, target) {
+		if !sameTarget(granted, target) || !sameGitHubAppField(granted, narrowing) {
 			continue
 		}
 		var rulesVersion, decidedBy string
@@ -1762,20 +1806,63 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// Each agent-secret row is listed for the person responsible for it, and for everyone where it
 	// names none (responsiblePerson), and in either case only for a reader who may see it: a
 	// private project's request is left off the list of everyone outside the project, since its
-	// names and its reason are that project's (maySeeRecord). A request Dispatch cannot answer for
-	// is left off too, failing closed for that row alone and logged (logRowUnanswered), and the rest
-	// of the list is answered. A row whose responsible person is someone else is listed only where
-	// that person may not see it (listedInStead), within the list's one clock, listFallbackBound
+	// names and its reason are that project's (maySeeRecord). The reader's own rows are read at
+	// once, listRowsAtOnce at a time, within the list's clock for them, listOwnRowsBound from here:
+	// a request Dispatch cannot answer for, or has not answered for when that clock runs out, is
+	// left off, failing closed for that row alone, and logged (logRowUnanswered), and every other
+	// row is listed, so one project Dispatch is slow to answer, or never answers, costs the list
+	// the rows that name it and no other, up to listRowsAtOnce's bound. A row whose responsible
+	// person is someone else is listed only where that person may
+	// not see it (listedInStead), within a clock of those rows' own, listFallbackBound
 	// from here, so that however many people's rows touch a project, and however slowly Dispatch
 	// answers, they cannot keep the list from its caller. Such a row left off because a read
 	// failed is logged for itself, naming its responsible person (logFallbackUnread); the rows left
 	// off once the clock has run out are counted in one line for the list (logFallbackCut), since
 	// each of them is on its responsible person's list wherever that person may see it, which is
 	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
-	// list. A list whose caller went away (an Inbox tab or a page closed) is read by nobody, so the
-	// rows it leaves off then are neither counted nor logged: its clock did not run out.
-	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
+	// list. Those rows are read one after another, beside the reader's own. A list whose caller
+	// went away (an Inbox tab or a page closed) is read by nobody, so the rows it leaves off then
+	// are neither counted nor logged: its clocks did not run out. Every question the list's rows
+	// ask is asked once for the list, on the clock of the reader's own rows, and the list asks
+	// Dispatch at most MaySeeAtOnce questions at a time (withAccessMemo), so a project many rows
+	// name, an issue key a stored reason names among them, costs the list one read. The list reads
+	// at most listRowsAtOnce rows at once, and a row whose read panics is left off and logged as
+	// one Dispatch did not answer for (readRow).
+	own, cancelOwn := context.WithTimeout(ctx, listOwnRowsBound)
+	defer cancelOwn()
+	own = withAccessMemo(own)
+	fallback, cancel := context.WithTimeout(own, listFallbackBound)
 	defer cancel()
+	insteadOf := func(i int) string {
+		if notify := reads[i].notify; notify != "" && notify != record.CanonicalLogin(approver) {
+			return notify
+		}
+		return ""
+	}
+	verdicts := make([]rowVerdict, len(out))
+	var judging errgroup.Group
+	judging.SetLimit(listRowsAtOnce)
+	judging.Go(func() error {
+		for i, p := range out {
+			if notify := insteadOf(i); p.Kind == record.KindAgentSecret && notify != "" {
+				readRow(&verdicts[i], func() (bool, error) {
+					return m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
+				})
+			}
+		}
+		return nil
+	})
+	for i, p := range out {
+		if p.Kind == record.KindAgentSecret && insteadOf(i) == "" {
+			judging.Go(func() error {
+				readRow(&verdicts[i], func() (bool, error) {
+					return m.maySeeRecord(own, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+				})
+				return nil
+			})
+		}
+	}
+	_ = judging.Wait()
 	visible := out[:0]
 	cut := 0
 	for i, p := range out {
@@ -1786,24 +1873,18 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			visible = append(visible, p)
 			continue
 		}
-		notify := reads[i].notify
-		instead := notify != "" && notify != record.CanonicalLogin(approver)
-		var listed bool
-		var err error
-		if instead {
-			listed, err = m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
-		} else {
-			listed, err = m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
-		}
+		notify := insteadOf(i)
+		instead := notify != ""
+		listed, err := verdicts[i].listed, verdicts[i].err
 		switch {
 		case err != nil && ctx.Err() != nil:
-			// The caller went away: neither the clock ran out nor Dispatch failed to answer, so
-			// the row is left off a list nobody reads, and nothing is counted or logged.
+			// The caller went away: neither clock ran out nor Dispatch failed to answer, so the
+			// row is left off a list nobody reads, and nothing is counted or logged.
 		case err != nil && instead && fallback.Err() != nil:
 			cut++
 		case err != nil && instead:
 			m.logFallbackUnread(p.RecordID, notify, err)
-		case errors.Is(err, ErrProjectAccessUnavailable):
+		case errors.Is(err, ErrProjectAccessUnavailable), errors.Is(err, errReadPanicked), err != nil && own.Err() != nil:
 			m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
 		case err != nil:
 			return nil, err
@@ -1819,21 +1900,90 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 
 // listFallbackBound is how long after a pending list's rows are read its fallback reads, for the
 // rows that name another person as responsible (listedInStead), may still start or run. It is a
-// clock from that moment, not a budget of their own: the reader's own rows, read on the list's
-// context before or between them, spend it too, so the fallback rows never take the list past
-// it, whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
-// (cipher.Client's defaultTimeout), and each read of Dispatch may take up to the
-// project-access client's own 10, so without the clock a slow Dispatch and many other people's
+// clock from that moment, not a budget of their own: those rows are read one after another, so
+// however many there are they never take the list past it. Dispatch's Inbox waits 5 seconds for
+// the whole list (cipher.Client's defaultTimeout), and each read of Dispatch may take up to
+// the project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
 // before the fallback existed, and counted in the list's one line (logFallbackCut).
 const listFallbackBound = 2 * time.Second
+
+// listOwnRowsBound is how long after a list's rows are read the reads of the reader's own rows,
+// made at once (listRowsAtOnce), may still run: the pending list's rows that name no other person as
+// responsible, and every grant the grant list asks Dispatch about. Dispatch's Inbox waits 5 seconds
+// for the whole list (cipher.Client's defaultTimeout), and one read of Dispatch may take up
+// to the project-access client's own 10, so without it one project Dispatch does not answer would
+// keep every row of the list from its caller on every poll. Three seconds leaves the other two for
+// the rows' own read of the database before it and the answer's way back to Dispatch, and holds
+// the densest stored reason, 80 projects, six times over at 100 ms an answer (MaySeeAtOnce). A row
+// whose reads have not answered when it runs out is left off and logged (logRowUnanswered); a row
+// whose projects the list or the client had already answered is still listed.
+const listOwnRowsBound = 3 * time.Second
+
+// listRowsAtOnce is how many of a list's rows are read at once: each of the reader's own rows, and
+// the pending list's rows that name another person as responsible (listedInStead), which are read
+// one after another, as one. A list reads every row its statement selects, with no page limit
+// (pendingForApproverQuery, pendingOrExpiredForApproverQuery, GrantsForApprover's own), and each
+// row's read asks up to MaySeeAtOnce questions at once (maySee), so without this bound the
+// goroutines of one read grew with every request a pod that names no person adds to everyone's
+// list. With it a list's reads hold at most listRowsAtOnce rows' goroutines and, under each, the
+// MaySeeAtOnce of its questions', beside the memo's MaySeeAtOnce: 64 × 17 + 16, about 1,100.
+// Questions of Dispatch are bounded apart from it, at MaySeeAtOnce for the whole list
+// (withAccessMemo), and a row waiting on another row's question holds none. A row waiting on a
+// project Dispatch does not answer does hold its place here until the list's clock runs out
+// (listOwnRowsBound). So when the first 64 of the reader's own rows a list reads all wait on such
+// a project, every own row after them starts only once that clock has run out, and is listed only
+// where it asks Dispatch nothing or the list or the client already holds every answer it needs. In
+// the pending list the reads of the rows that name another person take one of the 64 places while
+// they run, at most listFallbackBound (2 s): for that long 63 of the reader's own rows are read at
+// once, and an own row behind 63 such rows starts when those reads end, with the rest of the 3 s
+// clock left for its questions.
+const listRowsAtOnce = 64
+
+// rowVerdict is what a list read of one row: whether its reader may see it, or why that could not
+// be told.
+type rowVerdict struct {
+	listed bool
+	err    error
+}
+
+// readRow is read's answer for one row of a list, into verdict. A panic in read is the row's error
+// (recoverRead), so the row fails closed, left off and logged as one Dispatch did not answer for,
+// and the list goes on.
+func readRow(verdict *rowVerdict, read func() (bool, error)) {
+	defer recoverRead(&verdict.err)
+	verdict.listed, verdict.err = read()
+}
+
+// errReadPanicked is the error a panic in a read of the person rule becomes (recoverRead).
+var errReadPanicked = errors.New("requests: a read of whose request this is panicked")
+
+// readPanickedMessage is logged, at ERROR, each time a read of the person rule panics
+// (recoverRead), followed by error=<errReadPanicked, with what panicText says of the panic> and
+// stack=<the goroutine's stack>. The row the read was for fails closed, and the list it is on goes
+// on.
+const readPanickedMessage = "requests: a read of whose request this is panicked, and the row it was read for fails closed"
+
+// recoverRead, deferred directly by a goroutine a read of the person rule runs in (a list's row
+// (readRow), one of maySee's questions, or a question the list's memo asks (accessMemoEntry.settle)),
+// turns a panic there into *err, errReadPanicked naming it, and logs it with its stack
+// (readPanickedMessage). net/http recovers a panic only on a handler's own goroutine, so one in a
+// goroutine a read started would end the broker; recovered, the row it was read for fails closed.
+func recoverRead(err *error) {
+	p := recover()
+	if p == nil {
+		return
+	}
+	*err = fmt.Errorf("%w: %s", errReadPanicked, panicText(p))
+	slog.Error(readPanickedMessage, "error", *err, "stack", string(debug.Stack()))
+}
 
 // listedInStead answers whether reader's list holds the agent-secret row p, whose record names
 // notify, another person, as responsible for the agent that made it. Such a row is that person's
 // (responsiblePerson), so a person who has nothing to do with the agent is not asked. Where that
 // person may not see it (it belongs to a private project they are not on, from when it was made
 // or since), it is listed for every other reader who may see it (maySeeRecord), so a request no
-// longer waits where nobody sees it. Both reads run on fallback, the list's one clock
+// longer waits where nobody sees it. Both reads run on fallback, the clock of such rows
 // (listFallbackBound), the reader's first, so a row the reader may not see costs no read of the
 // other person's. A row touching no project asks Dispatch nothing. Its error is the first read's
 // that failed, or the clock's when the clock ran out before the first read; either way the row
@@ -1844,12 +1994,11 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 	if err := fallback.Err(); err != nil {
 		return false, err
 	}
-	row := "record " + p.RecordID
-	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
+	mine, err := m.maySeeRecord(fallback, reader, p.Identifiers, sessionProjects, reason)
 	if err != nil || !mine {
 		return false, err
 	}
-	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
+	theirs, err := m.maySeeRecord(fallback, notify, p.Identifiers, sessionProjects, reason)
 	if err != nil {
 		return false, err
 	}
@@ -1973,8 +2122,9 @@ type RecordDetail struct {
 	// SessionProjects are the Dispatch projects the credentials the request has had name: the
 	// enrollment that asked, which the record names, and the one the request hangs off now, which
 	// an adoption rewrites (credentialsProjects). SecretProjects is the project of each requested
-	// secret the live policy tags with one. Both are empty for a record touching no project.
-	// The approval page shows them.
+	// secret the policy tags with one, as the person rule read it (ReadRecordFor, which alone fills
+	// it; ReadRecord leaves it empty). Both are empty for a record touching no project. The
+	// approval page shows them.
 	SessionProjects []string
 	SecretProjects  []SecretProject
 	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
@@ -2015,22 +2165,35 @@ type RecordProfile struct {
 // reading "cancelled", whenever the cancel came. ExpiresAt is the deadline recordStateSQL reads
 // (recordDeadlineSQL): a secret request's pending_expires_at, and a machine login's expires_at.
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
-	var canonical, approver, kind, requestSession, enrollmentSession, state string
+	return m.readRecord(ctx, recordID, nil)
+}
+
+// readRecord is ReadRecord, and, where shown is not nil, ReadRecordFor: its one statement reads,
+// beside the record, everything the person rule reads of it, the very column list readRowFacts
+// reads under recordKey for HideUnseen (rowFactsColumns), and hands those facts to shown before
+// anything else of the record is read or verified. An error shown answers is readRecord's; the
+// projects it answers are the record's SecretProjects, in the order its request names its secrets.
+func (m *Machine) readRecord(ctx context.Context, recordID string, shown func(rowFacts) ([]SecretProject, error)) (RecordDetail, error) {
+	var canonical, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
 	var judgeDeciding bool
-	var asked, current enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
+	var read rowFactsRead
+	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.created_at, `+recordDeadlineSQL+`,
 			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
-			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+credentialColumns+`, `+currentCredentialColumns+`
-		from credential_requests cr
-		left join requests req on req.record_id = cr.id
-		left join enrollments enr on enr.id = cr.enrollment_id
-		left join enrollments cur on cur.id = req.enrollment_id
-		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
+			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+rowFactsColumns(recordKey)+`
+		from `+recordKey.from+rowFactsJoins(recordKey)+`
+		where `+recordKey.where, recordID).
+		Scan(append([]any{&canonical, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding}, read.dest()...)...); err != nil {
 		return RecordDetail{}, err
+	}
+	facts := read.done(m)
+	kind, approver, sessionProjects := facts.kind, deref(facts.approver), facts.sessionProjects
+	var secrets []SecretProject
+	if shown != nil {
+		var err error
+		if secrets, err = shown(facts); err != nil {
+			return RecordDetail{}, err
+		}
 	}
 	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
 	// and the lookup show an undecided record as pending or expired, and the hold beside it.
@@ -2061,12 +2224,12 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: m.credentialsProjects(asked, current),
+		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: sessionProjects,
 		JudgeDeciding: judgeDeciding, Profiles: profiles,
 	}
-	if agentSecret {
-		if detail.SecretProjects, _, err = m.secretProjects(ctx, identifiers); err != nil {
-			return RecordDetail{}, err
+	for _, name := range identifiers {
+		if i := slices.IndexFunc(secrets, func(p SecretProject) bool { return p.Name == name }); i >= 0 {
+			detail.SecretProjects = append(detail.SecretProjects, secrets[i])
 		}
 	}
 	// Whether the record is still undecided follows PendingForApprover's rule: an agent_secret
@@ -2330,22 +2493,42 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	// A private project's grant is left off the list of everyone outside the project but its
 	// approver and its operator (operatorOf: none for a person's pod BROKER_POD_OPERATORS no longer
 	// maps), read once the rows are closed so no call to Dispatch holds the pooled connection
-	// (maySeeRecord); a grant Dispatch cannot answer for is left off alone, as PendingForApprover
-	// leaves off a request, and one left off because the caller went away is not logged.
-	visible := out[:0]
+	// (maySeeRecord). The grants are read at once, listRowsAtOnce at a time, within the list's
+	// clock (listOwnRowsBound), as PendingForApprover's own rows are: a grant Dispatch cannot
+	// answer for, or has not answered for when the clock runs out, is left off alone and logged,
+	// and one left off because the caller went away is not logged. Each question is asked once
+	// for the list, on that clock, and the list asks Dispatch at most MaySeeAtOnce questions at a
+	// time (withAccessMemo), as PendingForApprover's are. A grant whose read panics is left off
+	// and logged as one Dispatch did not answer for (readRow).
+	own, cancelOwn := context.WithTimeout(ctx, listOwnRowsBound)
+	defer cancelOwn()
+	own = withAccessMemo(own)
+	verdicts := make([]rowVerdict, len(out))
+	var judging errgroup.Group
+	judging.SetLimit(listRowsAtOnce)
 	for i, g := range out {
 		if reads[i].notOwn && !approves {
 			continue
 		}
 		if named, _ := namedOnGrant(login, &g.Approver, reads[i].operator); named {
-			visible = append(visible, g)
+			verdicts[i].listed = true
 			continue
 		}
-		ok, err := m.maySeeRecord(ctx, "grant "+g.GrantID, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+		judging.Go(func() error {
+			readRow(&verdicts[i], func() (bool, error) {
+				return m.maySeeRecord(own, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+			})
+			return nil
+		})
+	}
+	_ = judging.Wait()
+	visible := out[:0]
+	for i, g := range out {
+		ok, err := verdicts[i].listed, verdicts[i].err
 		switch {
 		case err != nil && ctx.Err() != nil:
 			// The caller went away: nothing is logged, and the grant is left off a list nobody reads.
-		case errors.Is(err, ErrProjectAccessUnavailable):
+		case errors.Is(err, ErrProjectAccessUnavailable), errors.Is(err, errReadPanicked), err != nil && own.Err() != nil:
 			attrs := []any{"list", "grants", "grant", g.GrantID}
 			if g.RecordID != nil {
 				attrs = append(attrs, "record", *g.RecordID)

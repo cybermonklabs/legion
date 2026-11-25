@@ -200,13 +200,16 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 	}
 }
 
-// The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
-// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
-// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
-// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
-// until the context ends. The controller's form with --microvm is refused for its roles directory
-// alone, so --microvm reached it too.
-func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+// The metadata endpoint is a microVM pod's alone, in either of the launcher's forms, and named
+// whole: both of its flags, with --microvm. Each other mixture is refused before anything is
+// dialled or listened on, naming what it lacks, which proves each flag reaches the launcher: one
+// it did not know would exit 2 on its usage, and one it dropped would change the refusal or dial
+// the unreachable daemon until the context ends. The controller's form without --microvm is
+// refused as an issue pod's is, so the metadata flags reach that form too. Its acceptance with
+// --microvm is TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart's (internal/launcher), through
+// the configuration's own check: an accepted run here would start the launcher, which listens on
+// the endpoint's fixed address and names it in this process's environment.
+func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -226,8 +229,8 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			"the metadata endpoint is named in part: no --metadata-workload-pool"},
 		{"a gVisor pod", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
-		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
-			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+		{"the controller's form in a gVisor pod", []string{"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(), "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := refusalContext(t)
@@ -264,6 +267,32 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "launcher", "role-init", "--roles-dir", t.TempDir(), "--role", "a", "--generation", "1", "--status-fd", "3", "--", "/bin/true"}, &stdout, &stderr)
 	if code != launcher.RoleInitSetupFailedExit || !strings.Contains(stderr.String(), "role-init: not the init of a PID namespace of its own") {
 		t.Fatalf("role-init outside a role's namespaces: exit %d, %q; want a refusal with exit %d", code, stderr.String(), launcher.RoleInitSetupFailedExit)
+	}
+}
+
+// role-init's own lines pass the URL rule, though the stderr it is handed goes to the role's shim
+// as it is (newRoleInitCommand): a flag's value it cannot read, quoted in its refusal, keeps no
+// userinfo and no query, so a URL with a token in either reaches the launcher's log with neither,
+// its host and path kept.
+func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	for _, value := range []string{
+		"https://legion-reader:" + token + "@d.example/status",
+		"https://d.example/status?token=" + token,
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(context.Background(), []string{"legion", "launcher", "role-init", "--status-fd", value}, &stdout, &stderr)
+		printed := stdout.String() + stderr.String()
+		shown := strings.ReplaceAll(printed, token, "<the token>")
+		if code != launcher.RoleInitSetupFailedExit {
+			t.Errorf("role-init --status-fd <a URL> = exit %d, %q; want %d", code, shown, launcher.RoleInitSetupFailedExit)
+		}
+		if strings.Contains(printed, token) {
+			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
+		}
+		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
+		}
 	}
 }
 

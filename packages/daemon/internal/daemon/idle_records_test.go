@@ -20,15 +20,15 @@ func (r *idleRig) records(t *testing.T) store.PodReleaseRecords {
 	return records
 }
 
-// INFRA-945 R6: a completed release is recorded with the run it released, the roles whose claims
-// it suspended and the size of the bundle it saved, so a deployment can count what release did
-// without reading the daemon's log.
-func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {
+// A completed release is recorded with the run it released and the roles whose claims it
+// suspended, so a deployment can count what release did without reading the daemon's log.
+func TestAReleaseRecordsItsRunAndItsRoles(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	// Nothing is recorded until the release completes: the bundle is the teardown's to save.
+	// Nothing is recorded until the release completes: the record is the teardown's to write.
 	if records := rig.records(t); len(records.Releases) != 0 {
 		t.Fatalf("releases recorded before the teardown = %+v, want none", records.Releases)
 	}
@@ -45,9 +45,10 @@ func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {
 	if len(recorded.Roles) != 1 || recorded.Roles[0] != "implementer" {
 		t.Errorf("release roles = %v, want the one role whose claim it suspended", recorded.Roles)
 	}
-	// The rig's launcher answers a four-byte bundle, which is what the release saved.
-	if recorded.BundleBytes != 4 {
-		t.Errorf("release bundle = %d bytes, want the 4 the rig's launcher answered", recorded.BundleBytes)
+	// No release saves the workspace's unpushed work: the check found none, and the record's
+	// bundle bytes, which an earlier release filled, stay zero.
+	if recorded.BundleBytes != 0 {
+		t.Errorf("release bundle = %d bytes, want none: no release saves a bundle", recorded.BundleBytes)
 	}
 	if recorded.At.IsZero() {
 		t.Error("the release was recorded with no time")
@@ -62,6 +63,7 @@ func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {
 // would charge this release with a role it never touched — and charge a reader of the records
 // for the hours that role's pod was gone twice over.
 func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.releasedArchitect(t)
@@ -83,6 +85,7 @@ func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
 // not: the idle rule reports a hold for every working pod on every tick, and recording those
 // would drown the ones that mean something.
 func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("quiet and held", func(t *testing.T) {
@@ -140,12 +143,13 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 	})
 }
 
-// A release the teardown could not finish keeps the pod, and the reason it read is recorded as a
-// hold in the same vocabulary the tick uses.
+// A release the check could not finish keeps the pod, and the reason it read is recorded as a hold
+// in the same vocabulary the tick uses.
 func TestAReleaseThatCouldNotFinishRecordsItsHold(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
-	rig.rt.bundleErr = errors.New("the launcher is gone")
+	rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("the launcher is gone"))
 
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
 	rig.drain(t)
@@ -154,7 +158,7 @@ func TestAReleaseThatCouldNotFinishRecordsItsHold(t *testing.T) {
 	if len(records.Releases) != 0 {
 		t.Fatalf("releases = %+v, want none: the release did not finish", records.Releases)
 	}
-	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldBundleSave.String() {
-		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldBundleSave)
+	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldWorkspaceUnread.String() {
+		t.Fatalf("holds = %+v, want the one %s", records.Holds, workflow.IdleHoldWorkspaceUnread)
 	}
 }

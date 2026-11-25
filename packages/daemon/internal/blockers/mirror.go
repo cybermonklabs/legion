@@ -20,10 +20,15 @@ import (
 // blocker whose closing event never arrived is repaired before those handlers judge. A reading
 // writes only the values it carries, and each value keeps the sequence of the reading that wrote
 // it: a reading changes it only at a higher sequence, or where no reading wrote it
-// (record.PutDispatchIssue). Each issue's Dispatch claim is mirrored beside its row, behind a
-// fence of its own (record.PutDispatchClaim): from an issue event or a view that shows it, and
-// from Dispatch's issue.claimed and issue.released events (intake.DispatchClaim), which say
-// nothing else of the issue and are kept even when they arrive before the issue's first row.
+// (record.PutDispatchIssue). An issue fact alone, an event or a view intake let through, is a
+// reading the daemon applies (record.DispatchReading.Applied): it also raises the row's applied
+// sequence, which the release's read, the turn's re-read and a listing leave as it stands, since
+// none of them is a fact the daemon decides on, and the turn's re-read and a listing read
+// Dispatch's last sequence of the issue, which a comment, a document edit, an ask or a claim
+// raises too. Each issue's Dispatch claim is mirrored beside its row, behind a fence of its own
+// (record.PutDispatchClaim): from an issue event or a view that shows it, and from Dispatch's
+// issue.claimed and issue.released events (intake.DispatchClaim), which say nothing else of the
+// issue and are kept even when they arrive before the issue's first row.
 //
 // One path it never sees: an intake.ObservedIssue of an issue already recorded whose event was
 // prepared in place of none applies no handler at all (intake.settleObserved sets handlers to
@@ -54,7 +59,9 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.DispatchIssue:
 		observed := intake.IssueStatus{Key: fact.Key, Project: m.project, Status: fact.Status, Blockers: fact.Blockers,
 			Seq: fact.Seq, ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown, Parent: fact.Parent, Labels: fact.Labels, Rank: fact.Rank}
-		if err := m.put(ctx, tx, readingOf(observed)); err != nil {
+		reading := readingOf(observed)
+		reading.Applied = true
+		if err := m.put(ctx, tx, reading); err != nil {
 			return intake.Result{}, err
 		}
 	case intake.DispatchClaim:

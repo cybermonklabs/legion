@@ -1,4 +1,4 @@
-// Checks the guides' layout, on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and in CI: ci.yaml's test job runs it in the step "Check the guides' semantic line breaks", behind the guide_layout filter, which names the guides below and the checker it spawns.
+// Checks the guides' layout, on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and in CI: ci.yaml's tooling-checks job runs it in the step "Check the guides' semantic line breaks", behind the guide_layout filter, which names the guides below and the checker it spawns.
 import { expect, test } from "bun:test";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,8 +9,8 @@ import { gfm } from "micromark-extension-gfm";
 
 const SCRIPT = resolve(import.meta.dir, "semantic-line-breaks.ts");
 const REPO_ROOT = resolve(import.meta.dir, "..");
-/** The root guide, the e2e README and the Kubernetes doc. */
-const GUIDES = ["AGENTS.md", "scripts/e2e/README.md", "docs/kubernetes.md"];
+/** The root guide, the contributing guide, the e2e README and the Kubernetes doc. */
+const GUIDES = ["AGENTS.md", "CONTRIBUTING.md", "scripts/e2e/README.md", "docs/kubernetes.md"];
 
 /** Runs the script as a contributor does: `bun scripts/semantic-line-breaks.ts [--write] <files>`. */
 function run(args: string[]) {
@@ -32,7 +32,7 @@ test("the Envoy guide and the Dispatch server README keep the layout", () => {
   expect(exitCode).toBe(0);
 });
 
-test("the root guide, the e2e README and the Kubernetes doc keep the layout", () => {
+test("the root guide, the contributing guide, the e2e README and the Kubernetes doc keep the layout", () => {
   const { exitCode, stdout, stderr } = run(GUIDES);
   expect(stdout).toBe("");
   expect(stderr).toBe("");
@@ -45,7 +45,7 @@ interface MarkdownNode {
   position?: { start: { line: number } };
 }
 
-test("the root guide, the e2e README and the Kubernetes doc hold no raw HTML block, which the checker skips", () => {
+test("the root guide, the contributing guide, the e2e README and the Kubernetes doc hold no raw HTML block, which the checker skips", () => {
   // A line that starts with a block-level tag such as `<dir>` or `<p>` opens an HTML block even in
   // the middle of a paragraph, as GitHub reads it: every line up to the next blank line is then raw
   // HTML, which R1 never reads and GitHub does not render as the paragraph's text.
@@ -69,7 +69,7 @@ test("the root guide, the e2e README and the Kubernetes doc hold no raw HTML blo
   // and grows with them; the deadline is for a parse that hangs, not a measure of its speed.
 }, 60_000);
 
-test("--write changes none of the five guides, which the checker accepts", () => {
+test("--write changes none of the six guides, which the checker accepts", () => {
   // A guide the checker accepts is one `--write` leaves as it is. Each runs on a copy, so a failure
   // leaves the repository as it was.
   const files = ["packages/envoy/AGENTS.md", "packages/envoy/cmd/dispatch/README.md", ...GUIDES];

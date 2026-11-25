@@ -77,10 +77,11 @@ func ValidID(id string) bool {
 
 // CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
 // before people were named by email keeps the GitHub login it was decided under), and lowers its
-// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
-// this form on both sides.
+// ASCII letters and nothing else: fold.Login, the one spelling of that rule, which Dispatch's
+// model.CanonicalLogin reads too. Every login comparison in the module goes through this form on
+// both sides.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -1030,9 +1031,11 @@ func ReasonProjects(reason string) []string {
 
 // CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
 // issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
-// request alone — requests.Machine.Create and the machine login's creation call it — and never
-// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
-// read again.
+// request alone, on a broker that holds a project-access client — requests.Machine.Create and the
+// machine login's creation call it there, and a broker with none, which reads no reason's
+// projects, takes any reason — and never part of VerifyRequestObject, so a request stored before
+// the rule, or by a broker with no such client, keeps verifying wherever it is read again, and its
+// reader asks Dispatch about every project it names (requests.Machine.maySee).
 func CheckReasonProjects(reason string) error {
 	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
 		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)

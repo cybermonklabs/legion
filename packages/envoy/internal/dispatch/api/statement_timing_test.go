@@ -65,6 +65,7 @@ const (
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
 // package's equality tests are held to.
 func TestStatementTimings(t *testing.T) {
+	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -350,7 +351,19 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // is untimed on purpose: that rebuild moves refreshed_at and writes no snapshot, so the pass
 // after it counts every project in full by this build's own rule, and timing that would measure
 // a first-use full build rather than the steady state.
+//
+// Its verdict is the passes' wall time, and no count of the work that the test can read stands
+// for it: each side sends the same few statements per project, and the items a pass reports it
+// applied are what its statement answers, not the rows Postgres read to apply them, so a step
+// that read every item of the project would still report the queue's depth. A reading of the
+// clock is the machine's load as much as the pass's work, so the protocol runs only where
+// DISPATCH_BENCH_TIMING is set as well as DISPATCH_BENCH_DATABASE_URL: a person runs it on a quiet
+// machine, and CI never does.
 func TestRelatedTermsRefreshTiming(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("DISPATCH_BENCH_TIMING") == "" {
+		t.Skip("DISPATCH_BENCH_TIMING is unset: protocol 3's times are read on a quiet machine, never in CI")
+	}
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
 	database := openRefreshTimingStore(t)
