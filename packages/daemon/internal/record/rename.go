@@ -29,17 +29,19 @@ import (
 // cleared_pull_requests.repo (20261120144241), production_checks.repo (0049) and
 // repo_notes.resolved_repo (0047). No other column holds one the pass writes. The claims' and
 // claim capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads carry no
-// repository, and processed_events.event_id only embeds one in a dedupe key. Two more columns hold
+// repository, and processed_events.event_id only embeds one in a dedupe key. Four more columns hold
 // a name the pass leaves as it is: issues.repo_before, the repository a correction moved the issue
-// off, which is that correction's history and decides nothing that compares it with a pair; and
+// off, which is that correction's history and decides nothing that compares it with a pair;
 // issues.repo_change_pending, Dispatch's own name for a change still to be made, which the issue's
-// next event writes again from Dispatch. Every comparison is made without case
-// (`lower(col) = lower(from)`), as every read of a repository name in the record is, so a row in
-// any spelling of the old name is written; the new name is written as the caller hands it, on
-// every column alike, which the pass hands in GitHub's spelling of the pair's `to`
-// (Issue.GitHubRepo is the spelling GitHub intake's subjects are built from). A pair never renames
-// a repository to itself in another case (ghrepo.NewRenames), so a row on the new name never
-// matches the old one, and a second run writes nothing.
+// next event writes again from Dispatch; and claims.update_repository and
+// claims.working_repository, the repository an update round's pod and a claim's running process
+// were built from, each read only for the round or incarnation it was recorded with. Every
+// comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
+// name in the record is, so a row in any spelling of the old name is written; the new name is
+// written as the caller hands it, on every column alike, which the pass hands in GitHub's spelling
+// of the pair's `to` (Issue.GitHubRepo is the spelling GitHub intake's subjects are built from). A
+// pair never renames a repository to itself in another case (ghrepo.NewRenames), so a row on the
+// new name never matches the old one, and a second run writes nothing.
 
 // RenameTable is a table whose columns hold a repository name, as a count by table names it
 // (RenameCandidate.Rows, RenameWrite.Rows).

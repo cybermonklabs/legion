@@ -368,10 +368,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// priority, the claim views' cause times and the repository correction, and the log holds
 	// those seven rows' lines and nothing else. A caller below the give-ups' row is
 	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's, one below the cause times' row
-	// TestAnOlderContractIsServedNoCauseTimes's, and one below the correction's row alone the
-	// subtest above's. This subtest does not catch a strip applied beside the loop, because it
-	// reads both its expectation and its answer from stateNarrowings; the subtests below, which
-	// name their lines as literals, are what catch that.
+	// TestAnOlderContractIsServedNoCauseTimes's, and one below the correction's row alone that of
+	// the subtest "the highest narrowing writes its own line". This subtest does not catch a strip
+	// applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
 	t.Run("the seven highest narrowings write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",

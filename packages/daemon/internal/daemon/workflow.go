@@ -1539,10 +1539,9 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 // names the workspace the agent that reads it is in, and a relaunch moves it. The agent is told
 // the work moved by the correction sentences in the addressing of each launch after the
 // correction (addressingFragment), not by this line: a process launched before the correction
-// gets neither until its next launch. The line is the
-// engine's, written under the directory the runtime gives that repository
-// (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), with no repository for a launch that
-// named none, whose line names the branch alone.
+// gets neither until its next launch. The line is the engine's, written under the directory the
+// runtime gives that repository (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), with no
+// repository for a launch that named none, whose line names the branch alone.
 //
 // A task that carries news of the approved design (supervise.Delivery.News) holds the start's own
 // text twice: in its text and in the news, which every send renders the text from again
@@ -1559,11 +1558,7 @@ func (w *workflowRuntime) workingCopy(_ context.Context, c supervise.Claim, d su
 	if c.WorkingRepository == nil {
 		return d.Task, d.News, nil
 	}
-	working := record.Issue{Key: c.Issue}
-	if !c.WorkingRepository.IsZero() {
-		working.Repo = c.WorkingRepository.String()
-	}
-	task := w.engine.WorkingCopyAtSend(d.Task, working)
+	task := w.engine.WorkingCopyAtSend(d.Task, c.Issue, *c.WorkingRepository)
 	if len(d.News) == 0 {
 		return task, d.News, nil
 	}
@@ -1571,7 +1566,7 @@ func (w *workflowRuntime) workingCopy(_ context.Context, c supervise.Claim, d su
 	if err != nil {
 		return "", nil, err
 	}
-	own := w.engine.WorkingCopyAtSend(carried.Task, working)
+	own := w.engine.WorkingCopyAtSend(carried.Task, c.Issue, *c.WorkingRepository)
 	if own == carried.Task {
 		return task, d.News, nil
 	}

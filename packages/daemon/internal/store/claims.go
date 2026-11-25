@@ -1097,10 +1097,11 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 // hold it: its name and the round it was written with, both empty for no repository
 // (20261112012123_issue_repository_correction).
 func roundRepositoryColumns(c supervise.Claim) (repository, round string) {
-	if c.UpdateRepository.IsZero() {
-		return "", ""
+	repository = c.UpdateRepository.StringOrEmpty()
+	if repository != "" {
+		round = c.UpdateRound
 	}
-	return c.UpdateRepository.String(), c.UpdateRound
+	return repository, round
 }
 
 // roundRepositoryOf is the repository the two columns hold for round, the round the claim
@@ -1129,10 +1130,7 @@ func workingRepositoryColumns(c supervise.Claim) (repository *string, incarnatio
 	if c.WorkingRepository == nil || c.Locator == nil {
 		return nil, ""
 	}
-	name := ""
-	if !c.WorkingRepository.IsZero() {
-		name = c.WorkingRepository.String()
-	}
+	name := c.WorkingRepository.StringOrEmpty()
 	return &name, c.Locator.Incarnation
 }
 

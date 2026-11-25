@@ -2478,13 +2478,12 @@ func (w *workflowRuntime) recordWithPullRequest(ctx context.Context, key string,
 // workspace, and prepared as the refresher prepares a record's repository (prepareLive): both role
 // Apps' installations under the name the rename rule serves it under, its name and default branch,
 // and Dispatch's webhook App. The answer is kept by issue key (keptRepository) for as long as the
-// issue holds its workspace, so every claim of the issue works one repository — its later
+// issue holds its workspace, so every claim of the issue works one repository: its later
 // launches, its working copy's adoption and a tmux pane's credential refresh, which runs at every
-// refresh tick — and a relaunch never restores a workspace saved from one repository into
-// another's. The repository joins the cache set and the heard set (workLaunched) at every answer,
-// the kept one's too: a read of the live records replaces the cache set (refreshLive), and no
-// record of the issue names the repository there, so without it a later launch of the issue would
-// leave its repository's cache to be stamped and retired while the issue's pod works in it.
+// refresh tick. The repository joins the cache set and the heard set (workLaunched) at every
+// answer, the kept one's too: a read of the live records replaces the cache set (refreshLive), and
+// no record of the issue names the repository there, so without it a later launch of the issue
+// would leave its repository's cache to be stamped and retired while the issue's pod works in it.
 //
 // Each refusal fails that one launch, naming its cause, and the daemon stays up: Dispatch not
 // answering, an issue that resolves to no repository, a role App that is not installed on the
@@ -3025,10 +3024,10 @@ func (w *workflowRuntime) requestFollow() {
 // A key no owed follow covers yet wakes the refresher, which follows it at once. A key already
 // covered (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass
 // that reads it is coming already: the one the ask that first owed it woke, or, once a pass has
-// left it owed, the next one the follow job's clock runs on installReadRetry's backoff. That
+// left it owed, the next one the follow job's clock runs on reads().retry's backoff. That
 // backoff is the job's and not the key's: it runs while any follow is owed (followReasons) and
 // starts again at its first wait only once none is, so a key a pass leaves owed beside others
-// owed for long waits up to installReadRetry.Max for its next pass, unless a newly owed key's
+// owed for long waits up to reads().retry.Max for its next pass, unless a newly owed key's
 // wake runs one sooner. A wake at every ask would start a whole pass — a read of the records,
 // Dispatch's whole listing and GitHub's reads — at each event or hand-over of an issue GitHub
 // does not answer for, past that backoff.
@@ -3059,7 +3058,7 @@ func (w *workflowRuntime) requestFollowOf(key string) {
 // of issues it moves, which is why it reads GitHub once per repository (readCorrection).
 //
 // A pass that fails is logged and owes again everything it took (oweFollows), so the refresher
-// runs it again on its backoff (followReasons, installReadRetry). A pass that returns issues —
+// runs it again on its backoff (followReasons, reads().retry). A pass that returns issues —
 // the ones its bound cut short before it prepared them, and the ones whose correction's reads
 // GitHub did not answer — commits the corrections it prepared all the same and owes those issues
 // again by key: the follow stays owed, and the next pass reads them beside whatever was asked

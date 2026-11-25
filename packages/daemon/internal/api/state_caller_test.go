@@ -265,6 +265,14 @@ func stripPriority(issue map[string]any) {
 	}
 }
 
+// stripRepositoryCorrection takes the four keys repositoryCorrectionContract added
+// (repositoryCorrectionKeys) off one issue of a decoded body.
+func stripRepositoryCorrection(issue map[string]any) {
+	for _, key := range repositoryCorrectionKeys {
+		delete(issue, key)
+	}
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -341,10 +349,7 @@ func withoutCorrectionKeys(t *testing.T, body []byte) []byte {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
 	for _, issue := range served["issues"].(map[string]any) {
-		issue := issue.(map[string]any)
-		for _, key := range repositoryCorrectionKeys {
-			delete(issue, key)
-		}
+		stripRepositoryCorrection(issue.(map[string]any))
 	}
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -997,9 +1002,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				stripPriority(issue)
 				// Every row that reaches here is below repositoryCorrectionContract too, so no
 				// issue carries the four keys of a correction of its repository.
-				for _, key := range repositoryCorrectionKeys {
-					delete(issue, key)
-				}
+				stripRepositoryCorrection(issue)
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)

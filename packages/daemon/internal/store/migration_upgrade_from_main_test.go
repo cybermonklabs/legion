@@ -189,7 +189,7 @@ import (
 // 20261124143026, and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
 // default, 0, on every row it finds.
 // dispatch://INFRA-3136's 20261122212816 is applied after all of these and before
-// cybermonklabs/legion#4869's 20261123050533 and the five after it; it adds
+// cybermonklabs/legion#4869's 20261123050533 and the six after it; it adds
 // readmitted_approvals.artifact at its default and touches no outbox_kind_check.
 // cybermonklabs/legion#4869's release that keeps no saved workspace (20261123050533) is applied
 // after all of these and before the plan of an experiment's draw (20261123165139),

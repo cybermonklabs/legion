@@ -1841,7 +1841,10 @@ left.
 Every role in the pod is asked to push its work and to answer the update round, as for any other
 pod replacement.
 The issue's branch and its pull request are on the repository the issue left, and the
-replacement makes no rescue: work a role has not pushed by the round's bound goes with the pod.
+replacement makes no rescue: work a role has not pushed by the round's bound goes with the pod,
+except on a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), where it stays in the
+old repository's workspace on the volume, beside the workspace the next pod makes of the new
+repository, until a reset or the issue's close deletes the volume.
 A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
 and no update round is opened, and each pane works the repository the issue left until its next
 launch, which provisions it a workspace of the new repository on the daemon's host.

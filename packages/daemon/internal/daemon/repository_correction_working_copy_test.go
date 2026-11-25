@@ -43,7 +43,6 @@ type workingCopyRig struct {
 	ctx      context.Context
 	pool     *store.Pool
 	records  record.Store
-	engine   *workflow.Engine
 	workflow *workflowRuntime
 	sup      *supervisor
 	rt       *fake.Runtime
@@ -87,7 +86,7 @@ func newWorkingCopyRig(t *testing.T, runtimeName string) *workingCopyRig {
 	token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, engine: engine, workflow: w, sup: sup, rt: rt, conn: conn,
+	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, workflow: w, sup: sup, rt: rt, conn: conn,
 		token: token, runtime: runtimeName, stateDir: stateDir,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 			tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -122,7 +121,7 @@ func (r *workingCopyRig) line(repo string) string {
 func (r *workingCopyRig) start(composedOn string) entryStartRow {
 	r.t.Helper()
 	issue := readIssue(r.t, r.pool, workingCopyIssue)
-	if err := startPromoted(r.ctx, r.pool, r.engine, *issue, claim.RoleImplementer); err != nil {
+	if err := startPromoted(r.ctx, r.pool, r.workflow.engine, *issue, claim.RoleImplementer); err != nil {
 		r.t.Fatalf("write the implementer's start: %v", err)
 	}
 	rows := roleStartRows(r.t, r.pool, workingCopyIssue, claim.RoleImplementer)

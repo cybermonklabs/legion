@@ -256,15 +256,18 @@ type IdleDecision struct {
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
-//   - the pod runs the image the configuration names, and each live claim speaks this daemon's
-//     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
-//     already behind is a relaunch's to replace, not a release's to save;
+//   - the pod runs the image the configuration names: a released pod comes back as a fresh pod on
+//     the configured image, so a pod already behind is a relaunch's to replace, not a release's to
+//     take;
 //
 //   - the pod was built from the repository the issue's record holds now (repositoryDrifted,
 //     which the daemon reads of the pod itself against that record). A correction of the
 //     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
 //     the update round that replaces it opens on a later sweep. The pod is replaced rather than
 //     released, as a pod on an image this daemon does not serve is;
+//
+//   - each live claim speaks this daemon's plugin contract: a pod with a claim behind on it is a
+//     relaunch's to replace as well, not a release's to take;
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()

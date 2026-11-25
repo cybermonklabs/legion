@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -67,20 +68,20 @@ func workingCopyOpening(key string) string {
 const workingCopyDirectory = ", directory "
 
 // WorkingCopyAtSend is task, a worker's task as this package composed it (task, resumeText) and
-// as it is kept until its send, with its working copy line written again from issue, an issue
-// value whose repository is the one the process the task goes to works (the daemon's workingCopy):
-// WorkingCopy's line under the directory this engine names (Config.WorkspaceDir), in the place of
-// the line the task holds (workingCopyLine). It is the one place a kept task's line is found and
-// replaced, and the daemon asks it at every send of a worker's task (supervise's
-// Deps.WorkingCopy). A task that holds no working copy line of issue's branch, as a task a release
-// before that line composed holds none, is answered as it is, and so is a task whose line is
-// already the one issue gives.
-func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
-	start, end, ok := workingCopyLine(task, issue.Key)
+// as it is kept until its send, with the working copy line of the issue key written again from
+// repo, the repository the process the task goes to works (the daemon's workingCopy), the zero
+// Repository for a launch that named none: WorkingCopy's line under the directory this engine
+// names (Config.WorkspaceDir) for that issue on that repository, in the place of the line the task
+// holds (workingCopyLine). It is the one place a kept task's line is found and replaced, and the
+// daemon asks it at every send of a worker's task (supervise's Deps.WorkingCopy). A task that
+// holds no working copy line of key's branch, as a task a release before that line composed holds
+// none, is answered as it is, and so is a task whose line is already the one repo gives.
+func (e *Engine) WorkingCopyAtSend(task, key string, repo ghrepo.Repository) string {
+	start, end, ok := workingCopyLine(task, key)
 	if !ok {
 		return task
 	}
-	line := WorkingCopy(issue, e.cfg.WorkspaceDir).lines
+	line := WorkingCopy(record.Issue{Key: key, Repo: repo.StringOrEmpty()}, e.cfg.WorkspaceDir).lines
 	if task[start:end] == line {
 		return task
 	}

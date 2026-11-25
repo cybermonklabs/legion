@@ -791,8 +791,9 @@ const legionIssue = z.object({
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
-   * when the daemon first recorded the issue and never changed after; absent on an issue the
-   * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
+   * when the daemon first recorded the issue and kept after, except that a correction of the
+   * issue's repository moves both (`repoBefore` below); absent on an issue the workflow does not
+   * record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** The repository the record held before the newest correction of the issue's repository, and

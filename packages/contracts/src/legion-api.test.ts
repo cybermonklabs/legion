@@ -2953,7 +2953,6 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
-  const correctionKeys = ["repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"];
   const withoutCauseTimes = (view: unknown): unknown => {
     if (!isJsonObject(view)) {
       return view;
@@ -2963,10 +2962,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   };
   const narrowedIssues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, priority: _priority, ...kept } = issue;
-      const narrowed: Record<string, unknown> = Object.fromEntries(
-        Object.entries(kept).filter(([field]) => !correctionKeys.includes(field))
-      );
+      const {
+        podHold: _podHold,
+        priority: _priority,
+        repoBefore: _repoBefore,
+        repoCorrectedAt: _repoCorrectedAt,
+        repoChangePending: _repoChangePending,
+        repoChangeReason: _repoChangeReason,
+        ...kept
+      } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
       if (isJsonObject(line)) {
         const { priority: _placed, ...placed } = line;

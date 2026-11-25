@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -26,8 +27,7 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 	)
 	text := "Build the widget.\n" + planted
 	composed := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", Title: "root", Phase: phase.Reviewing}
-	corrected := composed
-	corrected.Repo = "zeta/tools"
+	corrected := ghrepo.MustParse("zeta/tools")
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	stepWalk := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
@@ -68,14 +68,14 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 			if strings.Count(tc.kept, old) != 1 || tc.owners != strings.Contains(tc.kept, planted) {
 				t.Fatalf("the kept task %q, want it to name %q once, and the owner's line %q where it carries the owner's text: the case's own premise", tc.kept, old, planted)
 			}
-			sent := engine.WorkingCopyAtSend(tc.kept, corrected)
+			sent := engine.WorkingCopyAtSend(tc.kept, composed.Key, corrected)
 			if want := strings.Replace(tc.kept, old, now, 1); sent != want {
 				t.Fatalf("the task sent after the correction = %q,\nwant %q: the working copy of zeta/tools, every other byte as composed", sent, want)
 			}
 			if tc.owners && !strings.Contains(sent, "\n"+planted+"\n") {
 				t.Fatalf("the task sent after the correction = %q, want the owner's line %q inside its fence as the owner wrote it", sent, planted)
 			}
-			if again := engine.WorkingCopyAtSend(tc.kept, composed); again != tc.kept {
+			if again := engine.WorkingCopyAtSend(tc.kept, composed.Key, ghrepo.MustParse(composed.Repo)); again != tc.kept {
 				t.Fatalf("the task sent with no correction = %q, want it as it was composed, %q", again, tc.kept)
 			}
 		})
@@ -84,7 +84,7 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 	// A text an earlier release composed: the continue line and no working copy line, with the
 	// owner's text after it, whose planted line is the owner's.
 	earlier := continueLine(composed) + " Resume the existing phase work." + step.owners
-	if sent := engine.WorkingCopyAtSend(earlier, corrected); sent != earlier {
+	if sent := engine.WorkingCopyAtSend(earlier, composed.Key, corrected); sent != earlier {
 		t.Fatalf("the earlier release's task sent after the correction = %q, want it as it was kept, %q", sent, earlier)
 	}
 }

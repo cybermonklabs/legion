@@ -544,10 +544,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 				}
 				if !tc.correction {
-					delete(issue, "repoBefore")
-					delete(issue, "repoCorrectedAt")
-					delete(issue, "repoChangePending")
-					delete(issue, "repoChangeReason")
+					stripRepositoryCorrection(issue)
 				}
 				if !tc.assigned {
 					delete(issue, "assignments")

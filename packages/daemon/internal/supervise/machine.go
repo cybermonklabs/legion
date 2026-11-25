@@ -3746,12 +3746,8 @@ func (m *Machine) workingRepository(ctx context.Context, loc runtime.Locator, la
 		place, err = ghrepo.Parse("the repository the launched process's place names", named)
 	}
 	if err != nil {
-		specRepository := ""
-		if !launched.IsZero() {
-			specRepository = launched.String()
-		}
 		m.log.Warn("supervise: the runtime did not say which repository the place of the launched process was built from; the claim records the repository its launch named",
-			"incarnation", loc.Incarnation, "podRepository", named, "specRepository", specRepository, "error", err)
+			"incarnation", loc.Incarnation, "podRepository", named, "specRepository", launched.StringOrEmpty(), "error", err)
 		return &launched
 	}
 	return &place
