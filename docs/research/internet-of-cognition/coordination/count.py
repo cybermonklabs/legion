@@ -594,33 +594,15 @@ def main():
     issues_resolved = len(visited)
 
     # ---- the handoffs: every handoff.recorded row of the window, read whole
-    def strings_in(value, out):
-        if isinstance(value, str):
-            out.append(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                strings_in(item, out)
-        elif isinstance(value, list):
-            for item in value:
-                strings_in(item, out)
-
     def handoff_body(handoff):
-        # A handoff body is one JSON object as a string.  Its text is every string value it
-        # holds, joined as paragraphs, so the patterns read the written words and not the
-        # escaping of the JSON that carries them.  A read that fails ends the run, naming
-        # the handoff and its row, so no handoff of the window leaves the denominator.
+        # Its text is handoff_text's, below.  A read that fails ends the run, naming the
+        # handoff and its row, so no handoff of the window leaves the denominator.
         event_id, hid = handoff[:2]
         try:
             body = fetch("/api/v1/handoffs/" + hid, token, base).get("body")
         except Exception as err:
             raise RuntimeError("the read of handoff %s, of event %s, failed: %s" % (hid, event_id, err)) from err
-        try:
-            body = json.loads(body)
-        except (TypeError, ValueError):
-            return body if isinstance(body, str) else ""
-        out = []
-        strings_in(body, out)
-        return "\n\n".join(out)
+        return handoff_text(body)
 
     # each handoff in feed order, its text read beside its row's issue and actor
     hand = Counter()
@@ -774,6 +756,38 @@ def main():
         )
     )
     return 0
+
+
+# ------------------------------------------------------------ a handoff's text
+# Read by main and by handoff_quotes.py beside this file, so the two read one text.
+
+
+def strings_in(value, out):
+    """Append to `out` every string `value` holds, in order, however deep it stands."""
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            strings_in(item, out)
+    elif isinstance(value, list):
+        for item in value:
+            strings_in(item, out)
+
+
+def handoff_text(body):
+    """The text of a handoff whose body is `body`.
+
+    A handoff body is one JSON object as a string.  Its text is every string value it holds,
+    joined as paragraphs, so the patterns read the written words and not the escaping of the
+    JSON that carries them.  A body that is no JSON is read as it stands.
+    """
+    try:
+        body = json.loads(body)
+    except (TypeError, ValueError):
+        return body if isinstance(body, str) else ""
+    out = []
+    strings_in(body, out)
+    return "\n\n".join(out)
 
 
 if __name__ == "__main__":

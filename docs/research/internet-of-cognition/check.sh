@@ -2335,7 +2335,7 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   656  a command word and its arguments
+#   simple command                   657  a command word and its arguments
 #   pipeline                         471  two or more commands joined by |
 #   list                             257  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
@@ -2374,7 +2374,7 @@ prepare_env() {
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    15  wrapped in a function that records its status
-#   program python3                   37  wrapped in a function that records its status
+#   program python3                   38  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
 #   program sed                      308  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
@@ -2401,7 +2401,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 456  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 457  a parameter, its name in braces or not
 #   $?                                27  the status of the last command
 #   $( )                              15  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
