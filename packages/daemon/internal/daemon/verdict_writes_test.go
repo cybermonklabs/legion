@@ -167,7 +167,8 @@ type fakeWrite struct {
 // them while a compare with main lists them all; any other pull request named in pulls, whose reads it
 // counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
 // request 86 at its head, and each of opened at its own. Each write and each read of pull request
-// 86 is recorded in order. failCreates is how many of the next creates of a check run GitHub
+// 86 is recorded in order, and requests is every request it served, as its method, its path under
+// the repository and its query. failCreates is how many of the next creates of a check run GitHub
 // answers 502, as it does when it fails a request; staleReads is how many reads of pull request
 // 86, made once its head has a success run, still answer `blocked`, as GitHub does while it has
 // not yet counted a new run.
@@ -184,6 +185,7 @@ type verdictGitHub struct {
 	statuses      []fakeStatus
 	writes        []fakeWrite
 	events        []string
+	requests      []string
 	pulls         map[int]string
 	pullReads     map[int]int
 	opened        []fakePull
@@ -273,6 +275,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			githubtest.Unexpected(t, w, r)
 			return
 		}
+		g.requests = append(g.requests, r.Method+" "+path+"?"+r.URL.RawQuery)
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		answer := func(v any) {
 			if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -435,6 +438,20 @@ func (g *verdictGitHub) recorded() ([]fakeWrite, []string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.writes), slices.Clone(g.events)
+}
+
+// requested is every request the fake served whose method and path, as requests logs them, are
+// method and path, each with its query.
+func (g *verdictGitHub) requested(method, path string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var queries []string
+	for _, request := range g.requests {
+		if query, ok := strings.CutPrefix(request, method+" "+path+"?"); ok {
+			queries = append(queries, query)
+		}
+	}
+	return queries
 }
 
 // verdictRig is CAPTURE-1 on acme/widgets' pull request 86 at head code, the workflow runtime
@@ -1882,6 +1899,35 @@ func compares(events []string) []string {
 		}
 	}
 	return compared
+}
+
+// One write reads the open pull requests at its head once (GET /commits/{sha}/pulls): that list
+// gives a Legion head's change the branch it is compared with (compareBase) and the pull requests
+// decided with it (atHead). So does a merge group's write, which decides its pull request at the
+// head it stands at now. Each paged read asks for one page size, a hundred.
+func TestLegionVerdictAWriteReadsThePullRequestsAtItsHeadOnce(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
+	rig.acceptedAndWritten(t)
+	if reads := rig.github.requested(http.MethodGet, "/commits/code/pulls"); len(reads) != 1 {
+		t.Fatalf("the acceptance's write read the pull requests at code %d times (%q), want once", len(reads), reads)
+	}
+	rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+	rig.written(t)
+	groupConcluded(t, rig.github, rig.pool, "group-86", "success")
+	if reads := rig.github.requested(http.MethodGet, "/commits/code/pulls"); len(reads) != 2 {
+		t.Fatalf("the merge group's write read the pull requests at code %d times, want once", len(reads)-1)
+	}
+	for _, read := range []struct{ path, what string }{{"/commits/code/pulls", "the pull requests at code"}, {"/compare/main...code", "the change"}} {
+		queries := rig.github.requested(http.MethodGet, read.path)
+		if len(queries) == 0 {
+			t.Fatalf("GitHub was never asked for %s, so its page size cannot be read", read.what)
+		}
+		for _, query := range queries {
+			if n := strings.Count(query, "per_page="); n != 1 {
+				t.Fatalf("a read of %s asked for per_page %d times (%q), want once", read.what, n, query)
+			}
+		}
+	}
 }
 
 // R4: the change is GitHub's compare of the head with the branch its pull request merges into, which

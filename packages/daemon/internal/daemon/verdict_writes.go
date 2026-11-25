@@ -345,7 +345,8 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 	if !ok {
 		return nil
 	}
-	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head)
+	pulls := &headPulls{}
+	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head, pulls)
 	if err != nil {
 		return err
 	}
@@ -358,7 +359,7 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 		read = true
 	}
 	if decided.conclusion != verdict.Failure && !target.alone {
-		if decided, err = w.atHead(ctx, entry, target.repository, target.number, decided); err != nil {
+		if decided, err = w.atHead(ctx, entry, target.repository, target.number, decided, pulls); err != nil {
 			return err
 		}
 	}

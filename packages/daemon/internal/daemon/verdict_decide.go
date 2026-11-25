@@ -38,14 +38,16 @@ const (
 //   - and nothing otherwise.
 //
 // GitHub lists the pull requests of a commit (GET /commits/{sha}/pulls), and only the open ones whose
-// head is that commit are decided, each by decideVerdict. A failure needs no other read, and the
-// callers ask for none then. The reason of a failure for a commit with no reader, and the commits it
-// names, stay only where the head's conclusion is the pull request's own.
-func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, decided verdictDecision) (verdictDecision, error) {
+// head is that commit are decided, each by decideVerdict; pulls is the write's one read of that list
+// (headPulls). A failure needs no other read, and the callers ask for none then. The reason of a
+// failure for a commit with no reader, and the commits it names, stay only where the head's
+// conclusion is the pull request's own.
+func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, decided verdictDecision,
+	pulls *headPulls) (verdictDecision, error) {
 	if decided.head == currentHead {
 		return decided, nil
 	}
-	others, err := w.openPullRequestsAt(ctx, repository, decided.head)
+	others, err := w.openPullRequestsAt(ctx, repository, decided.head, pulls)
 	if err != nil {
 		return verdictDecision{}, err
 	}
@@ -54,7 +56,7 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 		if other == number {
 			continue
 		}
-		each, err := w.decideVerdict(ctx, entry, repository, other, decided.head)
+		each, err := w.decideVerdict(ctx, entry, repository, other, decided.head, pulls)
 		if err != nil {
 			return verdictDecision{}, err
 		}
@@ -89,22 +91,36 @@ func headConclusion(at []verdictDecision) verdict.Conclusion {
 
 // openPullRequestsAt is the number of each open pull request of repository whose head is head
 // (pullRequestsAt).
-func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]int, error) {
-	pulls, err := w.pullRequestsAt(ctx, repository, head)
+func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string, pulls *headPulls) ([]int, error) {
+	listed, err := w.pullRequestsAt(ctx, repository, head, pulls)
 	if err != nil {
 		return nil, err
 	}
-	open := make([]int, 0, len(pulls))
-	for _, pull := range pulls {
+	open := make([]int, 0, len(listed))
+	for _, pull := range listed {
 		open = append(open, pull.Number)
 	}
 	return open, nil
 }
 
+// headPulls is one write's read of the open pull requests at the head it decides, of the one
+// repository it writes on (pullRequestsAt). The branch a Legion head's change is compared with
+// (compareBase) and the pull requests decided with the head (atHead) come from that one list, so a
+// write reads it once. The zero value has read nothing. A read GitHub did not answer is kept
+// nowhere, and the write's next asker reads again.
+type headPulls struct {
+	head  string
+	pulls []githubrest.PullRequest
+	read  bool
+}
+
 // pullRequestsAt is each open pull request of repository whose head is head, with the branch it
 // merges into, as GitHub lists the pull requests of that commit with the daemon's read token (GET
-// /commits/{sha}/pulls).
-func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]githubrest.PullRequest, error) {
+// /commits/{sha}/pulls), read once in the write pulls is of.
+func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string, pulls *headPulls) ([]githubrest.PullRequest, error) {
+	if pulls.read && pulls.head == head {
+		return pulls.pulls, nil
+	}
 	serving := w.repositories.serving(repository)
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
@@ -112,16 +128,17 @@ func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
-	pulls, err := githubrest.GetPages[githubrest.PullRequest](read, client, "/commits/"+head+"/pulls?per_page=100")
+	listed, err := githubrest.GetPages[githubrest.PullRequest](read, client, "/commits/"+head+"/pulls")
 	if err != nil {
 		return nil, fmt.Errorf("list the pull requests of %s at %s: %w", serving, head, err)
 	}
 	var open []githubrest.PullRequest
-	for _, pull := range pulls {
+	for _, pull := range listed {
 		if pull.State == "open" && pull.Head.SHA == head {
 			open = append(open, pull)
 		}
 	}
+	pulls.head, pulls.pulls, pulls.read = head, open, true
 	return open, nil
 }
 
@@ -157,8 +174,10 @@ const currentHead = ""
 // nothing and has no verdict, as a closed Legion pull request is written on by nobody (workflow's
 // askVerdictWrite); a legion/<KEY> head holds no verdict here, of this project's issue since no
 // record holds it and of another project's as above; and any other is recorded as an outside pull
-// request at the head GitHub shows and decided as one.
-func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, head string) (verdictDecision, error) {
+// request at the head GitHub shows and decided as one. pulls is the write's one read of the open pull
+// requests at the head (headPulls).
+func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, head string,
+	pulls *headPulls) (verdictDecision, error) {
 	if other := w.verdicts.otherIssue(repository.String(), number); other != "" {
 		return w.otherProjectsHead(repository, number, other, head), nil
 	}
@@ -206,7 +225,7 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 	case other != "":
 		return w.otherProjectsHead(repository, number, other, head), nil
 	case legion != nil:
-		w.readCommits(ctx, repository, number, legion)
+		w.readCommits(ctx, repository, number, legion, pulls)
 		decided.conclusion, decided.reason = verdict.Decide(legion.in)
 		if decided.reason == verdict.NoReader {
 			decided.noReader = verdict.CommitsWithNoReader(legion.in)
@@ -347,11 +366,11 @@ const changeUnread = "verdict: the change's commits could not be read, so no com
 // makers are the sessions its Omp-Session lines name (ompSessions). Where the commits cannot be read
 // the change is unread, and no commit has a reader (verdict.Inputs.Unread); the line it logs says
 // why.
-func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) {
+func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead, pulls *headPulls) {
 	if !verdict.StepsPassed(read.in) {
 		return
 	}
-	base, err := w.compareBase(ctx, repository, number, read)
+	base, err := w.compareBase(ctx, repository, number, read, pulls)
 	var commits []verdict.Commit
 	if err == nil {
 		commits, err = w.changeCommits(ctx, repository, base, read.in.Head)
@@ -366,12 +385,13 @@ func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Rep
 
 // compareBase is the branch pull request number merges into, with which its head's change is
 // compared: the base GitHub lists for it among the open pull requests at the head (pullRequestsAt,
-// the read atHead makes), so a child issue's change leaves out the commits its parent's branch
-// holds; where GitHub lists no such pull request there, the base the record holds; and only where
-// neither names one, the issue's default branch. Where GitHub's list cannot be read and the record
-// holds no base, the base is unknown, and the change is no reading (an error).
-func (w *workflowRuntime) compareBase(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) (string, error) {
-	pulls, err := w.pullRequestsAt(ctx, repository, read.in.Head)
+// the write's one read of them, which atHead reads too), so a child issue's change leaves out the
+// commits its parent's branch holds; where GitHub lists no such pull request there, the base the
+// record holds; and only where neither names one, the issue's default branch. Where GitHub's list
+// cannot be read and the record holds no base, the base is unknown, and the change is no reading
+// (an error).
+func (w *workflowRuntime) compareBase(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead, at *headPulls) (string, error) {
+	pulls, err := w.pullRequestsAt(ctx, repository, read.in.Head, at)
 	if err != nil {
 		if read.recordedBase != "" {
 			return read.recordedBase, nil
@@ -399,9 +419,9 @@ type listedCommit struct {
 
 // changeCommits is each commit of the change, in its order, with the sessions its Omp-Session lines
 // name: GitHub's compare of base and head (GET /compare/BASE...HEAD) with the daemon's read token,
-// a hundred commits to a page and every page, which must hold head. A pull request's own list of
-// commits stops at 250 (spec R4), and the compare's pages do not. A compare GitHub refuses, or one
-// that does not hold head, is no reading of the change, and an error.
+// a hundred commits to a page (githubrest.GetListPages) and every page, which must hold head. A
+// pull request's own list of commits stops at 250 (spec R4), and the compare's pages do not. A
+// compare GitHub refuses, or one that does not hold head, is no reading of the change, and an error.
 func (w *workflowRuntime) changeCommits(ctx context.Context, repository ghrepo.Repository, base, head string) ([]verdict.Commit, error) {
 	serving := w.repositories.serving(repository)
 	if base == "" {
@@ -413,7 +433,7 @@ func (w *workflowRuntime) changeCommits(ctx context.Context, repository ghrepo.R
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
-	listed, err := githubrest.GetListPages[listedCommit](read, client, "/compare/"+base+"..."+head+"?per_page=100", "commits")
+	listed, err := githubrest.GetListPages[listedCommit](read, client, "/compare/"+base+"..."+head, "commits")
 	if err != nil {
 		return nil, fmt.Errorf("compare %s...%s of %s: %w", base, head, serving, err)
 	}

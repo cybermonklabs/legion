@@ -709,7 +709,7 @@ func TestTheBootSweepTakesItsOwnUnrecordedRunToTheRightConclusion(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, seedReviewerVerdict(tc.word), openCapture)
 			rig.foreign([]fakeRun{{ID: 1001, Head: "code", Name: verdict.CheckName, Conclusion: tc.left, App: verdictAppSlug}}, nil)
-			decided, err := rig.w.decideVerdict(context.Background(), widgetsEntry, widgets, 86, "code")
+			decided, err := rig.w.decideVerdict(context.Background(), widgetsEntry, widgets, 86, "code", &headPulls{})
 			if err != nil || decided.conclusion != tc.decision {
 				t.Fatalf("verdict.Decide at code = %q, %v; want %q", decided.conclusion, err, tc.decision)
 			}
