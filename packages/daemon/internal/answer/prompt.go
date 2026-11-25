@@ -20,6 +20,7 @@ import (
 // post, the bounds of each tool's calls, and, while the project is paused as the run starts
 // (Request.Paused), that its tools run their reads and refuse every write; then the work it
 // declines, and the reply form.
+// It also says where the daemon posts the reply and when the agent can use a tool to write.
 func systemPrompt(req Request) string {
 	offered := req.offeredTools()
 	names := make([]string, len(offered))
@@ -29,11 +30,24 @@ func systemPrompt(req Request) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the agent whose conversation follows: the %s of issue %s (session %s, phase %s).", req.Agent.Role, req.Agent.Issue, req.Agent.Session, req.Agent.Phase)
 	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself. Your conversation is your first source: answer from it what it holds, and use your tools only for what it does not hold.\n\n")
+	b.WriteString("The daemon posts your reply where the message reached you:\n" +
+		"- In the same comment thread.\n" +
+		"- On the same ask.\n" +
+		"- As the reply to the Dispatch message.\n" +
+		"- To the Envoy session that asked.\n\n" +
+		"Never post your answer or a copy of it with any tool, including `gh`.\n\n")
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
 	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
 	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
 	if req.Dispatch != nil {
-		fmt.Fprintf(&b, "The `dispatch` tool is Dispatch's own command line, run as your own session, %s: read any issue with it, and reply with a comment or a message where the message asks you to; its description lists the commands it runs, and it refuses every other. Every comment or message you post with it carries the loop's mark, which the tool adds. ", req.Agent.Session)
+		fmt.Fprintf(&b, "The `dispatch` tool is Dispatch's own command line, run as your own session, %s. "+
+			"Read any issue with it. Its description lists the commands it runs, and it refuses every other. "+
+			"Every comment or message you post with it carries the loop's mark, which the tool adds. "+
+			"The daemon posts your reply where the message reached you. "+
+			"Never use `comment`, `message`, or `send-to-agent` to post your answer or a copy of it. "+
+			"Use a `dispatch` write only if the message explicitly asks you to:\n"+
+			"- Post other content somewhere else, such as on another issue, in another thread, or to another agent.\n"+
+			"- Resolve a comment.\n\n", req.Agent.Session)
 	}
 	if req.WebSearch != nil {
 		b.WriteString("The `web_search` tool runs one web search for you: use it only for facts your conversation and your other tools do not hold, and name in your reply the address of each source you use. ")

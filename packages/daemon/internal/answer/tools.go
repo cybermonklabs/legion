@@ -120,6 +120,9 @@ func dispatchDescription(req Request) string {
 	comment, _ := json.Marshal(dispatchInput{Args: []string{"comment", "--issue", req.Agent.Issue, "--body-file", "-"}, Stdin: "Your comment."})
 	return "Run Dispatch's own `dispatch` command, the one your pane runs. The daemon runs it as your own session, " +
 		req.Agent.Session + ", with that session's access, so Dispatch answers each call as it answers you when you run. " +
+		"The daemon posts your reply where the message reached you. " +
+		"Never use `comment`, `message`, or `send-to-agent` to post your answer or a copy of it. " +
+		"Use these commands only if the message explicitly asks you to post somewhere else. " +
 		"Give dispatch's arguments without the leading dispatch, and as stdin the text an option `--<field>-file -` reads. " +
 		"Read an issue with its documents, comments, asks and messages, those written since you stopped included: " +
 		"for example " + string(read) + ". Post a comment with its body on stdin: " + string(comment) + ". " +
