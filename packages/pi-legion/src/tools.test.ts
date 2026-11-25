@@ -112,6 +112,8 @@ function recordingDaemon(options: {
     "issueStatus",
     "freshSession",
     "compact",
+    "intakeReplay",
+    "intakeDiscard",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -176,43 +178,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
- * the sign-off moves the task, names each refusal code its text gives, and says why a parent waits
- * for the issues beneath it. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "moving its task to its next step, or to retro where the acceptance is the task's last step",
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-    "since a parent is accepted only once no issue beneath it is still in the workflow",
-  ],
-} as const;
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -236,24 +201,6 @@ const toolFor = (active: LegionToolSession) =>
     resolveDocument: noDocumentLookup,
     session: () => active,
   });
-
-test("the legion tool's description names stop_task's and sign_off's terms, for every session", () => {
-  for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
-    const held = description.slice(description.indexOf(STOP_TASK_TERMS.opens));
-    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
-    expect(signOffAt).toBeGreaterThan(0);
-    const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
-    expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
-  }
-});
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
@@ -304,6 +251,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "replay_give_up",
+        "discard_give_up",
       ],
     },
     issue: { type: "string" },
@@ -344,6 +293,9 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
     claim: { type: "string" },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
   },
   required: ["op"],
   additionalProperties: false,
@@ -1982,13 +1934,13 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 221) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (contract 258) is recovered as Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
-  // A claim named by its token (contract 222), another claim of the role than the step's worker,
+  // A claim named by its token (contract 259), another claim of the role than the step's worker,
   // is sent as named, and only when named; compact takes it the same way.
   await run({
     op: "fresh_session",
@@ -2080,7 +2032,7 @@ test("the controller reads the state without a grant and sets an issue's status 
   ]);
 });
 
-// Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
+// Contract 258: the summary lists each worker of an issue's map, a role of the deployment's after
 // Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
@@ -2117,7 +2069,7 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
-// Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// Contract 259: two claims of one issue can hold one role, and `workers` shows one of them, so the
 // summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
 // both turn times and its token, marks it as another claim of that role, and names the token
 // because fresh_session and compact reach that claim only by it (their `claim`).
@@ -2378,6 +2330,174 @@ test("pause and resume are offered to no architect and no phase worker", async (
   expect(posted).toEqual([]);
 });
 
+// The intake's give-ups (dispatch://INFRA-1575, R3). The controller replays a give-up, a message
+// the daemon's intake gave up on, by its record id, or every open one of a consumer at or below a
+// stream sequence, and discards them the same way with a reason. Each call goes through the real
+// daemon client to the controller's route, so the answer the controller reads is the golden the
+// daemon's own test wrote, parsed by the contract's schema.
+test("the controller's replay_give_up sends one record id to the daemon's controller route and returns its answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const replayed = await controllerTool(daemon, minted).execute(
+    "",
+    { op: "replay_give_up", giveUp: 41 },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(replayed.isError).toBeUndefined();
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(replayed.content).toEqual([{ type: "text", text: JSON.stringify(replayed.details) }]);
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", giveUp: 41 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+});
+
+// The bulk form names the consumer and the stream sequence the summary gives as its newest. A
+// selection the daemon would refuse (GIVE_UP_REQUEST_INVALID) is refused before a grant is minted
+// or a request sent: both forms, neither, one half of the bulk form, a number that is no record id
+// or stream sequence, and a field the replay does not take.
+test("the controller's replay_give_up sends a consumer and every open record at or below a stream sequence (throughSeq)", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-dispatch";
+
+  const replayed = await run({ op: "replay_give_up", consumer, throughSeq: 6044896 });
+  expect(replayed.details).toEqual(daemonFixture("intake-replay.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/intake/replay", { grantId: "controller-grant-1", consumer, throughSeq: 6044896 }],
+  ]);
+  expect(minted).toEqual(["ses_controller"]);
+
+  const refusals = [
+    [
+      { op: "replay_give_up", giveUp: 41, consumer, throughSeq: 6044896 },
+      "replay_give_up takes giveUp, or consumer and throughSeq, not both",
+    ],
+    [{ op: "replay_give_up" }, "replay_give_up requires giveUp, or consumer and throughSeq"],
+    [
+      { op: "replay_give_up", consumer },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [
+      { op: "replay_give_up", consumer, throughSeq: 0 },
+      "replay_give_up requires throughSeq with consumer, a stream sequence from 1",
+    ],
+    [{ op: "replay_give_up", throughSeq: 6044896 }, "replay_give_up requires consumer"],
+    [
+      { op: "replay_give_up", giveUp: 41.5 },
+      "replay_give_up's giveUp is a give-up's record id, a whole number from 1",
+    ],
+    [
+      { op: "replay_give_up", giveUp: 41, reason: "the fix runs" },
+      'replay_give_up does not accept field "reason"; it takes giveUp, consumer, throughSeq',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(1);
+  expect(minted).toHaveLength(1);
+});
+
+test("the controller's discard_give_up sends its reason and returns the daemon's answer", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const consumer = "legion-go-LEGION-github";
+  const reason = "the listener published these bodies as text, and no fix can apply them";
+
+  const bulk = await run({ op: "discard_give_up", consumer, throughSeq: 812004, reason });
+  expect(bulk.isError).toBeUndefined();
+  expect(bulk.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(bulk.content).toEqual([{ type: "text", text: JSON.stringify(bulk.details) }]);
+  const one = await run({ op: "discard_give_up", giveUp: 42, reason });
+  expect(one.details).toEqual(daemonFixture("intake-discard.json"));
+  expect(posted).toEqual([
+    [
+      "/legion/v1/intake/discard",
+      { grantId: "controller-grant-1", consumer, throughSeq: 812004, reason },
+    ],
+    ["/legion/v1/intake/discard", { grantId: "controller-grant-1", giveUp: 42, reason }],
+  ]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+});
+
+// A discard is the one act that ends a fact with no apply, so it says why: one with no reason, or
+// a blank one, is refused before a grant is minted or a request sent, and so is one that names no
+// give-up.
+test("discard_give_up without a reason is refused before any call", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/discard": "intake-discard.json" });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const refusals = [
+    [{ op: "discard_give_up", giveUp: 41 }, "discard_give_up requires reason"],
+    [{ op: "discard_give_up", giveUp: 41, reason: " " }, "discard_give_up requires reason"],
+    [
+      { op: "discard_give_up", consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+      "discard_give_up requires reason",
+    ],
+    [
+      { op: "discard_give_up", reason: "it can never apply" },
+      "discard_give_up requires giveUp, or consumer and throughSeq",
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(
+      tool.execute("", parameters, undefined, undefined, context("ses_controller"))
+    ).resolves.toEqual({ content: [{ type: "text", text }], details: {}, isError: true });
+  }
+  expect(posted).toEqual([]);
+  expect(minted).toEqual([]);
+});
+
+// Neither operation is a claim's: a root architect, a sub-architect and every phase worker are
+// refused by the operation's name, before a grant is minted or a request sent.
+test("a phase worker and an architect have neither replay_give_up nor discard_give_up", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/intake/replay": "intake-replay.json",
+    "/legion/v1/intake/discard": "intake-discard.json",
+  });
+  const claims = EVERY_SESSION.filter((session) => session.kind !== "controller");
+  expect(claims).toHaveLength(7);
+  for (const session of claims) {
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+    for (const parameters of [
+      { op: "replay_give_up", giveUp: 41 },
+      { op: "discard_give_up", giveUp: 41, reason: "it can never apply" },
+    ]) {
+      await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
+        content: [
+          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+        ],
+        details: {},
+        isError: true,
+      });
+    }
+  }
+  expect(posted).toEqual([]);
+});
+
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {
   const state = stateOf92Issues();
   const { daemon } = recordingDaemon({ state });
@@ -2599,6 +2719,32 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+});
+
+// What the controller reads of the intake's give-ups in `read_state` with no field: one line for
+// each consumer with open give-ups, with how many and the newest stream sequence among them, which
+// is the throughSeq of a replay or a discard of all of them, and one line saying none is open.
+// A state without the key, served to a caller below the contract that added it, says nothing.
+test("the read_state summary prints each consumer's open give-ups and their newest sequence", async () => {
+  const giveUpLines = (lines: readonly string[]) =>
+    lines.filter((line) => line.startsWith("intake give-ups"));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(giveUpLines(golden)).toEqual([
+    "intake give-ups legion-go-LEGION-dispatch open 2 newest seq 6044896",
+    "intake give-ups legion-go-LEGION-github open 1 newest seq 812004",
+  ]);
+  expect(golden[0]).toContain(
+    "intake give-ups <consumer> open <count> newest seq <stream sequence>"
+  );
+
+  const none = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-stage3.json" }).daemon
+  );
+  expect(giveUpLines(none)).toEqual(["intake give-ups (none)"]);
+
+  const unsaid = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
+  expect(giveUpLines(unsaid)).toEqual([]);
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

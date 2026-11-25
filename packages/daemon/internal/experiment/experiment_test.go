@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // twoArms is the experiment the mode cases below draw over: two arms of equal weight, the first of
@@ -362,3 +364,22 @@ func (r *countingReader) Read(p []byte) (int, error) {
 }
 
 var _ io.Reader = (*countingReader)(nil)
+
+// The group of an issue is its one row that says how it is done: among the rows of `memory`,
+// which names no plan and stands first, and `planning`, which names `default`, it is `planning`'s;
+// rows that name no plan give the zero row, the issue of no group. The fault caught is a GroupOf
+// that answers the first row, which here is `memory`'s.
+func TestGroupOfIsTheRowThatSetsPlan(t *testing.T) {
+	memory := record.Assignment{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random"}
+	planning := record.Assignment{Experiment: "planning", Unit: "issue", Variant: "b", Mode: "random", Plan: "default"}
+	if got := GroupOf([]record.Assignment{memory, planning}); !reflect.DeepEqual(got, planning) {
+		t.Errorf("GroupOf(memory, planning) = %+v, want the planning row %+v", got, planning)
+	}
+	other := record.Assignment{Experiment: "review-depth", Unit: "issue", Variant: "deep", Mode: "on"}
+	if got := GroupOf([]record.Assignment{memory, other}); !reflect.DeepEqual(got, record.Assignment{}) {
+		t.Errorf("GroupOf of rows that name no plan = %+v, want the zero row", got)
+	}
+	if got := GroupOf(nil); !reflect.DeepEqual(got, record.Assignment{}) {
+		t.Errorf("GroupOf of no row = %+v, want the zero row", got)
+	}
+}

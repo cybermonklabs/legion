@@ -19,7 +19,7 @@ import (
 // never the phase: `checker implementer linter` reads step at place 1 and at place 3, and only the
 // linter's place 3 stands after the implementer. A held issue is read for at the place it is held
 // from, which its caller hands over. The third reason a read is owed, a review round that waits on
-// GitHub's answer whatever the fact, is not the gate's: workflow's askMergeStateFor adds it, so a
+// GitHub's answer whatever the fact, is not the gate's: workflow's mergeStateOwed adds it, so a
 // review in reviewing asks nothing here.
 func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 	step := func(n int) record.TaskPlace { return record.TaskPlace{Kind: record.PlaceStep, Position: n} }

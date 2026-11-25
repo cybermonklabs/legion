@@ -31,9 +31,10 @@ type bootReads struct {
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
 // and the arm that name it, and the operator's file verbatim. Boot writes one copy per entry
-// under the state directory (config.WriteVariantInstructions), named and headed as the arm's
-// declaration says (config.Variant.MemoryBlock), and a launch's prompt ends with the copies of the
-// arms its unit was drawn into.
+// under the state directory (writeInstructionsCopies), named and headed as the arm's declaration
+// says (config.Variant.MemoryBlock), each launch reads the file again into that copy
+// (instructionsCopies.refresh), and a launch's prompt ends with the copies of the arms its unit was
+// drawn into.
 type variantInstructions struct {
 	experiment string
 	variant    config.Variant
@@ -110,21 +111,12 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
 	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
 	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
-	// The block's own arm (config.Variant.MemoryBlock) is refused in the block's own words
-	// (config.ReadMemoryInstructions), which the documentation quotes, and every arm of the
-	// `experiments` key, `experiments.memory` included, in the experiments' words
-	// (config.ReadVariantInstructions).
 	for _, experiment := range cfg.ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
 			if variant.InstructionsPath == "" {
 				continue
 			}
-			var contents []byte
-			if variant.MemoryBlock {
-				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
-			} else {
-				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
-			}
+			contents, err := readArmInstructions(experiment.Name, variant)
 			if err != nil {
 				return bootReads{}, err
 			}

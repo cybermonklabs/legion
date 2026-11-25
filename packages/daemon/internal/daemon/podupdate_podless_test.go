@@ -411,7 +411,7 @@ var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 // pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
 // not paced (supervise's exemptWake).
 func pacedUntil(letOut time.Time) supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(time.Time) time.Time { return letOut }}
+	return supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(time.Time) time.Time { return letOut }}
 }
 
 // heldLaunchLetOut is what the round waits for while the wake pacing parks the held launch of
@@ -987,8 +987,8 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		rig.wantPodKept("the answers")
 
 		// The member that holds the ask is launched as the boot launches an unfinished launch
-		// (launchUnfinishedClaim): its release, then the spawn, which resumes its session into the
-		// pod a process of the issue runs in now.
+		// (releaseUnfinishedClaim, launchUnfinished): its release, then the spawn, which resumes
+		// its session into the pod a process of the issue runs in now.
 		if m, ok := rig.sup.Machine(rig.tokens[holder]); !ok {
 			t.Fatalf("the %s is not supervised", holder)
 		} else if _, err := m.ReleaseUncertainLaunch(rig.ctx); err != nil {

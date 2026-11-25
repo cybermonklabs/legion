@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt globs it and reads each file; TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer reads one
+
 import (
 	"bytes"
 	"context"
@@ -563,8 +565,9 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 
 // Dispatch can add issue payload fields, or start filling one it has always sent empty, before a
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
-// matching workflow change rolls out. The daemon reads no priority, and no key the captured
-// fixture lacks, which a decoder rejecting unknown fields would refuse.
+// matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
+// decoder rejecting unknown fields would refuse; it does read the priority, which the filled
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)
@@ -584,8 +587,13 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issue.created with a priority and a field the fixture lacks: %v", err)
 	}
-	if !reflect.DeepEqual(got.Fact, want.Fact) {
-		t.Fatalf("widened fact = %#v, want %#v", got.Fact, want.Fact)
+	carried, ok := want.Fact.(DispatchIssue)
+	if !ok {
+		t.Fatalf("captured issue.created decodes to %#v, want a Dispatch issue", want.Fact)
+	}
+	carried.Priority = record.P1
+	if !reflect.DeepEqual(got.Fact, carried) {
+		t.Fatalf("widened fact = %#v, want %#v", got.Fact, carried)
 	}
 }
 
@@ -1240,6 +1248,9 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	}
 }
 
+// A message that does not decode is given up at its first delivery: one give-up line at ERROR
+// with the reason undecodable and one given-up record each, and it is terminated, so neither is
+// delivered again.
 func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1251,19 +1262,28 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
-	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
+	const giveUp = "intake: a message was given up"
+	testwait.Eventually(t, "two give-up lines", func() bool { return strings.Count(logs.String(), giveUp) == 2 })
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	if got := strings.Count(logs.String(), giveUp); got != 2 {
+		t.Fatalf("give-up lines after ack wait = %d, want 2", got)
+	}
+	if got := strings.Count(logs.String(), "reason=undecodable"); got != 2 {
+		t.Fatalf("%d give-up lines name the reason undecodable, want both:\n%s", got, logs)
+	}
+	records := intakeRecords(t, pool)
+	if len(records) != 2 || !records[0].GivenUp() || !records[1].GivenUp() ||
+		records[0].GiveUpReason != record.GiveUpUndecodable || records[1].GiveUpReason != record.GiveUpUndecodable {
+		t.Fatalf("intake_failures = %+v, want one record of each message given up as undecodable", records)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
 
 // A GitHub envelope with no payload, as an Envoy listener published every commit status on its
 // repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
-// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
-// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
-// acknowledgement.
+// bytes, with this test's repository and ids of its own), is given up once, its give-up line at
+// ERROR, and terminated, and the GitHub durable goes on: the push stored after it is applied, and
+// nothing waits for an acknowledgement.
 func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1279,11 +1299,11 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
 		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
 	}
-	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+	requireLogLine(t, logs, "level=ERROR", "intake: a message was given up", "reason=undecodable", "Envoy envelope payload is not JSON",
 		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
-		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	if got := strings.Count(logs.String(), "intake: a message was given up"); got != 1 {
+		t.Fatalf("give-up lines after ack wait = %d, want 1: a terminated message is not delivered again", got)
 	}
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
@@ -1860,6 +1880,122 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("counter = %d, want both facts applied in turn", n)
+	}
+}
+
+// A fact takes its pool's turn before it takes a connection (store.Pool.FactTurn), so a burst of
+// facts waiting on the fact lock holds one connection, not one each: with one fact inside its
+// handler and twice the pool's size of facts waiting behind it, a read of the pool still answers
+// at once. Before the turn every waiting fact held a connection, the burst held them all, and the
+// read waited for the whole burst (the boot replay's read of which facts are applied, which ran out
+// its budget so in 1 of 20 race-soak runs of internal/daemon).
+func TestABurstOfFactsWaitingOnTheLockLeavesThePoolToOtherReads(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	inside, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	letFirstFinish := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failing read must still let the first fact finish, or its open transaction holds the pool.
+	defer letFirstFinish()
+	var applied sync.WaitGroup
+	errs := make(chan error, 1+2*int(raw.Config().MaxConns))
+	applied.Go(func() {
+		_, err := ApplyFact(ctx, pool, "test", "burst-0", DispatchConsumerPosition{AckFloorStream: 0}, handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+			close(inside)
+			<-release
+			return Result{}, nil
+		}))
+		errs <- err
+	})
+	<-inside
+	var asked sync.WaitGroup
+	for i := range 2 * int(raw.Config().MaxConns) {
+		asked.Add(1)
+		applied.Go(func() {
+			asked.Done()
+			_, err := ApplyFact(ctx, pool, "test", fmt.Sprintf("burst-%d", i+1), DispatchConsumerPosition{AckFloorStream: int64(i + 1)})
+			errs <- err
+		})
+	}
+	asked.Wait()
+	// Without the turn the burst takes every connection of the pool, each waiting on the lock; with
+	// it, only the fact inside its handler holds one. The read goes once the pool is full or a second
+	// has passed, whichever is first, so it never runs ahead of a burst that would starve it.
+	testwait.Holds(time.Second, testwait.Poll, func() bool { return raw.Stat().AcquiredConns() == raw.Config().MaxConns })
+	read, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := pool.QueryRow(read, `select 1`).Scan(&one); err != nil {
+		t.Fatalf("a read of the pool beside %d facts waiting on the fact lock = %v, want it answered at once", 2*raw.Config().MaxConns, err)
+	}
+	letFirstFinish()
+	applied.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a fact of the burst: %v", err)
+		}
+	}
+}
+
+// A fact whose ctx ends while it waits for its pool's turn leaves the line holding nothing: it
+// takes no connection, runs no handler and records nothing, and answers ctx's error naming the
+// wait. The line moves on: once the turn is free, the same fact applies.
+func TestAFactWhoseContextEndsWhileItWaitsForItsTurnTakesNoConnection(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	held, err := pool.FactTurn(ctx)
+	if err != nil {
+		t.Fatalf("take the pool's turn: %v", err)
+	}
+	ran := false
+	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+		ran = true
+		return Result{}, nil
+	})
+	acquired := raw.Stat().AcquireCount()
+	waiting, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = ApplyFact(waiting, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the pool's turn to apply fact test/turn-ends") {
+		t.Fatalf("ApplyFact while another holds the turn = %v, want the wait for the turn ended by its context", err)
+	}
+	if got := raw.Stat().AcquireCount(); got != acquired || ran {
+		t.Fatalf("the fact that left the line took %d connections and ran its handler %t, want none and false", got-acquired, ran)
+	}
+	held()
+	if _, err := ApplyFact(ctx, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil || !ran {
+		t.Fatalf("ApplyFact once the turn is free = %v, handler ran %t; want it applied", err, ran)
+	}
+}
+
+// A fact hands its pool's turn on at its COMMIT, before its other commit hooks run: a hook that
+// waits (a NATS publish, say) holds up no other fact. Here the first fact's hook waits until a
+// second fact has applied; a turn held through the hooks would leave the second waiting on the
+// first's hook, and its bound would end it.
+func TestAFactsCommitHookHoldsUpNoOtherFact(t *testing.T) {
+	t.Parallel()
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	second := make(chan error, 1)
+	hooked := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+		store.OnCommit(ctx, func() {
+			bounded, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := ApplyFact(bounded, pool, "test", "after-the-commit", DispatchConsumerPosition{AckFloorStream: 2})
+			second <- err
+		})
+		return Result{}, nil
+	})
+	if _, err := ApplyFact(ctx, pool, "test", "hooked", DispatchConsumerPosition{AckFloorStream: 1}, hooked); err != nil {
+		t.Fatalf("the hooked fact: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("a fact applied from the first fact's commit hook = %v, want it applied: the turn was handed on at the first's COMMIT", err)
 	}
 }
 

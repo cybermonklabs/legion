@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    The Codex `dispatch` tool's description no longer reads exit 1 as a refusal by Dispatch alone:
+    the command exits 2 for a usage error and 1 for any other failure, a Dispatch it cannot reach
+    and a call that wrote nothing and whose answer Dispatch kept no copy of included.
+time: 2026-11-24T16:47:25Z
+custom:
+    Issue: codex-dispatch-exit-codes

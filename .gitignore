@@ -277,8 +277,6 @@ $RECYCLE.BIN/
 
 # Playwright output (packages/dispatch e2e)
 packages/dispatch/e2e/test-results/
-# The reverse-order visual run's results (`e2e/visual-run.sh --output=e2e/test-results-reverse`).
-packages/dispatch/e2e/test-results-reverse/
 packages/dispatch/e2e/playwright-report/
 # The blob report `--reporter=blob` writes, which the CI legs send to $RUNNER_TEMP through
 # PLAYWRIGHT_BLOB_OUTPUT_DIR and a run by hand leaves here (.github/workflows/dispatch-browser.yaml).

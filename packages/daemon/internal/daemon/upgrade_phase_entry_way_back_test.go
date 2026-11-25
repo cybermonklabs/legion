@@ -57,7 +57,7 @@ const (
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
-	planStepAgentMigrationFile           = "internal/store/migrations/20261123203837_plan_step_agent.up.sql"
+	planStepAgentMigrationFile           = "internal/store/migrations/20261124213820_plan_step_agent.up.sql"
 	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
 	// copy of contract 146's, are read from this package's own directory, where each file sits
 	// beside the code it is about and needs no declared read of its own.
@@ -662,7 +662,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // in the tree. Judging the payloads the strip leaves by this shape answers for 0b297211 too:
 // that release's decoder knows every key this struct knows and freshSession besides, so a
 // payload this one accepts it accepts. A row this branch's release queued can carry `claim`
-// besides, which the way back of 20261123203837_plan_step_agent takes off before this rollback
+// besides, which the way back of 20261124213820_plan_step_agent takes off before this rollback
 // runs (its header, and upgradeRecoveryReadsAnswer runs it), so no payload this shape judges
 // carries it.
 type preEntrySuperviseRequest struct {

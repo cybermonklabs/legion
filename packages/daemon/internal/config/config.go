@@ -15,7 +15,8 @@
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 // A role's `prompt_file` (`roles.<name>.prompt_file`) is resolved and kept as a path too, and Load
 // also reads it, refusing one the daemon cannot read; `legion config check` reads it as Load does
 // (CheckRolePrompts), and LoadForValidation, which the commands that only name the daemon run,
@@ -146,6 +147,15 @@ type Config struct {
 	// kind holds.
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
+
+	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
+	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
+	// when the file names none): after each query the next waits (1 - share) / share of the time
+	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
+	// processing time in 60 seconds, and every daemon that reads with the same installation
+	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
+	GitHubGraphQLShare float64
 
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
@@ -304,6 +314,13 @@ const (
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
 
+	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
+	// installation is followed by a pause as long as it took.
+	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
+
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
 	// timers are not so bounded; the bound is kept so a file one daemon accepts, the other
@@ -453,6 +470,8 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
+	// GitHubGraphQLShare is `github_graphql_share` (readShare).
+	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -957,6 +976,27 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
+func readShare(value *yaml.Node, key string) (*float64, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
+	}
+	return &read, nil
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -1027,6 +1067,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
+		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
@@ -1107,6 +1148,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+
+	if file.GitHubGraphQLShare != nil {
+		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
 	}
 
 	if err := resolveStage2(file, configDir, &cfg); err != nil {

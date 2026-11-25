@@ -303,15 +303,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
+		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records
+		// any of the six at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -538,7 +539,14 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
-// A second pair touches one block, and one band of it writes that block in an older shape
+// A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
+// whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
+// caller below both is served no `assignments` whichever runs first. The second reads what the
+// first left only to know whether it took anything: run after it, as this table runs them, it
+// finds no row and writes no line, so a caller below assignmentsContract is told of the
+// assignments and not of their `plan` (narrowingsExpected holds that line back).
+//
+// A third pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
 // contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
 // block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
@@ -602,6 +610,11 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
+	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: deploymentRolesContract, state: withoutDeploymentRoleClaims, issue: withoutDeploymentRoles,
 		left: leftDeploymentRoles,
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
@@ -1056,14 +1069,105 @@ const repositoriesLiveContract = 202
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
 // dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
-// rather than its number:
-// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
-// entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
-// constant behind names a contract no entry declares and fails there.
+// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
+// list to version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and
+// leaves this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
+// assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
+// experiment's arm set at the issue's draw (version.go's 220). A plugin before it is served every
+// assignment without the key (withoutAssignmentPlans): its reader strips a key it does not name,
+// so the band is what keeps the group from a caller that did not ask for it rather than what keeps
+// such a caller reading. The rest of each row stays as assignmentsContract serves it.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason.
+const assignmentPlanContract = 220
+
+// intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's
+// 228, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
+// consumer's count of the messages its intake gave up on that no replay or discard has closed,
+// with the newest stream sequence among them, and the newest of those records. It added two
+// answers whole with their routes, the controller's replay and discard of those records
+// (answers.go's AnswerIntakeReplay and AnswerIntakeDiscard), which no contract below it records.
+// A plugin before it is served the state without the key (withoutIntakeGiveUps, its row of
+// stateNarrowings): one built before sjawhar/legion#2788 reads the state with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the band keeps the body its own contract's record describes. The two enumerated
+// fields it added, a give-up's `reason` and a replayed record's `outcome` (answers.go's
+// intakeGiveUpReasons and replayOutcomes), arrived whole with the key and the answer that carry
+// them, so no value strip is needed. The operator's two give-up routes answer the `legion`
+// command, which no plugin parses.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract the key and the two answers arrived at stays where it is.
+const intakeGiveUpsContract = 228
+
+// podHoldContract is the daemon contract that added each issue's `podHold` to the state
+// (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its
+// own table before. A plugin before it reads each issue with a
+// strict schema that names no `podHold` and refuses the whole body for it, so every caller below
+// it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
+// it with no row of stateNarrowings between the two (232, between them, moves a request body and
+// no key of the state), so a caller from that contract to 245 is served 228's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
+// is, and answers.go's SupportedContracts names the constant.
+const podHoldContract = 246
+
+// withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
+// nothing else of that contract is on the route. The key is written only for an issue whose pod
+// a hold stands on, so the band reports a move only for an issue that carries one.
+func withoutPodHold(issue Issue) (Issue, bool) {
+	moved := issue.PodHold != nil
+	issue.PodHold = nil
+	return issue, moved
+}
+
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
+// plugin before it is served every issue without either key (withoutPriority). It is a literal
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and answers.go's
+// SupportedContracts names the constant.
+const priorityContract = 250
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
+	return issue, moved
+}
+
+// causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
+// `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its
+// `lastStartFailure` (version.go's 256). A plugin before it is served
+// every claim view without the two keys (withoutCauseTimes): its reader strips a key it does not
+// name, so the band is what keeps the times from a caller that did not ask for them rather than
+// what keeps such a caller reading. The two are one band because each dates the cause beside it
+// and both arrive at this one number. The causes themselves stay as stateMachineContract serves
+// them. The contract removed no key and added no value to an enumeration: the two are times. It
+// put the same keys on the operator claim too, and the operator routes are not served down,
+// because their reader is the `legion` built with this daemon. priorityContract stands below it
+// with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
+// 250's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the keys arrived at stays where it is. It moves only with this
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number.
+const causeTimesContract = 256
+
 // deploymentRolesContract is the daemon contract that added the roles a deployment defines to the
-// state (version.go's 221): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
+// state (version.go's 258): the phase step, each issue's `stepRole` and `startWaitsForPod`, and
 // the stranded claims, waiting wakes and pause stops of a role outside Legion's six. A plugin
 // below it reads an issue's `phase`, its `heldFrom` and a pending task's `phase` with an
 // enumeration that names no step, and the `role` of a stranded claim, of a waiting wake and of a
@@ -1082,10 +1186,10 @@ const cachesSourceContract = 213
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
 // only with this change's own number, and answers.go's SupportedContracts names the constant
 // rather than its number for that reason.
-const deploymentRolesContract = 221
+const deploymentRolesContract = 258
 
 // strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 222, `strandedClaims.*.token`), and to the release records the tokens of the
+// state (version.go's 259, `strandedClaims.*.token`), and to the release records the tokens of the
 // claims a release suspended (`releases.*.claims`) and of the claim a wake brought back
 // (`resumes.*.claim`): two claims of one issue can hold one role, so the issue and the role no
 // longer name one claim.
@@ -1093,7 +1197,7 @@ const deploymentRolesContract = 221
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and it is the last number of answers.go's SupportedContracts, which names the constant
 // rather than its number for that reason.
-const strandedTokenContract = 222
+const strandedTokenContract = 259
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
@@ -1247,6 +1351,32 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 	return issue, moved
+}
+
+// withoutAssignmentPlans is the issue with no assignment carrying `plan`, the one key
+// assignmentPlanContract added to the state; every other key of each row stays. The key is
+// `omitempty` and absent from a row whose arm named no group, so the band reports a move only for
+// an issue one of whose rows carries one. The list is copied before a row is changed, so the state
+// the source answered is left as it was.
+func withoutAssignmentPlans(issue Issue) (Issue, bool) {
+	if !slices.ContainsFunc(issue.Assignments, func(row AssignmentView) bool { return row.Plan != "" }) {
+		return issue, false
+	}
+	issue.Assignments = slices.Clone(issue.Assignments)
+	for i := range issue.Assignments {
+		issue.Assignments[i].Plan = ""
+	}
+	return issue, true
+}
+
+// withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
+// `lastStartFailureAt`, the two keys causeTimesContract added to the claim views; every other key
+// of each view stays, its causes among them.
+func withoutCauseTimes(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.LastDeathAt, view.LastStartFailureAt = nil, nil
+		return view
+	})
 }
 
 // withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of
@@ -1917,6 +2047,19 @@ func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
 	return state, moved
+}
+
+// withoutIntakeGiveUps is state with no `intakeGiveUps`, the one key intakeGiveUpsContract added
+// to the state; the rest of that contract is two answers of their own routes, which no older
+// plugin calls. The key is left off rather than emptied, because the strict reader before the
+// contract refuses it as surely when its two lists are empty as when they name a give-up, which
+// is why State.MarshalJSON writes the key on every body but this one (State.intakeGiveUpsHidden),
+// as withoutWakesWaiting leaves off `wakesWaiting`. The flag is set on a value of the state's own,
+// so the state the source answered is left as it was. The band reports a move on every body it
+// serves, as withoutWakesWaiting does.
+func withoutIntakeGiveUps(state State) (State, bool) {
+	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
+	return state, true
 }
 
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added

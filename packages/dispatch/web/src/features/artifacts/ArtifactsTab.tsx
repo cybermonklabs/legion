@@ -22,6 +22,8 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -144,7 +146,10 @@ function ReferencesDisclosure({
  *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
  *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
  *  (`to`). A document's row names its owner first, as a member's row does. A node with no
- *  reference (a session) has no page to open, so its row names it without a link. */
+ *  reference (a session) has no page to open, so its row names it without a link. A comment or a
+ *  message, or a block of one, carries its post's marks: a deleted one is named by the deleted line
+ *  (`DeletedBody`) and never by the words the read gave, and an edited one says ` · edited` after
+ *  its name (`EditedMark`). */
 function ReferenceLinkRow({
   alsoReferences,
   near,
@@ -156,16 +161,26 @@ function ReferenceLinkRow({
 }): ReactNode {
   const { node } = row;
   const route = node.ref === undefined ? undefined : parseNodeReference(node.ref);
+  const deleted = postDeletion(node);
+  const name =
+    deleted === null ? (
+      <>
+        {row.name}
+        <EditedMark at={node.edited_at} className={`font-normal ${textMutedOnSurface}`} />
+      </>
+    ) : (
+      <DeletedBody deleted={deleted} />
+    );
   return (
     <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
       {route === undefined ? (
-        <span className="font-medium">{row.name}</span>
+        <span className="font-medium">{name}</span>
       ) : (
         <Link
           className={`font-medium underline ${linkText} ${linkHoverText}`}
           to={buildReferencePath(route)}
         >
-          {row.name}
+          {name}
         </Link>
       )}
       <p className={textMutedOnSurface}>

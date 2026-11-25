@@ -25,12 +25,13 @@ import (
 // days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
 // records it, so an issue standing in accepting is always still waiting for it; every other
 // phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// answers nothing here: the merger's is recorded and moves no issue. The pull request's state is
+// all it reads, so it reads the row alone (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return false, err
 	}
@@ -651,9 +652,12 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.started(ctx, tx, issue, role, agent, task, row.Entry, marks)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (ResumeTask), on the one walk of its run it reads for that task and the entry it raises.
+// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's first run
+// brings back — its promotion, or the admission pass that finds the tree running when its design
+// gate opened first (admit's startMidPhaseMembers, returnMembersOfRunningTrees) — on the resume
+// task of the phase it stands in (ResumeTask), on the one walk of its run it reads for that task
+// and the entry it raises. Both are the promotion's start here: the pass's return is the one the
+// promotion would have made.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -1091,8 +1095,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the issue holds, a start still queued or in flight included. A number counted on the role's row,
 // or across the rows that name the claim now, falls at or below a claim's given entry wherever a
 // version moves the row that held the claim's highest entry to another claim, and the claim's queue
-// then takes its next task as given already (supervise's given) and no sweep owes it. Readers
-// compare entries for order alone, never for nearness: a role's entries need not be consecutive.
+// then takes its next task as given already (supervise's given) and no sweep owes it. A role's
+// entries need not be consecutive: the difference printed as "which is %d behind" by
+// intake/facts.go and engine.go counts issue-wide raises, including other roles' entries, not
+// entries missed by this role.
 // The facts that raise an entry are applied one at a time (intake.SerializeFacts), so two raises
 // of one issue never read the same highest entry.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (entered, error) {
@@ -1390,7 +1396,8 @@ func HeldNotice(issue record.Issue) record.Notice {
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
+// tree's first run made the tree live: its root's promotion, or the admission pass that finds a
+// re-admitted tree running first.
 func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Issue role holders identify the claim and whether it works the current step, so different agents can hold one role and one agent can move between keyed steps without losing its session or messages.
+time: 2026-11-24T20:14:11Z
+custom:
+    Issue: pr5156

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -209,6 +210,50 @@ func TestAParkedStartOfWorkTheIssueLeftStartsNoProcessAtItsTurn(t *testing.T) {
 			if got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Pending != nil {
 				t.Fatalf("the parked start's claim after its turn = %s by %q holding %+v, want suspended by the daemon holding no task",
 					got.State, got.SuspendedBy, got.Pending)
+			}
+		})
+	}
+}
+
+// A start's launch can park at its issue pod's gate as well, behind another role's session load
+// (askPod), written launching with no process, and the issue can leave the start's work before the
+// gate grants the pod. The grant judges the work again, as the wake pacing's turn does
+// (startLeftWhileParked): a launch whose work the issue left starts no process, its claim is
+// suspended for the daemon, and the pod goes to the next start that waits. The control is the same
+// parked start whose work still holds at the grant, which starts once while the next start waits.
+func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		holds bool
+	}{
+		{"the issue leaves the start's work before the grant", false},
+		{"the control: the work still holds at the grant", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := podHarness(t, "")
+			phaseHoldsAnswering(&holds, &asked)(&h.deps)
+			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+			third := h.podRole(claim.RoleTester, StateSuspended)
+			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			h.wantStarts(first.token, 1)
+			h.parks(second, RequestRuleResume{Claim: second.token, Reason: "it owns its issue's step", Start: startOfStep}, 0)
+			h.parks(third, RequestResume{Claim: third.token}, 0)
+
+			holds = tc.holds
+			h.loadEnds(first)
+
+			if tc.holds {
+				h.wantGrantedStart(second, 1)
+				h.wantStarts(third.token, 0)
+				return
+			}
+			h.wantGrantedStart(third, 1)
+			second.m.Wait()
+			h.wantStarts(second.token, 0)
+			if got := second.m.Claim(); got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Locator != nil {
+				t.Fatalf("the parked start's claim after the grant = %s by %q recording %+v, want suspended by the daemon with no process",
+					got.State, got.SuspendedBy, got.Locator)
 			}
 		})
 	}

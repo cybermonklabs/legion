@@ -10,6 +10,8 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseDispatchReference, shortForm } from "../refs/routes";
 import type { ItemRoute } from "./useItemLanding";
 
@@ -46,7 +48,8 @@ function ownerOf(candidate: IDCandidate): string | undefined {
  *
  * A match the server gave no address for, a direct message a reader may not open, is listed as
  * its kind alone: nothing is linked to it, and no empty line is drawn where its first line would
- * have been.
+ * have been. A comment or a message its author deleted has no first line left, and its link reads
+ * as the deleted line; one its author edited carries ` · edited` after where it stands.
  */
 export function ItemMatchList({
   candidates,
@@ -82,6 +85,7 @@ export function ItemMatchList({
 function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
   const reference = candidate.ref === "" ? undefined : parseDispatchReference(candidate.ref);
   const owner = ownerOf(candidate);
+  const deleted = postDeletion(candidate);
   // The first line tells two matches apart; where the server gave none, the whole id does, so
   // the link always has words of its own.
   const words = candidate.first_line ?? "";
@@ -96,13 +100,20 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
         {owner === undefined ? null : (
           <span className="min-w-0 [overflow-wrap:anywhere]">{owner}</span>
         )}
+        <EditedMark at={candidate.edited_at} deleted={deleted} />
       </div>
       {reference === undefined ? null : (
         <Link
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
           to={buildReferencePath(reference)}
         >
-          {words === "" ? candidate.id : words}
+          {deleted !== null ? (
+            <DeletedBody deleted={deleted} />
+          ) : words === "" ? (
+            candidate.id
+          ) : (
+            words
+          )}
         </Link>
       )}
     </li>

@@ -11,8 +11,9 @@ import (
 // Two texts an operator reads say what a role of the deployment takes. The deploy example says a
 // hook's `roles` take any role of `roles` beside Legion's, as config.readHookRoles and
 // checkDeploymentRoleKeys do. The deployment guide says an issue pod built before a role was
-// defined runs it only once its update round or its release replaces the pod, since the start of
-// that role waits (runtime.ErrAwaitsPodUpdate). Each text is read as prose (proseOf), so a
+// defined runs it only once its update round or its release replaces the pod: until then a start
+// the workflow asks for waits, and a launch the supervisor makes itself is refused and charged as a
+// launch failure (runtime.ErrAwaitsPodUpdate). Each text is read as prose (proseOf), so a
 // comment's layout decides nothing.
 func TestTheOperatorTextsSayWhatARoleOfTheDeploymentTakes(t *testing.T) {
 	for _, text := range []struct {
@@ -26,7 +27,11 @@ func TestTheOperatorTextsSayWhatARoleOfTheDeploymentTakes(t *testing.T) {
 		},
 		{
 			path: "docs/deployment.md",
-			want: []string{"An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod, and until then the role's start waits."},
+			want: []string{
+				"An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod.",
+				"Until then a start the workflow asks for waits, and a launch the supervisor makes itself, such as an operator's resume or a retry, is refused and charged as a launch failure",
+			},
+			gone: []string{"and until then the role's start waits."},
 		},
 	} {
 		prose := proseOf(shippedText(t, text.path))

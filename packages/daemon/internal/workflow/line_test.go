@@ -29,7 +29,7 @@ func seedOwnersPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 	steps := record.NameAgents(nil, []record.PlanStep{
 		{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: key, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-	})
+	}, nil)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
 	})
@@ -88,7 +88,7 @@ func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "checker", Type: "review"},
 		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 3, Role: "linter", Type: "security"},
-	})
+	}, nil)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
 	})

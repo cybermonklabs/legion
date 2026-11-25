@@ -22,6 +22,7 @@ import (
 // end, and the start waits until then. The control is the same start naming a session the claim
 // does not record: nothing stops the running claim, and nothing starts it again.
 func TestAStartThatLeavesAKeysSessionSuspendsItsRunningClaimAndStartsAFreshAgent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		leave  string

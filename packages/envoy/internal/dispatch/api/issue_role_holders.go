@@ -18,7 +18,7 @@ import (
 
 // An issue's role holders are the sessions that hold its Legion roles, each with the claim it holds
 // its role by (issue_role_holders, migrations 20261116163813_issue_role_holders and
-// 20261123203843_issue_role_holders_by_session). Two claims of one issue can hold one role — the
+// 20261124213825_issue_role_holders_by_session). Two claims of one issue can hold one role — the
 // agent of a key on a step of another role, beside that role's own claim of an earlier version of
 // the plan — so a role can have more than one session, and each session holds one role. The
 // Legion daemon is the one party that gives a session a role. It publishes the live set of each
@@ -67,7 +67,7 @@ import (
 // (legionclaim.IsRole), so the shape spells the grammar and lists no roles. The claim is the
 // Legion claim token of the issue the session runs (legionclaim.CutClaimToken), and works_step
 // is true for the claim the daemon's record gives the role's step: two claims of one issue can
-// hold one role, and the way back of 20261123203843 keeps that claim's session where it folds a
+// hold one role, and the way back of 20261124213825 keeps that claim's session where it folds a
 // role back to one session. A daemon before that release names neither, which reads as no claim
 // and no step.
 type issueRoleHolder struct {
@@ -104,12 +104,19 @@ type issueRoleHoldersInput struct {
 	Actor   *model.Actor       `json:"actor"`
 }
 
+// legionProjectOf is the project of the issue key: the key up to its first -, the daemon's own rule
+// (packages/daemon's dispatch.DaemonSession). No route moves an issue to another project, so it is
+// the issue row's project_key too.
+func legionProjectOf(key string) string {
+	project, _, _ := strings.Cut(key, "-")
+	return project
+}
+
 // legionDaemonSessionOf is the session the Legion daemon writes the issue key's project as:
-// legion-daemon:<the key up to its first ->, the daemon's own rule (packages/daemon's
+// legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
 // dispatch.DaemonSession).
 func legionDaemonSessionOf(key string) string {
-	project, _, _ := strings.Cut(key, "-")
-	return legionDaemonSessionPrefix + project
+	return legionDaemonSessionPrefix + legionProjectOf(key)
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
@@ -208,10 +215,9 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
-		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
 			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
-			project, key, daemon))
+			legionProjectOf(key), key, daemon))
 		return
 	}
 	if input.Holders == nil {

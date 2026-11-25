@@ -505,7 +505,7 @@ no_second_source:
   # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
   # this digest in one commit.
   - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
-    digest: aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+    digest: 8ea7415e726e81f4e47d4ba914adf7a8d7c417c05c0a7e66a24023a12ee48a3b
     pinned_in: packages/daemon/docker/worker.Dockerfile
     pinned_as: ARG OMP_SHA256
     why: >-

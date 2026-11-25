@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Two edge-delivery defects. When a session claims a role through an edge replica whose relay run
+  for the session had ended for want of an admission, its messages no longer wait for its next
+  registration: the claim records the admission and renews the entry, and the refresh now sends the
+  resume a registration sends, which starts the ended run; a session the listener is not to relay
+  still gets nothing. And a gap mark owed after a nak whose re-mark write failed before the relay
+  loop's clear no longer goes missing: the clear now forgets the in-memory mark only when it equals
+  the mark the frame carried, so the re-mark's fresh mark survives and the next frame this listener
+  sends the session carries it, in the same run.
+time: 2026-11-23T21:12:49Z
+custom:
+    Issue: pr5282

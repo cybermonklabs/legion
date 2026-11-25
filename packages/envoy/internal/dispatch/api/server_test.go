@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -45,13 +46,14 @@ import (
 )
 
 // apiTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel. Every test of the package calls t.Parallel but those that change or measure
-// something the whole process shares (the default logger, the environment, a package variable,
-// heap statistics), which stay serial and run before the rest. Alone, a test spends most of its
-// time waiting on Postgres, not on a core, so go test's default of GOMAXPROCS (four on CI's arm
-// runner) leaves the runner idle, and on a dev box with hundreds of cores it would open more
-// connections than the test server allows: each test has a database and pools of its own
-// (storetest.Open), and testlimits.ServerConnections sizes the server for a few at once.
+// no -parallel. Most tests of the package call t.Parallel; those that change or measure something
+// the whole process shares (the default logger, the environment, a package variable, heap
+// statistics, the xid rig's GOMAXPROCS and collector) or hold a wall-clock bound stay serial and
+// run before the rest. Alone, a database-backed test spends most of its time waiting on Postgres,
+// not on a core, so go test's default of GOMAXPROCS (four on CI's arm runner) leaves the runner
+// idle, and on a dev box with hundreds of cores it would open more connections than the test
+// server allows: each test has a database and pools of its own (storetest.Open), and
+// testlimits.ServerConnections sizes the server for a few at once.
 //
 // Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
 // test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a
@@ -62,11 +64,14 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
+// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
+// databases to drop and drops their templates, inside the broker harness's Run, which then drops
+// the database brokerstoretest.URL made the contract rows' broker schemas in.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
@@ -216,6 +221,19 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
+	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
+	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
+	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
+	// answer into an unanswered lookup.
+	mentionLookupBound func(target string) time.Duration
+	// relatedBound is the related-item check's meaning allowance and its wait for the
+	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
+	// zero keeps production's. A case whose verdict is what the check's meaning stage found
+	// passes meaningVerdictBound, so whether the machine met production's three seconds is not
+	// what it measures. The bound counts from each check's start, the seed writes' checks among
+	// them.
+	relatedBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -223,6 +241,12 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
+	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
+	// list asks the listener and stores no copy, as the browser suite's server runs
+	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
+	listenerRosterUncached bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -372,21 +396,23 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   options.oidc,
+		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
+		AgentStream:            options.agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               options.embedder,
+		Answerer:               options.answerer,
+		Files:                  options.files,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
+		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
+		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -399,6 +425,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.mentionLookupBound = options.mentionLookupBound
+	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -1186,6 +1214,50 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 	if issues != 1 {
 		t.Fatalf("issue count = %d, want 1", issues)
+	}
+}
+
+// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
+// reference already imported into the call's project answers its issue and creates nothing, and
+// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
+// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
+// is held to the route here, so a change of either the words or the route fails this test.
+func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+	t.Parallel()
+	var words string
+	for _, tool := range contracts.DispatchTools {
+		for _, argument := range tool.Arguments {
+			if tool.Name == "dispatch_issue" && argument.Name == "external" {
+				words = argument.Description
+			}
+		}
+	}
+	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
+		if !strings.Contains(words, promise) {
+			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
+		}
+	}
+	handler := newTestHandler(t)
+	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project["key"], response.Code, response.Body.String())
+		}
+	}
+	importInto := func(project string) *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+			"external": "owner/repo#7", "project": project,
+		}, "alice")
+	}
+	created := importInto("CORE")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("import owner/repo#7 into CORE: status=%d body=%s", created.Code, created.Body.String())
+	}
+	key := decodeBody[model.Issue](t, created).Key
+	if again := importInto("CORE"); again.Code != http.StatusOK || decodeBody[model.Issue](t, again).Key != key {
+		t.Fatalf("import owner/repo#7 into CORE again: status=%d body=%s, want 200 answering %s", again.Code, again.Body.String(), key)
+	}
+	if refused := importInto("OTHER"); refused.Code != http.StatusBadRequest || responseCode(t, refused) != "EXTERNAL_PROJECT_MISMATCH" {
+		t.Fatalf("import owner/repo#7 into OTHER: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH", refused.Code, refused.Body.String())
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -112,7 +113,7 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(peer.Close)
+	testcleanup.Add(t, peer.Close)
 	return peer
 }
 

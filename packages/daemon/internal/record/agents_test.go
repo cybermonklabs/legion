@@ -18,7 +18,7 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 		{Task: "t", Position: 3, Role: "reviewer"},
 		{Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"},
 	}
-	got := NameAgents(nil, steps)
+	got := NameAgents(nil, steps, nil)
 	want := []claim.Agent{"implementer", "implementer", "reviewer", ""}
 	for i := range want {
 		if got[i].Agent != want[i] {
@@ -29,7 +29,7 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 		t.Errorf("NameAgents named the steps it was given (%q), want a copy named", steps[0].Agent)
 	}
 	later := []PlanStep{{Task: "u", Position: 1, Role: "tester", AgentKey: "a"}, {Task: "u", Position: 2, Role: "implementer"}}
-	again := NameAgents(got, later)
+	again := NameAgents(got, later, nil)
 	if again[0].Agent != "implementer" {
 		t.Errorf("key a in a later version: name %q, want implementer, the name it had", again[0].Agent)
 	}
@@ -46,12 +46,12 @@ func TestAKeyKeepsItsNameWhenALaterVersionGivesItsRoleToAFreshStep(t *testing.T)
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	})
+	}, nil)
 	v2 := NameAgents(v1, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	})
+	}, nil)
 	if v2[1].Agent != "implementer" {
 		t.Errorf("key a in version 2: name %q, want implementer", v2[1].Agent)
 	}
@@ -106,23 +106,23 @@ func TestAKeyOfALaterGenerationTakesNoNameAnEarlierKeyHeld(t *testing.T) {
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	}))
+	}, nil))
 	second := NameAgents(first, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
 		{Task: "t", Position: 2, Role: "tester"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	})
+	}, nil)
 	if want := []claim.Agent{"", "tester", "reviewer"}; !slices.Equal(agentNames(second), want) {
 		t.Fatalf("the names of generation 2 = %q, want %q: key b takes no name key a held", agentNames(second), want)
 	}
-	if unnamed := UnnamedAgents(first, second); len(unnamed) != 1 || unnamed[0].Step.Position != 1 || unnamed[0].Name != "implementer" || unnamed[0].Holder != "a" {
+	if unnamed := UnnamedAgents(first, second, nil); len(unnamed) != 1 || unnamed[0].Step.Position != 1 || unnamed[0].Name != "implementer" || unnamed[0].Holder != "a" {
 		t.Fatalf("UnnamedAgents = %+v, want step 1's agent, key b, which would take implementer, which key a holds", unnamed)
 	}
 	back := NameAgents(first, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	})
+	}, nil)
 	if want := []claim.Agent{"", "implementer", "reviewer"}; !slices.Equal(agentNames(back), want) {
 		t.Fatalf("the names with key a back = %q, want %q: key a keeps implementer and key b takes none", agentNames(back), want)
 	}
@@ -136,18 +136,18 @@ func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
 	first := ofGeneration(1, NameAgents(nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "implementer"},
-	}))
+	}, nil))
 	defaults := ofGeneration(2, NameAgents(nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	}))
+	}, nil))
 	earlier := append(slices.Clone(first), defaults...)
 	got := NameAgents(earlier, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
 		{Task: "t", Position: 3, Role: "reviewer"},
-	})
+	}, nil)
 	if want := []claim.Agent{"implementer", "implementer", "reviewer"}; !slices.Equal(agentNames(got), want) {
 		t.Fatalf("the names = %q, want %q: key a keeps the name its generation's default steps gave it", agentNames(got), want)
 	}
@@ -189,12 +189,12 @@ func TestADroppedKeysNameIsTakenByNoOtherAgent(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			first := ofGeneration(1, NameAgents(nil, tc.first))
-			got := NameAgents(first, tc.later)
+			first := ofGeneration(1, NameAgents(nil, tc.first, nil))
+			got := NameAgents(first, tc.later, nil)
 			if !slices.Equal(agentNames(got), tc.want) {
 				t.Fatalf("the names = %q, want %q", agentNames(got), tc.want)
 			}
-			unnamed := UnnamedAgents(first, got)
+			unnamed := UnnamedAgents(first, got, nil)
 			if len(unnamed) != 1 || unnamed[0].Step.Position != tc.unnamed.Step.Position || unnamed[0].Name != tc.unnamed.Name || unnamed[0].Holder != tc.unnamed.Holder {
 				t.Fatalf("UnnamedAgents = %+v, want step %d's agent, which would take %s, held by key %s", unnamed, tc.unnamed.Step.Position, tc.unnamed.Name, tc.unnamed.Holder)
 			}
@@ -208,12 +208,12 @@ func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
 	earlier := ofGeneration(1, NameAgents(nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer"},
 		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
-	}))
+	}, nil))
 	earlier[1].Agent = "acceptance"
 	got := NameAgents(earlier, []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
 		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
-	})
+	}, nil)
 	if want := []claim.Agent{"implementer", ""}; !slices.Equal(agentNames(got), want) {
 		t.Fatalf("the names = %q, want %q: the owner has no name whatever its earlier rows hold", agentNames(got), want)
 	}
@@ -235,12 +235,12 @@ func TestUnnamedAgentsNamesEachAgentWithNoNameAndTheNameItWouldTake(t *testing.T
 		{Task: "t", Position: 4, Role: "reviewer"},
 		{Task: "t", Position: 5, Role: "acceptance", AgentKey: "owner"},
 	}
-	got := UnnamedAgents(earlier, named)
+	got := UnnamedAgents(earlier, named, nil)
 	want := []UnnamedAgent{{Step: named[1], Name: "critic", Holder: "a"}, {Step: named[3], Name: "reviewer", Holder: "b"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("UnnamedAgents = %+v, want %+v", got, want)
 	}
-	if none := UnnamedAgents(nil, NameAgents(nil, named[:3])); len(none) != 0 {
+	if none := UnnamedAgents(nil, NameAgents(nil, named[:3], nil), nil); len(none) != 0 {
 		t.Fatalf("UnnamedAgents of a version every agent of which has a name = %+v, want none", none)
 	}
 }

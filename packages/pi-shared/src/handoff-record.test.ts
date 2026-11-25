@@ -154,7 +154,7 @@ test("every other completion reports the commit the workspace stands on, and rea
   }
 });
 
-// Contract 221: a role of the deployment completes the step it works, `step`, which ends with no
+// Contract 258: a role of the deployment completes the step it works, `step`, which ends with no
 // handoff record, so it reports the commit its workspace stands on wherever its issue stands.
 test("a role of the deployment reports the commit the workspace stands on, and reads no record", async () => {
   for (const [phase, role] of [

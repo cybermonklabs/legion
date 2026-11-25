@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `legion` tool's descriptions of `register_plan` and `stop_task` say that Legion answers
+  `PLAN_NOT_TAKEN` on an issue whose experiment's group runs the project's default steps, and
+  that the refusal records nothing. The plugin speaks daemon API contract 220.
+time: 2026-11-22T00:41:05Z
+custom:
+    Issue: pr4930

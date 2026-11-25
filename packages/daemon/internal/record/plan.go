@@ -30,7 +30,8 @@ const (
 	// document.
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
-	// work of a generation no owner's plan reached: version 0, no document and no giver.
+	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
+	// its owner: version 0, no document and no giver.
 	PlanSourceDefault = "default"
 )
 
@@ -185,7 +186,7 @@ type PlanStep struct {
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
 	// gives before the step is written and nothing else writes. A step of the key owner holds
-	// none (20261123203837 named every other step a release before the column wrote).
+	// none (20261124213820 named every other step a release before the column wrote).
 	Agent claim.Agent
 	// LeaveSession is the session the claim of the step's agent recorded when the step was
 	// written, where that agent took a name a key's agent held in an earlier generation, so the
@@ -513,10 +514,25 @@ func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue)
 // architect of the issue's tree now (ArchitectOfTree), in the order they were given: the plans an
 // earlier owner gave, which the issue's first step passes over. The architect of the tree's root
 // and each sub-architect of the tree are owners, so none of their plans is among them, and a
-// default plan is nobody's, so none is either. The versions are read, and their rows closed,
-// before each giver is judged, since a transaction runs one statement at a time.
+// default plan is nobody's, so none is either.
 func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	describe := fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key)
+	return s.plansInForce(ctx, tx, issue, false, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key))
+}
+
+// PlansOfOwners is the version in force of each generation of issue whose giver is an architect of
+// the issue's tree now (ArchitectOfTree), in the order they were given, generation 0 among them,
+// which holds a plan given before the daemon recorded the issue: every plan an owner gave that a
+// first step could take, each copy a carry wrote to a later generation (CarryPlan) among them. A
+// default plan is nobody's, so none is among them.
+func (s *Postgres) PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
+	return s.plansInForce(ctx, tx, issue, true, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key))
+}
+
+// plansInForce is the owner's version in force of each generation of issue, in the order they were
+// given, whose giver is an architect of the issue's tree now where owners is true, and is none where
+// it is false. The versions are read, and their rows closed, before each giver is judged, since a
+// transaction runs one statement at a time.
+func (s *Postgres) plansInForce(ctx context.Context, tx pgx.Tx, issue Issue, owners bool, describe string) ([]PlanVersion, error) {
 	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
 		order by given_at, generation`, issue.Key)
 	if err != nil {
@@ -526,17 +542,17 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	var earlier []PlanVersion
+	var plans []PlanVersion
 	for _, version := range given {
 		owner, err := ArchitectOfTree(ctx, s, tx, version.GivenBy, issue)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		if !owner {
-			earlier = append(earlier, version)
+		if owner == owners {
+			plans = append(plans, version)
 		}
 	}
-	return earlier, nil
+	return plans, nil
 }
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
@@ -575,8 +591,12 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
-			select issue, $3, task, position, role, type, agent_key, agent
+		// Every column of plan_steps but the generation, leave_session among them: a default step
+		// whose agent took a key's name carries the key's session to leave into the generation it is
+		// carried to, or that agent's first start there resumes the key's session
+		// (TestACarriedPlanHoldsEveryColumnOfItsSteps fails on a column the copy leaves out).
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent, leave_session)
+			select issue, $3, task, position, role, type, agent_key, agent, leave_session
 			from plan_steps where issue = $1 and generation = $2`,
 	} {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
