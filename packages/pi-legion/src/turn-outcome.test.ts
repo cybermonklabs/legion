@@ -288,8 +288,17 @@ test("a turn that was not the take's names no task, a take's turn names its task
   await report(SESSION, refusedWith(529), 4);
   await report(SESSION, refusedWith(529));
 
-  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "refused", task: 4, providerError: { status: 529 } });
-  expect(posted[1]).toMatchObject({ sequence: 2, outcome: "refused", providerError: { status: 529 } });
+  expect(posted[0]).toMatchObject({
+    sequence: 1,
+    outcome: "refused",
+    task: 4,
+    providerError: { status: 529 },
+  });
+  expect(posted[1]).toMatchObject({
+    sequence: 2,
+    outcome: "refused",
+    providerError: { status: 529 },
+  });
   expect(posted[1]).not.toHaveProperty("task");
   for (const body of posted) expect(body).not.toHaveProperty("unprompted");
 });
