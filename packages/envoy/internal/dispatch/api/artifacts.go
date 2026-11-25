@@ -2049,7 +2049,15 @@ const issueArtifactsStatement = `
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
-	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)
+	return listedArtifacts(ctx, q, issueArtifactsStatement, issueKey)
+}
+
+// listedArtifacts is the artifacts query names, as every list of them is read: the rows scanned
+// (collectArtifacts), then each given the versions and the rest of the detail a read carries
+// (loadArtifactDetails). An issue's list, a project's and an agent conversation's differ in the
+// statement alone, so each is that statement and this call.
+func listedArtifacts(ctx context.Context, q queryer, query string, args ...any) ([]model.Artifact, error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2061,6 +2069,23 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 		return nil, err
 	}
 	return artifacts, nil
+}
+
+// writeArtifactList answers a list route with the artifacts query names (listedArtifacts), each
+// as a read shape carrying the display trees the caller asked for. A list route is therefore its
+// own authorization, its own statement and this call: a project's list and an agent
+// conversation's differ in nothing else, and a route added later says what it reads and who may
+// read it rather than repeating how a list is read.
+func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
+	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 // collectArtifacts reads the rows issueArtifactsStatement returns. An issue with no artifact

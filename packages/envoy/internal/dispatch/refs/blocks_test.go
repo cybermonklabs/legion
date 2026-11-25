@@ -102,7 +102,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {
@@ -146,7 +146,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	`, "The first paragraph.\n\nThe second paragraph.").Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
@@ -194,7 +194,7 @@ func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
 	`, body).Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {
@@ -365,7 +365,7 @@ func indexOtherRendererVersionOne(t *testing.T, tx pgx.Tx, artifact, markdown st
 	}
 	stored := respelledVersionBlocks(t, tree, markdown, cuts)
 	insertRenderedVersion(t, tx, artifact, 1, markdown, pmdoc.RendererVersion-1, versionOneAt)
-	if _, won, _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil); err != nil || !won {
+	if _, won, _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil, ""); err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
 	return tree, stored
@@ -378,7 +378,7 @@ func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks 
 	t.Helper()
 	versionTwoAt := versionOneAt.Add(time.Hour)
 	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	moved, won, _, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
+	moved, won, _, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}
