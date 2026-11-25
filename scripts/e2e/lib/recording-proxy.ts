@@ -309,16 +309,22 @@ export function startProxy(options: ProxyOptions) {
         return new Response(null, { status: response.status, headers: responseHeaders });
       }
       const [toClient, toRecord] = response.body.tee();
-      (async () => {
+      // The client need not wait for the recording. Keep partial text for a read failure,
+      // but do not retry a failed write or print its error, which might contain request data.
+      const recordStream = async () => {
         const decoder = new TextDecoder();
         let text = "";
         try {
           for await (const chunk of toRecord) text += decoder.decode(chunk, { stream: true });
-          finish(text + decoder.decode());
         } catch (error) {
           finish(text, error instanceof Error ? error.message : String(error));
+          return;
         }
-      })();
+        finish(text + decoder.decode());
+      };
+      recordStream().catch(() => {
+        console.error(`recording-proxy: could not record ${label} exchange ${number}`);
+      });
       return new Response(toClient, { status: response.status, headers: responseHeaders });
     },
   });
