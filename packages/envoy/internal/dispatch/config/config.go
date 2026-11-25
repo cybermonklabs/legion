@@ -229,11 +229,14 @@ func refuseOpenCodeUserFile(oldPath, userPath string, deviceOf func(string) (uin
 	}
 }
 
+// applyEnvironmentOverrides applies DISPATCH_SERVER_URL and NATS_URLS over cfg. Each refusal names
+// the variable alone: the value as written is where a credential would be, a URL's user
+// information above all, which a NATS server reads as its user and password or its token.
 func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bool)) error {
 	if raw, set := lookup("DISPATCH_SERVER_URL"); set {
 		serverURL, err := dispatchServerURL(raw)
 		if err != nil {
-			return fmt.Errorf("DISPATCH_SERVER_URL=%q (expected an absolute http(s) URL without a path)", raw)
+			return errors.New("DISPATCH_SERVER_URL (expected an absolute http(s) URL with no user information, path, query or fragment)")
 		}
 		if cfg.Dispatch == nil {
 			cfg.Dispatch = &DispatchConfig{}
@@ -243,7 +246,7 @@ func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bo
 	if raw, set := lookup("NATS_URLS"); set {
 		natsURLs, err := natsURLs(raw)
 		if err != nil {
-			return fmt.Errorf("NATS_URLS=%q (expected a comma-separated list of NATS URLs)", raw)
+			return errors.New("NATS_URLS (expected a comma-separated list of NATS URLs, none of them empty)")
 		}
 		cfg.Envoy.NatsURLs = natsURLs
 	}
