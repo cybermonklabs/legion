@@ -182,7 +182,7 @@ describe("exportJjSessionAttribution", () => {
     );
   });
 
-  // Contract 258: a role of the deployment, `checker`, is a claim's role as Legion's six are, and
+  // Contract 297: a role of the deployment, `checker`, is a claim's role as Legion's six are, and
   // its commits carry it as theirs do.
   it("writes Legion-Role: checker for a role of the deployment", async () => {
     const dir = await stateDir();

@@ -752,7 +752,7 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
 // `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
 // above cannot see a role the Go side adds. The key list it held is held here instead: every
 // worker key of every golden is a role of the step grammar, one of Legion's six or a role of the
-// deployment (contract 258), as LEGION-241's `checker` is.
+// deployment (contract 297), as LEGION-241's `checker` is.
 test("every golden's worker keys are roles of the step grammar", () => {
   const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
   expect(states.length).toBeGreaterThan(0);
@@ -987,7 +987,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
   ).toBeTrue();
 });
 
-// Contract 258: a step of a role of the deployment runs as the phase `step`, and the issue names
+// Contract 297: a step of a role of the deployment runs as the phase `step`, and the issue names
 // the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
 // issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
 // it; a held issue keeps the failed claim of that role as its worker.
@@ -1002,7 +1002,7 @@ test("the state golden carries an issue at step and the role of the deployment t
   expect(Object.keys(held?.workers ?? {})).toEqual(["checker"]);
 });
 
-// Contract 258: a move back may go to `step` and name the step it returns to by its place,
+// Contract 297: a move back may go to `step` and name the step it returns to by its place,
 // 1 for the task's first (`api.PhaseBackwardRequest.ReturnTo`), as a failed completion does.
 test("a move back may go to step and name the place it returns to", () => {
   const move = { grantId: "grant-208", to: "step", reason: "the check failed", returnTo: 2 };
@@ -2787,9 +2787,9 @@ test("a reader at the previous contract parses the state body this daemon serves
   const golden = fixture("state.json") as {
     strandedClaims: { issue: string; role: string; state: string; token?: string }[];
   };
-  // Each entry names its claim's token since contract 259, a key the 45 reader does not know: a
+  // Each entry names its claim's token since contract 298, a key the 45 reader does not know: a
   // strict object refuses the entry, and so the whole state body, over it. That is why the state
-  // route serves a pod below 259 every entry without it (`api`'s `withoutStrandedTokens`, pinned
+  // route serves a pod below 298 every entry without it (`api`'s `withoutStrandedTokens`, pinned
   // on the Go side), and the entries below are read as such a pod is served them.
   const withToken = golden.strandedClaims[0];
   if (withToken?.token === undefined) {
@@ -2828,9 +2828,9 @@ test("a reader at the previous contract parses the state body this daemon serves
     expect(refused.error?.issues[0]?.path).toEqual(["state"]);
   }
 
-  // A claim of a role of the deployment (contract 258), LEGION-241's checker, is the other entry
+  // A claim of a role of the deployment (contract 297), LEGION-241's checker, is the other entry
   // this reader cannot take: its role enum names Legion's six. That is why the state route serves
-  // a pod below 258 the report without it (`api`'s row of `stateNarrowings` for the roles of a
+  // a pod below 297 the report without it (`api`'s row of `stateNarrowings` for the roles of a
   // deployment, pinned on the Go side) rather than the body it would refuse.
   const deployed = state.strandedClaims.filter((stranded) => !builtin.has(stranded.role));
   expect(deployed).toEqual([{ issue: "LEGION-241", role: "checker", state: "failed" }]);
@@ -2941,9 +2941,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off; the pod hold's at 246, which
   // leaves `podHold` off every issue (`withoutPodHold`); contract 250's, which takes `priority`
   // off each issue and off its `waitingLine`; contract 256's, which takes `lastDeathAt` and
-  // `lastStartFailureAt` off each claim view; the roles of a deployment's (contract 258), which
+  // `lastStartFailureAt` off each claim view; the roles of a deployment's (contract 297), which
   // serves the state golden's issues at step and its claims of a role of the deployment as a
-  // caller below 258 reads them (`belowDeploymentRoles`); and contract 259's, which serves each
+  // caller below 297 reads them (`belowDeploymentRoles`); and contract 298's, which serves each
   // claim nothing will wake and each claim view without its `token`, and each issue without its
   // `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`). So the narrowing changes this
   // one block and, beside it, only what the other seven bands change. One value strip stands
@@ -3067,7 +3067,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
 });
 
 /** `state` as the state route serves it to a caller below the roles of a deployment (contract
- * 258, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in `internal/api/shaping.go`):
+ * 297, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in `internal/api/shaping.go`):
  * an issue at `step` at `implementing`, a hold from `step` as one from `implementing`, a pending
  * task at `step` as one at `implementing`, no `stepRole` and no `startWaitsForPod`; and no
  * stranded claim, waiting wake or pause stop of a role outside Legion's six. An issue's workers
@@ -3224,7 +3224,7 @@ test("the state golden shows a claim's capability report beside its locator", ()
 // each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
 // failed implementer, whose issue is held, LEGION-211's suspended one, LEGION-212's retired
 // tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
-// relaunch (contract 56), and LEGION-241's failed checker, a role of the deployment (contract 258)
+// relaunch (contract 56), and LEGION-241's failed checker, a role of the deployment (contract 297)
 // — four keys each, neither the suspended nor the retired one wider than the failed one, the
 // fourth the claim's token, which tells two claims of one role on one issue apart — and a state
 // with none carries an empty list rather than none.
@@ -3800,7 +3800,7 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
 });
 
-// A role of the deployment (contract 258): a claim of it registers, an operator acts on it, and
+// A role of the deployment (contract 297): a claim of it registers, an operator acts on it, and
 // the state names it among the claims nothing will wake, the wakes the pacing holds and the stops
 // an open pause waits on. The controller's claim holds no issue, so no request of a claim recovery
 // may name it.

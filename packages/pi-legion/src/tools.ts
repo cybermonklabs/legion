@@ -331,13 +331,13 @@ function stateSummary(state: LegionState): string {
     const claims: Array<readonly [string, SummaryClaim, string]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
     // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
-    // deployment (contract 258) in the map's order.
+    // deployment (contract 297) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim, ""]);
     }
-    // Each other claim of the issue, with the role it holds (contract 259): two claims of one
+    // Each other claim of the issue, with the role it holds (contract 298): two claims of one
     // issue can hold one role, and `workers` shows one of them, so the other is listed after the
     // workers, marked as another claim of its role, with its token: issue and role reach only the
     // claim `workers` shows, and fresh_session and compact reach this one by its token (`claim`).
@@ -449,14 +449,14 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 258): the role
+    // A claim's role, one of Legion's six or a role of the deployment (contract 297): the role
     // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
     // controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
       .optional(),
-    // A claim's token (contract 259), for fresh_session and compact: two claims of one issue can
+    // A claim's token (contract 298), for fresh_session and compact: two claims of one issue can
     // hold one role, and issue and role reach the one that works the role's step that started last.
     claim: z
       .string()
@@ -863,8 +863,8 @@ export function createLegionTool(deps: {
                 `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
               );
             }
-            // A claim the controller names by its token (contract 259) is sent only when named,
-            // since a daemon below 259 refuses the member as unknown.
+            // A claim the controller names by its token (contract 298) is sent only when named,
+            // since a daemon below 298 refuses the member as unknown.
             const named = parameters.claim;
             if (named !== undefined && (typeof named !== "string" || named.trim() === "")) {
               throw new Error(`${operation}'s claim is a claim token, as a notice names it`);

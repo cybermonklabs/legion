@@ -277,7 +277,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 		t.Fatalf("the boot's line = %v, want an error for project %s naming %q to resume, %q as suspended workers, %q to retry and %q needing a workflow start",
 			line, cfg.Project, resume, workers, retry, workflowStart)
 	}
-	// Each entry names its claim's token (contract 259's `strandedClaims.*.token`): two claims of
+	// Each entry names its claim's token (contract 298's `strandedClaims.*.token`): two claims of
 	// one issue can hold one role, so the issue and the role do not name the claim.
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
