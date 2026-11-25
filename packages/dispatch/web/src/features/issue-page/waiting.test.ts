@@ -898,10 +898,10 @@ const answered: Ask = {
 // Decision 447: the count pairs a question written as a block of the spec with its ask as the
 // tree does (`askOfNode`), through the issue's open asks and the asks read alike. Once alice
 // answered it, the question is no open ask of the issue, and only the asks read names the block
-// it is written as. With its ask's node overtaken, the open question the read hangs under its
-// block and the decision waiting for review there wait on nobody: the count counts neither, and
-// the tree draws the block's row and both of them closed and none waiting. With its ask's node
-// live, both wait, in the count as in the tree.
+// it is written as. With its ask's node overtaken, neither the open question the read hangs
+// under its block nor the decision waiting for review there waits on the reader: the count counts
+// neither, and the tree draws the block's row and both of them closed and none waiting. With its
+// ask's node live, both wait, in the count as in the tree.
 test("an answered question whose ask is overtaken counts nothing under it", () => {
   const underBlock = (ask: Partial<TreeAnswerNode>) =>
     answerOf([

@@ -35,6 +35,7 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
+import { treeRead } from "./spec-filter/tree-read";
 import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -90,12 +91,13 @@ export function IssuePropertiesRow({
   // observer, so each read here takes that rule too, and the count costs no request of its own
   // (`waiting.ts`). A statement is one by the rule the outline's review list reads
   // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
-  // The asks read, which the outline holds too, pairs a question's block with its ask as the
-  // outline pairs them, open or answered (`askOfNode`), so the count closes what the outline does.
+  // The asks read is observed under the key the outline fills, and sends no request of its own
+  // (`treeRead`): it pairs a question's block with its ask as the outline pairs them, open or
+  // answered (`askOfNode`), so the count closes what the outline does.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
-  const asks = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
+  const asks = useQuery(treeRead(issueAsksQuery(issue.key)));
   const tree = useTreeRead(issue).answer;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
