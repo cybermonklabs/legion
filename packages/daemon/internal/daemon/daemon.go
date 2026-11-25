@@ -1062,7 +1062,7 @@ type plan struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	// streamListen is overrides.streamListen; nil binds the worker stream's address.
 	streamListen func(network, address string) (net.Listener, error)
-	// totalsRead is overrides.totalsRead; nil runs nothing.
+	// totalsRead is overrides.totalsRead, and nil runs nothing.
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
 	// totalsClock is overrides.totalsClock, and clock where that is nil: the clock of each read of
 	// an agent's totals (workflowRuntime.readTotals).

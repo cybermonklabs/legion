@@ -629,21 +629,28 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 	}
 }
 
-// seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
-// daemon's store in reviewing at generation 1, on an open pull request of its own at
-// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+// seedChildInReviewing records a child of the walk's root on the pull request after the walk's
+// (seedChildOn). It answers the child's key and its pull request's number.
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
+	r.t.Helper()
+	number := r.number + 1
+	return r.seedChildOn(number, "A child in the walk's tree"), number
+}
+
+// seedChildOn records a child of the walk's root titled title, created in Dispatch and held by the
+// daemon's store in reviewing at generation 1. It stands on open pull request number at
+// stepRecordsHead, which GitHub reports clean. It answers the child's key.
+func (r *stepRecordsRig) seedChildOn(number int, title string) string {
 	t := r.t
 	t.Helper()
 	var created createdIssue
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child in the walk's tree"}, http.StatusCreated, &created)
-	number := r.number + 1
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
 	parent := r.key
 	ctx := context.Background()
 	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
-			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+			Title: title, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
 		}); err != nil {
 			return err
@@ -652,7 +659,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
-	return created.Key, number
+	return created.Key
 }
 
 // A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the

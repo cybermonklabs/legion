@@ -581,6 +581,28 @@ func (r *stepRecordsRig) person(method, path string, body any, want int, into an
 	}
 }
 
+// personMoves is a person setting the walk's issue, titled title, to status in Dispatch. Dispatch
+// then relays the event of that write, of type kind. The daemon's consumer reads it as it reads any
+// issue event.
+func (r *stepRecordsRig) personMoves(status, kind, title string) {
+	t := r.t
+	t.Helper()
+	var moved createdIssue
+	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": status}, http.StatusOK, &moved)
+	payload, err := json.Marshal(map[string]any{
+		"id": moved.LastSeq, "issue_key": r.key, "project": r.cfg.Project, "seq": moved.LastSeq, "type": kind,
+		"actor": map[string]string{"kind": "user", "id": "a-person"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"payload": map[string]any{
+			"key": r.key, "status": status, "title": title, "parent": nil, "rank": moved.Rank,
+			"labels": liveDispatchLabels(true), "last_seq": moved.LastSeq, "project": r.cfg.Project, "resolved_repo": liveRepo,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encode the Dispatch event of %s: %v", r.key, err)
+	}
+	r.publish("notifications.dispatch.issue."+r.key+"."+kind, "dispatch", fmt.Sprintf("%s-%s-%d", r.key, status, moved.LastSeq), string(payload))
+}
+
 // writeHandoff writes the issue's handoff record of word under session, as `dispatch
 // handoff-write` does with the agent's bearer, and answers its id and version.
 func (r *stepRecordsRig) writeHandoff(session, word string) (string, int) {
@@ -996,8 +1018,8 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	return c
 }
 
-// reconnect is the pane's shim connecting to the daemon that runs now with the boot token it has
-// held since its launch, as it does after the daemon restarts. It says again that it counts the
+// reconnect is the pane's shim connecting to the daemon that runs now, as it does after the daemon
+// restarts. It uses the boot token it has held since its launch, and says again that it counts the
 // agent's calls.
 func (c *stepClaimant) reconnect() {
 	c.r.built.mu.Lock()
@@ -1414,7 +1436,8 @@ func (c *stepClaimant) holdSocket(sh *shim) {
 }
 
 // dialCountingShim dials the worker stream at address as a shim that counts its launch's calls
-// (Hello2.ModelTotals), again after a refused hello until one is acked (dialHelloUntilAcked).
+// (Hello2.ModelTotals). It dials again after a refused hello until one is acked
+// (dialHelloUntilAcked).
 func dialCountingShim(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
 	return dialHelloUntilAcked(t, address, shimwire.Hello2{BootToken: bootToken, ModelTotals: true})

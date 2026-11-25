@@ -18,9 +18,6 @@ const (
 
 // totalsOf is what a shim counted of one launch: its set model, and each model with its calls.
 func totalsOf(setModel string, counts ...shimwire.ModelCount) *shimwire.Totals {
-	if counts == nil {
-		counts = []shimwire.ModelCount{}
-	}
 	return &shimwire.Totals{Read: 1, SetModel: setModel, Counts: counts}
 }
 
@@ -109,7 +106,7 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 }
 
 // shownAnswers is answers as a test failure names them: unknown for nil, else each model and its
-// calls, so an empty list and nil read apart.
+// calls. So an empty list and nil read apart.
 func shownAnswers(answers *[]record.ModelCalls) string {
 	if answers == nil {
 		return "unknown"
@@ -117,11 +114,11 @@ func shownAnswers(answers *[]record.ModelCalls) string {
 	return fmt.Sprintf("%v", *answers)
 }
 
-// The launches of a step: the start's live launch, each launch from the first one that counts from
-// zero (record.StartTotals.FromZero) to the claim's generation now, and a launch still starting. A
-// launch absent at the start, whose row the store wrote only after it, counts from zero. A live
-// launch's end is the fact's read, or the newer read a committed fact kept. An ended launch's end is
-// its final totals. A launch still starting at the end has no end.
+// A step's launches are the start's live launch, and each launch from the first that counts from
+// zero (record.StartTotals.FromZero) to the claim's generation now. A launch still starting is one
+// too. A launch absent at the start, whose row the store wrote only after it, counts from zero. A
+// live launch's end is the fact's read, or the newer read a committed fact kept. An ended launch's
+// end is its final totals. A launch still starting at the end has no end.
 func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 	t.Parallel()
 	agent := claim.Token("legion-legion-legion-208-implementer")

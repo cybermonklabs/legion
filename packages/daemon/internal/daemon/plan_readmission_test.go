@@ -6,7 +6,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -191,24 +190,10 @@ func (r *ownerStepsRig) waitLingerEnded(generation uint64) {
 }
 
 // todoAgain is a person setting the walk's issue todo in Dispatch, and the event Dispatch relays for
-// that write, which the daemon's consumer reads as it reads any issue event.
+// that write (personMoves). The daemon's consumer reads it as it reads any issue event.
 func (r *ownerStepsRig) todoAgain() {
-	t := r.t
-	t.Helper()
-	var moved createdIssue
-	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "todo"}, http.StatusOK, &moved)
-	payload, err := json.Marshal(map[string]any{
-		"id": moved.LastSeq, "issue_key": r.key, "project": r.cfg.Project, "seq": moved.LastSeq, "type": "issue.updated",
-		"actor": map[string]string{"kind": "user", "id": "a-person"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"payload": map[string]any{
-			"key": r.key, "status": "todo", "title": r.title(), "parent": nil, "rank": moved.Rank,
-			"labels": liveDispatchLabels(true), "last_seq": moved.LastSeq, "project": r.cfg.Project, "resolved_repo": liveRepo,
-		},
-	})
-	if err != nil {
-		t.Fatalf("encode the Dispatch event of %s: %v", r.key, err)
-	}
-	r.publish("notifications.dispatch.issue."+r.key+".issue.updated", "dispatch", fmt.Sprintf("%s-todo-%d", r.key, moved.LastSeq), string(payload))
+	r.t.Helper()
+	r.personMoves("todo", "issue.updated", r.title())
 }
 
 // waitStands waits for issue to stand in want at generation.

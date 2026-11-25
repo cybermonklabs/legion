@@ -113,7 +113,7 @@ type workflowRuntime struct {
 	// plan.totalsClock, which run sets before any fact applies. nil, in a runtime a test builds by
 	// hand, is the wall clock.
 	totalsClock supervise.Clock
-	// totalsRead is plan.totalsRead, a test's seam after each fact's reads (readTotals); nil runs
+	// totalsRead is plan.totalsRead, a test's seam after each fact's reads (readTotals). nil runs
 	// nothing.
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
