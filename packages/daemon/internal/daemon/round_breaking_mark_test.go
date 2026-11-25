@@ -11,10 +11,12 @@ package daemon
 // mark's words without making the round break its pod. And the Legion reviewer's point 8: an
 // earlier round's keep of the pod holds no round over a drift that breaks the pod, which no role
 // can keep working under. Spec v25 adds a drift of the pod's exchange identity (the Sandbox
-// runtime's movedExchangeIdentity) to the drifts that break the pod, for the account's reason: a
-// launch into a pod built before the exchange identity is refused until the pod's round replaces
-// it, so a round that kept such a pod would leave an issue whose only claim waits on it unable to
-// run again. Its row scripts the reason as PodDrift gives it (podUpdateExchangeDrift).
+// runtime's movedExchangeIdentity) to the drifts that break the pod, for the account's reason, and
+// spec v26 narrows it, on the Legion reviewer's Medium 2, to where a launch into the pod is refused
+// until the pod's round replaces it: under dispatch_token_broker with no transition file named, a
+// pod built before the exchange identity, so a round that kept such a pod would leave an issue
+// whose only claim waits on it unable to run again. Its row scripts the reason as PodDrift gives it
+// there (podUpdateExchangeDrift); round_exchange_drift_test.go reads each case off the real PodDrift.
 //
 // Each round here is over a working copy that holds a change. A round over a drift that breaks the
 // pod replaces the pod after the read and tells the issue's architect what it took; any other

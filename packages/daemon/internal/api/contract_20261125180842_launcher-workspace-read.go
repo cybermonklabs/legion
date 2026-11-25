@@ -54,10 +54,12 @@ package api
 // spec v23) ride this entry too, and move no contract: none of them changes a shape a plugin,
 // a pane, a pod's init or launcher container, or the launcher wire reads. They add the store
 // table `pod_replacements` (migration 20261125023100), a record that only this daemon reads and
-// writes, which is no wire or answer shape; the reasons a pod's account drift and its exchange
-// identity's drift give (`runtime.BreakingDrift` in front of each), which are a round's recorded
-// reasons and an update ask's text, both free text to every reader; and the words of
-// `supervise.UpdateTask` and of the update-stalled notice's reason, which no reader parses. The
+// writes, which is no wire or answer shape; the reasons a pod's account drift and, where a launch
+// into the pod is refused until its round replaces it, its exchange identity's drift give
+// (`runtime.BreakingDrift` in front of each; spec v26 narrowed the exchange identity's), which are
+// a round's recorded reasons and an update ask's text, both free text to every reader; and the
+// words of `supervise.UpdateTask` and of the update-stalled notice's reason, which no reader
+// parses. The
 // second round of fixes on fa9deb04 moves none either: the table's key becomes the act's own
 // identity (`operation`), with what the act takes and the uid of its target (`takes`,
 // `target_uid`), in the same unreleased migration; `runtime.ActReader` and `runtime.TakenPod`'s

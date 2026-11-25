@@ -34,10 +34,13 @@ import (
 )
 
 // podUpdateExchangeDrift is what the Sandbox runtime's PodDrift reports of a pod built before the
-// exchange identity once the deployment names an exchange audience (movedExchangeIdentity): the
-// drift a round over such a pod is opened for, spelled as drift.go builds it. It opens on
-// runtime.BreakingDrift: a drift of the exchange identity breaks the pod (R7 of #5285, spec v25),
-// so a round over it replaces the pod after the read of its workspace whatever the read finds.
+// exchange identity, under dispatch_token_broker with no dispatch_token_transition_file named
+// (movedExchangeIdentity): the drift a round over such a pod is opened for, spelled as drift.go
+// builds it. It opens on runtime.BreakingDrift: there a launch into the pod is refused until its
+// round replaces it, and that is the one case in which a drift of the exchange identity breaks the
+// pod (R7 of #5285, spec v26), so a round over it replaces the pod after the read of its workspace
+// whatever the read finds. TestAnExchangeIdentityDriftBreaksThePodOnlyWhereALaunchIntoItIsRefused
+// reads that reason off the real PodDrift, and each drift of the identity that does not break.
 const podUpdateExchangeDrift = runtime.BreakingDrift + "agent-secrets-exchange (unset), now audience=legion-broker-exchange expiry=3600s path=token"
 
 // podRoundRetry is how long a start refused for want of its pod's round waits before it is tried
@@ -270,9 +273,12 @@ func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *tes
 // launch waits on the pod (awaitsRoundPod), which has not answered and has no process to answer
 // with. The round waits on no answer of it (waitingClaims) and passes over no claim, so it ends on
 // the tester's answer. work is what a read of the issue's workspace finds, and drift is the drift
-// the round is opened for: a read that finds work keeps the pod over a drift its roles can keep
-// working under (roundKeeps, R7 of #5285), so a caller whose read finds work opens the round over a
-// drift that breaks the pod (roundBreakingDrift), which is replaced whatever the read found.
+// the round is opened for. A read that finds work keeps the pod only over a drift its roles can
+// keep working under (roundKeeps, R7 of #5285). The drift the waiting claim's refusal stands for,
+// the exchange identity's under dispatch_token_broker with no transition file
+// (podUpdateExchangeDrift), is not one: every launch into the pod is refused until its round
+// replaces it (spec v26). A caller whose read finds work opens the round over a drift that breaks
+// the pod (roundBreakingDrift) all the same, which is replaced whatever the read found.
 // notWaited is each other claim of the issue, a claim with a session that the round neither asks
 // nor waits for and that does not answer it: a failed claim. It holds that the pod is replaced
 // once, through the tester's process, and that the replacement's one line names the roles of

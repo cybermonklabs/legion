@@ -9,10 +9,13 @@ body: |-
   image and settings, the keep is recorded as an idle release's decline, the open phase's worker
   or else the architect is told once (`workspace-kept`), and the workspace is read again after each
   turn of the issue, and an hour after a failed read, until a read finds nothing. A drift of the
-  Kubernetes service account the pod runs as, or of the pod's exchange identity, breaks the pod
-  (its reason opens on `[breaks the pod] `), so its round replaces the pod after the read whatever
-  it finds, and no keep holds that round back; a round over a kept volume the next pod mounts
-  replaces the pod too. Such a
+  Kubernetes service account the pod runs as breaks the pod, and so does a drift of the pod's
+  exchange identity where a launch into the pod is refused until its round replaces it
+  (`dispatch_token_broker` set, no `dispatch_token_transition_file`, and a pod that carries no
+  exchange identity); its reason opens on `[breaks the pod] `, so its round replaces the pod after
+  the read whatever it finds, and no keep holds that round back. Any other drift of the exchange
+  identity, a token of another lifetime among them, is one the roles keep working under. A round
+  over a kept volume the next pod mounts replaces the pod too. Such a
   replacement, and a launch's own replacement of an issue pod, tells the architect once what it
   took (`workspace-taken`): each commit and the working-copy change by name, or that no read could
   be made. A launch reads through any launcher of the pod that can, and a launch that deletes a

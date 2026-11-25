@@ -27,10 +27,11 @@ import (
 // is over a drift the pod's roles can keep working under (its recorded reasons, which reasons is,
 // do not open on runtime.BreakingDrift: runtime.Breaks), and the pod's disk is no kept volume
 // that the issue's next pod mounts (roundKeptVolume), which no replacement deletes. A round over a
-// drift that breaks the pod (today a drift of the pod's service account or of its exchange
-// identity, which the Sandbox runtime's PodDrift marks where it decides it, spec v23 and v25) is
-// replaced whatever the read found, since no role can keep working in that pod, and the issue's
-// architect is told what the replacement took (roundReplaced). A round is read by the reasons it
+// drift that breaks the pod (today a drift of the pod's service account, or one of its exchange
+// identity where a launch into the pod is refused until its round replaces it, which the Sandbox
+// runtime's PodDrift marks where it decides it, spec v23 and v26) is replaced whatever the read
+// found, since no role can keep working in that pod, and the issue's architect is told what the
+// replacement took (roundReplaced). A round is read by the reasons it
 // recorded at its open: a drift that breaks the pod and comes while a round is open is the next
 // round's, which the keep of this round's read holds back no more than any other
 // (podKeptForWork).
@@ -151,10 +152,11 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 // whether the read that may end the keep is due over the sweep's snapshot, group (due;
 // keptPodReadDue). The keep is the issue's decline row naming pod (keptDeclineOf). reasons is the
 // drift this sweep read of the pod, as a round would record it (runtime.RoundReasons). A drift that
-// breaks the pod (runtime.Breaks: today a drift of the pod's service account or of its exchange
-// identity) is held back by no keep (spec v23 and v25): the round over it opens, and replaces the
-// pod after the read, as any round over such a drift does. A store that cannot be read keeps the
-// pod for this sweep: a reading nobody took may not open a round that deletes a disk.
+// breaks the pod (runtime.Breaks: today a drift of the pod's service account, or one of its
+// exchange identity where a launch into the pod is refused until its round replaces it) is held
+// back by no keep (spec v23 and v26): the round over it opens, and replaces the pod after the
+// read, as any round over such a drift does. A store that cannot be read keeps the pod for this
+// sweep: a reading nobody took may not open a round that deletes a disk.
 //
 // The read itself is no part of the walk (the Legion reviewer's point 1): the sweep makes it after
 // the walk (podUpdateSweep.keptReads, readKeptPod), which reads the claims again, as their
