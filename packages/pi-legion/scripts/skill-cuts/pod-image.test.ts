@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { GhRetries } from "./common";
 import {
@@ -195,10 +196,10 @@ test("registryImageConfig ends a token command that runs past its time limit, an
   expect(fetched.reads).toEqual([]);
 });
 
-// registryImageConfig on a configured registry under load: its token command prints a made-up
-// token, and each request's time limit is short so a row whose request meets it takes well under
-// a second.
-const LOADED_TOKEN = "tok-made-up-loaded";
+// registryImageConfig on a configured registry under load: its token command prints a random
+// fixture token, and each request's time limit is short so a row whose request meets it takes
+// well under a second.
+const LOADED_TOKEN = fixtureSecret("tok");
 const LOADED = [{ host: "loaded.example.test", tokenCommand: ["printf", LOADED_TOKEN] }];
 const LOADED_ROOT = "https://loaded.example.test/v2/acme/worker";
 const LOADED_IMAGE = `loaded.example.test/acme/worker@${INDEX}`;
