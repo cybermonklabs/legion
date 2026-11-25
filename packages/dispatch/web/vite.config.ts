@@ -218,14 +218,15 @@ export default defineConfig({
     // their own, and `@legion/contracts`' subpaths keep that package's reference table and zod's
     // schema modules out of a page that reads neither - in the editor's chunks too, which import
     // that package by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
-    // This `chunkSizeWarningLimit` is Vite's own warning, and it is over the ECharts chunk alone.
-    // ECharts and the Mermaid worker were measured with `bun run build:web` at `53286717` on
-    // 2026-11-23, and read the same on 2026-11-25: the largest chunk is ECharts (an `index-*.js`
-    // of 1,134,772 bytes raw), which only the Delivery page loads. beautiful-mermaid and ELK live
-    // only in the Mermaid worker's bundle (features/refs/mermaid-render.worker.ts, 1,565,608
-    // bytes), fetched once a body or a document holds a mermaid block; Vite emits it as an asset
-    // and holds it to no chunk limit. The editor's lazy chunk (`lib-*.js`, 189,012 bytes, measured
-    // with `bun run build:web` on 2026-11-25) carries none of the renderer.
+    // `chunkSizeWarningLimit` is the size in kB (1,000 bytes) over which Vite warns about a chunk
+    // after minification. The warning stops nothing: the build passes over it. Vite's default is
+    // 500. This value sits over the ECharts chunk (an `index-*.js`), which only the Delivery page
+    // loads, so that chunk does not warn on every build. A chunk that grows past it warns again.
+    // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
+    // (features/refs/mermaid-render.worker.ts), fetched once a body or a document holds a mermaid
+    // block. Vite emits that worker as an asset, not a chunk, so this setting does not apply to
+    // it. The editor's lazy chunk (`lib-*.js`) carries none of the renderer. `bun run build:web`
+    // lists the size of each asset and chunk.
     chunkSizeWarningLimit: 1200,
     // No modulepreload polyfill. Vite's copy of it is 710 bytes of the entry chunk, and it does
     // nothing in a browser that has `<link rel=modulepreload>`: Chrome 66+, Safari 17+ and
