@@ -2691,7 +2691,9 @@ test("a key that takes the focus out of the row before its editor has drawn the 
     document.activeElement?.closest('[contenteditable="true"]') ?? null,
     "an editor holds the focus"
   ).toBeNull();
-  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  // The page hears the editing's end from a passive effect (`useNodeEditing`'s `onEditing`),
+  // which runs a task after the commit that drew the row's end, so the read waits for it.
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
   expect(
     rowsFor(view.container, "spec#b-r1")[0]?.querySelector('[contenteditable="true"]') ?? null,
     "the statement's row still holds the editor"
@@ -4946,7 +4948,7 @@ test("a row whose editor's hold fails to load ends the editing and says its edit
       row?.querySelector("[data-row-report]") != null,
       "the report is not at the statement's row"
     ).toBe(true);
-    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
     await waitFor(() =>
       expect(
         row?.querySelector('[contenteditable="true"]') == null,
@@ -4994,7 +4996,7 @@ test("a hold that fails to load before the row is handed an editor ends the edit
         "the row whose hold failed to load did not say its editor could not open"
       ).toBe(KEY_REPORTS.editor_closed)
     );
-    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
     expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
   } finally {
     load.mockRestore();
@@ -5166,7 +5168,7 @@ test("a page that hands the row no editor gets no caret: the editing ends and th
       "the row handed no editor did not say its editor could not open"
     ).toBe(KEY_REPORTS.editor_closed)
   );
-  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
   expect(
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret went into an editor the row was never handed"
@@ -7582,6 +7584,44 @@ test("a key with nowhere to go says so at its row, until the next move", async (
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
   expect(rowReport(view.container)).toBeUndefined();
+});
+
+// Down and Up scroll the page from the page's body: the outline takes them only from a row or a
+// control inside one, where they move as `j` and `k` do, while `j` from the page's body still
+// goes to the first row.
+test("the outline: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the outline took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "j from the page's body did not go to the first row").toBe(
+        "comment-1"
+      )
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(focusedRow(view.container), "Down from a row did not go to the next").toBe(
+        "comment-1a"
+      )
+    );
+  } finally {
+    view.unmount();
+  }
 });
 
 /**

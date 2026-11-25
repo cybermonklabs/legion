@@ -17,8 +17,10 @@ import { TAB_STOP_ROW } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
+  outlineQuery,
   resetViews,
   subscribeTreeFreshness,
+  type TreeAnswer,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -40,10 +42,11 @@ import {
  *
  * A filter whose own nodes Conversation's read does not hold has its view read sent with a load
  * of Conversation or of a filter, and held as the others are, for its count and, for Plan, for
- * "How it gets done" (R4, R13): Plan always, since Conversation's read holds no plan task, and
- * Spec and Verification where the issue has children, whose design blocks and checks Spec and
- * Verification draw (`sentWithLoad`). That filter, turned on, sends no second read. Graph sends
- * none for a count: each is read off Graph's read.
+ * "How it gets done" (R4, R13): Plan always, since Conversation's read holds no plan task; Spec
+ * where the issue is a child, whose Spec view holds the requirements of its parent's spec it
+ * serves; and Verification where the issue has children and Conversation's answer, once it
+ * answers, holds no check of an issue under it (`sentWithLoad`). That filter, turned on, sends no
+ * second read. Graph sends none for a count: each is read off Graph's read.
  *
  * On Spec it also sends Conversation's read from 1024 px up, where the Contents pane beside the
  * view reads it (R13): Spec's own readers watch that read and send nothing (`useTreeRead`), since
@@ -69,6 +72,9 @@ export function ViewReadProvider({
 }): ReactNode {
   const queryClient = useQueryClient();
   const key = issue.key;
+  // Conversation's answer, watched and never sent here: whether it holds the checks of the issues
+  // under this one says whether Verification's view read goes with the load (`sentWithLoad`).
+  const conversation = useQuery({ ...outlineQuery(key, "conversation"), enabled: false }).data;
   // Whether the views of a past load are dropped. No view is read before then: a view read as the
   // stage mounts would be dropped by that reset and read a second time.
   const [dropped, setDropped] = useState(false);
@@ -90,7 +96,7 @@ export function ViewReadProvider({
             filter={filter}
             issueKey={key}
             key={filter}
-            on={preset === filter || sentWithLoad(filter, preset, issue)}
+            on={preset === filter || sentWithLoad(filter, preset, issue, conversation)}
           />
         ))}
       {children}
@@ -99,11 +105,31 @@ export function ViewReadProvider({
 }
 
 /** Whether a load of `preset` sends `filter`'s view read with it (`ViewReadProvider`): a load of
- *  Conversation or of a filter, for Plan always and for Spec and Verification where the issue has
- *  children. */
-function sentWithLoad(filter: TreeFilter, preset: Preset, issue: IssueDetails): boolean {
+ *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
+ *  Verification where the issue has children and Conversation's answer `conversation` holds no
+ *  check of an issue under it, which is not known until that answer is held. */
+function sentWithLoad(
+  filter: TreeFilter,
+  preset: Preset,
+  issue: IssueDetails,
+  conversation: TreeAnswer | undefined
+): boolean {
   if (preset !== "conversation" && !isFilter(preset)) return false;
-  return filter === "plan" || (issue.children ?? []).length > 0;
+  switch (filter) {
+    case "plan":
+      return true;
+    case "spec":
+      return issue.parent !== null;
+    case "verification":
+      return (
+        (issue.children ?? []).length > 0 &&
+        conversation !== undefined &&
+        !(conversation.nodes ?? []).some(
+          (node) =>
+            node.supertag === "check" && node.issue !== undefined && node.issue !== issue.key
+        )
+      );
+  }
 }
 
 /**

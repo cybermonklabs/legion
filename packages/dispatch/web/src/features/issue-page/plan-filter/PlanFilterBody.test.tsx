@@ -13,6 +13,7 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import type { IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -38,7 +39,7 @@ import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
 import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
 import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
@@ -573,6 +574,40 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   }
 });
 
+// Down and Up scroll the page from the page's body, as the outline's do: the chart takes them
+// only from a row or a link inside one, where they move as `j` and `k` do, while `j` from the
+// page's body still goes to the first bar.
+test("Plan: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderBody(
+    issue([task("t1"), task("t2", { needs: ["t1"] }), task("t3", { needs: ["t2"] })])
+  );
+  try {
+    // The stage gives the chart's first bar the focus nobody holds; Escape leaves the chart from
+    // there for the page's body.
+    await waitFor(() => expect(focusedRow()).toBe(D("t1")));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the chart took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    expect(focusedRow(), "j from the page's body did not go to the first bar").toBe(D("t1"));
+    await user.keyboard("{ArrowDown}");
+    expect(focusedRow(), "Down from a bar did not go to the next").toBe(D("t2"));
+  } finally {
+    view.unmount();
+  }
+});
+
 // An address that names a step lands on it, in the view the filter opens on. The landing focuses
 // the row in the frame after the commit that draws it (`IssueTree.tsx`'s `landOnRow`).
 test("an address naming a step puts the focus on its bar's row", async () => {
@@ -734,11 +769,17 @@ type DrawnSlot = RenderResult & { readonly redraw: (issue: IssueDetails) => void
 
 /** Draws the Plan view's slot (`slots/view-plan.tsx`) for `shown` over `client`, in the stage the
  *  page draws a view in (`slots/stage.tsx`), with the providers the page draws every slot under
- *  (`slots/providers.tsx`). */
-function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
-  const route = { key: KEY, kind: "issue" } as const;
+ *  (`slots/providers.tsx`). `at` is the address the router holds and the slot's route for it,
+ *  where a case gives one; where none is given the router holds no address the page reads, and
+ *  the slot is handed the issue's own route. */
+function renderSlot(
+  client: QueryClient,
+  shown: IssueDetails,
+  at?: { readonly path: string; readonly route: IssueRoute }
+): DrawnSlot {
+  const route = at?.route ?? ({ key: KEY, kind: "issue" } as const);
   const draw = (issue: IssueDetails): ReactNode => (
-    <MemoryRouter>
+    <MemoryRouter {...(at === undefined ? {} : { initialEntries: [at.path] })}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
@@ -816,6 +857,70 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
     await waitFor(() =>
       expect(asked(), "Retry on the statements line does not read the spec's blocks").toBe(
         before + 1
+      )
+    );
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// At the Plan view's own address the plan's blocks are Plan's own view read and the spec's the
+// outline read (`tree-read/tree-read.ts`'s `blocksOf`). With both refused the view draws one line,
+// the statements', whose one Retry reads each of the two again, and is busy while either runs:
+// while Plan's view read runs on after the outline read was refused again.
+test("at the Plan view's address the one Retry reads both refused reads again, busy while either runs", async () => {
+  setViewport(1440);
+  const outlineAgain = Promise.withResolvers<never>();
+  const viewAgain = Promise.withResolvers<unknown>();
+  const sent = { outline: 0, view: 0 };
+  // Each read's first answer is a refusal, and each later read of it is out until the case ends it.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    const read = query?.view === undefined ? "outline" : "view";
+    sent[read] += 1;
+    if (sent[read] === 1) return Promise.reject(new Error("refused"));
+    return read === "outline" ? outlineAgain.promise : viewAgain.promise;
+  }) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = slotClient({ specHeld: false });
+  // Plan's view read refused before the view is drawn, as the load leaves it, which the stage
+  // sends (`ViewReadProvider`) and this case draws no stage for.
+  await client.prefetchQuery(viewQuery(KEY, "plan"));
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => {
+      if (view.container.querySelector('[data-plan-unreadable="statements"]') === null) {
+        throw new Error("the view says nothing of the refused statements read");
+      }
+    });
+    expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
+    expect(sent).toEqual({ outline: 1, view: 1 });
+    await userEvent.click(retryOf(view, "statements"));
+    await waitFor(() =>
+      expect(sent, "Retry did not read each refused read again").toEqual({ outline: 2, view: 2 })
+    );
+    expect(retryOf(view, "statements")).toHaveAttribute("aria-busy", "true");
+    await act(async () => outlineAgain.reject(new Error("refused")));
+    await waitFor(() =>
+      expect(client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.fetchStatus).toBe(
+        "idle"
+      )
+    );
+    expect(
+      retryOf(view, "statements"),
+      "the Retry is not busy while Plan's view read runs"
+    ).toHaveAttribute("aria-busy", "true");
+    await act(async () => viewAgain.resolve(treeAnswer([taskBlock("t1", 0)])));
+    await waitFor(() =>
+      expect(retryOf(view, "statements"), "the Retry is busy with no read out").not.toHaveAttribute(
+        "aria-busy"
       )
     );
   } finally {

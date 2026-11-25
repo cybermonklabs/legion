@@ -2069,13 +2069,16 @@ test("a filter's view is read once in a load, and not again when it is pressed o
 
 /** The stage as the page's root draws it at the address the router holds: the stage's view reads
  *  (`ViewReadProvider`) at the address's view, while each reader of the outline reads the address
- *  itself. `held.navigate` moves the router, as a press of a view's control does. */
+ *  itself. `held.navigate` moves the router, as a press of a view's control does. `shown` is the
+ *  issue the page draws, `issue` unless a case gives another. */
 function AddressedStage({
   children,
   held,
+  shown = issue,
 }: {
   readonly children: ReactNode;
   readonly held: { navigate?: NavigateFunction };
+  readonly shown?: IssueDetails;
 }): ReactNode {
   const { hash, pathname, search } = useLocation();
   held.navigate = useNavigate();
@@ -2083,18 +2086,25 @@ function AddressedStage({
   const preset =
     route === undefined ? "conversation" : issueAddress(route, search, hash, undefined).preset;
   return (
-    <ViewReadProvider issue={issue} preset={preset}>
+    <ViewReadProvider issue={shown} preset={preset}>
       {children}
     </ViewReadProvider>
   );
 }
 
-/** A load of the issue at `path`, as the page's root mounts it (`AddressedStage`). */
-function loadAt(client: QueryClient, path: string, held: { navigate?: NavigateFunction } = {}) {
+/** A load of the issue `shown` at `path`, as the page's root mounts it (`AddressedStage`). */
+function loadAt(
+  client: QueryClient,
+  path: string,
+  held: { navigate?: NavigateFunction } = {},
+  shown: IssueDetails = issue
+) {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
-        <AddressedStage held={held}>{children}</AddressedStage>
+        <AddressedStage held={held} shown={shown}>
+          {children}
+        </AddressedStage>
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -2166,6 +2176,66 @@ test("a load of Conversation sends one kind read, the plan view read and no read
   } finally {
     for (const stub of stubs) stub.mockRestore();
     client.clear();
+  }
+});
+
+// R4: a load of Conversation sends a filter's view read with it only where Conversation's read does
+// not hold that filter's nodes: Plan's always; Spec's where the issue is a child, whose Spec view
+// holds the requirements of its parent's spec it serves; and Verification's where the issue has
+// children and Conversation's answer holds no check of an issue under it. Having children is not
+// enough, and neither is a check of the issue's own.
+test("a load of Conversation sends Spec's view read for a child, and Verification's for a parent whose answer holds no child's check", async () => {
+  const child: IssueDetails = { ...issue, parent: "CORE-0" };
+  const parent: IssueDetails = {
+    ...issue,
+    children: [
+      {
+        active_at: "2026-11-05T00:00:00Z",
+        external_links: [],
+        key: "CORE-2",
+        status: "todo",
+        subtree_done: 0,
+        subtree_total: 1,
+        title: "A child of the issue",
+      },
+    ],
+  };
+  const ownCheck = answerNode("c1", "check");
+  const childCheck = answerNode("c2", "check", { issue: "CORE-2", parent: "CORE-2" });
+  const loads = [
+    { name: "a child", sent: { kind: 1, plan: 1, spec: 1 }, shown: child, tree: [] },
+    {
+      name: "a parent whose answer holds its own check alone",
+      sent: { kind: 1, plan: 1, verification: 1 },
+      shown: parent,
+      tree: [ownCheck],
+    },
+    {
+      name: "a parent whose answer holds its child's check",
+      sent: { kind: 1, plan: 1 },
+      shown: parent,
+      tree: [ownCheck, childCheck],
+    },
+  ] as const;
+  for (const { name, sent, shown, tree } of loads) {
+    const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+      tree: treeAnswer([], { nodes: tree }),
+    });
+    const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      const view = renderHook(() => useIssueTree(shown).root, {
+        wrapper: loadAt(client, `/issues/${KEY}`, {}, shown),
+      });
+      await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+      await act(async () => {
+        await Bun.sleep(300);
+      });
+      expect(treeReadsSent(), name).toEqual(sent);
+      view.unmount();
+    } finally {
+      for (const stub of stubs) stub.mockRestore();
+      client.clear();
+    }
   }
 });
 

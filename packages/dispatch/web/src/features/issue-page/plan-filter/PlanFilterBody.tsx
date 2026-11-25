@@ -693,6 +693,14 @@ function PlanChart({
     const target = held[index];
     if (target !== undefined) moveToRow(target, { preventScroll: true });
   };
+  /** The outline's move keys on the chart (`useTreeKeymap.ts`'s `tree-next`, `tree-previous` and
+   *  `tree-arrows`): from a row to the nearest bar's row the way `by` goes (`barFrom`), and from
+   *  the page itself to the first bar, whichever way the key goes. */
+  const step = (by: 1 | -1): void => {
+    const held = items();
+    const on = at(held);
+    moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, by));
+  };
   useKeymap("issue", [
     // The chart is one tab stop: Tab from the page itself enters it at that stop, the row the
     // reader last stood on, by the outline's own key (`useTreeKeymap.ts`'s `treeEnterKey`), so
@@ -700,27 +708,30 @@ function PlanChart({
     treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
       id: "tree-next",
-      keys: ["j", "ArrowDown"],
+      keys: "j",
       label: "Move to the next row",
       palette: false,
-      run: () => {
-        const held = items();
-        moveTo(held, barFrom(held, at(held), 1));
-      },
+      run: () => step(1),
       when: () => reading() && items().length > 0,
     },
     {
-      // Up from the page itself goes to the first bar, as down does.
+      // `k` from the page itself goes to the first bar, as `j` does.
       id: "tree-previous",
-      keys: ["k", "ArrowUp"],
+      keys: "k",
       label: "Move to the previous row",
       palette: false,
-      run: () => {
-        const held = items();
-        const on = at(held);
-        moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, -1));
-      },
+      run: () => step(-1),
       when: () => reading() && items().length > 0,
+    },
+    {
+      // Down and Up scroll the page from the page itself, so they move through the chart only
+      // while the reader is on a row or on a link inside one, as the outline's do.
+      id: "tree-arrows",
+      keys: ["ArrowDown", "ArrowUp"],
+      label: "Move to the next / previous row while one is focused",
+      palette: false,
+      run: (event) => step(event.key === "ArrowDown" ? 1 : -1),
+      when: () => at(items()) !== -1,
     },
     {
       id: "tree-first",

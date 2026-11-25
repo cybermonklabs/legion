@@ -303,12 +303,16 @@ function absent(target: Extract<AddressFallback, { kind: "absent" }>["target"]):
   return { kind: "absent", target };
 }
 
+/** Where an address whose node the outline draws no row of opens: Graph at that node. */
+const GRAPH_AT_NODE = { keepsNode: true, preset: "graph" } as const;
+
 // R9: the outline alone reads a node address (`?node=`), Conversation's and Graph's, so one
-// whose node Conversation draws no row of - a node Conversation's read holds none of, or a plan
-// task it holds - goes to Graph's `?node=` of that node, which draws every node of its read
-// (R10), whether the page holds Graph's read or not; a block address goes to its filter, else to
-// Graph where the page holds Graph's read and it holds the block. A node Conversation draws a
-// row of stays, and Graph's own address sends nothing elsewhere.
+// whose node Conversation draws no row of - a plan task Conversation's tree holds, or a node
+// Conversation's read holds none of where the page holds Graph's read and it holds the node -
+// goes to Graph's `?node=` of that node, which draws every node of its read (R10); a block
+// address goes to its filter, else to Graph where the page holds Graph's read and it holds the
+// block. A node Conversation draws a row of stays, and so does a node on Graph's own address
+// that Graph's tree holds.
 test("a node address Conversation draws no row of goes to Graph's ?node= of that node", () => {
   const placed = { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" };
   const graphRead = treeAnswer([
@@ -322,10 +326,10 @@ test("a node address Conversation draws no row of goes to Graph's ?node= of that
     expect(
       addressView(on(nodeTarget), undefined, root, absent(nodeTarget), read),
       `a node Conversation's read holds none of, with Graph's read ${read === undefined ? "not " : ""}held`
-    ).toBe("graph");
+    ).toEqual(read === undefined ? { keepsNode: false, preset: "conversation" } : GRAPH_AT_NODE);
   }
-  expect(addressView(on(blockTarget), undefined, root, absent(blockTarget), graphRead)).toBe(
-    "graph"
+  expect(addressView(on(blockTarget), undefined, root, absent(blockTarget), graphRead)).toEqual(
+    GRAPH_AT_NODE
   );
   expect(
     addressView(on(blockTarget), undefined, root, absent(blockTarget), undefined)
@@ -334,15 +338,50 @@ test("a node address Conversation draws no row of goes to Graph's ?node= of that
   // its node's address Graph.
   const task = node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" });
   const toTask = [node("CORE-1", "issue", [task]), task];
-  expect(addressView(on(blockTarget), toTask, root, undefined, graphRead)).toBe("plan");
-  expect(addressView(on(nodeTarget), toTask, root, undefined, graphRead)).toBe("graph");
+  expect(addressView(on(blockTarget), toTask, root, undefined, graphRead)).toEqual({
+    keepsNode: true,
+    preset: "plan",
+  });
+  expect(addressView(on(nodeTarget), toTask, root, undefined, graphRead)).toEqual(GRAPH_AT_NODE);
   // A comment is a row of Conversation, which lands on it.
   const comment = node("comment-1", "comment", [], { readId: "comment-1" });
   const toComment = [node("CORE-1", "issue", [comment]), comment];
   expect(addressView(on(nodeTarget), toComment, root, undefined, graphRead)).toBeUndefined();
-  // Graph's own address draws Graph, which says in its place where its read holds no node.
+  // Graph's own address draws Graph, which lands on a node its tree holds.
   const graph = { preset: "graph", target: nodeTarget } as const;
-  expect(addressView(graph, undefined, root, absent(nodeTarget), graphRead)).toBeUndefined();
+  expect(addressView(graph, toTask, root, undefined, graphRead)).toBeUndefined();
+});
+
+// R9: an id no read holds opens the outline's own address without it, with no line: on
+// Conversation's own address, Conversation's, whether the page holds no Graph read or holds one
+// that lacks the node, and on Graph's own address Graph's. A node Conversation's read holds none
+// of that Graph's read, as the page holds it, holds opens Graph at that node.
+test("a node address no read holds opens the issue's own address with no line", () => {
+  const placed = { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" };
+  const graphRead = treeAnswer([
+    treeNode("t9", "plan_task", null, { document: placed, in: "plan-md" }),
+  ]);
+  const graphHolds = { id: "CORE-1/plan-md#t9", kind: "node" } as const;
+  const nobodyHolds = { id: "CORE-1/plan-md#t404", kind: "node" } as const;
+  const on = (preset: Preset, target: AddressTarget) => ({ preset, target }) as const;
+  const root = issue();
+  const ownAddress = { keepsNode: false, preset: "conversation" } as const;
+  expect(
+    addressView(on("conversation", nobodyHolds), undefined, root, absent(nobodyHolds), undefined),
+    "a node no read holds, with no Graph read held"
+  ).toEqual(ownAddress);
+  expect(
+    addressView(on("conversation", nobodyHolds), undefined, root, absent(nobodyHolds), graphRead),
+    "a node no read holds, with a Graph read held that lacks it"
+  ).toEqual(ownAddress);
+  expect(
+    addressView(on("conversation", graphHolds), undefined, root, absent(graphHolds), graphRead),
+    "a node Conversation's read lacks, with a Graph read held that holds it"
+  ).toEqual(GRAPH_AT_NODE);
+  expect(
+    addressView(on("graph", nobodyHolds), undefined, root, absent(nobodyHolds), graphRead),
+    "a node no read holds, on Graph's own address"
+  ).toEqual({ keepsNode: false, preset: "graph" });
 });
 
 test("each filter's signal is its count, with what of it asks something of the reader", () => {
@@ -638,6 +677,64 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
     ],
   ]);
   expect(filterSignals(root, "").spec.count).toBe(2);
+});
+
+/** The Spec view read holding the statements r1 and r2, and the tree its own answer builds
+ *  (`TreeViews.trees`), each statement worded as the view's. */
+function specViewOf(): { readonly answer: TreeAnswer; readonly tree: TreeNode } {
+  return {
+    answer: treeAnswer(
+      [
+        viewNode("r1", "requirement", "query", { in: "spec" }),
+        viewNode("r2", "requirement", "query", { in: "spec" }),
+      ],
+      [],
+      { view: "spec" }
+    ),
+    tree: node("CORE-1", "issue", [
+      statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The view's r1." }),
+      statement("spec#b-r2", [], { readId: "CORE-1/spec#r2", text: "The view's r2." }),
+    ]),
+  };
+}
+
+/** Each row `preset` draws of `root`, by its id, with its words. */
+function rowWords(root: TreeNode, preset: Preset): [string, string][] {
+  return treeRows(presetView(root, preset, "").root)
+    .slice(1)
+    .flatMap((row): [string, string][] =>
+      row.kind === "node" ? [[row.node.id, row.node.text]] : []
+    );
+}
+
+// R4, R5: a filter draws its view read's rows whatever the outline read holds. A node of its view
+// answer the outline's tree holds no node of is drawn as the node of the tree the view's answer
+// builds alone (`TreeViews.trees`): with the outline read not sent, as on Spec loaded cold below
+// 1024 px (R13), the outline's tree is the issue alone and Spec still draws each statement.
+test("a filter draws a node its view answer holds that the outline's tree lacks", () => {
+  const { answer, tree } = specViewOf();
+  const cold = node("CORE-1", "issue", [], { views: { spec: answer, trees: { spec: tree } } });
+  expect(rowWords(cold, "spec")).toEqual([
+    ["spec#b-r1", "The view's r1."],
+    ["spec#b-r2", "The view's r2."],
+  ]);
+});
+
+// R4: where the outline's tree and the tree the view's answer builds both hold a node, the filter
+// draws the outline's, so a row reads as it does in the outline; the view's own tree gives the
+// node the outline's lacks.
+test("a filter draws the outline's node where the outline's tree and its view's both hold it", () => {
+  const { answer, tree } = specViewOf();
+  const root = node(
+    "CORE-1",
+    "issue",
+    [statement("spec#b-r1", [], { readId: "CORE-1/spec#r1", text: "The outline's r1." })],
+    { views: { spec: answer, trees: { spec: tree } } }
+  );
+  expect(rowWords(root, "spec")).toEqual([
+    ["spec#b-r1", "The outline's r1."],
+    ["spec#b-r2", "The view's r2."],
+  ]);
 });
 
 // Two documents of an issue that has not converted can hold one block id, and each block is a row

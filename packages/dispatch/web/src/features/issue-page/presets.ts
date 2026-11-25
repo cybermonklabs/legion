@@ -432,15 +432,18 @@ function filterView(
  * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
- * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
- * draws each statement the view holds as context, with each check under each statement it
- * serves and each result under its check. A node the tree holds no node for - a criterion, a
- * node of an issue under this one - is no row, and neither is the memo, a callout. A decision and
- * a constraint are never rows: each is a line of the row its tie names (`PresetView.lines`). The
- * words filter keeps the rows whose words hold it, as `filterView` keeps them, and a node the
- * address names is drawn whatever the filter: from the view where the view holds it as a row, and
- * else where `filterView` draws it, at each place the tree has it, under the nearest row of the
- * view above it there or at the top, in the tree's order among the view's rows there.
+ * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. A node the
+ * outline's tree holds no node of is drawn as the node of the tree the view's own answer builds
+ * (`TreeViews.trees`), so the view draws its own read's rows whatever the outline read holds or
+ * whether it was sent at all (R4, R5). Verification draws each statement the view holds as
+ * context, with each check under each statement it serves and each result under its check. A
+ * node neither tree drafts - a criterion - is no row, and neither is the memo, a callout. A
+ * decision and a constraint are never rows: each is a line of the row its tie names
+ * (`PresetView.lines`). The words filter keeps the rows whose words hold it, as `filterView`
+ * keeps them, and a node the address names is drawn whatever the filter: from the view where the
+ * view holds it as a row, and else where `filterView` draws it, at each place the tree has it,
+ * under the nearest row of the view above it there or at the top, in the tree's order among the
+ * view's rows there.
  */
 function heldFilterView(
   root: TreeNode,
@@ -451,12 +454,13 @@ function heldFilterView(
 ): PresetView {
   // Each node of the tree the read drew, by its id and by the read's id, at its first placement,
   // and each placement by its id and the node it stands under. A view's node is matched by its
-  // id; a node the view does not hold, by the read's.
+  // id; a node the view does not hold, by the read's. The outline's tree is read first, and the
+  // view's own tree after it fills in only what the outline's holds no node of.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
   const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
-  const index = (parent: TreeNode): void => {
+  const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
         if (!fromRead.has(child.id)) {
@@ -466,12 +470,15 @@ function heldFilterView(
           else same.push(child);
         }
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
-        placements.set(`${child.id} ${parent.id}`, child);
+        const placement = `${child.id} ${parent.id}`;
+        if (outline || !placements.has(placement)) placements.set(placement, child);
       }
-      index(child);
+      index(child, outline);
     }
   };
-  index(root);
+  index(root, true);
+  const own = root.views?.trees?.[filter];
+  if (own !== undefined) index(own, false);
   // The tree's node each node of the view stands for: the one of its own id (`treeIdOfNode`), so
   // two nodes of one block id, blocks of two documents, are two; else, for a view node that names
   // no document, the one of its read id. And each one's parent: the nearest node before it that
