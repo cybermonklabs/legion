@@ -35,6 +35,7 @@ func consumerResumeRegistration(sessionID, epoch, streamID string, seq uint64) s
 // message stored while it was away is relayed to it once, and nothing it had acked is relayed
 // again: the consumer is created at the sequence after that point.
 func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStoredWhileItWasAway(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_after_deregister"
 	agent := contracts.LegacyAgentSubject(sessionID)
@@ -70,6 +71,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 // what its consumer would have delivered from that point has aged out of the stream or been
 // discarded, and the session is told so rather than left to believe it was given everything.
 func TestSessionConsumerResumePointBelowTheStreamsFirstSequenceIsAnsweredAGap(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_resume_gap"
 	agent := contracts.LegacyAgentSubject(sessionID)
@@ -99,6 +101,7 @@ func TestSessionConsumerResumePointBelowTheStreamsFirstSequenceIsAnsweredAGap(t 
 // away reaches it — where a registration with no resume point at all would start at the stream's
 // end and never deliver it.
 func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingComesBack(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_consumer_start"
 	// Another session's message, so the consumer's start is above the stream's first sequence
@@ -150,6 +153,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 // agent subject, which the stream stores, where the role lane itself is core NATS and in no
 // consumer's filter.
 func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_old_plugin"
 	const followed = "notifications.dispatch.issue.INFRA-2365.comment"
