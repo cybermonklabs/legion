@@ -137,6 +137,11 @@ jobs:
       # each other, no more at once than the runner has cores, in the order queued (the longest
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
+      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
+      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
+        working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
         # The harness's own bound, the pool's `--minutes`: 373 + 1050 = 1423 s -> 24 min.
