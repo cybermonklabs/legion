@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the label terms of ci.yaml's `changes` outputs, through ci_router_outputs.py, which
+# Tests for the label terms of `.github/workflows/ci.yaml#changes` outputs, through ci_router_outputs.py, which
 # evaluates this repository's own ci.yaml as GitHub would: on a pull request the slow suites'
 # outputs are false whatever their paths say, `full-ci` turns every one of them on, a
 # `lane:<output>` label turns on that one output and no other, still only where its paths
@@ -237,8 +237,9 @@ list_copy() {
 
 # The test job's harness steps read their gates out of one output, the paths filter's own list
 # of the filters that matched (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates). The
-# cases below read each step's `if:` through ci.yaml's `with:` as GitHub would, so a list that
-# skipped a matched harness, or ran an unmatched one, fails here by step name.
+# cases below read each step's `if:` through the `with:` that ci.yaml's calling job passes, as
+# GitHub would, so a list that skipped a matched harness, or ran an unmatched one, fails here by
+# step name.
 echo "case: the test job's step gates are read out of the one list"
 none=$(steps --event pull_request --verdicts false --verdict test=true)
 gated=$(grep -c . <<<"$none" || true)
