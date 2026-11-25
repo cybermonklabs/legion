@@ -1927,17 +1927,15 @@ describe("label_tree", () => {
     }
   });
 
-  /** #4902's head, fetched by its pull request's ref, once, into a repository of its own that
-   * borrows this checkout's objects, so no ref of this checkout moves. A fetch that fails is no
-   * pass: the row that needs it fails, naming the ref. */
+  /** #4902's head, fetched by its pull request's ref, once, at depth 1, into a repository of its
+   * own, so no ref of this checkout moves. It borrows no object of this checkout: CI's checkout is
+   * shallow, and a fetch that offered its commits as haves asked for parents no repository held.
+   * A fetch that fails is no pass: the row that needs it fails, naming the ref. */
   let pr4902: { repo: string; head: string } | undefined;
   function fetch4902(): { repo: string; head: string } {
     if (pr4902 !== undefined) return pr4902;
     const repo = freshDir("pr-4902");
     git(repo, "init", "-q");
-    const common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").trim();
-    mkdirSync(path.join(repo, ".git/objects/info"), { recursive: true });
-    writeFileSync(path.join(repo, ".git/objects/info/alternates"), `${common}/objects\n`);
     try {
       const origin = git(root, "remote", "get-url", "origin").trim();
       git(repo, "fetch", "-q", "--depth=1", origin, "refs/pull/4902/head");
