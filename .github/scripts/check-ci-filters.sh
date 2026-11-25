@@ -345,23 +345,24 @@
 #      every run; a `!` before the `contains` runs the step when its filter did not match, and a
 #      term after it can stop it running at all; a `contains` without the quotes matches every
 #      name holding the filter's (`ci_tools_test` inside `mirror_ci_tools_test`); a condition
-#      without the `all` term is skipped on every dispatched run, and one without the result term
-#      on every run whose changes failed; and a job-level read selects a job by an output that is
-#      never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a `with:` value
-#      of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it calls (but
-#      ci.yaml's ci-ok job), that names the changes job other than as needs.changes.result,
-#      needs.changes.outputs.<name> or needs.changes, or an input other than as inputs.<name>
-#      (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`, `inputs. x`,
-#      `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule here reads
-#      them, so a read so spelt would be held to nothing. An input's name is read in any case, as
-#      GitHub reads it. Also a condition reading the ci-ok payload (`toJSON(needs.changes)`, which
-#      holds the list and filter_verdicts), filter_verdicts, `toJSON(needs)` or every job's
-#      outputs (`needs.*` but `needs.*.result`) other than as the payload's `!= ''`, which asks
-#      only whether ci.yaml is the caller; and a `run:`, `env:`, `with:` or other text of a job
-#      that reads any of them, but ci.yaml's own `with:` to a workflow it calls, the ci-ok report
-#      action's `changes:` and ci.yaml's ci-ok job: each of these names every filter on every run,
-#      so a step reading one for a filter (`case '${{ inputs.matched-filters }}' in *apx*)`) is
-#      gated on a filter no rule reads. Rules 2 and 3 read the filter out of each `contains`
+#      without the `all` term is skipped on every run that selects every job, and one without the
+#      result term on every run whose changes failed; and a job-level read selects a job by an
+#      output that is never 'true', which ci-ok's CI_OK_SELECTED_BY cannot map. Also a condition, a
+#      `with:` value of ci.yaml, or any other `${{ }}` of a job of ci.yaml or of a workflow it
+#      calls (but ci.yaml's ci-ok job), that names the changes job other than as
+#      needs.changes.result, needs.changes.outputs.<name> or needs.changes, or an input other than
+#      as inputs.<name> (`needs['changes']`, `outputs['x']`, `INPUTS.x`, `inputs['x']`,
+#      `inputs. x`, `toJSON(inputs)`): GitHub reads those spellings as the same values, and no rule
+#      here reads them, so a read so spelt would be held to nothing. An input's name is read in any
+#      case, as GitHub reads it. Also a condition reading the ci-ok payload
+#      (`toJSON(needs.changes)`, which holds the list and filter_verdicts), filter_verdicts,
+#      `toJSON(needs)` or every job's outputs (`needs.*` but `needs.*.result`) other than as the
+#      payload's `!= ''`, which asks only whether ci.yaml is the caller; and a `run:`, `env:`,
+#      `with:` or other text of a job that reads any of them, but ci.yaml's own `with:` to a
+#      workflow it calls, the ci-ok report action's `changes:` and ci.yaml's ci-ok job: each of
+#      these names every filter on every run, so a step reading one for a filter
+#      (`case '${{ inputs.matched-filters }}' in *apx*)`) is gated on a filter no rule reads. Rules
+#      2 and 3 read the filter out of each `contains`
 #      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old

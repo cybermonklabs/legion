@@ -1173,9 +1173,9 @@ def list_refusals(condition: str, path: str, job_id: str, step) -> list:
     list gates on what no rule here can read: `<list> != ''` is true on every run, a `!` before the
     `contains` or an `&& false` after it runs the step when its filter did not match or never, a
     `contains` without its quotes matches a name that holds the filter's, a condition without the
-    `all` term is skipped on every dispatched run, and one without the result term on every run
-    whose changes failed. A job-level read is refused too: ci-ok's CI_OK_SELECTED_BY maps a job
-    to the output that is 'true' when changes selects it, and the list is never 'true'."""
+    `all` term is skipped on every run that selects every job, and one without the result term on
+    every run whose changes failed. A job-level read is refused too: ci-ok's CI_OK_SELECTED_BY maps
+    a job to the output that is 'true' when changes selects it, and the list is never 'true'."""
     if not LIST_MENTION.search(condition):
         return []
     where = where_if(job_id, step)
