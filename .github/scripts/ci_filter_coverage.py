@@ -413,8 +413,8 @@ def called_workflows(document: dict) -> dict:
 # named for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the
 # two halves of what was one job, and ci.yaml's job of each id passes its own id. A file that
 # several jobs call and that holds no job named for any of them (dispatch-browser.yaml, which
-# dispatch-browser and dispatch-browser-pr call with a lane each) runs every job under every
-# caller.
+# dispatch-browser, dispatch-browser-pr and dispatch-references call with a lane each) runs every
+# job under every caller.
 CALLER_INPUT = "job"
 
 
@@ -1514,16 +1514,17 @@ WITH_CHANGES = re.compile(r"^\$\{\{\s*(needs\.changes\.outputs\.[A-Za-z0-9_-]+|n
 # A value that names the changes job at all, in any shape: what the refusal below is about. One
 # that does not cannot carry a filter, so the condition reading it gates on something other than
 # the paths filter and this rule leaves it alone - `.github/workflows/dispatch-browser.yaml#lane`, which each of
-# its two callers in ci.yaml passes as a literal and three of whose jobs run only when it reads
+# its three callers in ci.yaml passes as a literal and three of whose jobs run only when it reads
 # `full`, chooses which projects the browser suite runs, never whether it runs; the
-# `dispatch_browser` and `dispatch_browser_pr` outputs decide that, on the caller jobs' own `if:`.
+# `dispatch_browser`, `dispatch_browser_pr` and `dispatch_references` outputs decide that, on the
+# caller jobs' own `if:`.
 NAMES_CHANGES = re.compile(r"\bneeds\.changes\b")
 
 
 def input_expressions(documents: dict, problems: list[Annotation]) -> dict:
     """Per workflow ci.yaml calls and per job of ci.yaml that calls it, {an input a condition of
     that workflow reads: the expression that calling job passes for it}, keyed (the workflow, the
-    calling job): a file two jobs call (ci-job-test.yaml, dispatch-browser.yaml) is read under
+    calling job): a file several jobs call (ci-job-test.yaml, dispatch-browser.yaml) is read under
     each caller's own `with:`. The resolution may never be guessed: an input a
     condition reads whose `with:` value names the changes job in any other shape - an output
     inside a larger expression, a value built from one - is refused here, naming the input, the
@@ -2169,14 +2170,11 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # two never answer for each other.
     skipped = {key for key, names in gated.items() if names and names <= set(excluded)}
     # A called file's jobs run inside the caller job's run and under its `if:`, so a caller whose
-    # gate is EXCLUDED hands its skip to them: the go commands of those steps are the other
-    # check's too, exactly as the caller's own would be. A job every caller of it hands a skip to
-    # is skipped; one a caller with a gate of this table also runs is not.
-    owners = defaultdict(set)  # (called file, its job) -> the ci.yaml jobs that run it
-    for own, path, name_there, _, _ in units:
-        if path != WORKFLOW:
-            owners[(path, name_there)].add(own)
-    skipped |= {key for key, run_by in owners.items() if all((WORKFLOW, own) in skipped for own in run_by)}
+    # gate is EXCLUDED hands its skip to them: the loop below passes over a step of a called file
+    # whose caller is skipped, and the go commands of those steps, read as that caller's, are the
+    # other check's too, exactly as the caller's own would be. A job a caller with a gate of this
+    # table also runs is read as that caller's alone (dispatch-browser.yaml's jobs, which
+    # dispatch-references runs beside dispatch-browser and dispatch-browser-pr).
     claims = defaultdict(list)  # (the ci.yaml job, step label) -> pinned texts
     exacts = defaultdict(list)  # (the ci.yaml job, step label) -> (the gate's filter, Exact)
     owner = {}  # id(Run) -> the gate's filter
@@ -2192,7 +2190,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
         for e in g.exact:
             exacts[(g.job, e.step)].append((g.filter, e))
     for own, path, name_there, holder, job in units:
-        if (path, name_there) in skipped:
+        if (path, name_there) in skipped or (WORKFLOW, own) in skipped:
             continue
         for step in job.get("steps") or []:
             if "run" not in step:
@@ -2653,7 +2651,7 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event). Its `job:` is the
             # caller's id, written out or read from an input this caller passes it, which is how
-            # dispatch-browser.yaml's merge job reports for whichever of its two callers ran it.
+            # dispatch-browser.yaml's merge job reports for whichever of its callers ran it.
             passed = job.get("with") or {}
 
             def reported_job(value: str) -> str:
@@ -2850,6 +2848,115 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
                                     f"runs that package's untagged tests must be declared there, so the check holds it to "
                                     f"running in every run this step runs"))
     return report
+
+
+# ---------------------------------------------------------------- the references lane's spec files
+# The `references` lane of dispatch-browser.yaml runs the spec files that one shell variable of the
+# script its shard job's browser step runs lists, and the dispatch_references filter, an EXCLUDED
+# one whose patterns its file of .github/ci-gates keeps by hand, is what starts the job calling
+# that lane. The arm is read from that script with comments and blank lines aside (script_lines),
+# so a comment that spells an assignment is no entry.
+BROWSER_WORKFLOW = ".github/workflows/dispatch-browser.yaml"
+LANE_SCRIPT = ".github/scripts/dispatch-browser-shard-suite.sh"
+REFERENCES_FILTER = "dispatch_references"
+REFERENCES_ARM = re.compile(r"^references\)$(.*?)^;;$", re.M | re.S)
+LANE_FILES = re.compile(r'^lane_files="([^"]*)"', re.M)
+
+
+# Where a run: step's text may start the lane script's path: the start of a line or a word, a
+# quote, an `=`, a `(` or a backtick, each also before `./`, and a variable's or an expression's
+# end before a `/` (`"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
+# `$(git rev-parse --show-toplevel)/<script>`).
+LANE_SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
+
+
+def runs_lane_script(holder: dict, job: dict, step: dict) -> bool:
+    """Whether a run: step names LANE_SCRIPT as a whole word of its run: text after one of
+    LANE_SCRIPT_START's starts, by its path from the repository root or from the directory the
+    step runs in; nothing that goes on the path after it (`.old`, a longer name) counts. This
+    reads only where the references lane's spec files are read from: which step starts a script
+    is not proven by its text (around_job), so a lane started some other way is read as run from
+    no step, and rule 24 fails rather than holding the filter to nothing."""
+    run = str(step.get("run", ""))
+    workdir = step_workdir(holder, job, step)
+    paths = {LANE_SCRIPT, os.path.relpath(LANE_SCRIPT, workdir)} if workdir != "." else {LANE_SCRIPT}
+    return any(re.search(rf"{LANE_SCRIPT_START}{re.escape(path)}(?![\w.-])", run) for path in paths)
+
+
+def check_references_lane(data, quantifier: str, problems: list[Annotation]) -> list:
+    """Rule 24: every spec file the references lane runs is one the dispatch_references filter
+    matches. That filter names less than its job reads on purpose (EXCLUDED holds it to no gate's
+    reads), but the lane's own spec files are the least it must name: a spec file it misses is a
+    change to the lane's own rows that starts no run of the lane, and nothing fails. The entries
+    are the lane_files LANE_SCRIPT sets in its `references)` arm. Each is a path from the directory
+    of the step of BROWSER_WORKFLOW that runs that script, which is where Playwright reads it, and
+    is held to the filter as the repository path it names there, under the changes job's
+    quantifier. A tree without that workflow holds no such lane; one whose script is absent, sets
+    lane_files in no `references)` arm, in more than one, or in an arm that lists no file, or whose
+    workflow runs the script from no step or from steps of two directories, or where no file of
+    .github/ci-gates declares the filter as EXCLUDED, fails, rather than holding the filter to
+    nothing. Returns the report lines."""
+    if not (REPO / BROWSER_WORKFLOW).is_file():
+        return []
+    kept = data.EXCLUDED.get(REFERENCES_FILTER)
+    source = kept.source if kept is not None else GATES_DIR
+    held = f"so the filter {REFERENCES_FILTER} cannot be held to the spec files the references lane runs"
+    if not (REPO / LANE_SCRIPT).is_file():
+        problems.append(error(BROWSER_WORKFLOW, f"{LANE_SCRIPT}, the script whose `references)` arm lists the spec "
+                                                f"files {BROWSER_WORKFLOW}'s references lane runs, is absent, {held}"))
+        return []
+    arms = REFERENCES_ARM.findall("\n".join(script_lines(read_repository_text(REPO / LANE_SCRIPT))))
+    lists = [listed.group(1).split() for listed in (LANE_FILES.search(arm) for arm in arms) if listed]
+    if not lists:
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files=\"...\" in no `references)` arm of its "
+                                           f"script, {held}"))
+        return []
+    if len(lists) > 1:
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files in {len(lists)} `references)` arms, "
+                                           f"where this check reads one, {held}"))
+        return []
+    entries = lists[0]
+    if not entries:
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files to no spec file in its `references)` "
+                                           f"arm, {held}"))
+        return []
+    browser = load_repository_yaml(REPO / BROWSER_WORKFLOW) or {}
+    runs = [(f'job {job_id} step "{step_label(step or {})}"', step_workdir(browser, job or {}, step or {}))
+            for job_id, job in (browser.get("jobs") or {}).items()
+            for step in (job or {}).get("steps") or []
+            if runs_lane_script(browser, job or {}, step or {})]
+    if not runs:
+        problems.append(error(BROWSER_WORKFLOW, f"no step of {BROWSER_WORKFLOW} runs {LANE_SCRIPT}, so the "
+                                                f"directory its references lane's spec files are read from is "
+                                                f"unknown, {held}"))
+        return []
+    if len({workdir for _, workdir in runs}) > 1:
+        problems.append(error(BROWSER_WORKFLOW, f"{len(runs)} steps of {BROWSER_WORKFLOW} run {LANE_SCRIPT} from "
+                                                f"more than one directory "
+                                                f"({'; '.join(f'{where} from {workdir}' for where, workdir in runs)}), "
+                                                f"where this check reads one, {held}"))
+        return []
+    where, workdir = runs[0]
+    if kept is None:
+        problems.append(error(GATES_DIR, f"no file of {GATES_DIR} declares the filter {REFERENCES_FILTER} "
+                                         f"(`EXCLUDED = excluded({REFERENCES_FILTER!r}, ...)`), which must match "
+                                         f"every spec file the references lane of {LANE_SCRIPT} runs ({where} "
+                                         f"of {BROWSER_WORKFLOW} runs it)"))
+        return []
+    matcher = PathsFilter(list(kept.patterns), quantifier or "some-with-excludes")
+    unmatched = 0
+    for entry in entries:
+        path = os.path.normpath(os.path.join(workdir, entry))
+        if matcher.covers(path):
+            continue
+        unmatched += 1
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} runs {entry} in the references lane (lane_files, run "
+                                           f"from {workdir} by {where} of {BROWSER_WORKFLOW}), which the filter "
+                                           f"{REFERENCES_FILTER} ({source}) does not match as {path}, so a change "
+                                           f"to that spec file starts no run of the lane that runs it; add '{path}' "
+                                           f"to the patterns of {source}, or take the entry out of lane_files"))
+    return [f"{LANE_SCRIPT} references lane: {len(entries)} spec files, {unmatched} unmatched by filter "
+            f"{REFERENCES_FILTER}"]
 
 
 def declared_reads(data) -> list:
@@ -3739,6 +3846,8 @@ def check() -> int:
     report += check_push_workflows(data, filters, mode, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, Selection(filters, quantifiers, files),
                              listed, problems)
+    # Rule 24: the references lane's spec files are ones its EXCLUDED filter matches.
+    report += check_references_lane(data, quantifier, problems)
     report.append(f"{GENERATED_FILE}: {len(computed)} filters, {sum(len(c.positives) for c in computed.values())} "
                   f"patterns and {sum(len(c.negations) for c in computed.values())} `!` patterns")
     if report:

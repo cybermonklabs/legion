@@ -23,7 +23,7 @@ import {
   stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
-import { askResolutionBadge, askResolutionReason } from "./actor";
+import { askResolutionBadge } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
 import { relativeTimeLabel, Timestamp } from "./Timestamp";
@@ -613,15 +613,11 @@ export function AgentParts({
   ));
 }
 
-/** `Resolved by <agent> - <reason>` / `Retracted by <agent> - <reason>` / `Withdrawn when <agent>
- *  closed the issue` (a withdrawal's reason only repeats it) as `AgentPart`s, for the description
- *  builders (the activity and event descriptions). */
+/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` /
+ *  `<agent> declined to answer` as `AgentPart`s, for the description builders (the activity and
+ *  event descriptions). The reason is no part of it: it is the resolver's own stored text, which
+ *  a builder adds as a part the one reader draws (`askResolutionReason`, `SentenceParts`). */
 export function askResolutionParts(resolution: AskResolution): AgentPart[] {
   const [before, after] = resolutionFrame(resolution);
-  const reason = askResolutionReason(resolution);
-  return [
-    before,
-    { actor: resolution.actor },
-    reason === undefined ? after : `${after} - ${reason}`,
-  ];
+  return [before, { actor: resolution.actor }, after];
 }

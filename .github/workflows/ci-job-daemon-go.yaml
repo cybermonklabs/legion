@@ -423,7 +423,7 @@ jobs:
 
       # internal/daemon's scratch-Dispatch tests (startScratchDispatchOn) start the real Dispatch
       # server on a database of this service, and one Dispatch process opens up to
-      # store.ConnectionsPerProcess connections (117): more than PostgreSQL's default
+      # store.ConnectionsPerProcess connections (118): more than PostgreSQL's default
       # max_connections of 100 allows, before the five packages' own pools. A run holding several
       # at once had a scratch Dispatch refused with 53300 "sorry, too many clients already" and
       # exit before it was ready (job 137919658889). So the service is raised to what a Dispatch
