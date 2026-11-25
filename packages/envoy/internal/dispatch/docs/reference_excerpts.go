@@ -826,14 +826,21 @@ func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.Versi
 
 // heldBlockIndex is what artifactID's block index holds as a plan of it reads it: as the
 // transaction's own queued indexing of the document leaves it, when there is one
-// (recordBlockIndex), else as read in tx.
+// (recordBlockIndex), else as read in tx; either holding the blocks a move of the node route
+// placed in the transaction (Ledger.storedBlocks), whose own facts the store holds only once the
+// write phase has run.
 func heldBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string) (refs.BlockIndex, error) {
-	if ledger := queueFor(ctx, tx); ledger != nil {
+	ledger := queueFor(ctx, tx)
+	if ledger != nil {
 		if index, held := ledger.blockIndexes[artifactID]; held {
-			return index, nil
+			return index.WithStored(ledger.storedBlocks), nil
 		}
 	}
-	return refs.ReadBlockIndex(ctx, tx, artifactID)
+	index, err := refs.ReadBlockIndex(ctx, tx, artifactID)
+	if err != nil || ledger == nil {
+		return index, err
+	}
+	return index.WithStored(ledger.storedBlocks), nil
 }
 
 // recordBlockIndex records index as what artifactID's block index holds once the plan this

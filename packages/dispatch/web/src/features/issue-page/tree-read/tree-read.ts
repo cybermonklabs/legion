@@ -110,16 +110,14 @@ export function dropViews(queryClient: QueryClient, key: string): void {
  *  (`issueTreeKey`), so every event of the issue reaches both. */
 export type Outline = "conversation" | "graph";
 
-/** The tree route's query as the page writes it: the route's own (`view`, `cursor`,
- *  `comments_before`), with `kind`, the filter by node kind, which the generated contract does not
- *  name yet. `routeUrl` writes a list as one `kind=` per value (`paths.ts`' `pathWithQuery`). */
-type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get"> & {
-  readonly kind?: readonly string[];
-};
+/** The tree route's query as the page writes it: the route's own (`view`, `kind`, `cursor`,
+ *  `comments_before`). `routeUrl` writes a list as one `kind=` per value (`paths.ts`'
+ *  `pathWithQuery`). */
+type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get">;
 
 /** What each outline's read asks the route for, beside a page's `cursor` or `comments_before`. */
 const OUTLINE_QUERIES: Readonly<Record<Outline, TreeQuery>> = {
-  conversation: { kind: CONVERSATION_KINDS },
+  conversation: { kind: [...CONVERSATION_KINDS] },
   graph: {},
 };
 

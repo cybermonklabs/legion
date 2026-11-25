@@ -1162,13 +1162,15 @@ type reasoningProbe struct {
 }
 
 // reasoningCrossProject is the request each route of cybermonklabs/legion#4193 under /issues/{key}
-// is sent under the other project's issue, about owned's objects. Every route
+// is sent under the other project's issue, about owned's objects, and so is the move of a node
+// (PATCH /api/v1/issues/{key}/nodes/{id}, R7 of dispatch://INFRA-1253). Every route
 // that pull request adds gets one, so each gets all three of threeBadRequests' requests
 // (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
 // and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
 // compared. Each request here is well formed and names a node or a document that exists - a node
 // by its store address, as /nodes/{id} takes one, or by its dispatch:// address in a body - so
-// the only thing wrong with it is the issue.
+// the only thing wrong with it is the issue. The move's request names no If-Match, which it reads
+// only once the node is found under the issue.
 func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
 	under := "/api/v1/issues/" + owned.otherIssue
 	node := func(of lensOrConstraint, route string) string { return under + nodePath(of.storeAddress(), route) }
@@ -1186,6 +1188,8 @@ func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
 			body: map[string]any{"state": graphstore.StateOvertaken}},
 		"POST /api/v1/issues/{key}/nodes/{id}/settle": {target: node(owned.tradeoff, "settle"), refused: "NOT_FOUND",
 			body: map[string]any{}},
+		"PATCH /api/v1/issues/{key}/nodes/{id}": {target: strings.TrimSuffix(node(owned.tradeoff, ""), "/"), refused: "NOT_FOUND",
+			body: map[string]any{"parent": "issue/" + owned.otherIssue}},
 		"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
 			target: under + "/artifacts/" + owned.slug + "/premortem-convert", refused: "ARTIFACT_NOT_FOUND",
 			body: map[string]any{"prevented_by": []any{}, "dry_run": true},

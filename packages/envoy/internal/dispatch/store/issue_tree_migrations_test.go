@@ -53,12 +53,13 @@ var keepsItsShape = []string{
 // room's block's in_document, node_search, the search rows of a node, issue_views, the
 // per-issue record of how an issue was converted and whether its spec is its own (R23),
 // issue_head_nodes and issue_head_marks, the head projection of each issue's tree and the marks of
-// the issues whose rows the head read reads (R8), and issue_query_marks, the issues whose queries a
-// write left owed a version (R7). Each is created new, by a create table of its own that is the
-// first statement of the set to name it, and no statement of the set fills it from a stored row. A
-// table no migration of the set names is no finding.
+// the issues whose rows the head read reads (R8), issue_query_marks, the issues whose queries a
+// write left owed a version (R7), and artifact_review_carries, the source of each carried review
+// (R27). Each is created new, by a create table of its own that is the first statement of the set
+// to name it, and no statement of the set fills it from a stored row. A table no migration of the
+// set names is no finding.
 var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_views",
-	"issue_head_nodes", "issue_head_marks", "issue_query_marks"}
+	"issue_head_nodes", "issue_head_marks", "issue_query_marks", "artifact_review_carries"}
 
 // columnAdd is the one statement a table of columnAdds takes from this child: an alter table of it
 // that adds the columns named, each of the type Postgres's parser names (its typeName's names) and

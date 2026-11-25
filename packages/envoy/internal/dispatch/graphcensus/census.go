@@ -1379,11 +1379,10 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			}
 		}
 	}
-	// Two kinds read in Go come after the projections, each one kind of its own: the Keeps the
-	// backfill's Keep pass still owes (CensusOfKeepSums), whose decisions' words only Go renders,
-	// and last the head projection, over every node kind (CensusOfHeads), once every projection of
-	// the nodes its rows read has been read.
-	for _, read := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, CensusOfHeads} {
+	// The Go readers come after the projections: Keeps, whose decisions' words only Go renders;
+	// review carries, whose legacy reasons Go parses; and last the head projection, over every
+	// node kind, once every projection of the nodes its rows read has been read.
+	for _, read := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, censusOfReviewCarries, CensusOfHeads} {
 		kind, err := read(ctx, tx)
 		if err != nil {
 			return nil, err

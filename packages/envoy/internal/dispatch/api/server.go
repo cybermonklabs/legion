@@ -226,6 +226,11 @@ type Deps struct {
 	// a parent's status out of line with its children's (R24) is refused 409
 	// PARENT_STATUS_CONFLICT. The zero value is off.
 	ParentStatusRule ParentStatusRule
+	// IssueTreePageSize is the most nodes one page of GET /api/v1/issues/{key}/tree answers. Zero
+	// keeps issueTreePageSize, and every deployment leaves it zero: no flag, setting or environment
+	// variable reaches it. Only this package's tests set another (testServerOptions), so a case of a
+	// few nodes reads several pages.
+	IssueTreePageSize int
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.

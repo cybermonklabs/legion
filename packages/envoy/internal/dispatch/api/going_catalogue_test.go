@@ -45,6 +45,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/projects/{key}/proven-sessions",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
+	"PATCH /api/v1/issues/{key}/nodes/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",

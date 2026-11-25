@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -80,7 +79,7 @@ import (
 // version, and is what tells such a review from one a person wrote on the version it names: the
 // number that follows it is the version the person approved. The Legion daemon reads the same
 // words from its own module (intake.CarriedApprovalReasonPrefix), which no import can share.
-const CarriedReviewReasonPrefix = "Carried forward from the approval of version "
+const CarriedReviewReasonPrefix = model.CarriedReviewReasonPrefix
 
 // restoreReason is the reason a review carried to a version restoring the approved text records,
 // naming the version of the approval it stands for (approvalOrigin), where that version's text is
@@ -94,28 +93,10 @@ const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is th
 // that approval was carried to (restoredReason).
 const restoreCarriedReason = CarriedReviewReasonPrefix + "%d: this version's text is version %d's, unchanged, which that approval was carried to."
 
-// CarriedFromVersion reads the version a carried review's reason names, out of the sentence every
-// carry writes (carriedReasonPrefix, restoreReason, restoreCarriedReason), and reports false for
-// every reason a person wrote. It stands beside those sentences because a reader that took a
-// carried review for a person's own would quote Dispatch's own words back as the reviewer's, and
-// nothing would report it: the writer and its reader are changed together here. A reason that
-// opens with the prefix but names no number there is read as a person's, since the number is all
-// such a line would say. The Legion daemon reads the same sentence in its own module, which no
-// import can share.
+// CarriedFromVersion reads the source version from the legacy carry reason, using the same
+// parser the census uses. Readers use this fallback only when the carry row is absent.
 func CarriedFromVersion(reason string) (int, bool) {
-	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
-	if !found {
-		return 0, false
-	}
-	digits, _, found := strings.Cut(rest, ":")
-	if !found {
-		return 0, false
-	}
-	version, err := strconv.Atoi(digits)
-	if err != nil || version < 1 {
-		return 0, false
-	}
-	return version, true
+	return model.CarriedFromVersion(reason)
 }
 
 // carriedReasonPrefix opens the reason of every review a carry case records, naming the version
@@ -488,12 +469,12 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		return err
 	}
 	if restored {
-		reason, err := restoredReason(ctx, tx, artifactID, newest)
+		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
 		if err != nil {
 			return err
 		}
 		return carryRestored(ctx, tx, artifactID, number, newest, func() error {
-			return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, reason, serverURL, sink)
+			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, restoredReason(newest.Version, origin), serverURL, sink)
 		})
 	}
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
@@ -525,19 +506,17 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if err != nil {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
 }
 
-// restoredReason is the reason of the carry of newest, the approval of version A, to a version
-// whose text is A's stored text byte for byte: restoreReason where newest is the person's own
-// approval of A, and restoreCarriedReason where newest is a carry to A of the approval of an
-// earlier version (approvalOrigin), whose text the restored version need not hold.
-func restoredReason(ctx context.Context, tx pgx.Tx, artifactID string, newest model.ArtifactReview) (string, error) {
-	origin, err := approvalOrigin(ctx, tx, artifactID, newest)
-	if err != nil || origin == newest.Version {
-		return fmt.Sprintf(restoreReason, newest.Version), err
+// restoredReason describes a carry to a version that restores the text of version restored.
+// The original approval was of version origin, which may differ from restored for a carry
+// of a carry.
+func restoredReason(restored, origin int) string {
+	if origin == restored {
+		return fmt.Sprintf(restoreReason, origin)
 	}
-	return fmt.Sprintf(restoreCarriedReason, origin, newest.Version), nil
+	return fmt.Sprintf(restoreCarriedReason, origin, restored)
 }
 
 // approvalOrigin is the version of the approval newest, an approval the document carries to a
@@ -845,17 +824,17 @@ func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, b
 	return &copied, true
 }
 
-// writeCarriedReview writes the carry of review to version number of artifactID with reason: the
-// open approval request's answer, Approve in the approver's name, when one is open and this carry
-// leaves every document it names approved, then the approved review and its artifact.approved. It
-// hands sink those events in that order, once the write phase has appended them. The carry records
+// writeCarriedReview carries review from its original approved version (from) to number.
+// When the carry leaves every document of an open approval request approved, it queues the
+// answer in the approver's name, then the new review, its source row, and its artifact.approved.
+// It hands sink the events in that order. The carry records
 // the kind of the review it carries, since it is that review's approval it follows: a plan version
 // restored to the text its plan review approved stays approved by that plan review, not by the
 // session that wrote the version (ReviewKindPlanReview). A row read from artifact_reviews always
 // names its kind, and a review that names none is a person's, as the column's default says. It
 // holds no document service: every write it makes is a package function over tx and the broker,
 // which is what the upload's own caller outside this package holds (CarryUploadedApproval).
-func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
+func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number, from int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
 	var askID *string
 	// The request as the version write's own move left it (MoveApprovalAsk), which names this
 	// version already.
@@ -908,7 +887,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// the row; a review read from a row that names no kind is a person's.
 	kind := cmp.Or(review.Kind, ReviewKindPerson)
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		return QueueReview(b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, func(_ model.ArtifactReview, event model.Event) {
+		return queueReview(b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, &from, func(_ model.ArtifactReview, event model.Event) {
 			sink(event)
 		})
 	}); err != nil {
@@ -929,13 +908,14 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// whole transaction, and the insert runs in tx, so the two are one value: a reader before the
 	// write phase names the carry at the time the stored row carries.
 	return recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
-		ArtifactID: artifactID,
-		Version:    number,
-		State:      "approved",
-		Kind:       kind,
-		Actor:      review.Actor,
-		Reason:     &reason,
-		AskID:      askID,
+		ArtifactID:         artifactID,
+		Version:            number,
+		State:              "approved",
+		Kind:               kind,
+		Actor:              review.Actor,
+		Reason:             &reason,
+		AskID:              askID,
+		CarriedFromVersion: &from,
 	})
 }
 

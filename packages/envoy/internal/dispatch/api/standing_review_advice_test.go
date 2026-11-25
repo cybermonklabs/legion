@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -161,7 +162,7 @@ func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
 // (docs' restoreCarriedReason), and the version it names first is what the advice must carry.
 func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "STANDCARRY", "Carried twice", restoreSpec)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
 
@@ -170,7 +171,7 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), nil)
 	agentEdit(t, handler, issue.PrimaryArtifactID, 4, replaceOp("behind a flag.", "behind a flag and a canary."))
 	agentEdit(t, handler, issue.PrimaryArtifactID, 5, replaceOp("behind a flag and a canary.", "behind a flag."))
-	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 5, 3, restoreCarriedSentence(1, 3), nil)
+	carry := requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 5, 3, restoreCarriedSentence(1, 3), nil)
 
 	review := askStandingReview(t, handler, issue.Key)
 	if review == nil {
@@ -192,6 +193,21 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	if !review.At.After(approval.CreatedAt) {
 		t.Fatalf("standing review at = %s, want the carry's own time, after alice's own review at %s",
 			review.At, approval.CreatedAt)
+	}
+
+	// Advice reads the carry row over its legacy reason, just as a review read does.
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into artifact_review_carries (review_id, carried_from_version) values ($1::uuid, 2)
+		on conflict (review_id) do update set carried_from_version = excluded.carried_from_version
+	`, carry.ID); err != nil {
+		t.Fatalf("set the carried review %s's source version to 2: %v", carry.ID, err)
+	}
+	asked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": "Which protocol should the gateway negotiate?", "actor": adviceSessionActor("session-asking"),
+	})
+	review = adviceFromResponse(t, asked.Code, asked.Body.String()).StandingReview
+	if review == nil || review.CarriedFromVersion != 2 || review.Reason != "" {
+		t.Fatalf("standing review = %#v, want source version 2 from the carry row rather than 1 from the reason, and no reason", review)
 	}
 }
 

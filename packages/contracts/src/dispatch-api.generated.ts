@@ -1842,6 +1842,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/nodes/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** @description Move the node {id} names {parent?, after?, actor?}: under the node parent names, among its siblings where after names one, in one write. {id} is the node's store address under the issue, percent-encoded as one path segment, read as the state route reads it; a node the caller may not see under the issue is 404 NOT_FOUND, and so is a parent the caller may not see. The request names the placement it read in If-Match: the node's placement_seq, the seq of its current part_of, which the tree read answers on every node, as a quoted entity tag; a move with no If-Match is 428 PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412 PRECONDITION_FAILED, so a move taken against a parent that has since changed stores nothing. A body with neither parent nor after is 400 MOVE_INPUT. A parent appends one part_of tuple from the node to the new parent and one retraction of the old, at no event, and touches no descendant and no serves; a ranked node takes a rank of its own document's band between after and the next ranked sibling of that band, after null placing it first in its band (after the issue's memo, for a block of the spec's band under the issue) and no after after every ranked sibling of its band; an after that is no ranked child of the parent, the node itself, or of another band, and an after on a node that holds no rank, are 400 INVALID_POINTER naming after. A block of a document holds the placement stored, which every later index pass keeps but where an edit names another parent in a typed block's parent attribute or takes the block's parent out of the text. Where Markdown can show the block's new place - under its document's top level, a callout or a list item that stands in no decision, reading, ask, requirement, criterion, check or plan_task - its text moves there in the same transaction, under the room's lock, and a typed block's parent attribute names the new parent, or is taken out where it can name none (a lens, a finding, a risk, a constraint, a result, an issue or a document); a change of the text writes one version of the document, with its artifact.version, which moves the document's open approval request; a text move that would leave a callout or a list item with no block of its own - its last block, or a list item's own first paragraph - is 409 CONTAINER_WOULD_EMPTY, naming the container and its kind. Where the move changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed. Refusals, in order: on an issue Legion runs, a move of a requirement, criterion or check by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT; a caller who holds no person scope moving a person's decision - an answered ask, the :::ask block of one, or a decision a person decided - is 409 ANSWERED_ASK_KEPT, quoting it; an ask, a comment or a message is 400 NODE_NOT_MOVABLE, naming it and its kind; a constraint under any node but an issue's is 400 INVALID_POINTER; under the owner locks of the issue and of every issue a node of the node's subtree or the parent's chain stands under, a node under an issue the move did not lock at each of two attempts is 409 PARENT_CONTENDED; a parent inside the node's subtree, one outside the issue's own tree, and a node that reads its issue from its own row under a node of an issue below are 400 INVALID_POINTER; a parent that is, or stands under, the node of a document a removal could take, where only a lens, a finding or a risk stands, is 409 PARENT_DOCUMENT_REMOVABLE, naming the node and its kind, the parent and the document; a parent the walk of its issue does not reach - gone, a comment or a message the conversation test does not pass, or under one - is 409 PARENT_NOT_REACHED, naming the parent and why. A refused move stores nothing. Answers 200 {parent, after, placement_seq}: the parent's store address, the ranked sibling the node now follows or null, and the new placement_seq, the tag the next If-Match of the node takes. */
+    patch: operations["patchApiV1IssuesByKeyNodesById"];
+    trace?: never;
+  };
   "/api/v1/issues/{key}/nodes/{id}/findings": {
     parameters: {
       query?: never;
@@ -2157,7 +2174,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One issue's tree as the caller may see it, in the tree's own order, from the scope GET /api/v1/issues/{key} reads in: {issue, view, version, converted, tree, view_of, documents, nodes, document_nodes, tuples, cursor, comments_before}. With no ?view= it answers the skeleton of the issue's tree: every node but a document, a document version, the prose of a role document, a block of the issue's other documents - each but its spec, its Verification document, its plan and its tree's own fragment - and a comment off its comment page - the issue's own node, then each node before its children, ranked siblings by rank and then the rest by when each was made, each tie by the lower id, then each node of the issue whose parent is a node of an issue above - and each child issue, each node of an issue under it placed under one of its nodes, and each check and plan node of an issue under it whose serves names one of its requirements, with each such check's results, read-only and marked with their issue; then, marked as context, each lens_kind and constraint a has_kind or constrained_by of a node it holds names that the tree does not hold, one level out, each interaction a changed_by_run of such a node names, through the caller's visibility, and each decision's decided_by person or session. Beside its nodes it answers document_nodes, each document of kind doc GET /api/v1/issues/{key} lists, in that order, {artifact_id, slug, block_count}, block_count the number of blocks GET /api/v1/artifacts/{id}/blocks lists for it, where a page reads the blocks of a document its reader opens. Its comment page is the 200 newest of the issue's comments by made_at and then by id, each with the nodes under it; comments_before is <made_at>,<id>, the made_at (RFC 3339, in UTC, with microseconds) and the id of the page's oldest comment, where older comments remain, and null where none does. ?comments_before=<made_at>,<id> answers the 200 comments older than that position, with the nodes under them and their tuples, and no other node, and its own comments_before; a comment whose parent the answer does not hold - the issue, an ask, a comment of another page - names that parent as its parent and stands under the issue, by made_at and then by id. A comments_before of another shape, one that no older comment of the issue follows, and one beside view or cursor are 400 INVALID_QUERY. ?view=spec, verification, plan or decisions answers that query's nodes, each role query, and its fixed context, each role context: on a child, the requirements of the issues above that its checks serve and its design blocks; on the verification view, every requirement node of the issue, served or not, so a requirement no check serves is in the answer, and each other requirement a check serves, and on a parent each check of an issue under it serving one of its requirements, with its results; on the plan view, every plan node of the whole tree and each issue as its two halves, each with its position, needs and size from the ordered read, in that one order. The decisions view answers each ask of the issue by its own node, each decision, and each reading under a decision or under an answered ask's node, keyed and shaped as GET /api/v1/issues/{key}/decisions answers them. The spec and the verification views also answer, as context, each decision and each answered ask whose shaped names one of their nodes and each constraint a constrained_by of one of them names, with those tuples; a view answers no document_nodes and no comments_before. ?v= with a view reads the query as of the store revision that version of its query node recorded; a version it holds no such record of is 404 QUERY_VERSION_NOT_FOUND, as every version of the decisions query is until that query records one, and v with no view is 400 INVALID_QUERY. Each node: kind and id as the store keys it, block_id, supertag, issue and read_only for a node of another issue, role, parent {kind, id, supertag, first_line, issue}, rank, author, state, visibility, made_at, attributes, text and, for a caller that sent Dispatch-Trees: 1, text_tree, the tree its kind's own read answers; no_conversation where no conversation node stands above it; document {artifact_id, slug, position} on a typed block of a role document; ask {options, urgency, multiple} on an ask, its question its text; decision, the Decisions read's members, on a decision and an answered ask; result {verdict, retracted, check_version, check_sha256}; check {text_sha256, changed_version}; plan on the plan view; and converted, tree, view_of and documents on an issue. A node the caller may not see is left out, and each node under it stands under the nearest node above it the caller may see, after that node's own children. tuples is every relation between two nodes of the answer, each end named by its kind and id. One page holds at most 12000 nodes; a larger tree answers cursor, the next node, which ?cursor= reads from, and the context on its last page. */
+    /** @description One issue's tree as the caller may see it, in the tree's own order, from the scope GET /api/v1/issues/{key} reads in: {issue, view, version, converted, tree, view_of, documents, nodes, document_nodes, tuples, cursor, remaining, comments_before}. With no ?view= it answers the skeleton of the issue's tree: every node but a document, a document version, the prose of a role document, a block of the issue's other documents - each but its spec, its Verification document, its plan and its tree's own fragment - and a comment off its comment page - the issue's own node, then each node before its children, ranked siblings by rank and then the rest by when each was made, each tie by the lower id, then each node of the issue whose parent is a node of an issue above - and each child issue, each node of an issue under it placed under one of its nodes, each check of an issue under it whose serves names one of its requirements, under the first requirement it serves, with that check's results, and each such plan node, read-only and marked with their issue; then, marked as context, each lens_kind and constraint a has_kind or constrained_by of a node it holds names that the tree does not hold, one level out, each interaction a changed_by_run of such a node names, through the caller's visibility, and each decision's decided_by person or session. ?kind=, repeated, one kind each, filters that read to the nodes of the kinds it names, each with every ancestor up to the issue, an ancestor of another kind marked as context, in the walk's order, with the context the read with no view carries for the nodes it returns: a typed block's type (each typed block of the block schema: callout, ask, criterion, requirement, check, plan_task, decision, reading), comment, message, issue (a child issue), lens, risk, constraint, result, finding (a block naming its lens) or prose (a block that opens no typed block). callout takes the issue's memo alone, ask each ask's own node and never an ask block, comment each comment tied to no text with the replies under it, and check each check of an issue under it under the requirement it serves, its results only beside kind=result; an item's own blocks stand with their item. kind=block, an empty kind, any other value, and kind beside view or v are 400 INVALID_QUERY naming kind and the values it takes. Every read, with a view, with kind or with neither, also carries each comment on the text of a node it returns, with every comment of its thread: a comment of a thread a person wrote in as a node of the tree, any other as context, and in a view each as context; a comment on text comes only with the node it is on. Beside its nodes the read with no view answers document_nodes, each document of kind doc GET /api/v1/issues/{key} lists, in that order, {artifact_id, slug, block_count}, block_count the number of blocks GET /api/v1/artifacts/{id}/blocks lists for it, where a page reads the blocks of a document its reader opens. Each read's comment page is the 200 newest of the comments it carries by made_at and then by id, each with the nodes under it; comments_before is <made_at>,<id>, the made_at (RFC 3339, in UTC, with microseconds) and the id of the page's oldest comment, where older comments remain, and null where none does. ?comments_before=<made_at>,<id>, beside the same view or kinds, answers the 200 comments that read carries older than that position, with the nodes under them and their tuples, and no other node, and its own comments_before; a comment whose parent the answer does not hold - the issue, an ask, a comment of another page - names that parent as its parent and stands under the issue, by made_at and then by id. A comments_before of another shape, one that no older comment of the issue follows, and one beside cursor are 400 INVALID_QUERY. ?view=spec, verification, plan or decisions answers that query's nodes, each role query, and its fixed context, each role context: on a child, the requirements of the issues above that its checks serve and its design blocks; on the verification view, every requirement node of the issue, served or not, so a requirement no check serves is in the answer, and each other requirement a check serves, and on a parent each check of an issue under it serving one of its requirements, with its results; on the plan view, every plan node of the whole tree and each issue as its two halves, each with its position, needs and size from the ordered read, in that one order. The decisions view answers each ask of the issue by its own node, each decision, and each reading under a decision or under an answered ask's node, keyed and shaped as GET /api/v1/issues/{key}/decisions answers them. The spec and the verification views also answer, as context, each decision and each answered ask whose shaped names one of their nodes and each constraint a constrained_by of one of them names, with those tuples; a view answers no document_nodes. ?v= with a view reads the query as of the store revision that version of its query node recorded; a version the query node does not have is 404 QUERY_VERSION_NOT_FOUND, as every version of the decisions query is until that query records one, one it has that holds no record of the revision it read - written before that record, deferred before its pass, or rendered off a mismatched tree - is 404 QUERY_VERSION_NOT_RECORDED naming the version, and v with no view is 400 INVALID_QUERY. Each node: kind and id as the store keys it, block_id, supertag, issue and read_only for a node of another issue, role, parent {kind, id, supertag, first_line, issue}, rank, placement_seq, author, state, visibility, made_at, attributes, text and, for a caller that sent Dispatch-Trees: 1, text_tree, the tree its kind's own read answers; no_conversation where no conversation node stands above it; document {artifact_id, slug, position} on a typed block of a role document; ask {options, urgency, multiple, answer, selected, answered_by, answered_at} on an ask, its question its text, each answer member null where it holds none, as on a declined ask; decision, the Decisions read's members with uncertainty and uncertainty_reason, on a decision and an answered ask; result {verdict, retracted, check_version, check_sha256}; check {text_sha256, changed_version}; plan on the plan view; checks on a requirement, how many checks of the issue and of each issue under it serve it at the read's cut, as GET /api/v1/issues/{key}/coverage counts them; title on a session that stamped one, the newest it stamped; anchor {artifact_id, block_id, mark_id, version, quote, orphaned} on a comment whose anchor is a document's, as the comments read answers it; and converted, tree, view_of and documents on an issue. A node the caller may not see is left out, and each node under it stands under the nearest node above it the caller may see, after that node's own children. tuples is every relation between two nodes of the answer, each end named by its kind and id. One page holds at most 12000 nodes and at most 2,000,000 bytes of JSON; a larger answer answers cursor, the next node, which ?cursor= reads from, and remaining, how many nodes the read holds after the page; each context node stands on the first page holding a node one of its tuples names, and one no such tuple names on the last. */
     get: operations["getApiV1IssuesByKeyTree"];
     put?: never;
     post?: never;
@@ -3799,6 +3816,7 @@ export interface components {
       ask_id?: string;
       at?: string;
       by?: components["schemas"]["Actor"];
+      carried_from_version?: number;
       content_sha256?: string;
       content_sha256_source?: string;
       documents?: components["schemas"]["AskApprovalDocument"][];
@@ -3815,6 +3833,7 @@ export interface components {
       ask_id?: string;
       at?: string;
       by?: components["schemas"]["Actor"];
+      carried_from_version?: number;
       content_sha256?: string;
       content_sha256_source?: string;
       documents?: components["schemas"]["AskApprovalDocument"][];
@@ -3885,6 +3904,7 @@ export interface components {
       actor: components["schemas"]["Actor"];
       artifact_id: string;
       ask_id: null | string;
+      carried_from_version?: number;
       content_sha256: null | string;
       content_sha256_source: null | string;
       /** Format: date-time */
@@ -3899,6 +3919,7 @@ export interface components {
       actor: components["schemas"]["Actor"];
       artifact_id: string;
       ask_id: null | string;
+      carried_from_version?: number;
       content_sha256: null | string;
       content_sha256_source: null | string;
       /** Format: date-time */
@@ -6157,13 +6178,43 @@ export interface components {
       total: number;
     };
     IssueTreeAsk: {
+      answer?: null | string;
+      /** Format: date-time */
+      answered_at?: null | string;
+      answered_by?: null | string;
       multiple: boolean;
       options: components["schemas"]["AskOption"][] | null;
+      selected?: string[] | null;
       urgency: string;
     };
     IssueTreeCheck: {
       changed_version: number;
       text_sha256: string;
+    };
+    IssueTreeDecision: {
+      asks: string[] | null;
+      block_id: string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      heading: string;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kind: string;
+      links: components["schemas"]["DecisionLink"][] | null;
+      ref: string;
+      replaced: boolean;
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty?: null | string;
+      uncertainty_reason?: null | string;
+      unsure: boolean;
+      waiting_review: boolean;
     };
     IssueTreeDocument: {
       artifact_id: string;
@@ -6191,6 +6242,7 @@ export interface components {
       kind: string;
     };
     IssueTreeNode: {
+      anchor?: components["schemas"]["Anchor"];
       ask?: components["schemas"]["IssueTreeAsk"];
       attributes: {
         [key: string]: string;
@@ -6198,8 +6250,9 @@ export interface components {
       author: components["schemas"]["Actor"][] | null;
       block_id?: string;
       check?: components["schemas"]["IssueTreeCheck"];
+      checks?: number;
       converted?: boolean;
-      decision?: components["schemas"]["Decision"];
+      decision?: components["schemas"]["IssueTreeDecision"];
       document?: components["schemas"]["IssueTreeDocument"];
       documents?: components["schemas"]["IssueTreeDocuments"] | null;
       id: string;
@@ -6209,6 +6262,7 @@ export interface components {
       made_at: null | string;
       no_conversation?: boolean;
       parent: components["schemas"]["IssueTreeParent"] | null;
+      placement_seq?: null | number;
       plan?: components["schemas"]["IssueTreePlan"];
       rank: null | string;
       read_only?: boolean;
@@ -6225,6 +6279,7 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      title?: string;
       tree?: null | string;
       view_of?: null | string;
       /** @enum {string} */
@@ -6254,6 +6309,7 @@ export interface components {
       issue: string;
       nodes: components["schemas"]["IssueTreeNode"][] | null;
       owed_documents?: components["schemas"]["OwedDocument"][];
+      remaining?: number;
       tree: null | string;
       tuples: components["schemas"]["IssueTreeTuple"][] | null;
       version: null | number;
@@ -6819,6 +6875,17 @@ export interface components {
       lens: components["schemas"]["LensRead"] | null;
       lenses: components["schemas"]["LensRead"][] | null;
       on: components["schemas"]["ReasoningEnd"];
+    };
+    NodeMoveInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      after?: null | string;
+      parent?: string;
+    };
+    NodeMoved: {
+      after: null | string;
+      parent: string;
+      /** Format: int64 */
+      placement_seq: number;
     };
     NodeStateInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -12812,6 +12879,48 @@ export interface operations {
       };
     };
   };
+  patchApiV1IssuesByKeyNodesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header: {
+        /** @description the node's placement_seq, the seq of its current part_of that the tree read answers on every node, as a quoted entity tag ("123"): none is 428 PRECONDITION_REQUIRED, and a tag that is no longer the node's placement_seq is 412 PRECONDITION_FAILED */
+        "If-Match": string;
+      };
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["NodeMoveInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeMoved"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1IssuesByKeyNodesByIdFindings: {
     parameters: {
       query?: {
@@ -13582,6 +13691,7 @@ export interface operations {
     parameters: {
       query?: {
         view?: "spec" | "verification" | "plan" | "decisions";
+        kind?: string[];
         v?: number;
         cursor?: string;
         comments_before?: string;
@@ -17222,6 +17332,7 @@ export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type IssueTreeAsk = components["schemas"]["IssueTreeAsk"];
 export type IssueTreeCheck = components["schemas"]["IssueTreeCheck"];
+export type IssueTreeDecision = components["schemas"]["IssueTreeDecision"];
 export type IssueTreeDocument = components["schemas"]["IssueTreeDocument"];
 export type IssueTreeDocumentNode = components["schemas"]["IssueTreeDocumentNode"];
 export type IssueTreeDocuments = components["schemas"]["IssueTreeDocuments"];
@@ -17288,6 +17399,8 @@ export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type NodeLenses = components["schemas"]["NodeLenses"];
+export type NodeMoveInput = components["schemas"]["NodeMoveInput"];
+export type NodeMoved = components["schemas"]["NodeMoved"];
 export type NodeStateInput = components["schemas"]["NodeStateInput"];
 export type NodeStateWritten = components["schemas"]["NodeStateWritten"];
 export type OpenAsk = components["schemas"]["OpenAsk"];

@@ -763,10 +763,18 @@ type blockFarEnd struct{ kind, id string }
 // (placeAuthored). textParents is, beside each, the index among the version's unique blocks of the
 // block whose text holds it, -1 for one no block of the version that is a node holds: the parent
 // the text gives it (placeBlocks), which placeAuthored and an answered ask leave as it is.
+//
+// stored marks, beside each, a block a move of the node route placed whose part_of the pass keeps
+// as the store holds it (keepStored), and unstored a block the store holds at PlacementStored that
+// the pass places again, by its text or by its author (the two exceptions of planBlockParents and
+// placeAuthored); each is nil where it marks none. A block the store holds stored whose part_of
+// is the one the text gives it is in neither: it keeps its placement all the same
+// (planBlockValues).
 type blockPlacement struct {
 	ids                          []string
 	placed, parents, textParents []int
 	ends                         []*blockFarEnd
+	stored, unstored             []bool
 }
 
 // end sets the far end the block at index hangs under, making ends where there is none yet.
@@ -775,6 +783,56 @@ func (p *blockPlacement) end(index int, far blockFarEnd) {
 		p.ends = make([]*blockFarEnd, len(p.ids))
 	}
 	p.ends[index] = &far
+}
+
+// detachTextParents gives textParents a slice of its own where it still shares parents', so a
+// block placed elsewhere than its text keeps the text parent its text gives it.
+func (p *blockPlacement) detachTextParents() {
+	if len(p.textParents) > 0 && &p.textParents[0] == &p.parents[0] {
+		p.textParents = slices.Clone(p.parents)
+	}
+}
+
+// keepStored marks the block at index as one whose stored part_of the pass keeps.
+func (p *blockPlacement) keepStored(index int) {
+	if p.stored == nil {
+		p.stored = make([]bool, len(p.ids))
+	}
+	p.stored[index] = true
+}
+
+// unstore marks the block at index as one the store holds stored that the pass places again.
+func (p *blockPlacement) unstore(index int) {
+	if p.unstored == nil {
+		p.unstored = make([]bool, len(p.ids))
+	}
+	p.unstored[index] = true
+}
+
+// keepsStored says the block at index keeps the placement PlacementStored once the pass has run:
+// the pass kept its stored part_of (keepStored), or the store holds it stored, at the part_of the
+// text gives it, and the pass did not place it again (unstore). held is the placement the store
+// holds of it.
+func (p blockPlacement) keepsStored(index int, held string) bool {
+	if p.stored != nil && p.stored[index] {
+		return true
+	}
+	return held == PlacementStored && (p.unstored == nil || !p.unstored[index])
+}
+
+// removedParent says far, the part_of a stored block holds, is a block of the indexed document
+// (refKey) that the version no longer holds: the second exception, under which the pass places
+// the block again rather than leave it under a gone parent. held is each block id of the version.
+func removedParent(far blockFarEnd, refKey string, held map[string]struct{}) bool {
+	if far.kind != BlockNodeKind {
+		return false
+	}
+	id, own := strings.CutPrefix(far.id, refKey+"#")
+	if !own {
+		return false
+	}
+	_, holds := held[id]
+	return !holds
 }
 
 // parentProbe is the blocks of a placement heldBlockParentDifferences reads, as the arrays it
@@ -948,6 +1006,31 @@ func (b *BlockIndexing) planBlockParents(
 	// Each placed block's difference, by its place among them: a kept node states none, a block an
 	// earlier indexing of this transaction placed is compared with where that indexing put it, and
 	// the rest are read from the store in one probe.
+	//
+	// A block the store holds at PlacementStored keeps the part_of it holds (keepStored): the move
+	// of the node route that placed it decides its parent, and its text does not. The one exception
+	// here is a stored part_of to a block of the document this version no longer holds
+	// (removedParent): the block is placed by its text again (unstore), so no stored block stands
+	// under a gone parent. An authored node's exceptions are placeAuthored's. A block a move of this
+	// same transaction placed is kept where the move put it (BlockIndex.storedMove), which the store
+	// holds only once the write phase has run.
+	var versionIDs map[string]struct{}
+	removed := func(far blockFarEnd) bool {
+		if versionIDs == nil {
+			versionIDs = make(map[string]struct{}, len(nodes))
+			for _, node := range nodes {
+				versionIDs[node.ID] = struct{}{}
+			}
+		}
+		return removedParent(far, refKey, versionIDs)
+	}
+	places := authoredPlaces{document: record, nodes: nodes, placement: &placement, parentIDs: parentIDs, outside: b.outside}
+	keep := func(position int, far blockFarEnd) {
+		placement.detachTextParents()
+		places.set(position, far)
+		placement.keepStored(position)
+		wanted[position] = far
+	}
 	skipped := make([]bool, len(placed))
 	differences := make([]*blockParentDifference, len(placed))
 	for position, id := range blockIDs {
@@ -955,14 +1038,27 @@ func (b *BlockIndexing) planBlockParents(
 			skipped[position] = true
 			continue
 		}
+		if move, moved := indexed.storedMove(blockNodeAddress(refKey, id)); moved {
+			skipped[position] = true
+			keep(position, blockFarEnd{kind: move.ParentKind, id: move.ParentID})
+			continue
+		}
 		far, known := indexed.placed[id]
 		if !known {
 			continue
 		}
 		skipped[position] = true
-		if far != wanted[position] {
-			differences[position] = &blockParentDifference{block: position, retract: []blockFarEnd{far}}
+		if far == wanted[position] {
+			continue
 		}
+		if indexed.values[id].placement == PlacementStored {
+			if !removed(far) {
+				keep(position, far)
+				continue
+			}
+			placement.unstore(position)
+		}
+		differences[position] = &blockParentDifference{block: position, retract: []blockFarEnd{far}}
 	}
 	probe := placement.probe(parentIDs, skipped)
 	read, err := heldBlockParentDifferences(ctx, q, refKey, topKind, topID, probe)
@@ -971,6 +1067,13 @@ func (b *BlockIndexing) planBlockParents(
 	}
 	for _, difference := range read {
 		difference.block = probe.position(difference.block)
+		if difference.placement == PlacementStored {
+			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) {
+				keep(difference.block, difference.retract[0])
+				continue
+			}
+			placement.unstore(difference.block)
+		}
 		differences[difference.block] = &difference
 	}
 	var tuples []graphstore.UncausedTuple
@@ -1328,6 +1431,16 @@ func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written,
 // (BlockIndex.placed) and its parent value, the target of the parent attribute's link its pairs
 // hold (BlockIndex.links). So a second indexing of the document in one transaction keeps a node
 // where the first placed it, as a later transaction would.
+//
+// An authored node a move of the node route placed holds PlacementStored, and it is kept where
+// the move put it as an authored node is kept, while its parent attribute names the target the
+// parent value the store holds names - the move rewrites the attribute to match its new parent, or
+// takes it out where it can name none - and while its part_of names no block of the document this
+// version no longer holds (removedParent). An edit whose text names another target places it again
+// by the precedence above, under PlacementAuthored, so the author's newest write wins; a removed
+// parent places it again the same way. A node a move of this same transaction placed
+// (BlockIndex.storedMove) is kept where the move put it, since the move wrote the attribute in
+// that transaction to match.
 func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources, outside map[string]struct{}) ([]bool, error) {
 	var authored []int
 	for index, block := range placement.placed {
@@ -1383,15 +1496,41 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 	// The blocks no version of this pass holds that kept nodes hang under, whose chains the walk
 	// climbs on through as the store holds them.
 	var keptEnds []string
+	var versionIDs map[string]struct{}
+	keep := func(index int, far blockFarEnd) {
+		kept[index] = true
+		places.set(index, far)
+		if _, inVersion := places.ownBlock(far); far.kind == BlockNodeKind && inVersion < 0 {
+			keptEnds = append(keptEnds, far.id)
+		}
+	}
 	for position, index := range authored {
 		stored := held[position]
+		if move, moved := indexed.storedMove(blockNodeAddress(document.RefKey, ids[position])); moved {
+			keep(index, blockFarEnd{kind: move.ParentKind, id: move.ParentID})
+			placement.keepStored(index)
+			continue
+		}
+		if stored.placement == PlacementStored && stored.parent.kind != "" {
+			if versionIDs == nil {
+				versionIDs = make(map[string]struct{}, len(nodes))
+				for _, node := range nodes {
+					versionIDs[node.ID] = struct{}{}
+				}
+			}
+			if !removedParent(stored.parent, document.RefKey, versionIDs) &&
+				stored.pointer == writtenParent(sources, farEnds, ids[position]) {
+				keep(index, stored.parent)
+				placement.keepStored(index)
+				continue
+			}
+			placement.unstore(index)
+			placing = append(placing, index)
+			continue
+		}
 		if stored.placement == PlacementAuthored && stored.parent.kind != "" &&
 			stored.pointer == writtenParent(sources, farEnds, ids[position]) {
-			kept[index] = true
-			places.set(index, stored.parent)
-			if _, inVersion := places.ownBlock(stored.parent); stored.parent.kind == BlockNodeKind && inVersion < 0 {
-				keptEnds = append(keptEnds, stored.parent.id)
-			}
+			keep(index, stored.parent)
 			continue
 		}
 		placing = append(placing, index)
@@ -1782,14 +1921,18 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 // (RankBandSpec and the rest); graphstore.AttributeText, the block's whole slice of its version's
 // markdown, its children's text included, which document_block_texts projects; and
 // AttributePlacement, which says what decides the block's parent: PlacementText, the text it
-// stands in, for every block the rendering places, and PlacementAuthored for an authored node,
-// whose parent its author decides (placeAuthored). A plan node holds one more, AttributePlanSize,
-// the `size` its opening line writes (blockSize).
+// stands in, for every block the rendering places, PlacementAuthored for an authored node, whose
+// parent its author decides (placeAuthored), and PlacementStored for a block a move of the node
+// route placed (R7 of dispatch://INFRA-1253: api's PATCH /api/v1/issues/{key}/nodes/{id}), whose
+// part_of and rank the store holds as that move wrote them and no pass computes from the text, but
+// for the two exceptions planBlockParents and placeAuthored name. A plan node holds one more,
+// AttributePlanSize, the `size` its opening line writes (blockSize).
 const (
 	AttributeRank      = "rank"
 	AttributePlacement = "placement"
 	PlacementText      = "text"
 	PlacementAuthored  = "authored"
+	PlacementStored    = "stored"
 )
 
 // A block's place in its document's text, which no rank holds: a rank orders a block only among
@@ -1924,11 +2067,23 @@ func planBlockValues(
 			held[index] = read[position]
 		}
 	}
+	// A block a move of this transaction placed holds what the move states of it, which the store
+	// holds only once the write phase has run: its rank, and the placement PlacementStored.
+	keeps := make([]bool, len(placement.ids))
+	for index, id := range placement.ids {
+		if move, moved := indexed.storedMove(blockNodeAddress(document.RefKey, id)); moved {
+			held[index].rank, held[index].placement = move.Rank, PlacementStored
+		}
+		keeps[index] = placement.keepsStored(index, held[index].placement)
+	}
 	if standing == nil {
 		standing = make(map[string]heldBlockValue, len(placement.ids))
 	}
 	bands := blockBands(document, nodes, fragments)
-	ranks := rankBlocks(bands, placement, held)
+	ranks := rankBlocks(bands, placement, held, keeps)
+	if err := spaceFromStoredRanks(ctx, q, indexed, document, nodes, placement, held, keeps, bands, ranks); err != nil {
+		return nil, nil, err
+	}
 	textRanks := textRankBlocks(bands, document, nodes, placement, fragments, held)
 	var tuples []graphstore.UncausedTuple
 	value := func(id, attribute, to string) {
@@ -1954,7 +2109,10 @@ func planBlockValues(
 			value(id, graphstore.AttributeText, markdown[block.From:block.To])
 		}
 		placed := PlacementText
-		if authoredType(block.Type) {
+		switch {
+		case keeps[index]:
+			placed = PlacementStored
+		case authoredType(block.Type):
 			placed = PlacementAuthored
 		}
 		if held[index].placement != placed {
@@ -2105,13 +2263,19 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 // the ranks their own documents' passes gave them, and stand before or after these by their bands.
 // An issue room's top level holds several documents' fragments, each a run of children of one
 // band in the room's order, and each run is ranked inside its own band.
-func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) []string {
+//
+// A block that keeps its stored placement (keeps, planBlockValues) keeps the rank the store holds
+// too: it is ranked on its own, as the one child of a parent of its own, which keeps any rank that
+// stands in its band, and it takes no part in its siblings' ranking, whose text it does not follow
+// (spaceFromStoredRanks keeps their new ranks off it).
+func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue, keeps []bool) []string {
 	nodes := len(bands)
 	// A parent is the index of the block holding the child plus one, 0 for the document's top,
-	// or past nodes+1 for a node that is no block of the version.
+	// or past nodes+1 for a node that is no block of the version, or for a stored block alone.
 	parents := nodes + 1
 	var ends map[blockFarEnd]int
 	parentOf := make([]int, len(placement.ids))
+	alone := 0
 	for index := range placement.ids {
 		parentOf[index] = placement.parents[index] + 1
 		if placement.ends != nil && placement.ends[index] != nil {
@@ -2127,7 +2291,151 @@ func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) [
 		}
 	}
 	parents += len(ends)
+	for index := range placement.ids {
+		if keeps[index] {
+			parentOf[index] = parents + alone
+			alone++
+		}
+	}
+	parents += alone
 	return rankChildren(bands, placement.placed, parentOf, parents, func(child int) string { return held[child].rank })
+}
+
+// spaceFromStoredRanks keeps each new rank rankBlocks gave a block placed by its text off every
+// rank its parent's other children hold (R7 of dispatch://INFRA-1253): a stored block's, which
+// the pass leaves where it stands, and those of another document's or another room's children of
+// the same parent. It reads, for each parent a new rank goes under, the rank of every child the
+// store holds under it, in one statement (parentChildRanks) - one read more for each parent the
+// pass writes - beside the ranks a move of this transaction gave its blocks
+// (BlockIndex.storedMove). A new rank that one of them holds moves to rank.Between it and the
+// next rank above it among the parent's children, or the band's own upper bound, so it equals
+// none of them and stays below every later sibling. A rank the block already held is no new rank
+// and stays where it is.
+func spaceFromStoredRanks(ctx context.Context, q Queryer, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement blockPlacement, held []heldBlockValue, keeps []bool, bands []byte, ranks []string) error {
+	topKind, topID := document.top()
+	parentOf := func(index int) blockFarEnd {
+		switch {
+		case placement.ends != nil && placement.ends[index] != nil:
+			return *placement.ends[index]
+		case placement.parents[index] >= 0:
+			return blockFarEnd{kind: BlockNodeKind, id: blockNodeAddress(document.RefKey, nodes[placement.parents[index]].ID)}
+		}
+		return blockFarEnd{kind: topKind, id: topID}
+	}
+	// The parents a new rank goes under: a rank the block already held is none.
+	var written []blockFarEnd
+	wrote := map[blockFarEnd]bool{}
+	for index := range placement.ids {
+		if keeps[index] || ranks[index] == held[index].rank {
+			continue
+		}
+		if parent := parentOf(index); !wrote[parent] {
+			wrote[parent] = true
+			written = append(written, parent)
+		}
+	}
+	if len(written) == 0 {
+		return nil
+	}
+	children, err := parentChildRanks(ctx, q, written)
+	if err != nil {
+		return fmt.Errorf("read the ranks of the children the parents of %s hold: %w", document.RefKey, err)
+	}
+	// Each placed block by its address: one placed by its text takes its rank here, so what the
+	// store holds of it is no other child's rank.
+	placed := make(map[string]int, len(placement.ids))
+	for index, id := range placement.ids {
+		placed[blockNodeAddress(document.RefKey, id)] = index
+	}
+	others := map[blockFarEnd][]string{}
+	for _, child := range children {
+		if index, ours := placed[child.address]; ours && !keeps[index] {
+			continue
+		}
+		if _, moved := indexed.storedMove(child.address); moved {
+			continue
+		}
+		others[child.parent] = append(others[child.parent], child.rank)
+	}
+	for _, move := range indexed.stored {
+		if parent := (blockFarEnd{kind: move.ParentKind, id: move.ParentID}); wrote[parent] && move.Rank != "" {
+			others[parent] = append(others[parent], move.Rank)
+		}
+	}
+	for index := range placement.ids {
+		if keeps[index] || ranks[index] == held[index].rank {
+			continue
+		}
+		parent := parentOf(index)
+		if !slices.Contains(others[parent], ranks[index]) {
+			continue
+		}
+		upper := string(bands[placement.placed[index]] + 1)
+		consider := func(candidate string) {
+			if candidate > ranks[index] && candidate < upper {
+				upper = candidate
+			}
+		}
+		for _, other := range others[parent] {
+			consider(other)
+		}
+		for sibling := range placement.ids {
+			if sibling != index && !keeps[sibling] && parentOf(sibling) == parent {
+				consider(ranks[sibling])
+			}
+		}
+		ranks[index] = rank.Between(ranks[index], upper)
+	}
+	return nil
+}
+
+// parentChild is one child a parent holds now, as parentChildRanks reads it: the parent, the
+// child's node address, and the rank the child holds.
+type parentChild struct {
+	parent  blockFarEnd
+	address string
+	rank    string
+}
+
+// parentChildRanks reads, in one statement, every block each of parents holds now through its
+// current part_of (graphstore.CurrentTupleRead, into a node, which graph_tuples_as_of_in serves),
+// with the rank it holds now, read as heldBlockValues reads a value; a child that holds no rank,
+// or that is no block, is left out.
+func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]parentChild, error) {
+	kinds, ids := make([]string, len(parents)), make([]string, len(parents))
+	for index, parent := range parents {
+		kinds[index], ids[index] = parent.kind, parent.id
+	}
+	rows, err := q.Query(ctx, `
+		select parent.kind, parent.id, child.from_id, ranked.held
+		from unnest($1::text[], $2::text[]) as parent (kind, id)
+		join lateral (
+			select held.from_id from (
+				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4`)+`
+			) held
+			where held.asserted
+		) child on true
+		join lateral (
+			select case when t.asserted then t.to_id end as held from graph_tuples t
+			where t.from_kind = $4 and t.from_id = child.from_id and t.kind = $5
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) ranked on ranked.held is not null
+	`, kinds, ids, graphstore.TuplePartOf, BlockNodeKind, AttributeRank)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var children []parentChild
+	for rows.Next() {
+		var child parentChild
+		if err := rows.Scan(&child.parent.kind, &child.parent.id, &child.address, &child.rank); err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+	return children, rows.Err()
 }
 
 // textRankBlocks is the text_rank each block placement placed stands at once the pass has run,
@@ -2912,12 +3220,15 @@ func parentTuple(address, toKind, toID string, at time.Time, writer model.Actor,
 
 // blockParentDifference is one block whose part_of in the store is not what the render gives:
 // where the block sits in the arrays the read was handed, the far ends the store still asserts
-// and the render does not give, and whether the render's own parent is among the far ends it
-// asserts. A block the store already places where the render does answers no difference at all.
+// and the render does not give, whether the render's own parent is among the far ends it
+// asserts, and the placement the store holds of the block, "" where it holds none, which says
+// whether a move of the node route placed it (PlacementStored). A block the store already places
+// where the render does answers no difference at all.
 type blockParentDifference struct {
-	block   int
-	retract []blockFarEnd
-	holds   bool
+	block     int
+	retract   []blockFarEnd
+	holds     bool
+	placement string
 }
 
 // heldBlockParentDifferences is each block of a document whose parent in the store is not the
@@ -2939,9 +3250,10 @@ type blockParentDifference struct {
 // The comparison is the statement's: a block answers a row only where the store asserts a far
 // end the render does not give, or asserts none the render does, so an edit that moved nothing
 // reads back no row and a document of thousands of blocks costs its probe and nothing more. The
-// having clause is that rule, and the two array_aggs carry the far ends the pass retracts. A
-// difference names its block by its place in the probe. It reads through q, in the plan's read
-// phase.
+// having clause is that rule, and the two array_aggs carry the far ends the pass retracts. The
+// placement the store holds is read for those rows alone, as heldBlockValues reads a value, so a
+// pass over a document nothing moved reads none. A difference names its block by its place in the
+// probe. It reads through q, in the plan's read phase.
 func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind, topID string, probe parentProbe) ([]blockParentDifference, error) {
 	if len(probe.ids) == 0 {
 		return nil, nil
@@ -2950,7 +3262,12 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 		select block.ordinality,
 		       array_agg(current.to_kind) filter (where not current.wanted),
 		       array_agg(current.to_id) filter (where not current.wanted),
-		       coalesce(bool_or(current.wanted), false)
+		       coalesce(bool_or(current.wanted), false),
+		       coalesce((
+		           select case when t.asserted then t.to_id end from graph_tuples t
+		           where t.from_kind = $3 and t.from_id = $7 || '#' || block.id and t.kind = $11
+		             and t.to_kind = '`+graphstore.KindValue+`'
+		           order by t.seq desc limit 1), '')
 		from unnest($1::text[], $2::text[], $8::text[], $9::text[]) with ordinality as block (id, parent, end_kind, end_id)
 		left join lateral (
 			select held.to_kind, held.to_id,
@@ -2966,11 +3283,12 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 			) held
 			where held.asserted
 		) current on true
-		group by block.ordinality
+		group by block.ordinality, block.id
 		having not coalesce(bool_or(current.wanted), false)
 		    or count(*) filter (where not current.wanted) > 0
 		order by block.ordinality
-	`, probe.ids, probe.parents, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, topKind, refKey, probe.endKinds, probe.endIDs, topID)
+	`, probe.ids, probe.parents, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, topKind, refKey, probe.endKinds, probe.endIDs, topID,
+		AttributePlacement)
 	if err != nil {
 		return nil, err
 	}
@@ -2980,10 +3298,11 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 		var ordinality int64
 		var kinds, ids []string
 		var holds bool
-		if err := rows.Scan(&ordinality, &kinds, &ids, &holds); err != nil {
+		var placement string
+		if err := rows.Scan(&ordinality, &kinds, &ids, &holds, &placement); err != nil {
 			return nil, err
 		}
-		difference := blockParentDifference{block: int(ordinality) - 1, holds: holds}
+		difference := blockParentDifference{block: int(ordinality) - 1, holds: holds, placement: placement}
 		for index, kind := range kinds {
 			difference.retract = append(difference.retract, blockFarEnd{kind: kind, id: ids[index]})
 		}

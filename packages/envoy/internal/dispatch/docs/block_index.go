@@ -193,8 +193,11 @@ func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
 // that pass returned, and so is the period each runs under: that wait, blockIndexStep while a batch
 // is full and the full interval once none is, so a tick inside it is one some process already
 // made. A tick whose lease another process holds, or whose period that process has already served,
-// waits the full interval: that process is doing this work.
-func (s *Service) RunBlockIndexReconciliation(ctx context.Context, leases duty.Leases) {
+// waits the full interval: that process is doing this work. Each of after runs once each tick of
+// this process has returned, on the tick's own context: R2's daemon-thread step
+// (DaemonThreadStep.Tick) re-places on each tick the nodes a release before left under a message of
+// a thread the Legion daemon's session began.
+func (s *Service) RunBlockIndexReconciliation(ctx context.Context, leases duty.Leases, after ...func(context.Context)) {
 	ctx = store.WithTransactionTracking(ctx)
 	var cursors BlockIndexCursors
 	// logged is the last tick this loop logged: a tick that indexed nothing and leaves the same
@@ -204,6 +207,9 @@ func (s *Service) RunBlockIndexReconciliation(ctx context.Context, leases duty.L
 	duty.RunLeasedAfterEachPass(ctx, leases, BlockIndexLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
 		var wait time.Duration
 		wait, cursors = s.blockIndexTick(ctx, cursors, liveAhead, &logged)
+		for _, call := range after {
+			call(ctx)
+		}
 		return wait
 	})
 }

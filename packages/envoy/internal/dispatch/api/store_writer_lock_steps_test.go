@@ -76,9 +76,12 @@ const storeStepWait = 20 * time.Second
 //     it, and so before the version whose insert writes the fence row, which names that row;
 //   - an accept that finds a suggestion's mark gone (orphanCommentAnchor), which retracts the
 //     comment's anchored_in (T17b of this branch's plan);
-//   - and the record and the retraction of a check's result (writeRecordedResult,
+//   - the record and the retraction of a check's result (writeRecordedResult,
 //     writeCheckResultRetraction), which write the result's node and tuples and its retracted
-//     value (T11 of this branch's plan).
+//     value (T11 of this branch's plan);
+//   - and a node's move that writes no text (moveNodeRoute, queueNodeMove), which writes its
+//     tuples alone at the sentinel, its block's parent_block_id and the issue's query mark (R7 of
+//     dispatch://INFRA-1253).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -121,7 +124,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
 		rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.architectureSourceRemoval(), rig.commentAnchorOrphaning(),
-		rig.resultRecord(), rig.resultRetraction(),
+		rig.resultRecord(), rig.resultRetraction(), rig.nodeMove(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -189,6 +190,17 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 // made for that run sends it (api's GoingCaller.Do); with no run it names none.
 func (r *writersRig) requestForRun(t *testing.T, run, method, target string, body any, login string, want int) []byte {
 	t.Helper()
+	var headers map[string]string
+	if run != "" {
+		headers = map[string]string{contracts.GoingRunHeader: run}
+	}
+	return r.requestWith(t, headers, method, target, body, login, want)
+}
+
+// requestWith is request sending headers beside the rig's own: a run's header (requestForRun), or
+// the If-Match a node's move names.
+func (r *writersRig) requestWith(t *testing.T, headers map[string]string, method, target string, body any, login string, want int) []byte {
+	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("encode %s %s: %v", method, target, err)
@@ -200,8 +212,8 @@ func (r *writersRig) requestForRun(t *testing.T, run, method, target string, bod
 	} else {
 		request.Header.Set("Authorization", "Bearer agent-token")
 	}
-	if run != "" {
-		request.Header.Set(contracts.GoingRunHeader, run)
+	for name, value := range headers {
+		request.Header.Set(name, value)
 	}
 	response := httptest.NewRecorder()
 	r.handler.ServeHTTP(response, request)
@@ -337,8 +349,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	// the run the sweep states gone, the run a write is made for, the ask and the comment the run
 	// rewords, the message the run edits, the comment and the message it deletes, the trade-off
 	// lens on the spec, the pre-mortem a risk stands under, the issue whose spec holds a
-	// requirement, and the constraint under that issue.
-	var swept, run, reworded, edited, correctedMessage, deletedComment, deletedMessage, lens, premortem, requiring, constraint string
+	// requirement, the constraint under that issue, and the issue a node's move moves a block of.
+	var swept, run, reworded, edited, correctedMessage, deletedComment, deletedMessage, lens, premortem, requiring, constraint, moving string
 	nodeRoute := func(issue, address, route string) string {
 		return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
 	}
@@ -902,7 +914,59 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				map[string]any{"state": graphstore.StateOvertaken}, "alice", http.StatusOK)
 		},
 		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {graphstore.KindLens}},
+	}, {
+		// A paragraph of an issue's spec moved under the heading above it (PATCH
+		// /api/v1/issues/{key}/nodes/{id}), a place Markdown cannot show, so the move writes its
+		// tuples alone: one part_of appended and one retracted, the block's new rank and its
+		// placement stored, which the terms block and block_values count. The issue is one of the
+		// drive's own; a paragraph is no node any of its queries takes, so the move changes no
+		// query's record and the drain writes no version.
+		Name: "api/node_move.go#queueNodeMove", Database: r.database,
+		Sites: []string{"api/node_move.go#queueNodeMove"},
+		Ready: func(t *testing.T) {
+			moving = decoded[struct {
+				Key string `json:"key"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What a move writes", "spec": "# Moves\n\nA paragraph the move places.\n",
+			}, "alice", http.StatusCreated)).Key
+		},
+		Drive: func(t *testing.T) {
+			heading, paragraph := r.blockNode(t, moving, "heading"), r.blockNode(t, moving, "paragraph")
+			r.requestWith(t, map[string]string{"If-Match": `"` + strconv.FormatInt(paragraph.PlacementSeq, 10) + `"`},
+				http.MethodPatch, "/api/v1/issues/"+moving+"/nodes/"+url.PathEscape(paragraph.ID),
+				map[string]any{"parent": heading.ID}, "alice", http.StatusOK)
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:  {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:      {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}: {"block_values"},
+		},
 	}}, slices.Concat(askDrives(t, r), externalDrives(t, r))...)
+}
+
+// treeNode is a block of an issue as a drive reads it: its node's id and its placement_seq, the
+// seq of its current part_of, the If-Match a move of it names.
+type treeNode struct {
+	ID           string
+	PlacementSeq int64
+}
+
+// blockNode is the block of type typ of the issue key's documents, with its placement_seq, read
+// from the store, failing the test where the issue holds none.
+func (r *writersRig) blockNode(t *testing.T, key, typ string) treeNode {
+	t.Helper()
+	var node treeNode
+	if err := r.database.Pool.QueryRow(context.Background(), `
+		select d.node_address, (
+			select max(t.seq) from graph_tuples t
+			where t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = 'part_of' and t.asserted)
+		from document_blocks d join artifacts a on a.id = d.artifact_id
+		where a.issue_key = $1 and d.type = $2 and d.node_address is not null
+		order by d.block_id limit 1
+	`, key, typ).Scan(&node.ID, &node.PlacementSeq); err != nil {
+		t.Fatalf("read the %s block of %s: %v", typ, key, err)
+	}
+	return node
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its

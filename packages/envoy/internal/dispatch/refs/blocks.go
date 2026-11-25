@@ -134,6 +134,11 @@ func BlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
 // block it placed; rooms, the document an issue room's record names for each block; authored, the
 // blocks whose authors it stated or found stated (blockAuthors), so a later indexing states none of
 // them twice.
+//
+// stored is, by node address, each block a move of the node route placed in the transaction that
+// plans the indexing (StoredBlock, WithStored): the move's own part_of, rank and placement are
+// queued in that transaction's write phase, so no read of the plan sees them, and the plan reads
+// them from here instead. It is nil for every index no such move holds.
 type BlockIndex struct {
 	blocks   map[string]storedBlock
 	links    []indexedLink
@@ -143,6 +148,36 @@ type BlockIndex struct {
 	values   map[string]heldBlockValue
 	rooms    map[string]string
 	authored map[string]struct{}
+	stored   map[string]StoredBlock
+}
+
+// StoredBlock is where a move of the node route (api's PATCH /api/v1/issues/{key}/nodes/{id})
+// places a block it moves, in the transaction that also writes a version of the block's document:
+// the far end of the part_of the move appends, and the rank it gives the block there, "" for a
+// block that holds none. The move states the block's placement PlacementStored beside them, and
+// rewrites the parent attribute of a typed block's text to match the new parent in the same
+// transaction, so an index pass of that transaction keeps the block where the move put it: its
+// part_of, its rank and its placement (placeAuthored, planBlockParents, planBlockValues), and
+// states its text, its text_parent, its text_rank and its links from the text as it does for every
+// block.
+type StoredBlock struct {
+	ParentKind, ParentID string
+	Rank                 string
+}
+
+// WithStored is i holding stored, by node address, as the blocks a move of the reading transaction
+// placed (StoredBlock), which every plan of the index reads in place of what the store holds of
+// them. A nil stored holds none.
+func (i BlockIndex) WithStored(stored map[string]StoredBlock) BlockIndex {
+	i.stored = stored
+	return i
+}
+
+// storedMove is the move of the reading transaction that placed the block at address, and false
+// for a block no such move placed.
+func (i BlockIndex) storedMove(address string) (StoredBlock, bool) {
+	move, moved := i.stored[address]
+	return move, moved
 }
 
 // indexedLink is one block_refs row the index holds: its pair, with the node it hangs on where
