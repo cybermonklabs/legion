@@ -76,21 +76,31 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 			pod.Status.QOSClass, liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName, liveCondition(pod, corev1.PodScheduled))
 		fmt.Printf("   roles container: requests cpu %s memory %s; limits cpu %s memory %s\n",
 			roles.Resources.Requests.Cpu(), roles.Resources.Requests.Memory(), roles.Resources.Limits.Cpu(), roles.Resources.Limits.Memory())
+		// failed is this case's own errors: its checks report and go on, so its ok line is printed
+		// only for a case that held, and one failed case hides no other case's ok line.
+		failed := false
+		errorf := func(format string, args ...any) {
+			t.Helper()
+			failed = true
+			t.Errorf(format, args...)
+		}
 		if pod.Status.QOSClass != tc.qos {
-			t.Errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
+			errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
 		}
 		for _, kind := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
 			if got, want := roles.Resources.Requests[kind], tc.issue.Requests[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 			if got, want := roles.Resources.Limits[kind], tc.issue.Limits[kind]; got.Cmp(want) != 0 {
-				t.Errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
+				errorf("%s: the roles container is limited to %s %s, want %s", tc.name, kind, got.String(), want.String())
 			}
 		}
 		if scheduled := liveCondition(pod, corev1.PodScheduled); scheduled != corev1.ConditionTrue {
-			t.Errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
+			errorf("%s: pod %s PodScheduled is %q, want True", tc.name, pod.Name, scheduled)
 		}
-		fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		if !failed {
+			fmt.Printf("ok %s in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {

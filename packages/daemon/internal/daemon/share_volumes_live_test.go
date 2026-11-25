@@ -105,16 +105,20 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 			}
 		}
 		for _, c := range pod.Spec.Containers {
+			mounted := true
 			for _, mount := range want[tc.name].VolumeMounts {
 				found := false
 				for _, m := range c.VolumeMounts {
 					found = found || reflect.DeepEqual(m, mount)
 				}
 				if !found {
+					mounted = false
 					t.Errorf("container %s mounts %+v, want %+v among them", c.Name, c.VolumeMounts, mount)
 				}
 			}
-			fmt.Printf("   container %s mounts team at /mnt/team (read-only) and scratch at /mnt/scratch (writable)\n", c.Name)
+			if mounted {
+				fmt.Printf("   container %s mounts team at /mnt/team (read-only) and scratch at /mnt/scratch (writable)\n", c.Name)
+			}
 		}
 		for _, c := range pod.Spec.InitContainers {
 			for _, m := range c.VolumeMounts {
@@ -123,7 +127,11 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 				}
 			}
 		}
-		fmt.Printf("ok %s launched in %s\n", tc.name, time.Since(started).Round(time.Second))
+		// `shares` is the first case and the only one launched, so the test has failed here only
+		// where this case's own checks above did.
+		if !t.Failed() {
+			fmt.Printf("ok %s launched in %s\n", tc.name, time.Since(started).Round(time.Second))
+		}
 		results = append(results, fmt.Sprintf("%s %s/%s %s", tc.name, pod.Namespace, pod.Name, path))
 	}
 	if err := os.WriteFile(env["LEGION_E2E_RESULT"], []byte(strings.Join(results, "\n")+"\n"), 0o600); err != nil {
