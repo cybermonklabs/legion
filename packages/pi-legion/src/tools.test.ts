@@ -6,9 +6,9 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   type LegionPhase,
-  type LegionState,
   LegionProjectP0BoundClearRequest,
   LegionProjectP0BoundRequest,
+  type LegionState,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
@@ -2199,7 +2199,10 @@ test("the controller sets and clears the P0 bound, each request the contract's a
   expect(posted).toEqual([
     ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", bound: 2, reason }],
     ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", unbounded: true, reason }],
-    ["/legion/v1/project/p0-bound/clear", { grantId: "controller-grant-1", reason: "back to the file" }],
+    [
+      "/legion/v1/project/p0-bound/clear",
+      { grantId: "controller-grant-1", reason: "back to the file" },
+    ],
   ]);
   // Each request is one the contract describes, as the daemon's request-shape records do.
   expect(LegionProjectP0BoundRequest.safeParse(posted[0]?.[1]).success).toBeTrue();
@@ -2207,17 +2210,27 @@ test("the controller sets and clears the P0 bound, each request the contract's a
   expect(LegionProjectP0BoundClearRequest.safeParse(posted[2]?.[1]).success).toBeTrue();
 
   const refusals = [
-    [{ op: "set_p0_bound", reason }, "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both"],
+    [
+      { op: "set_p0_bound", reason },
+      "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both",
+    ],
     [
       { op: "set_p0_bound", bound: 2, unbounded: true, reason },
       "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both",
     ],
-    [{ op: "set_p0_bound", bound: 0, reason }, "set_p0_bound's bound is a whole number of at least 1"],
+    [
+      { op: "set_p0_bound", bound: 0, reason },
+      "set_p0_bound's bound is a whole number of at least 1",
+    ],
     [{ op: "set_p0_bound", bound: 2 }, "set_p0_bound requires reason"],
     [{ op: "clear_p0_bound" }, "clear_p0_bound requires reason"],
   ] as const;
   for (const [parameters, text] of refusals) {
-    await expect(run(parameters)).resolves.toEqual({ content: [{ type: "text", text }], details: {}, isError: true });
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
   }
   expect(posted).toHaveLength(3);
   expect(minted).toHaveLength(3);
@@ -2228,12 +2241,25 @@ test("the controller sets and clears the P0 bound, each request the contract's a
 test("the read_state summary gives the P0 holders and the P0 bound in force", async () => {
   const base = daemonFixture("state.json") as LegionState;
   const { daemon } = recordingDaemon({ state: base });
-  const summary = (await controllerTool(daemon, []).execute("", { op: "read_state" }, undefined, undefined, context("ses_controller")))
-    .content[0];
+  const summary = (
+    await controllerTool(daemon, []).execute(
+      "",
+      { op: "read_state" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
+  ).content[0];
   const admission = base.admission;
   const live = admission?.p0Bound?.live;
-  if (admission?.p0Holders === undefined || live === undefined || live.setBy.kind !== "controller") {
-    throw new Error("state.json carries no P0 holders or no live P0 bound set by the controller: this test proves nothing");
+  if (
+    admission?.p0Holders === undefined ||
+    live === undefined ||
+    live.setBy.kind !== "controller"
+  ) {
+    throw new Error(
+      "state.json carries no P0 holders or no live P0 bound set by the controller: this test proves nothing"
+    );
   }
   expect(summary).toMatchObject({
     text: expect.stringContaining(
@@ -2244,7 +2270,13 @@ test("the read_state summary gives the P0 holders and the P0 bound in force", as
   const { p0Holders: _held, p0Bound: _bound, ...older } = admission;
   const { daemon: olderDaemon } = recordingDaemon({ state: { ...base, admission: older } });
   const olderSummary = (
-    await controllerTool(olderDaemon, []).execute("", { op: "read_state" }, undefined, undefined, context("ses_controller"))
+    await controllerTool(olderDaemon, []).execute(
+      "",
+      { op: "read_state" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
   ).content[0];
   expect(olderSummary).toMatchObject({ text: expect.not.stringContaining("\np0 holders") });
 });

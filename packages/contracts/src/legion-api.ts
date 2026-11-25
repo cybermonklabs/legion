@@ -2292,7 +2292,11 @@ export const LegionProjectResumeRequest = z.strictObject({
  * both or a bound below 1 (`INVALID_P0_BOUND`), a blank reason (`P0_BOUND_REASON_REQUIRED`) and a
  * daemon with no workflow (`P0_BOUND_UNAVAILABLE`). */
 export const LegionProjectP0BoundRequest = z.union([
-  z.strictObject({ grantId: nonEmptyString, bound: z.number().int().positive(), reason: nonEmptyString }),
+  z.strictObject({
+    grantId: nonEmptyString,
+    bound: z.number().int().positive(),
+    reason: nonEmptyString,
+  }),
   z.strictObject({ grantId: nonEmptyString, unbounded: z.literal(true), reason: nonEmptyString }),
 ]);
 

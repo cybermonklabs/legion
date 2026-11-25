@@ -749,7 +749,12 @@ export function createLegionDaemonClient(
         input
       ),
     p0Bound: (input) =>
-      post("/legion/v1/project/p0-bound", LegionProjectP0BoundRequest, LegionP0BoundResponse, input),
+      post(
+        "/legion/v1/project/p0-bound",
+        LegionProjectP0BoundRequest,
+        LegionP0BoundResponse,
+        input
+      ),
     p0BoundClear: (input) =>
       post(
         "/legion/v1/project/p0-bound/clear",

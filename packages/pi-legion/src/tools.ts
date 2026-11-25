@@ -856,7 +856,9 @@ export function createLegionTool(deps: {
             }
             const { bound, unbounded } = parameters;
             if ((bound === undefined) === (unbounded !== true)) {
-              throw new Error("set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both");
+              throw new Error(
+                "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both"
+              );
             }
             if (bound !== undefined && !isWholeFromOne(bound)) {
               throw new Error("set_p0_bound's bound is a whole number of at least 1");
@@ -864,7 +866,9 @@ export function createLegionTool(deps: {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(
               await client.p0Bound(
-                bound === undefined ? { grantId, unbounded: true, reason } : { grantId, bound, reason }
+                bound === undefined
+                  ? { grantId, unbounded: true, reason }
+                  : { grantId, bound, reason }
               )
             );
           }
