@@ -1428,7 +1428,15 @@ export class DispatchClient {
    *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
    *  so Dispatch's own refusal, which names the route, is printed as it came. */
   async readRoute(path: string): Promise<unknown> {
-    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    let url: string;
+    try {
+      // Joined onto the configured URL's path, its query kept ahead of the path's own (`joinUrl`),
+      // as `#url` joins every other route: resolved against the URL's text with a slash appended,
+      // a configured query would take the slash and the read would lose the URL's path and query.
+      url = joinUrl(this.#baseUrl, path.slice(1)).toString();
+    } catch {
+      throw new Error(`${DISPATCH_URL_SETTING} is not an absolute URL with a host (not printed)`);
+    }
     return this.#response("GET", url, await this.#send("GET", url));
   }
 
