@@ -1,16 +1,16 @@
 import type { PriorityRow } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
-import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
+import { columnsById, phoneHidden, type TableColumn, tableLayout } from "./priority-table-model";
 
 /** The statuses each count column adds up. In flight is the statuses an issue is being worked
  *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
- *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
+ *  admitted and not started; backlog is work that stands in the backlog or the icebox. The three
  *  together are every open status, so no open issue under a priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
-/** The one list of the parked statuses: the parked count here and the parked fault list of the
- *  priorities page (`PrioritiesPage.tsx`) both read it. */
-export const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+/** The one list of the statuses backlog and icebox: the count here and the priorities page's
+ *  fault list of the priority work in either (`PrioritiesPage.tsx`) both read it. */
+export const BACKLOG_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
@@ -19,20 +19,33 @@ export const NEVER_MOVED = "Never";
  *  order, and the four counts the row shows, added up once rather than per cell. */
 export interface PriorityItem {
   readonly priority: PriorityRow;
-  /** The priority's place in the order, from 1: what `P7` reads from. */
+  /** The priority's place in the order, from 1: what `#7` reads from. */
   readonly place: number;
   readonly order: string;
   readonly inFlight: number;
   readonly waiting: number;
-  readonly parked: number;
+  readonly backlog: number;
   readonly closed: number;
   readonly newest: string | null;
 }
 
 /** What a priority's place in the one order is called, from the index the read answers it at:
- *  the row's `P7`, and the same name the issue header's Advances line writes
- *  (`IssuePriorityLine`), so one rule says what `P7` means. */
-export const orderLabel = (index: number): string => `P${index + 1}`;
+ *  the row's `#7`, and the same name the issue header's Advances line writes
+ *  (`IssuePriorityLine`), so one rule says what `#7` means. It is not `P7`: P0 to P3 are an
+ *  issue's own priority, a different thing. */
+export const orderLabel = (index: number): string => `#${index + 1}`;
+
+/** What a priority is named by beside its title: its place in the one order, from 1, then its
+ *  title (`#3 Ship it`), as its chip's accessible name and the picker's option read. A priority
+ *  the priorities read does not hold, one deleted since, is named by its id. */
+export function priorityName(
+  id: string,
+  place: number | undefined,
+  title: string | undefined
+): string {
+  const label = place === undefined ? id : orderLabel(place - 1);
+  return title === undefined ? label : `${label} ${title}`;
+}
 
 const countOf = (by: PriorityRow["work"]["by_status"], statuses: readonly string[]): number =>
   statuses.reduce((total, status) => total + (by?.[status] ?? 0), 0);
@@ -46,7 +59,7 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
     order: orderLabel(index),
     inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
-    parked: countOf(priority.work.by_status, PARKED_STATUSES),
+    backlog: countOf(priority.work.by_status, BACKLOG_STATUSES),
     closed: priority.work.closed_last_7_days,
     newest: priority.work.newest_event_at,
   }));
@@ -84,14 +97,30 @@ export function matchesPrioritySearch(item: PriorityItem, search: string): boole
 export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
-/** The four count columns are alike: a number, filtered by picking the numbers the rows hold,
- *  which is how a reader asks for the priorities with nothing in flight. */
-const COUNT_WIDTH = { size: 132, min: 132 };
+/** The width and the shape of each of the four count columns (`numeric`). */
+const COUNT = { size: 76, min: 76, numeric: true } as const;
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
- *  the left edge while the counts scroll. */
+ *  the left edge. Each header reads in 16 characters or fewer, in the words a status is named by
+ *  (INFRA-3221, R13). What closed in the last 7 days opens hidden, one tick away under Columns,
+ *  so the table fits a 1280 px window beside the sidebar with the work as it stands now - who
+ *  owns each priority, what is active, in triage or todo, and in backlog or icebox - and when
+ *  anything under it last moved.
+ *
+ *  Every column but the title is as wide as its header's words, its sort arrow and its filter
+ *  control need, so the title takes the rest of a desktop box (`PRIORITY_LAYOUT`): at 1280 px a
+ *  title of 90 characters reads in two lines. A count is a number no reader picks rows by, so
+ *  the four counts have no filter, and their headers no filter control; a count's column is as
+ *  narrow as its numbers, which stand at its right edge under its header's words, two lines of
+ *  them where they need it (`numeric`). The newest event's words take two lines as well, beside
+ *  its filter, over a time that takes one (`wrap`), in 104 px, and while the table is sorted by
+ *  it the column widens to what the header needs with its sort arrow beside the words, 116 px
+ *  at 1280 (`LayoutColumns.wrappedHeaders`), so the arrow stays clear of the filter. A phone
+ *  draws the place and the title alone, which take its box (`PRIORITY_PHONE_HIDDEN`), and the
+ *  title's cell names the owner, the three counts under their headers' words and the newest
+ *  event, so nothing scrolls sideways. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "Order", size: 88, min: 88, pinned: true, text: (item) => item.order },
+  { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {
     id: "title",
     header: "Priority",
@@ -103,26 +132,21 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   {
     id: "owner",
     header: "Owner",
-    size: 200,
-    min: 160,
+    size: 112,
+    min: 108,
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
-  { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
-  {
-    id: "parked",
-    header: "In backlog or icebox",
-    size: 180,
-    min: 180,
-    values: (item) => [String(item.parked)],
-  },
-  { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
+  { id: "in-flight", header: "Active", ...COUNT },
+  { id: "waiting", header: "Triage, Todo", ...COUNT },
+  { id: "backlog", header: "Backlog, icebox", ...COUNT },
+  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true },
   {
     id: "newest",
     header: "Newest event",
-    size: 160,
-    min: 160,
+    size: 104,
+    min: 104,
+    wrap: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,
@@ -140,6 +164,14 @@ export const PRIORITY_ROW_ATTRIBUTE = "data-priority-row";
 export const PRIORITY_GROUP_ATTRIBUTE = "data-priority-group";
 export const PRIORITY_LINK_ATTRIBUTE = "data-priority-link";
 
-export const PRIORITY_LAYOUT = tableLayout(PRIORITY_COLUMNS, "title", PRIORITY_ROW_ATTRIBUTE);
+/** The priorities table's layout: the order and the title pinned, and the title filling a
+ *  desktop box with what the other shown columns leave (`fills`), so nothing scrolls sideways. */
+export const PRIORITY_LAYOUT = {
+  ...tableLayout(PRIORITY_COLUMNS, "title", PRIORITY_ROW_ATTRIBUTE),
+  fills: "title",
+};
+/** What a phone's box hides, whatever the reader shows: every column but the place and the
+ *  title, whose cell names what the others hold there. */
+export const PRIORITY_PHONE_HIDDEN = phoneHidden(PRIORITY_COLUMNS);
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];

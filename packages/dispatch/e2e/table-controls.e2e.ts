@@ -6687,7 +6687,7 @@ interface PickListSeed {
   readonly member: string;
   /** The issue whose spec, and whose `notes.md`, are each in two versions. */
   readonly documented: string;
-  /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
+  /** The issue whose header's Assignee, Repository and Edit priorities are read, assigned to
    *  alice and inheriting CORE's default repository. */
   readonly header: string;
   /** For each width, three questions waiting on alice that the Inbox lists newest first, one
@@ -6795,9 +6795,9 @@ async function seedPickLists(): Promise<PickListSeed> {
   };
 }
 
-/** The twenty-six lists, in the order the row reads them at one width; `step` is the width's
- *  place, which picks the question it hands on, the issue it addresses, and the person and the
- *  repository the issue header's lists and the Settings page's people lists pick. */
+/** The twenty-five single-pick lists, in the order the row reads them at one width; `step` is the
+ *  width's place, which picks the question it hands on, the issue it addresses, and the person
+ *  and the repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const main = page.getByTestId("main-content");
   const palette = page.getByRole("dialog", { name: "Search" });
@@ -6842,7 +6842,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
   const assignee = listTrigger(page, `Assignee of ${seed.header}`);
   const repository = listTrigger(page, `Repository of ${seed.header}`);
-  const advance = listTrigger(page, "Priority to advance");
   const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
   const dialogProject = listTrigger(createIssueDialog, "Project");
   // The Settings page's lists. The New project form's Default assignee is the one whose label
@@ -6857,7 +6856,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
   const [repositoryWord, repositoryLeft, repositoryPicked] =
     step === 0 ? ["acme/gadgets", [], /^acme\/gadgets$/] : ["inh", ["Inherit"], /^acme\/widgets$/];
-  const reviewQueue = /^P\d+ Cut the review queue$/;
   // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
   // the row the column shows; without it, in the row itself.
   const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
@@ -7167,20 +7165,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       picked: repositoryPicked,
     },
     {
-      // A pick stages the priority, which Add would write.
-      name: "the issue header's Priority to advance",
-      reach: async () => {
-        await page
-          .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
-          .click();
-      },
-      trigger: advance,
-      value: shown(advance),
-      word: "queue",
-      left: [reviewQueue],
-      picked: reviewQueue,
-    },
-    {
       // Opened with `c` over the issue page, whose project it starts on, and read once its title
       // has the focus the dialog gives it on opening. The focus is taken off the list read before
       // this one first: a character typed on a list's closed trigger is the list's search, so `c`
@@ -7264,7 +7248,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // Snooze selected asks (`Inbox`), the Agents composer's Issue, the Agents page's Delivery mode
 // (`BroadcastComposer`), the Spec tab's Version (`SpecToolbar`), a document page's Version
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
-// (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
+// (`AssigneeControl`), Repository (`RepoControl`) and Edit priorities (`IssuePriorityLine`),
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
@@ -7311,7 +7295,10 @@ test("every list of options a reader picks from holds a text box that narrows it
   const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
    *  in that panel's one text box; or records why not, and shuts what the press opened. */
-  const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
+  const open = async (
+    list: Pick<PickList, "trigger">,
+    at: string
+  ): Promise<Locator | undefined> => {
     await list.trigger.click();
     const named = await expect(list.trigger)
       .toHaveAttribute("aria-controls", /\S/)
@@ -7364,9 +7351,8 @@ test("every list of options a reader picks from holds a text box that narrows it
         missing.push(`${at}: no control opens the list`);
         continue;
       }
-      // A trigger says its list is loading until the read of its options lands, as the issue
-      // header's Priority to advance says "Loading priorities…": read before then, the value
-      // the row compares each later read with would be one no press of the reader's gave.
+      // A trigger says its list is loading until the read of its options lands: read before then,
+      // the value the row compares each later read with would be one no press of the reader's gave.
       await expect
         .poll(() => list.value(), { message: `${at}: the list's options never loaded` })
         .not.toMatch(/^Loading/);
@@ -7458,13 +7444,116 @@ test("every list of options a reader picks from holds a text box that narrows it
         ).toBeFocused();
       }
     }
+    // The issue header's Edit priorities (main's #4316) is the shared list in multi-pick mode:
+    // its trigger stays `+`, Enter toggles the narrowed priority in the draft, and closing saves.
+    const at = `the issue header's Edit priorities at ${size.width}x${size.height}`;
+    const [priorityWord, priorityOption] =
+      step === 0
+        ? ["queue", /^#\d+ Cut the review queue$/]
+        : ["ledger", /^#\d+ Retire the old ledger$/];
+    await page.goto(`/issues/${seed.header}`);
+    const header = page.getByTestId("issue-header");
+    const editPriorities = header.getByRole("button", { exact: true, name: "Edit priorities" });
+    const chipLink = header.getByRole("link", { name: priorityOption });
+    const drawn = await expect(editPriorities)
+      .toBeVisible()
+      .then(
+        () => true,
+        () => false
+      );
+    if (!drawn) {
+      missing.push(`${at}: no control opens the list`);
+    } else {
+      await expect(chipLink, `${at}: the priority is already on the issue`).toHaveCount(0);
+      const escaped = await open({ trigger: editPriorities }, at);
+      if (escaped !== undefined) {
+        await expect
+          .poll(() => escaped.count(), {
+            message: `${at}: the list holds no option "${priorityWord}" does not match`,
+          })
+          .toBeGreaterThan(1);
+        await page.keyboard.type(priorityWord);
+        await expect(
+          escaped,
+          `${at}: "${priorityWord}" left other options than its own`
+        ).toHaveText([priorityOption]);
+        await page.keyboard.press("Escape");
+        await expect(editPriorities, `${at}: Escape left the list open`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+        await expect(editPriorities, `${at}: Escape left the focus elsewhere`).toBeFocused();
+        await expect(chipLink, `${at}: Escape added a priority`).toHaveCount(0);
+
+        const tab = step === 0 ? "Tab" : "Shift+Tab";
+        const tabbed = await open({ trigger: editPriorities }, at);
+        if (tabbed !== undefined) {
+          await page.keyboard.press(tab);
+          await expect(editPriorities, `${at}: ${tab} left the list open`).toHaveAttribute(
+            "aria-expanded",
+            "false"
+          );
+          await expect(editPriorities, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
+          await expect(chipLink, `${at}: ${tab} added a priority`).toHaveCount(0);
+        }
+
+        await page.keyboard.press("?");
+        const typed = listOf(editPriorities).locator(TEXT_BOXES);
+        const opened = await settledState(`${at} after ?`, [
+          ["shortcuts", shortcuts],
+          ["list", typed],
+        ]);
+        if (opened === "shortcuts") {
+          keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+          await page.keyboard.press("Escape");
+          await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
+          await editPriorities.focus();
+        } else {
+          await expect(
+            typed,
+            `${at}: ? on the closed trigger is not in its list's text box`
+          ).toHaveValue("?");
+          await expect(
+            typed,
+            `${at}: ? on the closed trigger left the focus off its list`
+          ).toBeFocused();
+          await page.keyboard.press("Escape");
+          await expect(editPriorities, `${at}: Escape left the list ? opened open`).toHaveAttribute(
+            "aria-expanded",
+            "false"
+          );
+          await expect(chipLink, `${at}: ? and Escape added a priority`).toHaveCount(0);
+        }
+
+        const entered = await open({ trigger: editPriorities }, at);
+        if (entered !== undefined) {
+          await page.keyboard.type(priorityWord);
+          await expect(
+            entered,
+            `${at}: "${priorityWord}" left other options than its own`
+          ).toHaveText([priorityOption]);
+          await page.keyboard.press("Enter");
+          await expect(
+            entered.first(),
+            `${at}: Enter did not tick the option "${priorityWord}" left`
+          ).toHaveAttribute("aria-selected", "true");
+          await page.keyboard.press("Escape");
+          await expect(
+            editPriorities,
+            `${at}: Escape left the list open after pick`
+          ).toHaveAttribute("aria-expanded", "false");
+          await expect(editPriorities, `${at}: closing left the focus elsewhere`).toBeFocused();
+          await expect(chipLink, `${at}: closing did not save the ticked priority`).toBeVisible();
+        }
+      }
+    }
   }
   expect(missing, missing.join("; ")).toEqual([]);
   expect(keyed, keyed.join("; ")).toEqual([]);
 });
 
-/** A title wider than any list's trigger is at 1024x768, given to an epic, a priority and a named
- *  version, each of which a list then picks. */
+/** A title wider than any list's trigger is at 1024x768, given to an epic and a named version,
+ *  each of which a list then picks. */
 const LONG_TITLE =
   "Retire the ledger mirror and hand every lease it still holds to the regional daemons";
 
@@ -7524,14 +7613,13 @@ function longValueDrawing(trigger: Locator): Promise<string[]> {
 // SLOW(>=2s): three pages and a document version, four lists each picked from at 1024x768.
 // INFRA-3135, round 12: below 1280 px `styles.css` makes every button a flex box, whose own text
 // ends in no ellipsis (`TruncatedText`), so a list's trigger cut a long picked value mid-word; no
-// trigger showed that it opens a list, as a `<select>`'s arrow did; and Priority to advance was
-// as wide as the words it showed, so the Add and Cancel beside it moved at each pick. At 1024x768,
-// between `md` and `xl`, four lists of the shared list (`components/MultiSelect.tsx`) each pick a
-// value longer than their trigger - the List's Move to epic, an epic's Merge into another epic,
-// the Spec tab's Version and the issue header's Priority to advance: the element holding the
-// value cuts it and ends it in an ellipsis, and the chevron is whole at the trigger's end. And
-// Priority to advance is one width before a pick, after a short one and after a long one.
-test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, and Priority to advance keeps its width across picks, at 1024x768", async ({
+// trigger showed that it opens a list, as a `<select>`'s arrow did. At 1024x768, between `md`
+// and `xl`, three lists of the shared list (`components/MultiSelect.tsx`) each pick a value
+// longer than their trigger - the List's Move to epic, an epic's Merge into another epic, and
+// the Spec tab's Version: the element holding the value cuts it and ends it in an ellipsis, and
+// the chevron is whole at the trigger's end. (Priority to advance became the fixed `+` multi-pick
+// Edit priorities trigger in main's #4316, which displays no picked title and has no chevron.)
+test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, at 1024x768", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 768, width: 1024 });
@@ -7550,7 +7638,6 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
     title: "Lease handover",
   });
   await createNamedVersion(documented.primary_artifact_id, LONG_TITLE);
-  for (const title of ["Ship", LONG_TITLE]) await createPriority({ owner: "alice", title });
   const wrong: string[] = [];
   /** Opens `trigger`'s list, types `word`, and takes the one option the word leaves with Enter. */
   const pick = async (trigger: Locator, word: string) => {
@@ -7592,39 +7679,19 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
   const version = listTrigger(page, "Version");
   await pick(version, "regional");
   await read("the Spec tab's Version", version);
-
-  await page.goto(`/issues/${member.key}`);
-  await page.getByRole("button", { exact: true, name: `Add a priority to ${member.key}` }).click();
-  const advance = listTrigger(page, "Priority to advance");
-  const width = () => advance.evaluate((node) => node.getBoundingClientRect().width);
-  await expect(advance).toHaveText("Choose a priority");
-  const widths = [await width()];
-  await pick(advance, "ship");
-  await expect(advance).toHaveText(/^P\d+ Ship$/);
-  widths.push(await width());
-  await pick(advance, "regional");
-  await read("the issue header's Priority to advance", advance);
-  widths.push(await width());
-  if (widths.some((each) => Math.abs(each - widths[0]) > 0.5)) {
-    wrong.push(
-      `the issue header's Priority to advance is ${widths.join(", ")} px wide before a pick, after a short one and after a long one`
-    );
-  }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): one issue page at two widths, its form opened four times.
-// INFRA-3135, round 13 (the tester's, measured in builds Jobs at 43b5b641): `+` on the issue
-// header's priority line takes itself away and puts the form in its place, whose first control
-// is Priority to advance. In Chromium the focus lands on that list's trigger; in Firefox and
-// WebKit it lands on the rail's Edit labels, after the form, and at 390 the details rail
-// scrolls to it, leaving the form the reader opened out of view (the trigger at -389 px in
-// Firefox and -274 px in WebKit, with the rail scrolled 426 and 311 px). At the merge base
-// 6ef60ff0 the form stands in view in all three engines. A focused control taken away, for which
-// these engines fire no `focusout`: the clause of the `webkit` and `firefox` projects that names
-// the page-own focus row (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440
-// and 390: the trigger holds the focus and stands whole in the window and in the rail.
-test("Add a priority opens its form in view with the focus on Priority to advance, at 1440 and 390 @firefox @webkit", async ({
+// SLOW(>=2s): one issue page at two widths, Edit priorities opened and dismissed four times.
+// INFRA-3135, round 13 (the tester's, rewritten in round 28 after main's #4316 replaced the
+// inline Add a priority form with the Edit priorities multi-pick trigger): pressing Edit
+// priorities opens its list wholly in view with the focus in its Priority to advance text box,
+// and Escape closes the list and gives the focus back to the trigger. Escape unmounts the
+// portalled list while its text box holds the focus, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440 and 390: the panel
+// stands whole in the window, its text box holds the focus, and Escape returns it to the trigger.
+test("Edit priorities opens its list in view with the focus in its text box, and Escape gives the focus back, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -7640,17 +7707,20 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
     for (const press of ["Enter", "click"] as const) {
       const at = `${size.width}x${size.height}, by ${press}`;
       await page.goto(`/issues/${issue.key}`);
-      const add = page.getByRole("button", { exact: true, name: `Add a priority to ${issue.key}` });
-      await expect(add).toBeVisible();
+      const trigger = page
+        .getByTestId("issue-header")
+        .getByRole("button", { exact: true, name: "Edit priorities" });
+      await expect(trigger).toBeVisible();
       if (press === "Enter") {
-        await add.focus();
+        await trigger.focus();
         await page.keyboard.press("Enter");
       } else {
-        await add.click();
+        await trigger.click();
       }
-      const trigger = listTrigger(page, "Priority to advance");
-      await expect(trigger, `${at}: the form opened no Priority to advance`).toBeVisible();
-      const focused = await expect(trigger)
+      const panel = listOf(trigger);
+      await expect(panel, `${at}: Edit priorities opened no list`).toBeVisible();
+      const search = panel.getByRole("combobox", { name: "Priority to advance" });
+      const focused = await expect(search)
         .toBeFocused()
         .then(
           () => true,
@@ -7665,30 +7735,47 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
       }
       const placed = await expect
         .poll(() =>
-          trigger.evaluate((node) => {
+          panel.evaluate((node) => {
             const box = node.getBoundingClientRect();
-            const rail = node
-              .closest('[data-testid="issue-metadata-rail"]')
-              ?.getBoundingClientRect();
-            const inWindow = box.left >= 0 && box.right <= window.innerWidth;
-            const inRail =
-              rail === undefined || (box.left >= rail.left - 1 && box.right <= rail.right + 1);
-            return inWindow && inRail
+            const inWindow =
+              box.left >= 0 &&
+              box.right <= window.innerWidth &&
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight;
+            return inWindow
               ? "whole"
-              : `at ${Math.round(box.left)}-${Math.round(box.right)} px`;
+              : `at ${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)} px in ${window.innerWidth}x${window.innerHeight}`;
           })
         )
         .toBe("whole")
         .then(
           () => "whole",
           async () =>
-            trigger.evaluate(
-              (node) =>
-                `at ${Math.round(node.getBoundingClientRect().left)}-${Math.round(node.getBoundingClientRect().right)} px`
-            )
+            panel.evaluate((node) => {
+              const box = node.getBoundingClientRect();
+              return `at ${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)} px in ${window.innerWidth}x${window.innerHeight}`;
+            })
         );
       if (placed !== "whole") {
-        wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
+        wrong.push(`${at}: the Priorities list stands ${placed}, out of the window`);
+      }
+      await page.keyboard.press("Escape");
+      await expect(trigger, `${at}: Escape left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      const back = await expect(trigger)
+        .toBeFocused()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!back) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: Escape left the focus on ${holder}, not on Edit priorities`);
       }
     }
   }
@@ -11932,4 +12019,759 @@ test("a click that puts the focus on the body while a Board move's dry run is ou
       ).toBe(afterClick);
     }
   }
+});
+
+// INFRA-3135, round 27 (the tester's), by the architect's ruling of 2026-11-25 13:01Z: "a count is
+// drawn once every read it counts has answered; a read that a count does not count never hides it
+// (the architect, 2026-11-25 13:01Z)". Measured in builds Jobs infra-3135-c-h-kwghj and
+// infra-3135-c2-h-qmwvp (head 7deb75af) and infra-3135-c-b-pcmr9 and infra-3135-c2-b-25xqq
+// (5ae79d88), in Chromium, Firefox and WebKit at 1440x900: with the agent list
+// (`GET /api/v1/agents`) answered 500 every time and Nobody or lapsed picked, 7deb75af draws no
+// count in any header filter for good, after the page has said that it could not check which
+// claims have lapsed. Over three issues that no one claims, Assignee offers "alice" where 5ae79d88
+// offers "alice, 3 issues", and Claimed by offers "Nobody" where 5ae79d88 offers "Nobody, 3
+// issues". Those counts read the issues alone, which answered. The header filters wait for the
+// agent registry whenever Claimed by asks for it (`readsRegistry`, IssuesTable.tsx:197), the
+// registry's `known` stays false after a read that failed (features/refs/agent-registry.ts:160),
+// and `filterCounted = counted && (!readsRegistry || registry.known)` (IssuesTable.tsx:449) then
+// hides every count of every filter: the ones the registry decides and the ones it does not.
+// 5ae79d88 draws both kinds, the registry's own among them ("Nobody or lapsed, 1 issue" over a
+// claim whose session had gone, which it could not judge), so this row holds the counts the
+// registry decides to none while it is refused. The control: with the agent list answered, the
+// same pages draw every count, Nobody or lapsed and a holder's among them.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): two projects on the List, each read with the agent list refused and then answered.
+test("with the agent list refused, the project List's header filters draw each count the list does not decide once the issues answer, and none that it decides @firefox @webkit", async ({
+  page,
+}) => {
+  // Two projects, each read refused and then answered, five filters each.
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  /** One project's three issues: the first and the third for alice at P1 labelled `alpha`, the
+   *  second for bob at P2. No title shares a word with another, so none reads as a duplicate. */
+  const seed = async (key: string, name: string, titles: readonly [string, string, string]) => {
+    await createProject({ key, name });
+    const alice = await createIssue({ project: key, title: titles[0] });
+    await patchIssue(alice.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+    const bob = await createIssue({ project: key, title: titles[1] });
+    await patchIssue(bob.key, { assignee: "bob", priority: 2 });
+    const more = await createIssue({ project: key, title: titles[2] });
+    await patchIssue(more.key, { assignee: "alice", labels: ["alpha"], priority: 1 });
+    return { alice: alice.key, bob: bob.key, more: more.key };
+  };
+  // CORE: no issue is claimed. HELD: one issue is claimed by a session that runs, so the answered
+  // agent list keeps that claim held, and Nobody or lapsed lists the same two issues it lists
+  // while the list is refused, where the page counts every claim as held.
+  const core = await seed("CORE", "Core", ["Harbour crane", "Signal tower", "Ferry ramp"]);
+  const held = await seed("HELD", "Held", ["Granite quarry", "Orchard fence", "Lantern repair"]);
+  const holder = { session_id: "e2e-claim-running", title: "Running holder" };
+  await setLiveSessions([holder]);
+  const token = await mintAgentToken("claim-running", "alice");
+  await claimIssue(held.more, {
+    actor: { id: holder.session_id, kind: "session", origin: { session_title: holder.title } },
+    as: "agent",
+    token,
+  });
+  // The agent list answers 500 every time it is asked while `refusing`, and goes through after.
+  let refusing = true;
+  let served = 0;
+  await page.route(
+    (url) => url.pathname === "/api/v1/agents",
+    async (route) => {
+      if (refusing) {
+        await route.fulfill({
+          body: '{"error":{"code":"INTERNAL","message":"agent list refused"}}',
+          contentType: "application/json",
+          status: 500,
+        });
+        return;
+      }
+      served += 1;
+      await route.continue();
+    }
+  );
+  /** Each option of one header filter, by its accessible name, read once it holds `count`, in
+   *  sorted order: an option that draws a count is named by its `aria-label` (`alice, 2 issues`),
+   *  and one that draws none by its label's own text (`alice`), its check mark left out. */
+  const headerFilterOptions = async (header: string, count: number): Promise<string[]> => {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${header}(?:: \\d+ picked)?$`, "u"),
+    });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map(
+        (element) =>
+          element.getAttribute("aria-label") ??
+          Array.from(element.children)
+            .filter((child) => child.getAttribute("aria-hidden") !== "true")
+            .map((child) => child.textContent ?? "")
+            .join("")
+            .trim()
+      )
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names.sort();
+  };
+  /** An option's value, with its count taken off where it draws one. */
+  const optionValue = (name: string) => name.replace(/, \d+ issues?$/u, "");
+  /** Each of `wanted` that `offered` does not hold as it is written. */
+  const missing = (offered: readonly string[], wanted: readonly string[]) =>
+    wanted.filter((want) => !offered.includes(want));
+  // Each filter's counts that read the issues alone, once Nobody or lapsed is picked: Status lists
+  // every status, so only the one these issues stand in is named, and Claimed by's Nobody counts
+  // the issues no one claims. `claimed` is everything Claimed by offers with the list answered.
+  const cases = [
+    {
+      key: "CORE",
+      listed: [core.alice, core.bob, core.more],
+      hidden: [] as string[],
+      filters: [
+        { count: 2, header: "Assignee", wanted: ["alice, 2 issues", "bob, 1 issue"] },
+        { count: 2, header: "Priority", wanted: ["P1, 2 issues", "P2, 1 issue"] },
+        { count: 9, header: "Status", wanted: ["Triage, 3 issues"] },
+        { count: 1, header: "Labels", wanted: ["alpha, 2 issues"] },
+        { count: 2, header: "Claimed by", wanted: ["Nobody, 3 issues"] },
+      ],
+      claimed: ["Nobody or lapsed, 3 issues", "Nobody, 3 issues"],
+    },
+    {
+      key: "HELD",
+      listed: [held.alice, held.bob],
+      hidden: [held.more],
+      filters: [
+        { count: 2, header: "Assignee", wanted: ["alice, 1 issue", "bob, 1 issue"] },
+        { count: 2, header: "Priority", wanted: ["P1, 1 issue", "P2, 1 issue"] },
+        { count: 9, header: "Status", wanted: ["Triage, 2 issues"] },
+        { count: 1, header: "Labels", wanted: ["alpha, 1 issue"] },
+        { count: 3, header: "Claimed by", wanted: ["Nobody, 2 issues"] },
+      ],
+      claimed: [
+        "Nobody or lapsed, 2 issues",
+        "Nobody, 2 issues",
+        "Running holder (for alice), 1 issue",
+      ],
+    },
+  ];
+  const wrong: string[] = [];
+  for (const { key, listed, hidden, filters, claimed } of cases) {
+    const at = `${key}, agent list refused`;
+    refusing = true;
+    await page.goto(`/projects/${key}/issues?unclaimed=1`);
+    for (const row of listed) await expect(page.locator(`[data-issue-row="${row}"]`)).toBeVisible();
+    for (const row of hidden)
+      await expect(page.locator(`[data-issue-row="${row}"]`)).toHaveCount(0);
+    // The page says the agent list's read failed after its retries, so every read these filters
+    // count has answered or been refused.
+    await expect(page.getByTestId("unclaimed-unchecked")).toBeVisible();
+    for (const { count, header, wanted } of filters) {
+      await expect
+        .poll(async () => missing(await headerFilterOptions(header, count), wanted), {
+          timeout: 5_000,
+        })
+        .toEqual([])
+        .catch(() => undefined);
+      // The poll above waited up to five seconds for these counts after every read they count had
+      // answered, so this reads what the filter settled on.
+      const offered = await headerFilterOptions(header, count);
+      wrong.push(
+        ...missing(offered, wanted).map(
+          (want) =>
+            `${at}: ${header} offers "${offered.find((name) => optionValue(name) === optionValue(want)) ?? "no such value"}" where it should offer "${want}"`
+        )
+      );
+    }
+    // Read after Claimed by's own poll above, so the panel has drawn whatever it will draw: every
+    // value but Nobody counts what the refused agent list decides, and draws no count.
+    const claimedOffered = await headerFilterOptions("Claimed by", claimed.length);
+    wrong.push(
+      ...claimedOffered
+        .filter((name) => optionValue(name) !== "Nobody" && optionValue(name) !== name)
+        .map((name) => `${at}: Claimed by offers "${name}", a count the refused agent list decides`)
+    );
+    // The control: with the agent list answered, the same page draws every count, the ones the
+    // list decides right.
+    served = 0;
+    refusing = false;
+    await page.goto(`/projects/${key}/issues?unclaimed=1`);
+    for (const row of listed) await expect(page.locator(`[data-issue-row="${row}"]`)).toBeVisible();
+    await expect.poll(() => served).toBeGreaterThan(0);
+    for (const { count, header, wanted } of filters) {
+      await expect
+        .poll(async () => missing(await headerFilterOptions(header, count), wanted), {
+          message: `${key}, agent list answered: ${header} draws ${wanted.join(" and ")}`,
+        })
+        .toEqual([]);
+    }
+    await expect
+      .poll(() => headerFilterOptions("Claimed by", claimed.length), {
+        message: `${key}, agent list answered: Claimed by draws ${claimed.join(" and ")}`,
+      })
+      .toEqual(claimed);
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// INFRA-3135, round 27 (the tester's), by the architect's ruling of 2026-11-25 04:59Z: a reader
+// who has gone elsewhere while a Board move's dry run is out keeps the focus where they put it,
+// and the body counts as the place the press left only when the press's own card went away.
+// Measured at 7deb75af in builds Job infra-3135-f-h1-qgpz2 and at 5ae79d88 in
+// infra-3135-f-b1-q7ttr, in Chromium, Firefox and WebKit at 1440x900 and 390x664: a child's card
+// moved by Shift+L (moved at once) or a parent's by Shift+H (asked, then Unlink them), with the
+// rule's dry run held and a Tab meanwhile that lands on the moving card's own link, ends on the
+// body once the move lands at 7deb75af, where 5ae79d88 takes it to the moved card. The move
+// draws the card in its new column, which takes the link away with the card, and the move sets
+// no focus to follow it: it does so only while the focus is the card itself, or the question
+// took it from the card itself (features/project/IssueBoard.tsx:644, 1cb2c03e), and a focus on a
+// control inside the card is neither, so the effect at :551 has no plan to run.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): eight projects of three issues on the Board, and eight keyboard moves with held dry runs.
+test("a Tab onto the moving card's own link while a Board move's dry run is out leaves the focus on the moved card once the move lands, as the same move with the focus left on the card does, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  // Every dry run of a status change sent while `holding` is held until the row lets it through.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(/\/api\/v1\/issues\/[^/?]+\/status-change$/, async (route) => {
+    const dryRun = (route.request().postData() ?? "").includes('"dry_run":true');
+    if (!holding || !dryRun) return route.fallback();
+    held.push(route);
+  });
+  /** What holds the keyboard focus: the moved card, the body, or the focused element's tag and
+   *  name. */
+  const focusName = (moved: string) =>
+    page.evaluate((moved) => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+      if (focused.matches(`[data-board-card="${moved}"]`)) return "the moved card";
+      const words = (focused.getAttribute("aria-label") || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      return `${focused.tagName.toLowerCase()} "${words}"`;
+    }, moved);
+  const got: string[] = [];
+  const want: string[] = [];
+  let made = 0;
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const move of ["moved at once", "asked, then Unlink them"] as const) {
+      for (const press of ["no Tab", "a Tab onto the card's own link"] as const) {
+        const where = `Board at ${size.width}x${size.height}, a move ${move}, with ${press} while the dry run is out`;
+        // One project per case: a parent and a child under it, both in To do, so the child's
+        // move into work is one the rule's dry run checks and moves at once, and the parent's
+        // move to the backlog, with its child in To do, is one it asks about.
+        made += 1;
+        const key = `BT${String.fromCharCode(64 + made)}`;
+        await createProject({ key, name: `Board Tab ${made}` });
+        const parent = await createIssue({ project: key, title: `Parent ${key}` });
+        const child = await createIssue({
+          parent: parent.key,
+          project: key,
+          title: `Child ${key}`,
+        });
+        const other = await createIssue({ project: key, title: `Other ${key}` });
+        for (const issue of [parent, child, other]) await patchIssue(issue.key, { status: "todo" });
+        await openIssuesTab(page, key, "Board");
+        const moved = move === "moved at once" ? child.key : parent.key;
+        const card = page.locator(`[data-board-card="${moved}"]`);
+        await card.focus();
+        await expect(card).toBeFocused();
+        holding = true;
+        await page.keyboard.press(move === "moved at once" ? "Shift+L" : "Shift+H");
+        await expect
+          .poll(() => held.length, { message: `${where}: the move sent no dry run` })
+          .toBeGreaterThan(0);
+        if (press === "a Tab onto the card's own link") {
+          await page.keyboard.press("Tab");
+          await expect(
+            card.locator("a").first(),
+            `${where}: the Tab did not land on the card's own link`
+          ).toBeFocused();
+        }
+        holding = false;
+        for (const route of held.splice(0)) await route.continue();
+        if (move === "asked, then Unlink them") {
+          const question = page.getByRole("dialog", { name: `Move ${moved} to Backlog?` });
+          // The choice is disabled until its own dry run answers, and the click waits for that.
+          await question.getByRole("button", { name: "Unlink them" }).click();
+          await expect(question).toHaveCount(0);
+        }
+        const column = move === "moved at once" ? "in_progress" : "backlog";
+        await expect(
+          page.locator(`[data-board-column="${column}"] [data-board-card="${moved}"]`),
+          `${where}: the card did not move`
+        ).toHaveCount(1);
+        // The move's focus effect runs with the render that draws the card in its column, and
+        // the question gives the focus back as it closes, so both are done after these frames.
+        await nextFrames(page);
+        await nextFrames(page);
+        // One read is the answer: the move has landed and every hand-off of it has run.
+        got.push(`${where}: the focus is on ${await focusName(moved)}`);
+        want.push(`${where}: the focus is on the moved card`);
+      }
+    }
+  }
+  // The Tab put the focus inside the card the press moved; the move took that link away with the
+  // card, so a focus left on the body there is the press's doing, and a keyboard reader would
+  // start their next Tab from the top of the page.
+  expect(got, got.join("; ")).toEqual(want);
+});
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, the marked row's checkbox
+// wherever it stands) and 13:01Z. Measured at 7deb75af in builds Jobs infra-3135-f-h1-qgpz2 and
+// infra-3135-f-hx-dl7bw, and at 5ae79d88 in infra-3135-f-b1-q7ttr and infra-3135-f-bx-hxjsw: on the
+// project List, with the row marked last near the end of a 90-row list and the table's box
+// scrolled back to its top, so the table's window does not draw that row, Clear selection lands
+// the focus on its checkbox at top 737 to bottom 750 in a box whose visible bottom is 736 at
+// 1440x900, and at 499 to 512 under a visible bottom of 494 at 390x664, in Chromium and Firefox,
+// at both heads: wholly out of sight. In those Jobs' Epic-filtered view WebKit centred it at 1440
+// and varied at 390; in this row's own view it failed every run of infra-3135-f-red3-8hflf at
+// 7deb75af (746 to 758 under 736, 510 to 522 under 460), six of six. The return goes to the table's own focus of a row it has not drawn
+// (features/project/IssuesTable.tsx:324, `model.focusRow`), which scrolls the virtualizer to the
+// row with `align: "auto"` (components/table-keys.ts:107, components/DataTable.tsx:304) and focuses
+// the checkbox with no scroll once the row is drawn (components/table-keys.ts:134). The
+// virtualizer measures its rows from the box's top (DataTable.tsx:286-294, no `scrollMargin`),
+// while the box draws the sticky header row above them (:651), so a row aligned to the box's end
+// stands one header row below it.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): ninety seeded issues, and two Clear selection presses read once the box settles.
+test("Clear selection with the row marked last below the view and not drawn by the project List's table hands the focus to its checkbox wholly inside the box under the sticky header, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "LONG", name: "Long list" });
+  for (let index = 0; index < 90; index++) {
+    await createIssue({ project: "LONG", title: `Long row ${index}` });
+  }
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  /** How the focused element stands against the window, the table's box and the box's sticky
+   *  header row: its name, its rect, the part of the box the reader sees under the header, and
+   *  whether it lies wholly inside that part. */
+  const standing = () =>
+    page.evaluate(() => {
+      const round = (value: number) => Math.round(value * 10) / 10;
+      const focused = document.activeElement;
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      if (!(focused instanceof HTMLElement) || focused === document.body || scroller === null) {
+        return { text: "the focus is on the body", whole: false };
+      }
+      const own = focused.getBoundingClientRect();
+      const frame = scroller.getBoundingClientRect();
+      const head = scroller.querySelector("thead th")?.getBoundingClientRect().bottom ?? frame.top;
+      const top = Math.max(0, frame.top, head);
+      const bottom = Math.min(window.innerHeight, frame.bottom);
+      const name = focused.getAttribute("aria-label") || focused.tagName.toLowerCase();
+      return {
+        text:
+          `the focus is on "${name}" at top ${round(own.top)} to bottom ${round(own.bottom)}, ` +
+          `where the box's visible part under its header runs from ${round(top)} to ${round(bottom)}`,
+        whole: own.top >= top - 0.5 && own.bottom <= bottom + 0.5,
+      };
+    });
+  const landings: { text: string; whole: boolean }[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `project List at ${size.width}x${size.height}`;
+    await openIssuesTab(page, "LONG", "List");
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+    // The window brings the table's box to just below the app's header where the page is taller
+    // than the window, and the box scrolls to its end, where the row marked last is drawn.
+    await box.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - 60);
+      node.scrollTop = node.scrollHeight;
+    });
+    await settledScrollTop(page);
+    await settledScrollTop(box);
+    // The rows read once the box has held still at its end; they only name the row marked.
+    const order = await rows.evaluateAll((nodes) =>
+      nodes
+        .map((node) => ({
+          key: node.getAttribute("data-issue-row") ?? "",
+          top: node.getBoundingClientRect().top,
+        }))
+        .sort((one, other) => one.top - other.top)
+        .map((row) => row.key)
+    );
+    const marked = order[order.length - 4] ?? "";
+    const mark = page.getByRole("checkbox", { exact: true, name: `Select ${marked}` });
+    await mark.focus();
+    await page.keyboard.press("Space");
+    await expect(mark).toBeChecked();
+    await expect(bar).toContainText("1 selected");
+    // Back to the box's top: the table's window no longer draws the row marked last.
+    await box.evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await settledScrollTop(box);
+    await expect(
+      page.locator(`[data-issue-row="${marked}"]`),
+      `${where}: the table still draws the row marked last`
+    ).toHaveCount(0);
+    await bar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    await expect(
+      mark,
+      `${where}: the focus is not on the checkbox of the row marked last`
+    ).toBeFocused();
+    await settledScrollTop(box);
+    await nextFrames(page);
+    // One read is the answer: the bar has gone, the focus has landed on the row's checkbox and
+    // the box has held still, so nothing moves the focus or the box after this.
+    const landing = await standing();
+    landings.push({ text: `${where}: ${landing.text}`, whole: landing.whole });
+  }
+  // A checkbox below the box's visible bottom is a landing the reader cannot see: the focus is
+  // on the row they marked, out of their sight, with no scroll that shows it.
+  expect(
+    landings.map((landing) => landing.whole),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, and a landing partly in sight is
+// shown whole at its nearest edge) and 13:21Z, which counts this row. Measured at 7deb75af in
+// builds Jobs infra-3135-f-h1-qgpz2 and infra-3135-f-hx-dl7bw, and at 5ae79d88 in
+// infra-3135-f-b1-q7ttr and infra-3135-f-bx-hxjsw, in Chromium, Firefox and WebKit at 1440x900
+// (the window at its top) and 390x664: under the project List's Epic filter, with the mark of the
+// row marked last cut by 30% of its height at the table box's bottom edge or under its sticky
+// header, Take out of epic lands the focus on the checkbox of the row now at its place and shows
+// it whole at that edge (7deb75af; 5ae79d88 left it cut). Cut by 70%, the same row at the place
+// is passed over: at the bottom edge the focus goes to the checkbox of the row before it, and
+// under the header to the table itself, with no scroll. The hand-off takes a row's mark only
+// where the centre of the mark is in the window and what the page draws there is that row
+// (components/SelectionBar.tsx:341-343, `markShown`); the sticky header, or the box's clipped
+// edge, stands over the centre of a mark cut by 70%, so the row at the place is passed over for
+// the nearest row before it in sight (:278) and else the list's own stop (:155).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): sixty seeded issues, and eight Take out of epic presses read once the box settles.
+test("Take out of epic with the row now at the place of the row marked last cut by 70% at the table box's bottom edge or under its sticky header hands the focus to that row's checkbox at its nearest edge, as a cut of 30% does, on the project List at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CUT", name: "Cut" });
+  const epic = await createIssue({ project: "CUT", title: "Cut epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 60; index++) {
+    await createIssue({ parent: epic.key, project: "CUT", title: `Cut row ${index}` });
+  }
+  const view = `/projects/CUT/issues?f.epic=${encodeURIComponent(`${epic.key} · Cut epic`)}`;
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  /** The issues the table draws, top to bottom, and of them those whose checkbox the reader sees
+   *  whole: inside the window and the box, below its sticky header. */
+  const drawn = () =>
+    page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      const frame = scroller?.getBoundingClientRect();
+      const head = scroller?.querySelector("thead th")?.getBoundingClientRect().bottom ?? 0;
+      const listed = [...document.querySelectorAll<HTMLElement>("[data-issue-row]")];
+      const topOf = (row: HTMLElement) => row.getBoundingClientRect().top;
+      listed.sort((one, other) => topOf(one) - topOf(other));
+      const seen = (row: HTMLElement) => {
+        const mark = row.querySelector('input[type="checkbox"]');
+        if (mark === null || frame === undefined) return false;
+        const own = mark.getBoundingClientRect();
+        return (
+          own.top >= Math.max(0, frame.top, head) &&
+          own.bottom <= Math.min(window.innerHeight, frame.bottom)
+        );
+      };
+      return {
+        order: listed.map((row) => row.getAttribute("data-issue-row") ?? ""),
+        shown: listed.filter(seen).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      };
+    });
+  /** Where the focus is against the edge `edge` names: the checkbox of the row `key` names
+   *  shown whole with that edge of it at most 2 px from the same edge of the box's visible part
+   *  under its header (`ok`), and in words what holds the focus, its rect and that part. */
+  const landingOn = (key: string, edge: "bottom" | "header") =>
+    page.evaluate(
+      ([key, edge]) => {
+        const round = (value: number) => Math.round(value * 10) / 10;
+        const focused = document.activeElement;
+        const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+        if (!(focused instanceof HTMLElement) || focused === document.body || scroller === null) {
+          return { ok: false, text: "the focus is on the body" };
+        }
+        const own = focused.getBoundingClientRect();
+        const frame = scroller.getBoundingClientRect();
+        const head =
+          scroller.querySelector("thead th")?.getBoundingClientRect().bottom ?? frame.top;
+        const top = Math.max(0, frame.top, head);
+        const bottom = Math.min(window.innerHeight, frame.bottom);
+        const name = focused.getAttribute("aria-label") || focused.tagName.toLowerCase();
+        const whole = own.top >= top - 0.5 && own.bottom <= bottom + 0.5;
+        const gap = edge === "bottom" ? bottom - own.bottom : own.top - top;
+        return {
+          ok: name === `Select ${key}` && whole && gap <= 2,
+          text:
+            `the focus is on "${name}" at top ${round(own.top)} to bottom ${round(own.bottom)}, ` +
+            `in a visible part from ${round(top)} to ${round(bottom)}`,
+        };
+      },
+      [key, edge] as const
+    );
+  const landings: { ok: boolean; text: string }[] = [];
+  for (const size of [
+    { height: 900, lift: false, width: 1440 },
+    { height: 664, lift: true, width: 390 },
+  ]) {
+    await page.setViewportSize({ height: size.height, width: size.width });
+    for (const [edge, part] of [
+      ["bottom", 0.3],
+      ["bottom", 0.7],
+      ["header", 0.3],
+      ["header", 0.7],
+    ] as const) {
+      const where = `project List at ${size.width}x${size.height} with the mark of the row marked last cut by ${part * 100}% ${edge === "bottom" ? "at the box's bottom edge" : "under its sticky header"}`;
+      await page.goto(view);
+      await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(12);
+      // At 390 the window brings the table's box to just below the app's header; at 1440 the box
+      // stands whole in the window, which stays at its top. The box scrolls half way down its rows.
+      await box.evaluate((node, lift) => {
+        if (lift) window.scrollBy(0, node.getBoundingClientRect().top - 60);
+        node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+      }, size.lift);
+      await settledScrollTop(page);
+      await settledScrollTop(box);
+      await expect.poll(async () => (await drawn()).shown.length).toBeGreaterThanOrEqual(3);
+      // The rows read once the box has held still and the poll above found them in sight; they
+      // only name the two rows marked below, the middle one in sight and the one after it, and
+      // the row after those two, which takes their place once they have gone.
+      const { order, shown } = await drawn();
+      const at = order.indexOf(shown[Math.floor(shown.length / 2)] ?? "");
+      const upper = order[at] ?? "";
+      const lower = order[at + 1] ?? "";
+      const after = order[at + 2] ?? "";
+      // The lower row first, so the row marked last is the upper one, whose place the focus takes.
+      for (const key of [lower, upper]) {
+        await markOf(key).focus();
+        await page.keyboard.press("Space");
+        await expect(markOf(key)).toBeChecked();
+      }
+      await expect(bar).toContainText("2 selected");
+      await markOf(upper).evaluate(
+        (mark, [edge, part]) => {
+          const scroller = mark.closest<HTMLElement>('[data-testid="issues-table-scroll"]');
+          const own = mark.getBoundingClientRect();
+          const head = scroller?.querySelector("thead th")?.getBoundingClientRect().bottom ?? 0;
+          const bottom = Math.min(
+            window.innerHeight,
+            scroller?.getBoundingClientRect().bottom ?? 0
+          );
+          scroller?.scrollBy(
+            0,
+            edge === "bottom"
+              ? own.bottom - (bottom + own.height * part)
+              : own.top - (head - own.height * part)
+          );
+        },
+        [edge, part] as const
+      );
+      await settledScrollTop(box);
+      await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+      await page.keyboard.press("Enter");
+      await expect(bar).toHaveCount(0);
+      await expect(markOf(upper)).toHaveCount(0);
+      // The bar's hand-off runs after the commit that took the bar away, and its scroll lands
+      // in the frames after it, so both are done once the box has held still.
+      await nextFrames(page);
+      await settledScrollTop(box);
+      // One read is the answer: the writes have landed, the bar has gone and every hand-off of the
+      // press has run, so nothing moves the focus or the box after this.
+      const landing = await landingOn(after, edge);
+      landings.push({
+        ok: landing.ok,
+        text: `${where}: ${landing.text}, want "Select ${after}" whole at that edge`,
+      });
+    }
+  }
+  // The row now at the place stands partly in the reader's sight; passing it over puts the focus
+  // on a row they did not mark the place of, or on the table with no row in hand.
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
+});
+
+// INFRA-3135, round 27 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll, to the nearest edge) and 13:21Z,
+// which counts this row: the least scroll shows the checkbox whole by the least distance, with no
+// room added for the foot the bar left. Measured at 7deb75af in builds Jobs infra-3135-f-h1-qgpz2
+// (the List) and infra-3135-f-h2-n8pwt (the Inbox), in Chromium, Firefox and WebKit at 390x664:
+// with the checkbox of the row marked last cut by the window's bottom edge, Clear selection
+// scrolls the window 80 px past the cut - 86 px for a cut of 6 px on the project List, 85 px for
+// 4.5 px and 92 px for 11.5 px on the Inbox - and leaves the checkbox 80 px above the window's
+// bottom. Cut by the window's top edge, the same press scrolls the cut alone. 5ae79d88
+// (infra-3135-f-b1-q7ttr, infra-3135-f-b2-jwrlv) centred the checkbox instead, 372 px and 369 px.
+// The landing shows the checkbox with `scrollIntoView({ block: "nearest" })`
+// (components/focus-place.ts:528, through `landWhole` from components/SelectionBar.tsx:314), and
+// the engine keeps clear of the root's `scroll-padding-bottom: 5rem`, which main sets below
+// 1280 px for the review sheet at the foot of the screen (web/src/styles.css:415).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-27 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): forty issues and thirty asks seeded, and three Clear selection presses read once the window settles.
+test("at 390 the selection bar's return to the row marked last, with its checkbox cut by the window's bottom edge, scrolls the window no further than the cut, on the project List and the Inbox, as it does with the checkbox cut by the window's top edge @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "WIN", name: "Window" });
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ project: "WIN", title: `Window row ${index}` });
+  }
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  /** The rect of the element `selector` finds and the window's scroll. */
+  const standing = (selector: string) =>
+    page.evaluate((selector) => {
+      const own = document.querySelector(selector)?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        scrollY: window.scrollY,
+        top: own?.top ?? Number.NaN,
+      };
+    }, selector);
+  /** Whether the focused element is the one `selector` finds. */
+  const focusedIs = (selector: string) =>
+    page.evaluate(
+      (selector) => document.activeElement === document.querySelector(selector),
+      selector
+    );
+  const landings: { ok: boolean; text: string }[] = [];
+  /** Presses Clear selection in `bar` and reads how far the checkbox `selector` finds moved,
+   *  against the cut it stood at before the press. */
+  const clearAndRead = async (
+    where: string,
+    bar: Locator,
+    selector: string,
+    edge: "bottom" | "top"
+  ) => {
+    const before = await standing(selector);
+    const cut = edge === "bottom" ? before.bottom - 664 : -before.top;
+    await bar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(bar).toHaveCount(0);
+    await expect
+      .poll(() => focusedIs(selector), { message: `${where}: the focus is not on the checkbox` })
+      .toBe(true);
+    await settledScrollTop(page);
+    await nextFrames(page);
+    // One read is the answer: the bar has gone, the focus has landed on the checkbox and the
+    // window has held still, so nothing moves the focus or the window after this.
+    const after = await standing(selector);
+    const moved = Math.abs(after.top - before.top);
+    const scrolled = Math.round(after.scrollY - before.scrollY);
+    landings.push({
+      ok: after.top >= -1 && after.bottom <= 665 && moved <= cut + 1,
+      text:
+        `${where}: the checkbox was cut by ${Math.round(cut * 10) / 10} px, and the window ` +
+        `scrolled ${scrolled} px, leaving it at top ${Math.round(after.top * 10) / 10} to bottom ` +
+        `${Math.round(after.bottom * 10) / 10}`,
+    });
+  };
+
+  // The project List: the table's box stands below the window's middle and runs past its bottom,
+  // and the box scrolls the checkbox of the row marked last to half its height below that bottom.
+  const issueBar = page.getByRole("toolbar", { name: "Selected issues" });
+  const box = page.getByTestId("issues-table-scroll");
+  const issueRows = page.locator("[data-issue-row]");
+  await openIssuesTab(page, "WIN", "List");
+  await expect.poll(() => issueRows.count()).toBeGreaterThanOrEqual(12);
+  await box.evaluate((node) => {
+    window.scrollBy(0, node.getBoundingClientRect().top - 60);
+    node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+  });
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  // The rows read once the box has held still; they only name the row marked, one in the middle.
+  const order = await issueRows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-issue-row") ?? "")
+  );
+  const issue = order[Math.floor(order.length / 2)] ?? "";
+  const issueMark = page.getByRole("checkbox", { exact: true, name: `Select ${issue}` });
+  await issueMark.focus();
+  await page.keyboard.press("Space");
+  await expect(issueMark).toBeChecked();
+  await issueMark.evaluate((mark) => {
+    const scroller = mark.closest<HTMLElement>('[data-testid="issues-table-scroll"]');
+    window.scrollBy(0, (scroller?.getBoundingClientRect().top ?? 0) - (window.innerHeight - 260));
+    const own = mark.getBoundingClientRect();
+    scroller?.scrollBy(0, own.top - (window.innerHeight - own.height / 2));
+  });
+  await settledScrollTop(page);
+  await settledScrollTop(box);
+  await clearAndRead(
+    "project List with the checkbox cut by the window's bottom edge",
+    issueBar,
+    `[data-issue-row="${issue}"] input[type="checkbox"]`,
+    "bottom"
+  );
+
+  // The Inbox: the window scrolls its rows, and the checkbox of the row marked last stands cut by
+  // 30% of its height at the window's bottom edge, then at its top edge.
+  const rowBar = page.getByRole("toolbar", { name: "Selected rows" });
+  for (const edge of ["bottom", "top"] as const) {
+    await page.goto("/?group=none");
+    await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+    // The rows read once the poll above found the list drawn; they only name the rows marked.
+    const ids = await page
+      .locator("[data-inbox-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+    const upper = ids[12] ?? "";
+    const lower = ids[13] ?? "";
+    // The lower row first, so the row marked last is the upper one.
+    for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+    await expect(rowBar).toBeVisible();
+    await inboxRow(page, upper)
+      .getByRole("checkbox")
+      .first()
+      .evaluate((mark, edge) => {
+        const own = mark.getBoundingClientRect();
+        window.scrollBy(
+          0,
+          edge === "bottom"
+            ? own.bottom - (window.innerHeight + own.height * 0.3)
+            : own.top + own.height * 0.3
+        );
+      }, edge);
+    await settledScrollTop(page);
+    await clearAndRead(
+      `Inbox with the checkbox cut by the window's ${edge} edge`,
+      rowBar,
+      `[data-inbox-row="${upper}"] input[type="checkbox"]`,
+      edge
+    );
+  }
+  // A scroll past the cut moves the reader's rows further than showing the checkbox needs, here
+  // by the room main keeps for a foot sheet that neither page draws.
+  expect(
+    landings.map((landing) => landing.ok),
+    landings.map((landing) => landing.text).join("; ")
+  ).toEqual(landings.map(() => true));
 });

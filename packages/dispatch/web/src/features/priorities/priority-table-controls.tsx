@@ -14,16 +14,23 @@ import { columnFilterChips } from "../../components/filter-chips";
  * column is shown or hidden, so a column the reader hid with the columns menu keeps its narrowing
  * in sight, and the chip's press takes it off; below 640 px of the bar's width the chips stand
  * behind one **+N more** in the bar's line, which lists them. What an action opens - the
- * priorities table's **New priority** form - the page draws under the bar, outside it.
+ * priorities table's **New priority** form - the page draws under the bar, outside it. Every
+ * control stands at the one height of a toolbar's controls from 1280 px up (the `toolbar` size).
+ * A phone's box (`compact`) draws no column control: its one cell names every field whatever the
+ * reader shows (`PRIORITY_PHONE_HIDDEN`), so a choice of columns there would change nothing the
+ * reader sees.
  */
 export function TableToolbar<Row>({
   actions,
+  compact,
   searchLabel,
   searchPlaceholder,
   table,
 }: {
   /** The page's own actions, such as the priorities table's **New priority**. */
   actions?: readonly BarActionProps[];
+  /** A phone's box (`useTableLayout`'s `compact`), which draws no column control. */
+  compact: boolean;
   searchLabel: string;
   searchPlaceholder: string;
   table: Table<Row>;
@@ -34,7 +41,7 @@ export function TableToolbar<Row>({
     <ControlRow
       actions={actions}
       chips={columnFilterChips(table.getAllLeafColumns())}
-      columns={{ columns: table.getAllLeafColumns() }}
+      columns={compact ? undefined : { columns: table.getAllLeafColumns() }}
       display={{
         label: "View",
         onOpenChange: setViewOpen,
@@ -64,7 +71,7 @@ export function TableToolbar<Row>({
         placeholder: searchPlaceholder,
         value: search,
       }}
-      size="compact"
+      size="toolbar"
     />
   );
 }

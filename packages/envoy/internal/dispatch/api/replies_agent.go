@@ -192,16 +192,25 @@ func myAgentLiveRoot(root string) string {
 // (sweepAgentDismissalsOwed), settles it. Each of the Inbox's two states reads such roots in a
 // branch of their own, over the owed roots alone, rather than as an `or` beside myAgentLiveRoot:
 // the live branch keeps its plan off messages_direct_roots_live, and this one reads nothing while
-// the table is empty, which it is but for those moments. A root its author's mark still names is
-// dismissed, whatever the table owes of it.
+// the table is empty, which it is but for those moments: it reads the roots off the owed rows
+// (myAgentOwedRoots), never the person's roots off messages, which a filter on their column would
+// read whole - 5,120 Agent-arm rows at 5,000 dismissed threads where 620 read at 250
+// (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory). A root its author's mark still
+// names is dismissed, whatever the table owes of it.
 func myAgentOwedRoot(root string) string {
-	return root + `.id in (select owed.root_id from user_agent_thread_dismissed_owed owed)
-		  and ` + root + `.agent_dismissed_at is not null
+	return root + `.agent_dismissed_at is not null
 		  and not exists (
 			select 1 from user_agent_thread_dismissed d
 			where d.message_id = ` + root + `.id and d.login = $1
 		  )`
 }
+
+// myAgentOwedRoots is the owed branch's source of roots: each root the owed table names, once,
+// and its message read by its key. The lateral's `offset 0` keeps the planner from pulling the
+// message read up into a join it could start from the person's roots, so the branch reads as many
+// messages as the table names roots.
+const myAgentOwedRoots = `(select distinct owed.root_id from user_agent_thread_dismissed_owed owed) owed
+		cross join lateral (select * from messages m where m.id = owed.root_id offset 0) m`
 
 // myAgentRowFacts is what one root's own thread says about its row, read in one walk of it: the
 // session it is in and the root's text as the subject, the newest reply the session wrote there -
@@ -248,10 +257,10 @@ var myAgentRootsWithFacts = `
 // myAgentUnreadRootsOf is one branch of state=unread's roots: the person's one-off roots that pass
 // live, each holding a session reply the person has not read. myAgentInboxRootsOf is one branch of
 // state=inbox's: the person's one-off roots that pass live, read or not.
-func myAgentUnreadRootsOf(live string) string {
+func myAgentUnreadRootsOf(from, live string) string {
 	return `
 		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
+		from ` + from + `
 		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
 		where ` + myAgentRootFilter("m") + `
 		  and ` + live + `
@@ -262,10 +271,10 @@ func myAgentUnreadRootsOf(live string) string {
 		  )`
 }
 
-func myAgentInboxRootsOf(live string) string {
+func myAgentInboxRootsOf(from, live string) string {
 	return `
 		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
+		from ` + from + `
 		where ` + myAgentRootFilter("m") + `
 		  and ` + live
 }
@@ -283,12 +292,12 @@ var (
 	// branch of its own, the owed roots whose column outlived the person's mark (myAgentOwedRoot); a
 	// root is in at most one of the two branches, since one reads its column null and the other set.
 	myAgentUnreadRoots = myAgentMarks + `
-	roots as (` + myAgentUnreadRootsOf(myAgentLiveRoot("m")) + `
-		union all` + myAgentUnreadRootsOf(myAgentOwedRoot("m")) + `
+	roots as (` + myAgentUnreadRootsOf(`messages m`, myAgentLiveRoot("m")) + `
+		union all` + myAgentUnreadRootsOf(myAgentOwedRoots, myAgentOwedRoot("m")) + `
 	)`
 	myAgentInboxRoots = myAgentMarks + `
-	roots as (` + myAgentInboxRootsOf(myAgentLiveRoot("m")) + `
-		union all` + myAgentInboxRootsOf(myAgentOwedRoot("m")) + `
+	roots as (` + myAgentInboxRootsOf(`messages m`, myAgentLiveRoot("m")) + `
+		union all` + myAgentInboxRootsOf(myAgentOwedRoots, myAgentOwedRoot("m")) + `
 	)`
 	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
 	// one index scan answers the narrowing, the order and the cursor

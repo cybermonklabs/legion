@@ -178,7 +178,6 @@ const ALICE_KEYS: Record<UserPreference, string> = {
   "inbox.thread-order": "dispatch.inbox.thread-order:alice",
   "issue.margin-sections": "dispatch.issue.margin-sections:alice",
   "issue.page": "dispatch.issue.page:alice",
-  "priorities.margin": "dispatch.priorities.margin:alice",
   "project.board-edges": "dispatch.project.board-edges:alice",
   "project.board-lanes": "dispatch.project.board-lanes:alice",
   "project.issue-filters": "dispatch.project.issue-filters:alice",
@@ -338,8 +337,8 @@ describe("a preference reaches every reader", () => {
       <QueryClientProvider client={client}>
         <Reader
           name="Writer"
-          next="open"
-          preference="priorities.margin"
+          next="board"
+          preference="project.issue-view"
           read={(stored) => stored ?? "nothing stored"}
           write={(value) => value}
         />
@@ -349,22 +348,22 @@ describe("a preference reaches every reader", () => {
     const view = render(tree(null));
     try {
       await user.click(screen.getByRole("button", { name: "Writer" }));
-      expect(shown("Writer")).toBe("open");
+      expect(shown("Writer")).toBe("board");
       const writer = screen.getByRole("button", { name: "Writer" });
 
       view.rerender(
         tree(
           <Reader
             name="Late"
-            preference="priorities.margin"
+            preference="project.issue-view"
             read={(stored) => `its own read of ${stored}`}
             write={(value) => value}
           />
         )
       );
-      expect(shown("Late")).toBe("its own read of open");
+      expect(shown("Late")).toBe("its own read of board");
       // The reader already there keeps the value written, and its mount.
-      expect(shown("Writer")).toBe("open");
+      expect(shown("Writer")).toBe("board");
       expect(screen.getByRole("button", { name: "Writer" })).toBe(writer);
     } finally {
       view.unmount();

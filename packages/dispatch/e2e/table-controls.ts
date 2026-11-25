@@ -132,10 +132,9 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
     CONTROL.columnsMenu,
     CONTROL.displayMenu,
     CONTROL.barAction,
-    CONTROL.panelTrigger,
     CONTROL.columnFilter,
     CONTROL.pager,
-    CONTROL.selectionBar,
+    CONTROL.moreMenu,
     CONTROL.dataTable,
   ],
   "priority page": [
@@ -251,6 +250,8 @@ export async function seedSurfaces(): Promise<SurfaceScene> {
   // And one in flight under no priority, so the priorities page's issues table has a row to mark.
   const loose = await createIssue({ project: "BOOKS", title: "Ledger cleanup" });
   await patchIssue(loose.key, { status: "in_progress" });
+  const parked = await createIssue({ project: "BOOKS", title: "File the audit notes" });
+  await patchIssue(parked.key, { advances: [priority.id], status: "backlog" });
   return { issue, priority: priority.id, project: "CORE" };
 }
 
@@ -725,8 +726,7 @@ async function openArtifactsTab(page: Page, scene: SurfaceScene): Promise<Surfac
   };
 }
 
-/** The priorities page: the priorities table, whose bar is the one read, and the issues tables
- *  under it, each with the project List's bar. */
+/** The opening tab of the Priorities page, which draws the priorities table alone. */
 async function openPrioritiesPage(page: Page): Promise<Surface> {
   const root = page.getByTestId("main-content");
   await page.goto("/priorities");
@@ -750,18 +750,6 @@ async function openPrioritiesPage(page: Page): Promise<Surface> {
     },
     display: async () => {
       await openDisplay(page, table);
-    },
-    // A row of the issues table under no priority, which the page draws under the project List's
-    // bar with its selection bar.
-    select: async () => {
-      await root
-        .getByRole("region", { exact: true, name: "In flight under no priority" })
-        .locator("[data-issue-row]")
-        .first()
-        .getByRole("checkbox")
-        .first()
-        .click();
-      await expect(control(root, CONTROL.selectionBar)).toBeVisible();
     },
   };
 }
@@ -848,13 +836,58 @@ export const HEADER_LINE = "[data-inbox-header-line]";
 /** A computed background no fill paints. */
 const NO_FILL = /^(transparent|rgba\(0, 0, 0, 0\))$/;
 
-/** The three tables the priorities page draws, each region under a bar of its own: the
- *  priorities table's, and the project List's above each issues table. */
-const PRIORITIES_TABLES = [
-  "Priorities",
-  "In flight under no priority",
-  "Priority work in backlog or icebox",
+/** The two tabs that each draw an Issues table, with their own address keys. */
+const PRIORITY_FAULTS = [
+  {
+    tab: "none",
+    label: "Active under no priority",
+    status: "in_progress",
+    word: "In progress",
+    key: "n",
+  },
+  {
+    tab: "backlog",
+    label: "Priority work in backlog or icebox",
+    status: "backlog",
+    word: "Backlog",
+    key: "k",
+  },
 ] as const;
+
+async function openPriorityFault(
+  page: Page,
+  fault: (typeof PRIORITY_FAULTS)[number]
+): Promise<Surface> {
+  const address = `/priorities?tab=${fault.tab}`;
+  await page.goto(address);
+  const main = page.getByTestId("main-content");
+  const root = main.getByRole("region", { exact: true, name: fault.label });
+  const firstRow = root.locator("[data-issue-row]").first();
+  await expect(firstRow).toBeVisible();
+  await expect(controlRow(main), `${fault.label}: only the active tab draws a bar`).toHaveCount(1);
+  const bar = controlRow(root);
+  return {
+    name: "project List",
+    root,
+    row: bar,
+    firstRow,
+    head: main.getByRole("heading", { level: 1, name: "Priorities" }),
+    narrow: async () => {
+      await page.goto(`${address}&${fault.key}.status=${fault.status}`);
+      await settledBar(page, "project List", bar, 1);
+    },
+    panel: async () => {
+      await openFilterPanel(page, root);
+    },
+    display: async () => {
+      await openDisplay(page, root);
+    },
+    select: async () => {
+      await firstRow.getByRole("checkbox").first().click();
+      await expect(control(root, CONTROL.selectionBar)).toBeVisible();
+    },
+  };
+}
 
 /** The narrowings each page that keeps them in its address is read under, as the address writes
  *  them, in the order a row takes them: the first one, two, three or all six, each one chip.
@@ -906,14 +939,8 @@ const BAR_NARROWINGS: Partial<Record<SurfaceName, readonly string[]>> = {
     "session=e2e-planner-1",
     "issue=CORE-1",
   ],
-  "priorities page": [
-    "p.f.owner=alice",
-    "p.f.waiting=0",
-    "p.f.in-flight=1",
-    "p.f.parked=0",
-    "p.f.closed=0",
-    "p.f.title=books",
-  ],
+  // The four order-tab columns that accept filters. Its work counts do not.
+  "priorities page": ["p.f.owner=alice", "p.f.title=books", "p.f.order=%231", "p.f.newest=Today"],
   "priority page": [
     "w.unclaimed=1",
     "w.status=in_progress",
@@ -1336,14 +1363,6 @@ export async function expectOneBarOn(
   const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
   const where = `${name} at ${size.width}x${size.height}`;
   await expect(surface.row, `${where}: not exactly one control bar above its list`).toHaveCount(1);
-  if (name === "priorities page") {
-    for (const region of PRIORITIES_TABLES) {
-      await expect(
-        controlRow(surface.root.getByRole("region", { exact: true, name: region })),
-        `${where}: not exactly one control bar above the table ${region}`
-      ).toHaveCount(1);
-    }
-  }
   // The Inbox and its drawer draw their search box in the header line, beside the title (R8), so
   // there the strays are read from under that line, which holds the page's one search box.
   const headed = INBOXES.includes(name);
@@ -1370,7 +1389,7 @@ export async function expectOneBarOn(
     ).toBeLessThan(NARROW_BELOW);
   }
   if (name === "Artifacts tab" && phone) await expectActionsInMore(page, surface.row, rest, where);
-  const on = await narrowBar(page, name, scene, surface, 6, phone);
+  const on = await narrowBar(page, name, scene, surface, name === "priorities page" ? 4 : 6, phone);
   await expectOneBar(page, name, surface.row, `${where}, ${on}`);
   if (phone && name === "priorities page") {
     // A bar with chips and no trigger keeps one `+N more` in its narrow line, which holds them.
@@ -1384,6 +1403,15 @@ export async function expectOneBarOn(
       `${where}, two narrowings on: the narrow bar's chips`
     ).toEqual(["2 more filters"]);
   }
+  if (name === "priorities page") {
+    for (const fault of PRIORITY_FAULTS) {
+      const tab = await openPriorityFault(page, fault);
+      const at = `${where}, ${fault.label}`;
+      await expectOneBar(page, tab.name, tab.row, `${at}, no narrowing on`);
+      await tab.narrow();
+      await expectOneBar(page, tab.name, tab.row, `${at}, one narrowing on`);
+    }
+  }
 }
 
 /** The controls the Design's table gives each page's bar with no narrowing on, each by what it is
@@ -1391,7 +1419,7 @@ export async function expectOneBarOn(
  *  table's **New priority**, the Artifacts tab's **New document** and **Upload** - is a button of
  *  the line in the wide layout and an item of **More** in the narrow one. `designOf` reads a bar
  *  in these words. */
-export function barDesign(name: SurfaceName, narrow: boolean): string[] {
+export function barDesign(name: SurfaceName, narrow: boolean, phone = false): string[] {
   switch (name) {
     case "Inbox":
     case "Inbox drawer":
@@ -1424,19 +1452,13 @@ export function barDesign(name: SurfaceName, narrow: boolean): string[] {
         ? ['search-box "Filter artifacts"', 'more-menu "More"']
         : ['search-box "Filter artifacts"', 'bar-action "New document"', 'bar-action "Upload"'];
     case "priorities page":
-      return narrow
-        ? [
-            'search-box "Search priorities"',
-            'columns-menu "Columns"',
-            'display-menu "View"',
-            'more-menu "More"',
-          ]
-        : [
-            'search-box "Search priorities"',
-            'bar-action "New priority"',
-            'columns-menu "Columns"',
-            'display-menu "View"',
-          ];
+      return [
+        'search-box "Search priorities"',
+        ...(narrow ? [] : ['bar-action "New priority"']),
+        ...(phone ? [] : ['columns-menu "Columns"']),
+        'display-menu "View"',
+        ...(narrow ? ['more-menu "More"'] : []),
+      ];
     default:
       return [
         'search-box "Search issues"',
@@ -1551,7 +1573,7 @@ async function expectRestingBar(
   expect(
     designOf(rest),
     `${said}, not its design's controls in the ${narrow ? "narrow" : "wide"} layout`
-  ).toEqual(barDesign(name, narrow));
+  ).toEqual(barDesign(name, narrow, phone));
   // The chosen part of the switch and the main action are filled; every other button is quiet.
   const painted = rest.controls.filter(
     (one) =>
@@ -1580,19 +1602,6 @@ async function expectRestingBar(
     ).toEqual([]);
   }
   return rest;
-}
-
-/** The priorities index draws two fault lists and the work table under an expanded priority. */
-async function expandPriorityWork(surface: Surface): Promise<Locator> {
-  await surface.firstRow
-    .getByRole("button", { name: new RegExp(`^Open .*${SURFACE_PRIORITY.title}$`) })
-    .click();
-  const work = surface.root.getByRole("region", {
-    exact: true,
-    name: `Work advancing ${SURFACE_PRIORITY.title}`,
-  });
-  await expect(work.locator("[data-issue-row]").first()).toBeVisible();
-  return work;
 }
 
 async function expectPriorityIssueChips(
@@ -1656,34 +1665,31 @@ export async function expectBarDesign(
     return;
   }
   if (name === "priorities page") {
-    // The three issue-list bars at rest, on the load `openSurface` made and before the six
-    // narrowings below load the page again: opening the work section puts no narrowing on.
-    const work = await expandPriorityWork(surface);
-    const faultLists = PRIORITIES_TABLES.slice(1).map(
-      (region) => [region, surface.root.getByRole("region", { exact: true, name: region })] as const
-    );
-    const issueLists = [...faultLists, [`Work advancing ${SURFACE_PRIORITY.title}`, work] as const];
-    await toRest();
-    for (const [label, region] of issueLists) {
-      await expectRestingBar(controlRow(region), "project List", `${where}, ${label}`, phone);
-    }
     // The priorities table's own chips, which have no Filter trigger to stand for them.
     if (!narrow) {
-      await narrowBar(page, name, scene, surface, 6, phone);
-      const { line, listed } = await chipsOfBar(page, bar, 6, `${where}, six narrowings on`);
-      expect(new Set([...line, ...listed]).size, `${where}: six chips, each once`).toBe(6);
+      await narrowBar(page, name, scene, surface, 4, phone);
+      const { line, listed } = await chipsOfBar(page, bar, 4, `${where}, four narrowings on`);
+      expect(new Set([...line, ...listed]).size, `${where}: four chips, each once`).toBe(4);
     }
-    // These are client-side status filters on the same recorded open-issue listings.
-    await page.goto("/priorities?n.status=in_progress&k.status=backlog&w.status=in_progress");
-    await expandPriorityWork(surface);
-    for (const [label, region] of issueLists) {
-      await expectPriorityIssueChips(
-        page,
-        region,
-        `${where}, ${label}`,
-        label === PRIORITIES_TABLES[2] ? "Backlog" : "In progress"
-      );
+    for (const fault of PRIORITY_FAULTS) {
+      const tab = await openPriorityFault(page, fault);
+      const at = `${where}, ${fault.label}`;
+      await toRest();
+      await expectRestingBar(tab.row, tab.name, at, phone);
+      await tab.narrow();
+      await expectPriorityIssueChips(page, tab.root, at, fault.word);
     }
+    // The work table now lives on the priority's own page. Read its status chip there.
+    const work = await openPriorityPage(page, scene);
+    await toRest();
+    await expectRestingBar(work.row, work.name, `${where}, work under the priority`, phone);
+    await page.goto(`/priorities/${scene.priority}?w.status=in_progress`);
+    await expectPriorityIssueChips(
+      page,
+      work.root,
+      `${where}, work under the priority`,
+      "In progress"
+    );
     return;
   }
   if (INBOXES.includes(name)) await expectInboxBar(page, name, bar, rest, phone, where);
@@ -1776,24 +1782,34 @@ export async function expectNoGrowth(
   phone: boolean
 ): Promise<void> {
   const surface = await openSurface(page, name, scene, { phone, searchTerm: SURFACE_SEARCH_TERM });
+  const at = `${name} at ${size.width}x${size.height}`;
+  await expectSurfaceNoGrowth(
+    page,
+    surface,
+    at,
+    name === "priority page" ? () => pickIssueFlag(page, "Unclaimed") : surface.narrow
+  );
+  if (name === "priorities page") {
+    for (const fault of PRIORITY_FAULTS) {
+      const tab = await openPriorityFault(page, fault);
+      await expectSurfaceNoGrowth(page, tab, `${at}, ${fault.label}`, tab.narrow);
+    }
+  }
+}
+
+async function expectSurfaceNoGrowth(
+  page: Page,
+  surface: Surface,
+  at: string,
+  narrowing: () => Promise<void>
+): Promise<void> {
+  const { name } = surface;
   // `openSurface` waited for the page's first row, so the bar is laid out, and its width follows
   // the viewport the row set before it opened the page.
   const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
-  const where = `${name} at ${size.width}x${size.height}, its bar ${Math.round(width)}px wide (the ${width < NARROW_BELOW ? "narrow" : "wide"} layout)`;
+  const where = `${at}, its bar ${Math.round(width)}px wide (the ${width < NARROW_BELOW ? "narrow" : "wide"} layout)`;
   await resetScroll(page, surface.firstRow);
   const first = await topOf(surface.firstRow);
-  // One narrowing that draws a chip: the List's and the Board's Needs you, a priority's
-  // Unclaimed (its one issue has no ask), and on the priorities table, which has no trigger, the
-  // Owner pick its column filter writes into the address.
-  const narrowing =
-    name === "priorities page"
-      ? async () => {
-          await page.goto(narrowedAddress(name, scene, 1));
-          await settledBar(page, name, surface.row, 1);
-        }
-      : name === "priority page"
-        ? () => pickIssueFlag(page, "Unclaimed")
-        : surface.narrow;
   // The Agents page marks rows for a broadcast: a checkbox on each row and one over the list for
   // every row the filters match (`features/agents/AgentsPage.tsx`). A mark draws the broadcast
   // composer, which sticks to the bottom of the viewport rather than standing above the rows.

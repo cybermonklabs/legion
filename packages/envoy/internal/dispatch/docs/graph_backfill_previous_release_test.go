@@ -410,9 +410,9 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 //
 // A change of words that keeps every statement's rows keeps the rule, and records its digest in
 // place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
-// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea on main and from
-// 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954 on this change, whose
-// statements also read the project columns above: the backfill's
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
+// #5491, and from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
+// before the hint below, whose statements also read the project columns above: the backfill's
 // block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
 // materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
 // and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot

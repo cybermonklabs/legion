@@ -313,7 +313,7 @@ export function Sidebar({
           <ul className="mt-1 space-y-0.5">
             <RailRow
               badge={priorityFaults}
-              detail="Every project's priorities, and the work on none"
+              detail="Priorities and the work under them"
               label="Priorities"
               onNavigate={onNavigate}
               // The entry stands for the whole of the priorities, so it stays lit on one

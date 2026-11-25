@@ -11,7 +11,7 @@ import {
   tableFilterActive,
   textSecondaryOnCanvas,
 } from "../theme/classes";
-import { type ControlSize, controlPadding } from "./control-names";
+import { type ControlSize, controlPadding, toolbarHeight } from "./control-names";
 
 /**
  * How the control bar (`ControlRow`) asks a shared control to draw itself in the bar: with no
@@ -49,10 +49,12 @@ const TONES: Record<BarTone, string> = {
 };
 
 /** A button that shows its glyph alone, at each size: square, at the touch target of
- *  `controlPadding`, which the compact size gives up only from `md`, where a mouse is. */
+ *  `controlPadding`, which the compact size gives up only from `md`, where a mouse is, and the
+ *  toolbar size only from 1280 px up, for the toolbar's one height (`toolbarHeight`). */
 const ICON_ONLY: Record<ControlSize, string> = {
   comfortable: "min-h-11 min-w-11 p-2",
   compact: "min-h-11 min-w-11 p-1 md:min-h-8 md:min-w-8",
+  toolbar: `min-h-11 min-w-11 p-1 ${toolbarHeight} xl:min-w-8.5`,
 };
 
 /** The classes of one button of the bar: its tone, at the page's size, with its words

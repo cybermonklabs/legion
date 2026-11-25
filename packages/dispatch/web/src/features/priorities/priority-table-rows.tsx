@@ -35,10 +35,15 @@ export function TableBodyRow<Row_>({
       data-priority-group={row.getParentRow()?.id ?? "ungrouped"}
       data-priority-row={row.id}
       onDragOver={(event) => {
-        if (dragging !== undefined) event.preventDefault();
+        if (dragging === undefined) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
       }}
-      onDrop={() => {
-        if (dragging !== undefined && dragging !== row.id) onDrop(row.id);
+      onDrop={(event) => {
+        if (dragging === undefined) return;
+        // The drag carries the id as text, which a browser would otherwise open as a search.
+        event.preventDefault();
+        if (dragging !== row.id) onDrop(row.id);
       }}
       ref={measure}
       tabIndex={-1}

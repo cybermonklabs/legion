@@ -141,6 +141,7 @@ type DecisionStepOwed struct {
 // Owed is what the step's last pass found owed, part by part, nil before a tick has counted it -
 // and so through the boot, whose pass counts nothing, for as long as
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the step, and on a nil step.
+// kept for one release: decisions-step
 func (s *DecisionStep) Owed() *DecisionStepOwed {
 	if s == nil {
 		return nil
@@ -149,6 +150,7 @@ func (s *DecisionStep) Owed() *DecisionStepOwed {
 }
 
 // OwedTotal is the sum of what the step's last pass found owed (Owed), nil while Owed is.
+// kept for one release: decisions-step
 func (s *DecisionStep) OwedTotal() *int64 {
 	owed := s.Owed()
 	if owed == nil {
@@ -196,6 +198,7 @@ func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionS
 
 // NewDecisionStep is the step of a process serving commit, the commit it registers
 // (processes.Instance.Commit), over database, logging through logger (slog.Default when nil).
+// kept for one release: decisions-step
 func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) *DecisionStep {
 	if logger == nil {
 		logger = slog.Default()
@@ -300,6 +303,7 @@ func (c *stepConn) release(logger *slog.Logger) {
 // first tick counts (probe) - so the boot waits on no table phase 1 does not read. Its context is
 // marked for the pool's nested-acquire guard (store.WithTransactionTracking), as every entry point
 // of the pool's transactions marks its own.
+// kept for one release: decisions-step
 func (s *DecisionStep) Boot(ctx context.Context) error {
 	ctx = store.WithTransactionTracking(ctx)
 	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
@@ -330,6 +334,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 // runs phase 3, or skips it where another process holds that lock. A failure of a phase is logged
 // and tried again at the next tick; it answers a failure of the probes or of a lock. Its context is
 // marked for the pool's nested-acquire guard, as Boot's is.
+// kept for one release: decisions-step
 func (s *DecisionStep) Tick(ctx context.Context) error {
 	ctx = store.WithTransactionTracking(ctx)
 	work, err := s.probe(ctx)
@@ -413,6 +418,7 @@ func (c *stepConn) takeRestoreLock(ctx context.Context, wait bool) (bool, error)
 
 // UseDocuments gives the step the document service its third phase writes the documents through.
 // A process calls it before the step's first tick; until it does, phase 3 does not run.
+// kept for one release: decisions-step
 func (s *DecisionStep) UseDocuments(documents *Service) {
 	s.documents = documents
 }
@@ -420,6 +426,7 @@ func (s *DecisionStep) UseDocuments(documents *Service) {
 // Run ticks at once and then every interval (BlockIndexReconcileInterval) until ctx ends. It never
 // stops for want of work: a process of another build can go live after a tick found none, and the
 // next tick catches up what it writes. A tick that fails is logged and tried again at the next one.
+// kept for one release: decisions-step
 func (s *DecisionStep) Run(ctx context.Context) {
 	for {
 		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
@@ -451,6 +458,7 @@ type decisionStepWork struct {
 // with no other build live: this build's create sites write each node and marker in the write that
 // stores the row, so a row it finds is one another build wrote. Every other tick takes phase 1 to
 // owe nothing.
+// kept for one release: decisions-step
 func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	var work decisionStepWork
 	var err error
@@ -485,6 +493,7 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 // block index is owed, each one probe of an index, and leaves the last count standing. The floor is
 // read before the count, so an event the count did not see is above it; an event log reset (newest
 // below the floor) is a change too.
+// kept for one release: decisions-step
 func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 	var newest int64
 	var indexOwed bool
@@ -516,6 +525,7 @@ func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 }
 
 // backfill runs phase 1 and logs what each of its passes stated.
+// kept for one release: decisions-step
 func (s *DecisionStep) backfill(ctx context.Context) error {
 	done, err := graphcensus.BackfillAsks(ctx, s.database)
 	for _, kind := range done {
@@ -532,6 +542,7 @@ func (s *DecisionStep) backfill(ctx context.Context) error {
 
 // anotherBuildLive reports whether processes.Live lists a process serving a commit other than
 // this process's own. An empty commit is one build with every other empty commit.
+// kept for one release: decisions-step
 func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 	live, err := processes.Live(ctx, s.database.Pool)
 	if err != nil {
@@ -729,6 +740,7 @@ func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 // events took its id after it: this pass's own does on a log no write holds open, and under writes
 // that overlap without a break an earlier pass's does, as soon as the writes open when it was
 // taken have ended. It waits on no transaction.
+// kept for one release: decisions-step
 func (s *DecisionStep) writerFloor(ctx context.Context) (int64, int64, error) {
 	mark, err := s.horizon.Mark(ctx)
 	if err != nil {

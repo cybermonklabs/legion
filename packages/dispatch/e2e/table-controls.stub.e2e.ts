@@ -159,16 +159,19 @@ const DRAWER_HEADER_LINE = ['h2 "Inbox"', "search box", 'button "Close"'] as con
 
 /** The height each size draws a control at from `md` up and at 1280 px and over, where
  *  `web/src/styles.css` stops raising every button to 44 px (`@media (max-width: 1279px)`): the
- *  two recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11` is
- *  44 px and whose compact `md:min-h-8` is 32 px, at Tailwind's 4 px a step. A column filter's
- *  funnel takes the same two (`glyphTarget`, in the same file). */
-const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32 };
+ *  three recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11`
+ *  is 44 px, whose compact `md:min-h-8` is 32 px and whose toolbar `xl:h-8.5` is 34 px, at
+ *  Tailwind's 4 px a step. A column filter's funnel takes the compact two (`glyphTarget`, in the
+ *  same file). */
+const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32, toolbar: 34 };
 
 /** The padding of the selection bar's own box at each size - top, right, bottom and left - as
- *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2` and `px-2 py-1`. */
+ *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2`, and `px-2 py-1` at
+ *  the compact and toolbar sizes. */
 const BAR_PADDING: Record<ControlSize, string> = {
   comfortable: "8px 16px 8px 16px",
   compact: "4px 8px 4px 8px",
+  toolbar: "4px 8px 4px 8px",
 };
 
 // SLOW(>=2s): eight pages opened at each of this project's widths, which is sixteen page loads.
@@ -333,7 +336,9 @@ test("each page draws every shared control its design gives it, and no other @pr
       const chipsInPanel = narrow && SURFACE_CONTROLS[name].includes(CONTROL.panelTrigger);
       const notHere = narrow ? CONTROL.barAction : CONTROL.moreMenu;
       const expected = [...SURFACE_CONTROLS[name]]
-        .filter((wanted) => name !== "Artifacts tab" || wanted !== notHere)
+        .filter(
+          (wanted) => (name !== "Artifacts tab" && name !== "priorities page") || wanted !== notHere
+        )
         .filter((wanted) => !viewInMore || wanted !== CONTROL.displayMenu)
         .filter((wanted) => !chipsInPanel || wanted !== CONTROL.chip)
         .sort();
@@ -440,7 +445,7 @@ test("one search box and chip across the Inbox and the Board, one bar trigger ac
   expect(board.search, "the Board's search box is not the Inbox's").toEqual(inbox.search);
   expect(board.chip, "the Board's chip is not the Inbox's").toEqual(inbox.chip);
 
-  // The List draws the compact size, so it is read for behaviour and for the shape of each
+  // The List's bar draws the toolbar size, so it is read for behaviour and for the shape of each
   // accessible name rather than for size, and its trigger for all but its height.
   const listed = await look("project List");
   const { height: _boardHeight, ...boardTrigger } = board.trigger;

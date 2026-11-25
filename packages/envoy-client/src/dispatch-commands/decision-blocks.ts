@@ -80,6 +80,7 @@ export async function refuseOpenDecisionBlocks(
   let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
   const liveText = () =>
     (live ??= client.docRead(artifact.id).then((text) => ({
+      // kept for one release: release-before-text
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
@@ -132,6 +133,7 @@ export async function refuseOpenDecisionBlocks(
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
+    // kept for one release: release-before-text
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
     if (ask !== undefined) {
       const open = ask.state === "open";
@@ -142,6 +144,7 @@ export async function refuseOpenDecisionBlocks(
       if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
         return open ? named : undefined;
       }
+      // kept for one release: release-before-text
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
     // A copy, judged by its source, which is read off the block's own opening lines alone
@@ -151,6 +154,7 @@ export async function refuseOpenDecisionBlocks(
     const text = await liveText();
     // kept for one release: release-before-text
     if (!text.served && recordsSettled) return undefined;
+    // kept for one release: release-before-text
     if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =

@@ -127,6 +127,14 @@ function renderBoard(
   };
 }
 
+/** Puts the focus on `card`'s own title link and returns it. */
+function focusTitleLink(card: Element, key: string): HTMLElement {
+  const link = card.querySelector<HTMLElement>("[data-issue-link]");
+  if (link === null) throw new Error(`${key}'s card draws no title link`);
+  act(() => link.focus());
+  return link;
+}
+
 test("board collapses Icebox and Done into droppable rails by default", async () => {
   const { cleanup } = renderBoard();
   try {
@@ -675,9 +683,7 @@ test("a card a refetch takes away from under the focus hands it to no other card
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
     const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    const title = bravo.querySelector<HTMLElement>("[data-issue-link]");
-    if (title === null) throw new Error("CORE-2's card draws no title link");
-    act(() => title.focus());
+    focusTitleLink(bravo, "CORE-2");
 
     listIssues.mockResolvedValue(keyboardIssues.filter((entry) => entry.key !== "CORE-2"));
     await act(async () => {
@@ -1705,21 +1711,24 @@ function AnotherDialog(): ReactNode {
 }
 
 // INFRA-3135: a keyboard move the rule's dry run checks first places the card only once the dry
-// run answers. The focus follows the card then only while it stands where the reader's press left
-// it. A reader who has moved on keeps their place: here `j` to the next card, or a blur that puts
-// the focus on the body, as a click on a blank spot of the page's shell does in Chromium and
-// WebKit. The board's draw of the card in its new column removes the node the press focused, so
-// after that draw the body tells nothing: only what the move read as it placed the card tells the
-// reader's blur from the card's going. Another dialog open over the board is no place the press
-// left the focus: with the focus on the body under it, as a press on its text leaves it, the move
-// takes no focus to the card behind it.
+// run answers. The focus follows the card then only while it stands in the card the reader's press
+// moved: on the card itself, or on a control inside it, as a Tab onto the card's own link leaves
+// it. The board's draw of the card in its new column takes that control away with the card, so
+// the focus goes with the card. A reader who has moved on keeps their place: here `j` to the next
+// card, or a blur that puts the focus on the body, as a click on a blank spot of the page's shell
+// does in Chromium and WebKit. That draw removes the node the press focused, so after it the body
+// tells nothing: only what the move read as it placed the card tells the reader's blur from the
+// card's going. Another dialog open over the board is no place the press left the focus: with the
+// focus on the body under it, as a press on its text leaves it, the move takes no focus to the
+// card behind it.
 for (const reader of [
   "stayed",
+  "put the focus on the card's own link",
   "moved on",
   "put the focus on the body",
   "opened another dialog and put the focus on the body",
 ] as const) {
-  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (the reader ${reader})`, async () => {
+  test(`board: checking - focus follows a checked keyboard move only while it stands in the card the press moved (the reader ${reader})`, async () => {
     const user = userEvent.setup();
     const dryRun = Promise.withResolvers<StatusChangeAnswer>();
     const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
@@ -1736,6 +1745,9 @@ for (const reader of [
       if (reader === "moved on") {
         await user.keyboard("j");
         expect(bravo).toHaveFocus();
+      }
+      if (reader === "put the focus on the card's own link") {
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
       }
       if (reader === "put the focus on the body") {
         act(() => pressed.blur());
@@ -1763,6 +1775,9 @@ for (const reader of [
         "moved on": bravo,
         "opened another dialog and put the focus on the body": document.body,
         "put the focus on the body": document.body,
+        "put the focus on the card's own link": within(inProgress).getByRole("article", {
+          name: "CORE-1 Parent",
+        }),
         stayed: within(inProgress).getByRole("article", { name: "CORE-1 Parent" }),
       };
       expect(kept[reader]).toHaveFocus();
@@ -1777,11 +1792,13 @@ for (const reader of [
 
 // The rule's question takes the focus as it opens and gives it back as it closes
 // (`useDialog`). A keyboard move whose card a choice of the question places takes the focus to
-// that card only where the question took the focus from the card the press moved. A reader who
-// puts the focus on the body while the move's dry run is out has the question open on the body:
-// once the choice has placed the card and the question has closed, the focus stays on the body.
-for (const opener of ["the pressed card", "the body"] as const) {
-  test(`board: asking - a choice that places a keyboard move's card takes the focus to it only where the question took the focus from that card (the question opened on ${opener})`, async () => {
+// that card only where the question took the focus from the card the press moved, or from a
+// control inside it, as a Tab onto the card's own link leaves it while the move's dry run is out.
+// A reader who puts the focus on the body while the move's dry run is out has the question open
+// on the body: once the choice has placed the card and the question has closed, the focus stays
+// on the body.
+for (const opener of ["the pressed card", "the pressed card's own link", "the body"] as const) {
+  test(`board: asking - a choice that places a keyboard move's card takes the focus to it only where the question took the focus from that card or a control inside it (the question opened on ${opener})`, async () => {
     const user = userEvent.setup();
     const refusal = Promise.withResolvers<void>();
     const statusChanges = answerTheQuestion(async () => fixtureAnswer("changed"), refusal.promise);
@@ -1796,6 +1813,9 @@ for (const opener of ["the pressed card", "the body"] as const) {
       if (opener === "the body") {
         act(() => pressed.blur());
         expect(document.body).toHaveFocus();
+      }
+      if (opener === "the pressed card's own link") {
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
       }
       refusal.resolve();
       const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });

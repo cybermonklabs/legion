@@ -1,6 +1,8 @@
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useState } from "react";
 import type { BarActionProps } from "../../components/BarAction";
 import { textGlyph } from "../../components/bar-look";
+import { controlPadding } from "../../components/control-names";
 import {
   borderDefault,
   focusVisibleRing,
@@ -12,6 +14,11 @@ import { usePriorityWrites } from "./priority-writes";
 
 /** **New priority**'s glyph, drawn before its words where the control bar draws it. */
 const PLUS_GLYPH = textGlyph("+");
+
+/** Each button here, at the size of the toolbar it stands by (`controlPadding`'s `toolbar`), so
+ *  each is the size of the controls it stands beside: from 1280 px up the one height of a
+ *  toolbar's controls. */
+const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefault} ${surfaceMutedHoverBg}`;
 
 /**
  * The one-line form a priority is added with: its title, **Add priority** and **Cancel**. Its
@@ -40,23 +47,20 @@ function NewPriorityForm({
     >
       <input
         aria-label="Title of the new priority"
-        className={`min-w-64 flex-1 rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+        className={`w-full min-w-0 flex-none rounded-lg border text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${controlPadding.toolbar} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+        maxLength={ISSUE_TITLE_MAX}
         onChange={(event) => setTitle(event.target.value)}
         placeholder="What the new priority is"
         value={title}
       />
       <button
-        className={`min-h-11 rounded-lg border px-3 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
+        className={`${BUTTON} disabled:opacity-40 ${focusVisibleRing}`}
         disabled={title.trim() === ""}
         type="submit"
       >
         Add priority
       </button>
-      <button
-        className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-        onClick={onClose}
-        type="button"
-      >
+      <button className={BUTTON} onClick={onClose} type="button">
         Cancel
       </button>
     </form>
@@ -97,11 +101,7 @@ export function NewPriority(): ReactNode {
   if (action === undefined) return null;
   return (
     <>
-      <button
-        className={`rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-        onClick={action.onPress}
-        type="button"
-      >
+      <button className={BUTTON} onClick={action.onPress} type="button">
         New priority
       </button>
       {form}

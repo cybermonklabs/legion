@@ -1,7 +1,7 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
 import { CONTROL, controlIn } from "../../components/control-names";
-import { pressArmed, pressMadeIn } from "../../components/focus-place";
+import { pressArmed, pressMadeIn, scrollToNearest } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 import { PANEL_ATTRIBUTE } from "./keymap";
 
@@ -673,7 +673,9 @@ export class ViewportAnchor extends Component<
   /** Brings the control that holds the focus in `row` whole into sight at its nearest edge where
    *  the reader can see a part of it, which the page's sight rule allows for a landing partly in
    *  sight (`components/focus-place.ts`): an edge that only touches the view's edge counts as in
-   *  sight. A control wholly in sight, or wholly out of it, is left where it is. */
+   *  sight. Uses `scrollToNearest` rather than `scrollIntoView` so the root's scroll padding
+   *  cannot scroll the window past the cut. A control wholly in sight, or wholly out of it, is
+   *  left where it is. */
   private showFocused(row: HTMLElement): void {
     const focused = document.activeElement;
     if (focused === null || !row.contains(focused)) return;
@@ -681,7 +683,7 @@ export class ViewportAnchor extends Component<
     const box = focused.getBoundingClientRect();
     const meets = box.bottom >= top && box.top <= bottom;
     const whole = box.top >= top && box.bottom <= bottom;
-    if (meets && !whole) focused.scrollIntoView({ block: "nearest" });
+    if (meets && !whole) scrollToNearest(focused);
   }
 
   getSnapshotBeforeUpdate(

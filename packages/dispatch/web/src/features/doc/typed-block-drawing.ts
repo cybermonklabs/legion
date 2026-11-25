@@ -345,6 +345,7 @@ export function servedAskOf(
 
 /** The character references the renderer writes in a directive attribute's value
  *  (pmdoc's escapeDirectiveAttribute), each with the character it stands for. */
+// kept for one release: release-before-text
 const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&#x22;": '"',
   "&#xA;": "\n",
@@ -406,6 +407,7 @@ export function liveAskOf(
   text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
   blockId: string
 ): ServedAsk | undefined {
+  // kept for one release: release-before-text
   if (text?.asks === undefined || text.asks === null) {
     return renderedAskOf(text?.markdown, blockId);
   }

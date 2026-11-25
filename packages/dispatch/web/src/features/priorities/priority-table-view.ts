@@ -5,7 +5,7 @@ import {
   type TableAddressView,
 } from "../../lib/page-address";
 import { PAGE_SIZES } from "../project/issues-table-model";
-import type { TableColumn } from "./priority-table-model";
+import { hasFilter, type TableColumn } from "./priority-table-model";
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -44,7 +44,8 @@ export function priorityTableGrammar<Row>(
         .filter(({ id }) => ids.includes(id));
       const filters = columns.flatMap((column) => {
         const values = params.getAll(key(`f.${column.id}`));
-        if (values.length === 0) return [];
+        // A filter of a column that has no filter (`hasFilter`), an older link's, filters nothing.
+        if (values.length === 0 || !hasFilter(column)) return [];
         return [{ id: column.id, value: column.text === undefined ? values : (values[0] ?? "") }];
       });
       const group = params.get(key("group")) ?? "";

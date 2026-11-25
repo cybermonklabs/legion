@@ -1167,19 +1167,30 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "person-node-title",
   },
-  // A priority's description, on its own page and on the open row of the priorities table, and
-  // its first line on a closed row of that table.
+  // A priority's description: drawn whole, on its own page and on the open row of the priorities
+  // table, in the documents' editor (`PriorityDescription`), which paints it and draws its
+  // references as a document's body is drawn, and its start, in plain words, on a closed row of
+  // that table (`priorities-columns.tsx`), through the projection.
   {
     cannotCarry: NO_QUESTION_ID,
     files: [
       "packages/dispatch/web/src/features/priorities/PriorityDescription.tsx",
       "packages/dispatch/web/src/features/priorities/priorities-columns.tsx",
     ],
-    reach: "/priorities/<ID>, the Description of P1 group",
-    reason:
-      "A priority's description is no record of the reference graph: a priority is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), and the priority write stores the description as an attribute of the priority and indexes nothing from it - so a `#id` in it declares nothing and names nothing.",
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/priorities/PrioritiesPage.test.tsx",
+        test: "a closed row runs a description's paragraphs together, a reference read as its target's name",
+      },
+      {
+        file: "packages/dispatch/web/src/features/priorities/PrioritiesPage.test.tsx",
+        test: "a closed row draws its description's excerpt from the tree the priorities read sends",
+      },
+    ],
+    reach: "/priorities/<ID>, the Description editor, and /priorities, a closed row's excerpt",
+    reason: `A priority's description is no record of the reference graph: a priority is none of the four kinds a \`TextSource\` names (an artifact, an ask, a comment, a message), and the priority write stores the description as an attribute of the priority and indexes nothing from it - so a \`#id\` in it declares nothing and names nothing. Whole, it is drawn in the documents' editor, as a document's body is: ${EDITOR_REASON} A closed row of the priorities table shows its start: ${PLAIN_WORDS_REASON}`,
     record: false,
-    rendered: true,
+    rendered: false,
     surface: "priority-description",
   },
   // The cards under a body: the renderer draws them itself, so no surface pairs a card with a

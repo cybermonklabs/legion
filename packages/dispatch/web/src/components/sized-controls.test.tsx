@@ -336,7 +336,7 @@ test.each(
 test("the bar draws Clear filters, +N more and More at the page's size", () => {
   /** The touch target each draws at `size`: the compact size gives it up from `md`. */
   const compactly = (element: HTMLElement) => element.classList.contains("md:min-h-8");
-  const read: Record<ControlSize, boolean[]> = { comfortable: [], compact: [] };
+  const read: Record<"comfortable" | "compact", boolean[]> = { comfortable: [], compact: [] };
   for (const size of ["compact", "comfortable"] as const) {
     // Wide, with something to clear and an action kept in More.
     const wide = render(

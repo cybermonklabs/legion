@@ -43,6 +43,9 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
 /** The Claimed by value that picks the issues nobody is working: no claim at all, or a claim
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
+/** The Claimed by value of an issue no one has claimed, and the heading its group reads under.
+ *  Which issues carry it is read off the issues alone: the agent registry never changes it. */
+export const NOBODY_FACET = "Nobody";
 
 /** How many of one action's writes are in flight at once, whether it is sending them for the
  *  first time or Finish is retrying what a refusal left behind. A selection is as large as the
@@ -392,7 +395,7 @@ export function buildItems(
     }
     const epic = root && isEpic(root) ? root : undefined;
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
-    const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
+    const claimedBy = issue.claim ? label(issue.claim.actor) : NOBODY_FACET;
     const epicName = epic
       ? `${epic.key} · ${epic.title}`
       : root === undefined || root.parent !== null
@@ -498,7 +501,7 @@ export function matchesFilters(item: Item, filters: ColumnFiltersState, except?:
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
  *  every named group. */
-const EMPTY_GROUPS: readonly string[] = ["No epic", "Unknown epic", "Nobody", "Unassigned"];
+const EMPTY_GROUPS: readonly string[] = ["No epic", "Unknown epic", NOBODY_FACET, "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
  *  and by name where the registry gives none — numbers inside a name counted as numbers, so
  *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
@@ -664,6 +667,15 @@ export function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
+}
+/** Whether `view` narrows the rows by nothing the reader set: no filter but the statuses the
+ *  table opens with (or none, `nofilter=1`), no search and no issues picked (`only=`). */
+export function narrowsNothing(view: View): boolean {
+  return (
+    view.search.trim() === "" &&
+    view.selection === null &&
+    view.filters.every(({ id, value }) => id === "status" && isDefaultStatus(value))
+  );
 }
 export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);

@@ -32,6 +32,7 @@ test("a human creates a project from Settings and it appears in the project pick
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const listed: Project = {
     created_at: "2026-09-10T00:00:00Z",
@@ -39,6 +40,7 @@ test("a human creates a project from Settings and it appears in the project pick
     name: "Quality",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   // The create answers the project with its default; the project list carries none.
   const created: CreatedProject = { ...listed, default_assignee: "alice" };
@@ -136,6 +138,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -253,6 +256,7 @@ function renderSettings(projects: string[]): {
         name: key,
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       }))
     ),
   ];

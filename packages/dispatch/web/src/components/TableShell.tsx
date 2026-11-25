@@ -19,7 +19,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { CONTROL, type ControlSize } from "./control-names";
+import { CONTROL } from "./control-names";
 import { useScrollEnds } from "./useScrollEnds";
 
 /** Everything one density of the shell draws, so the densities sit side by side in one place. */
@@ -47,14 +47,15 @@ interface TableRecipe {
 }
 
 /** How much room a row takes, and the box the rows sit in:
- *  - `comfortable` and `compact` are a control's two sizes;
+ *  - `comfortable` and `compact` are the room of a control's comfortable and compact sizes
+ *    (`ControlSize`);
  *  - `dense` is the comfortable table's look at the type and padding of a table read in a narrow
  *    tab beside other content (an issue's Steps), whose box sits inside a card of the caller's
  *    rather than drawing one;
  *  - `tight` is the compact table's look with half its cell padding, in a box with a rounded
  *    border of its own. It is for many one-line rows of figures in a short scrolling box (the
  *    Delivery page's measures per day). */
-export type TableDensity = ControlSize | "dense" | "tight";
+export type TableDensity = "comfortable" | "compact" | "dense" | "tight";
 
 const RECIPE: Record<TableDensity, TableRecipe> = {
   comfortable: {

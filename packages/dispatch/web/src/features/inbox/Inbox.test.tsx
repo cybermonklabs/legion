@@ -9498,6 +9498,7 @@ describe("the approval mark", () => {
         key: "CORE",
         name: "Core",
         open_asks: 0,
+        proven_sessions: false,
       },
     ]);
     const restoreReads = mockHeaderReads();

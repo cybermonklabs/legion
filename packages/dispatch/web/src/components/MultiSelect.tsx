@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import {
   borderDefault,
   borderStrong,

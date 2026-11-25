@@ -427,7 +427,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeItemNodes",
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeAsks",
 			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
@@ -459,8 +459,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes",
-			"cmd/dispatch-seed/write_items.go#stateAtSentinel", "cmd/dispatch-seed/write_items.go#writeMessages",
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#stateAtSentinel",
+			"cmd/dispatch-seed/write_items.go#writeMessages",
 			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()

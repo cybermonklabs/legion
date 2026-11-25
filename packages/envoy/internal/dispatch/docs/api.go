@@ -37,12 +37,16 @@ type API interface {
 	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
 	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
+	// kept for one release: heading-keep
 	DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
+	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)
 	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)
 	VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error)
 	BlockForQuote(ctx context.Context, artifactID, quote string) (string, error)

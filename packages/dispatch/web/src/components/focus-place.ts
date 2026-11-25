@@ -4,7 +4,7 @@ import { REQUEST_DEADLINE_MS } from "../api/client";
 import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 
@@ -463,68 +463,26 @@ export function focusLost(): boolean {
   return focused === null || focused === document.body || !focused.isConnected;
 }
 
-/** Which landings `land` shows whole: one the reader can see a part of (`"cut"`), the page's sight
- *  rule for a landing a hand-off chose because it was in sight (`landFirstInSight`), or every one
- *  not wholly in sight (`"any"`), for a hand-off that names its own landing wherever it stands
- *  (`landWhole`). */
-type Shown = "any" | "cut";
-
-/** Focuses `element` with no scroll of the engine's own, and, once it holds the focus, shows it
- *  whole by `shown`'s rule (`showWhole`): at once, and again once the commit it lands in is done,
- *  while it still holds the focus. A component's hand-off lands in a layout effect, and a layout
- *  effect after it in the same commit can scroll the page back under the landing: the Inbox list's
- *  `ViewportAnchor` puts the row it holds back where the commit found it, from its
- *  `componentDidUpdate`, and so undoes a scroll the control row's hand-off made before it. Blocked
- *  on you, landed after Enter on Mark all read scrolled out of sight at 390 px, was left with 4 of
- *  its 44 px in view in Chromium and Firefox. A microtask runs after every layout effect of that
- *  commit and before the next paint. The engine's own scroll of a focused control follows the
- *  engine's own rule: Chromium and Firefox centre a control that is not wholly in view, and
- *  Firefox moved a control half cut by a dialog's top edge 405 px. WebKit scrolls a focused
- *  control only a frame later, by when a list's own scroll keeping may have moved the page again.
- *  So every engine lands a control the same way. `clips` is the caller's read of which boxes clip
- *  (`clippingBoxes`): a focus changes no box's overflow. `head` is a list's sticky head over the
- *  element (`showWhole`). Answers whether it took the focus. */
-function land(
-  element: HTMLElement,
-  clips: Map<Element, boolean>,
-  shown: Shown,
-  head: Element | null = null
-): boolean {
+/** Focuses `element` with no scroll of the engine's own and runs the caller's scroll once it
+ *  holds the focus. A later layout effect can undo that scroll: the Inbox's `ViewportAnchor`
+ *  puts the row it holds back where the commit found it. Run the scroll rule again after the
+ *  commit, while the element still holds the focus. The engine's own focus scroll can centre
+ *  a cut control or scroll a frame later; neither gets to move this landing. */
+function land(element: HTMLElement, show: () => void): boolean {
   if (!focusNoScroll(element)) return false;
-  showWhole(element, clips, shown, head);
+  show();
   queueMicrotask(() => {
-    if (document.activeElement === element) showWhole(element, clips, shown, head);
+    if (document.activeElement === element) show();
   });
   return true;
 }
 
-/** Scrolls `element` to its nearest edge where it is not wholly in sight, in the window or in a
- *  box around it that clips it (`clippingBoxes`): the least distance that shows it whole. A control
- *  wholly in sight scrolls nothing, and so, under `"cut"`, does one wholly out of sight. `head`, a
- *  list's sticky head, hides the element where the element's top edge is above the head's bottom
- *  edge. The engine does not see the head: it scrolls a box only clear of the box's own
- *  `scroll-padding`. So first the box that holds the head, else the window, scrolls the element's
- *  top edge down to the head's bottom edge, the least distance. */
-function showWhole(
-  element: HTMLElement,
-  clips: Map<Element, boolean>,
-  shown: Shown,
-  head: Element | null = null
-): void {
-  const boxes = clippingBoxes(element, clips);
-  if (head !== null) {
-    const top = Math.max(sightOf(boxes, undefined).top, head.getBoundingClientRect().bottom);
-    // Rounded down, so no part of a pixel that the engine rounds away stays under the head.
-    const by = Math.floor(boxOf(element, undefined).top - top);
-    if (by < 0) {
-      const box = boxes.find((each) => each.contains(head));
-      if (box === undefined) window.scrollBy({ top: by });
-      else box.scrollBy({ top: by });
-    }
-  }
-  const sight = sightOf(boxes, undefined);
+/** Shows a generic component hand-off at its nearest edge. A control wholly in sight scrolls
+ *  nothing, as does one wholly out of sight when the hand-off only shows cut controls. */
+function showWhole(element: HTMLElement, clips: Map<Element, boolean>, onlyCut: boolean): void {
+  const sight = sightOf(clippingBoxes(element, clips), undefined);
   const drawn = boxOf(element, undefined);
-  if (liesWithin(drawn, sight) || (shown === "cut" && !meets(drawn, sight))) return;
+  if (liesWithin(drawn, sight) || (onlyCut && !meets(drawn, sight))) return;
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -536,22 +494,75 @@ export function landFirstInSight(candidates: readonly HTMLElement[]): boolean {
   // One read of each box's style for the whole hand-off (`clippingBoxes`).
   const clips = new Map<Element, boolean>();
   return candidates.some(
-    (candidate) => inSightNow(candidate, clips) && land(candidate, clips, "cut")
+    (candidate) =>
+      inSightNow(candidate, clips) && land(candidate, () => showWhole(candidate, clips, true))
   );
 }
 
-/** Lands `element` (`land`) with no scroll of the engine's own, and shows it whole at its nearest
- *  edge wherever it stands, partly or wholly out of the reader's sight (`"any"`), at once and
- *  again once the commit it lands in is done: a keyboard focus the reader cannot see is lost to
- *  them. A component's walk-back shows only a landing partly in sight (`"cut"`), since it lands
- *  only on one in sight. For a hand-off that names its own landing, as ControlRow's chips hand-off
- *  does: the Inbox list's `ViewportAnchor` puts the control row back where the commit found it
- *  after that hand-off has run (`keepPressedRow`), which undid the engine's own scroll of a plain
- *  `focus()` and left the control as far out of sight as before. With `head`, a list's sticky head,
- *  it shows it whole below that head too (`showWhole`), as the List's selection bar hand-off does
- *  (`useLastMarkedPlace`). Answers whether it took the focus. */
-export function landWhole(element: HTMLElement, head: Element | null = null): boolean {
-  return land(element, new Map(), "any", head);
+/** Lands a component's named control and shows it at its nearest edge even if it starts
+ *  wholly out of sight. ControlRow's chips use this after the Inbox's `ViewportAnchor` has put
+ *  the control row back where the commit found it. */
+export function landWhole(element: HTMLElement): boolean {
+  const clips = new Map<Element, boolean>();
+  return land(element, () => showWhole(element, clips, false));
+}
+
+/** Scrolls every clipping box around `element` and the window the least distance that shows
+ *  `element` whole, below `head` if given, ignoring CSS scroll padding. When `origin` is given,
+ *  its box moves to the closest position to `origin.top` that still fits `element`, rather than
+ *  anchoring to an approximate virtual jump. */
+export function scrollToNearest(
+  element: Element,
+  head: Element | null = null,
+  origin?: { readonly box: HTMLElement; readonly top: number }
+): void {
+  const boxes = clippingBoxes(element);
+  const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
+  for (const box of boxes) {
+    const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
+    const drawn = boxOf(element, undefined);
+    const from = box === origin?.box ? origin.top - box.scrollTop : 0;
+    scrollNearestIn(box, drawn, sight, from);
+  }
+  scrollNearestIn(
+    window,
+    boxOf(element, undefined),
+    belowHead(viewport(), headBox === undefined ? head : null)
+  );
+}
+
+/** Lands the selection bar's target at its nearest visible edge, ignoring CSS scroll padding.
+ *  The table can supply the scroll position before it had to draw a virtual row: show the
+ *  measured checkbox at the closest position to that starting point, not to the draw's jump. */
+export function landNearest(
+  element: HTMLElement,
+  head: Element | null = null,
+  origin?: { readonly box: HTMLElement; readonly top: number }
+): boolean {
+  let firstOrigin = origin;
+  return land(element, () => {
+    scrollToNearest(element, head, firstOrigin);
+    firstOrigin = undefined;
+  });
+}
+
+/** Scrolls only the axes where the target needs to move. */
+function scrollNearestIn(scroller: Element | Window, drawn: Edges, sight: Edges, from = 0): void {
+  const top = nearestDelta(drawn.top, drawn.bottom, sight.top, sight.bottom, from);
+  const left = nearestDelta(drawn.left, drawn.right, sight.left, sight.right);
+  if (left !== 0) scroller.scrollBy(top === 0 ? { left } : { left, top });
+  else if (top !== 0) scroller.scrollBy({ top });
+}
+
+/** The closest scroll delta to `from` that fits the target between the two visible edges.
+ *  Round toward the edge where needed so an engine rounding scroll offsets cannot leave a cut.
+ *  If the target spans both edges and cannot fit, leave it where it is. */
+function nearestDelta(start: number, end: number, low: number, high: number, from = 0): number {
+  const min = Math.ceil(end - high);
+  const max = Math.floor(start - low);
+  if (min <= max) return Math.max(min, Math.min(from, max));
+  if (start < low && end > high) return 0;
+  return Math.abs(from - min) <= Math.abs(from - max) ? min : max;
 }
 
 /** A row that will move up the page by `by` pixels once the rows a press is still taking away
@@ -578,22 +589,67 @@ function boxOf(element: Element, moved: MovedUp | undefined): Edges {
   return { bottom: box.bottom - by, left: box.left, right: box.right, top: box.top - by };
 }
 
-/** What is in the reader's sight through `boxes`, the boxes around an element that can hide it
- *  (`Sight`): the viewport cut to each of them, a box inside `moved`'s row read where it will
- *  stand. */
-function sightOf(boxes: Iterable<Element>, moved: MovedUp | undefined): Edges {
-  let top = 0;
-  let left = 0;
-  let bottom = window.innerHeight;
-  let right = window.innerWidth;
+/** The window's visible edges, without space reserved for a sheet by CSS scroll padding. */
+function viewport(): Edges {
+  return { bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 };
+}
+
+/** The inside of a clipping box's border and scrollbars, in window coordinates. */
+function scrollportOf(box: Element, moved?: MovedUp): Edges {
+  const drawn = boxOf(box, moved);
+  const top = drawn.top + box.clientTop;
+  const left = drawn.left + box.clientLeft;
+  // Without client dimensions, use the measured bounds (happy-dom's layout stubs).
+  return {
+    bottom: box.clientHeight ? top + box.clientHeight : drawn.bottom,
+    left,
+    right: box.clientWidth ? left + box.clientWidth : drawn.right,
+    top,
+  };
+}
+
+/** The part of `edges` below a list's sticky head. */
+function belowHead(edges: Edges, head: Element | null): Edges {
+  return head === null
+    ? edges
+    : { ...edges, top: Math.max(edges.top, head.getBoundingClientRect().bottom) };
+}
+
+/** What is in the reader's sight through the boxes around an element that can hide it. A box
+ *  inside `moved`'s row is read where it will stand. */
+function sightOf(boxes: Iterable<Element>, moved: MovedUp | undefined, edgesOf = boxOf): Edges {
+  let { bottom, left, right, top } = viewport();
   for (const box of boxes) {
-    const edges = boxOf(box, moved);
+    const edges = edgesOf(box, moved);
     top = Math.max(top, edges.top);
     left = Math.max(left, edges.left);
     bottom = Math.min(bottom, edges.bottom);
     right = Math.min(right, edges.right);
   }
   return { bottom, left, right, top };
+}
+
+/** A point in the visible part of a selection mark, or null if its edge only touches the view
+ *  or it is entirely outside it. The sticky head clips the mark even though it is not one of
+ *  the mark's ancestors. With `moved`, measure where the mark will stand once its row moves up. */
+export function visibleMarkPoint(
+  mark: HTMLElement,
+  clips: Map<Element, boolean>,
+  head: Element | null,
+  moved?: MovedUp
+): { x: number; y: number } | null {
+  const sight = belowHead(sightOf(clippingBoxes(mark, clips), moved, scrollportOf), head);
+  const drawn = boxOf(mark, moved);
+  const left = Math.max(drawn.left, sight.left);
+  const right = Math.min(drawn.right, sight.right);
+  const top = Math.max(drawn.top, sight.top);
+  const bottom = Math.min(drawn.bottom, sight.bottom);
+  if (left < right && top < bottom) return { x: (left + right) / 2, y: (top + bottom) / 2 };
+  // happy-dom's unmeasured mark is a point, not a laid-out rectangle.
+  if (drawn.top === drawn.bottom && drawn.left === drawn.right && liesWithin(drawn, sight)) {
+    return { x: drawn.left, y: drawn.top };
+  }
+  return null;
 }
 
 /** Whether `drawn` meets `sight`: a box whose edge only touches the edge of what is in sight
@@ -1412,8 +1468,9 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
 }
 
 /** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
- *  (`focusOwnStop`), and the control the Agents page hands a pin's moved focus to
- *  (`controlsLikeRow`). Answers whether it took the focus. */
+ *  (`focusOwnStop`), the mark SelectionBar focuses before its row moves up (`landMark`), and
+ *  the control the Agents page hands a pin's moved focus to (`controlsLikeRow`).
+ *  Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;
@@ -1451,9 +1508,9 @@ function walkBack(
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
- *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of each row
- *  mark it tries (`SelectionBar`'s `markShown`), with `moved` where the mark's row will move up
- *  once the rows a press is taking away have gone. */
+ *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of a row mark
+ *  it considers (`SelectionBar`'s `markAtPlace` and `landMark`), with `moved` where the mark's
+ *  row will move up once the rows a press is taking away have gone. */
 export function inSightNow(
   element: Element,
   clips: Map<Element, boolean>,

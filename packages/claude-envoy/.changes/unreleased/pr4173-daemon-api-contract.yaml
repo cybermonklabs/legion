@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 286, whose design steps are `criteria` and `spec`.
+    The plugin pairs with the daemon API contract entry decisions-step-gone (id 20261125170054), whose design steps are `criteria` and `spec`.
 time: 2026-11-17T17:20:07.000000000Z
 custom:
     Issue: pr4173

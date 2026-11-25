@@ -42,6 +42,7 @@ export type DispatchWritingBox =
   | "broadcast"
   | "architecture-reason"
   | "priority-description"
+  | "priority-title"
   | "issue-title"
   | "delivery-production-jobs"
   | "delivery-population-authors"
@@ -69,6 +70,7 @@ export type DispatchWritingBox =
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
  *   and which is sent to nobody.
+ * - `priority-title`: a priority's title.
  * - `issue-title`: an issue's title.
  * - `delivery-settings`: the delivery settings of this Dispatch.
  */
@@ -88,6 +90,7 @@ export type DispatchWriting =
   | "approval-reason"
   | "architecture-reason"
   | "priority-description"
+  | "priority-title"
   | "issue-title"
   | "delivery-settings";
 
@@ -533,18 +536,35 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     write: "architecture-reason",
   },
   // A priority's description, written where it is read: on the priority's own page and on the
-  // open row of the priorities table, which both open the one editor (`PriorityDescription`,
-  // which mounts the shared field with this row). The priority write resolves no party out of it
-  // and indexes nothing from it, so a party picked here is a reference for a reader and nobody
-  // is told. A priority belongs to no issue, so the picker lists everyone who has signed in.
+  // open row of the priorities table, which both draw it in the documents' editor
+  // (`PriorityDescription`), whose picker the editor hosts as a document's body does
+  // (`DocumentRefPicker`, mounted in `editor.ts`) under this row. The priority write resolves no
+  // party out of it and indexes nothing from it, so a party picked here is a reference for a
+  // reader and nobody is told. A priority belongs to no issue, so the picker lists everyone who
+  // has signed in.
   {
     box: "priority-description",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/priorities/PriorityDescription.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/priorities/PriorityDescription.tsx",
+      "packages/dispatch/web/src/features/doc/editor.ts",
+    ],
     issueRows: false,
-    reach: "Description of P1",
+    reach: "/priorities/<ID>, the Description editor",
     write: "priority-description",
+  },
+  // A priority's title, the heading of its own page, which opens into a `textarea` as an issue's
+  // title does, so a long title wraps as the heading does (`InPlaceField`'s `closed="heading"`).
+  {
+    box: "priority-title",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/priorities/InPlaceField.tsx"],
+    issueRows: false,
+    reach: "/priorities/<ID>, the Title heading",
+    reason: "A title is one line of text that holds no markup, so the box takes no picker.",
+    write: "priority-title",
   },
   // The new issue page's title, which is its own editor (`IssueTitleRow.tsx`): a `textarea` so
   // it wraps as the heading it stands over does, where today's page edits the title in an

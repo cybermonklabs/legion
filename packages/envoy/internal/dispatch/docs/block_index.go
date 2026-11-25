@@ -311,14 +311,14 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// events again. The object pass runs after it, so the node of a document the read marks is
 	// there before the documents batch states its blocks; one that fails, or stops with work left,
 	// is logged and leaves this build's debt, so the next tick runs it again.
-	eventsFull, owedPass, err := s.readEventsAfterCursor(ctx, &tick)
+	eventsFull, debt, err := s.readEventsAfterCursor(ctx, &tick)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
 		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
 	}
-	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, owedPass)
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, debt)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()

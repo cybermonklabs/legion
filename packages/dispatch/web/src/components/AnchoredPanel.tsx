@@ -14,7 +14,7 @@ import { createPortal } from "react-dom";
 
 import { hearPresses } from "../features/issue-page/focus-keeper";
 import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
@@ -71,7 +71,8 @@ export function shownSpan(box: Element): Span {
  *  where it ends below, and not at all where it stands whole. It sets the box's own `scrollTop`
  *  rather than call `scrollIntoView`, which scrolls the window too. A panel's rule for the
  *  control the focus reaches in it (`scrollPanelToShow`) and the shared list's for the option
- *  its arrows mark active and the one it opens on (`MultiSelect`'s `showOption`) all end here. */
+ *  it opens on or makes active by arrow keys or by an update (`MultiSelect`'s `showOption`,
+ *  including `showOption(activeRow)`) all end here. */
 export function scrollToShow(box: Element, span: Span, shown: Span): void {
   if (span.top < shown.top) box.scrollTop -= shown.top - span.top;
   else if (span.bottom > shown.bottom) box.scrollTop += span.bottom - shown.bottom;

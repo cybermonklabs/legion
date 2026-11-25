@@ -34,7 +34,7 @@ import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   borderDefault,
   borderStrong,

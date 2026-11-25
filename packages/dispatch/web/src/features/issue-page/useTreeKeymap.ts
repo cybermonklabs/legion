@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useRef } from "react";
 
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";

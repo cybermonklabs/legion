@@ -32,7 +32,7 @@ import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
@@ -72,6 +72,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
@@ -311,6 +312,20 @@ export function IssueHeader({
       : waitingForHuman.length > 0
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
+  // The priorities the issue advances, each the chip of its place in the order, and the picker's
+  // "+". From 768 px up they stand in the state row right after the P0-P3 tag: that row wraps,
+  // where the details row scrolls sideways and is long enough without them. Below it the state
+  // row has no room left on its first line, so there they stand first in the details row, in view
+  // before it is scrolled: a line of their own in the state row would push the page down under
+  // every sheet and pill a phone pins to the screen's foot. One line is drawn, in one place.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const priorityLine = (
+    <IssuePriorityLine
+      className={phone ? "shrink-0" : undefined}
+      disabled={isClosed}
+      issue={issue}
+    />
+  );
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The steps come from the issue read's own approval gate (`approval_gate`), which the server
   // computes: a root of the issue's project (no parent, or a parent of another project) in a
@@ -493,9 +508,10 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
-                  // An Enter or an Escape that ends or moves an input method's composition is the
-                  // composition's (`inputMethodKey`): it saves nothing, discards nothing and keeps
-                  // the editor open.
+                  // A key that ends an input method's composition - the Enter that takes the word
+                  // composed, the Escape that drops it - is no key of the reader's: it neither
+                  // writes the title nor closes its editor. Safari sends it after its
+                  // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
                   if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
@@ -591,6 +607,7 @@ export function IssueHeader({
             issueKey={issue.key}
             write={priorityWrite}
           />
+          {phone ? null : priorityLine}
           <AssigneeControl
             assignee={issue.assignee}
             disabled={isClosed || updateIssue.isPending}
@@ -687,6 +704,7 @@ export function IssueHeader({
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
         >
+          {phone ? priorityLine : null}
           {whoseTurn === null ? null : (
             <span
               className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
@@ -695,7 +713,6 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
-          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>

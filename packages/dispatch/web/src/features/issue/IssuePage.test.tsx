@@ -2437,6 +2437,35 @@ test("IssuePage keeps state actions available while approval awaits", async () =
   }
 });
 
+// The priorities an issue advances are chips with the picker's "+" after them, in the state row
+// directly after the P0-P3 tag at the test DOM's desktop width: that row wraps, where the details
+// row under it scrolls sideways. On a phone they open the details row instead
+// (`e2e/priorities.e2e.ts` reads both).
+test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag, not in the details row", async () => {
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const line = within(stateActions).getByTestId("issue-advances");
+    expect(within(line).getByRole("button", { name: "Edit priorities" })).not.toBeNull();
+    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows,
+    // in the element right before the chips.
+    const before = line.previousElementSibling;
+    if (!(before instanceof HTMLElement)) throw new Error("nothing stands before the chips");
+    expect(
+      within(before).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).not.toBeNull();
+    expect(
+      within(screen.getByTestId("issue-metadata-rail")).queryByTestId("issue-advances")
+    ).toBeNull();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("IssuePage draws a gated root issue's steps where the header's one chip sat", async () => {
   const awaiting = { latest_version: 1, state: "awaiting" };
   // The gate the server answers for a root issue of a project gating both steps, which holds
@@ -2500,6 +2529,7 @@ test("IssuePage draws the steps of a root whose parent is in another project", a
       key: "CORE",
       name: "Core",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   const view = renderIssuePage("/issues/CORE-1/conversation");

@@ -17,7 +17,7 @@ import { DismissControl, RowDismissContext } from "../inbox/DismissControl";
 import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
 import { useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
-import { PlainText } from "./plain-text";
+import { PlainText, usePlainHeadline } from "./plain-text";
 import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
 import { commentQuery } from "./reference-target";
@@ -347,57 +347,68 @@ test("a party's link whose words are code keeps them, painted and projected alik
   }
 });
 
+/** `markdown`'s first line alone, as the projection reads it for a caller that asks for it
+ *  (`usePlainHeadline`'s `firstLine`), which a node's line on the new issue page does. */
+function FirstLine({
+  children,
+  markdown,
+}: {
+  children: (text: string | undefined) => ReactNode;
+  markdown: string;
+}): ReactNode {
+  const { reads, text } = usePlainHeadline(undefined, markdown, { firstLine: true });
+  return (
+    <>
+      {reads}
+      {children(text?.text)}
+    </>
+  );
+}
+
 // The projection reads the whole text unless its caller asks for the first line alone, which a
-// closed priority row does: the line is read from the parsed document, so its references are
-// still named, and nothing after the first line is drawn or has its references named. A
-// heading's line and a list's first line read the same way, and so does a block of HTML: its
-// first line reads as its literal characters, which is how the projection draws HTML.
+// node's line on the new issue page does: the line is read from the parsed document, so its
+// references are still named, and nothing after the first line is drawn or has its references
+// named. A heading's line and a list's first line read the same way, and so does a block of
+// HTML: its first line reads as its literal characters, which is how the projection draws HTML.
 test("the plain-text projection reads the first line alone where it is asked to", async () => {
   const markdown = "Tied to **dispatch://CORE-1**\nhere.\n\n- A list after it";
   const view = draw(
     <>
-      <PlainText firstLine markdown={markdown}>
+      <FirstLine markdown={markdown}>
         {(text) => <span data-testid="first">{text ?? ""}</span>}
-      </PlainText>
+      </FirstLine>
       <PlainText markdown={markdown}>
         {(text) => <span data-testid="whole">{text ?? ""}</span>}
       </PlainText>
-      <PlainText firstLine markdown={"## The plan\n\nIts first step."}>
+      <FirstLine markdown={"## The plan\n\nIts first step."}>
         {(text) => <span data-testid="heading">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText firstLine markdown={"\n- First item\n  and its next line\n- Second item"}>
+      </FirstLine>
+      <FirstLine markdown={"\n- First item\n  and its next line\n- Second item"}>
         {(text) => <span data-testid="list">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText
-        firstLine
-        markdown={"![Diagram](https://example.com/a.png)\nThe priority keeps one build."}
-      >
+      </FirstLine>
+      <FirstLine markdown={"![Diagram](https://example.com/a.png)\nThe priority keeps one build."}>
         {(text) => <span data-testid="image">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText firstLine markdown={"\\\nAfter a hard break\nand more"}>
+      </FirstLine>
+      <FirstLine markdown={"\\\nAfter a hard break\nand more"}>
         {(text) => <span data-testid="break">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText firstLine markdown={"| Name | Owner |\n| --- | --- |\n| Fleet | Ops |"}>
+      </FirstLine>
+      <FirstLine markdown={"| Name | Owner |\n| --- | --- |\n| Fleet | Ops |"}>
         {(text) => <span data-testid="table">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText firstLine markdown={"```\n\nfirst code\nsecond\n```"}>
+      </FirstLine>
+      <FirstLine markdown={"```\n\nfirst code\nsecond\n```"}>
         {(text) => <span data-testid="code">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText
-        firstLine
-        markdown={'<img src="https://example.com/a.png">\nThe priority keeps one build.'}
-      >
+      </FirstLine>
+      <FirstLine markdown={'<img src="https://example.com/a.png">\nThe priority keeps one build.'}>
         {(text) => <span data-testid="html-image">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText
-        firstLine
+      </FirstLine>
+      <FirstLine
         markdown={"<details>\n<summary>Why this priority</summary>\nThe fleet first.\n</details>"}
       >
         {(text) => <span data-testid="html-details">{text ?? ""}</span>}
-      </PlainText>
-      <PlainText firstLine markdown={"<br>\nThe next line."}>
+      </FirstLine>
+      <FirstLine markdown={"<br>\nThe next line."}>
         {(text) => <span data-testid="html-break">{text ?? ""}</span>}
-      </PlainText>
+      </FirstLine>
     </>
   );
   try {

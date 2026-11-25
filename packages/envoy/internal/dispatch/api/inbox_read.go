@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -189,8 +190,17 @@ const inboxReadMarkAgentReplies = `
 // magnitude of headroom for a busier server and cuts no honest request off. The ceiling
 // matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
-// is better killed, which rolls the transaction back and frees them.
-const inboxReadStatementTimeout = "10s"
+// is better killed, which rolls the transaction back and frees them. The dismissal's transaction
+// (dismissInboxThreads) holds the same locks and takes the same bound.
+const inboxReadStatementTimeout = 10 * time.Second
+
+// inboxStatementBoundSetting is the statement_timeout the mark-all's and the dismissal's
+// transactions set for themselves alone in their first statement (set_config's is_local, as `set
+// local` sets it, beside the transaction's now()): every statement after it is bounded by
+// inboxReadStatementTimeout, unless a test set a bound of its own (server.inboxStatementBound).
+func (s *server) inboxStatementBoundSetting() string {
+	return fmt.Sprintf("%dms", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())
+}
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
 // against the issues.priority each stands for. inboxReadNone is the value that stands for the
@@ -614,7 +624,7 @@ func (s *server) markInboxReadThreads(
 	// transaction's now() beside it, which the events this route appends and the marks they cause
 	// are dated at (commitInboxMarks): one statement, before the first lock.
 	var at time.Time
-	if err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`, inboxReadStatementTimeout).Scan(new(string), &at); err != nil {
+	if err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`, s.inboxStatementBoundSetting()).Scan(new(string), &at); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,

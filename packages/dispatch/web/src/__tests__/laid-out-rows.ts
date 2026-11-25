@@ -35,17 +35,20 @@ export function layRowsOut(rowSelector: string, first: number): () => void {
 
 /** Draws `chrome` over the window's top `px`, as a list's sticky head is drawn over the rows that
  *  scroll under it, for `document.elementFromPoint`, which happy-dom answers with no element. A
- *  point above `px` names `chrome`. A point below it names the checkbox that `layRowsOut`, given
- *  the same `rowSelector` and `first`, lays there, else no element. Answers the function that
- *  gives happy-dom its own answer back. */
+ *  point above `px` names `chrome`; when `below` is given, a point at or past `below.at` names
+ *  `below.element` (so a hit-test outside a clipping box's bottom edge fails to hit a row). Any
+ *  other point names the checkbox that `layRowsOut`, given the same `rowSelector` and `first`,
+ *  lays there, else no element. Answers the function that gives happy-dom its own answer back. */
 export function drawOver(
   chrome: Element,
   px: number,
   rowSelector: string,
-  first: number
+  first: number,
+  below?: { readonly at: number; readonly element: Element }
 ): () => void {
   const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
     if (y < px) return chrome;
+    if (below !== undefined && y >= below.at) return below.element;
     const row = document.querySelectorAll(rowSelector)[first + Math.floor(y / ROW_PX)];
     return row?.querySelector('input[type="checkbox"]') ?? null;
   });

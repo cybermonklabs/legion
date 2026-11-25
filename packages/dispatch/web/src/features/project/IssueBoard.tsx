@@ -505,21 +505,26 @@ export function IssueBoard({
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
   // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), and only
-  // while the focus then stands where the move's press left it: on the card the press moved
-  // (`from`), or in the rule's question where the question took the focus from that card
-  // (`questionTookFocusFrom`). The question's choice places the card, and the question gives the
-  // focus back where it took it from as it closes (`useDialog`). Another dialog gives a move no
-  // focus, and nor does a question that took the focus from the body or from another control. The
-  // move reads this as it places the card, before the board draws the card in its new place and so
-  // takes the focus off that card. So a move that ends without placing the card takes no focus
-  // later, and nor does a move the rule's dry run checks first, placed once the dry run answers,
-  // where the reader has moved the focus on by then - a key to another card, a Tab, a click, a
-  // click on a blank spot that leaves the focus on the body too. A move that takes no focus leaves
-  // the plan of an earlier move as it is: the effect checks that plan against its own press. The
-  // effect runs on the `columns`/`boardLanes` render - the announcement's own render comes first,
-  // before the query observer has notified, and would focus the doomed node. It moves the focus
-  // only while the focus still stands on the press's card, or on the body where that card's going
-  // left it, or where the question's hand-back left it once that card had gone.
+  // while the focus then stands in the card the press moved (`pressed`): on the card itself, or on
+  // a control inside it, such as the card's link that a Tab reaches while the move's dry run is
+  // out. The move draws the card in its new column, which takes that control away with the card,
+  // so the focus goes with the card. A move sets it too where the rule's question took the focus
+  // from that card or from a control inside it (`questionTookFocusFrom`). The question's choice
+  // places the card, and the question gives the focus back where it took it from as it closes
+  // (`useDialog`). The plan's `from` is the element the focus stood on in that card, or the one
+  // the question took it from. Another dialog gives a move no focus, and nor does a question that
+  // took the focus from the body or from another control. The move reads this as it places the
+  // card, before the board draws the card in its new place and so takes the focus off that card.
+  // So a move that ends without placing the card takes no focus later, and nor does a move the
+  // rule's dry run checks first, placed once the dry run answers, where the reader has moved the
+  // focus out of the card by then - a key to another card, a Tab out of the card, a click, a
+  // click on a blank spot that leaves the focus on the body too. A move that takes no focus
+  // leaves the plan of an earlier move as it is: the effect checks that plan against its own
+  // press. The effect runs on the `columns`/`boardLanes` render - the announcement's own render
+  // comes first, before the query observer has notified, and would focus the doomed node. It
+  // moves the focus only while the focus still stands on the plan's `from`, or on the body where
+  // that element's going with the card left it, or where the question's hand-back left it once
+  // that element had gone.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
@@ -600,8 +605,10 @@ export function IssueBoard({
     )?.focus();
   };
   const move = (direction: MoveDirection) => {
-    const key = cardAround(document.activeElement)?.dataset.boardCard;
-    if (key === undefined) {
+    // The card the press moves: the focus stands on it, or on a control inside it.
+    const pressed = cardAround(document.activeElement);
+    const key = pressed?.dataset.boardCard;
+    if (pressed === null || key === undefined) {
       return;
     }
     const laneId = currentLaneId();
@@ -617,11 +624,9 @@ export function IssueBoard({
     // moved is already in its cell, so the count holds them. A move that ends without placing
     // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
-    // Where the press left the focus: the card it moves (`focusAfterMove`).
-    const from = document.activeElement;
     /** Says where the card stands now - its position and count in the visible cell, the one the
-     *  user sees, or nothing while it is not in that cell - and, while the focus stands where the
-     *  press left it, has focus follow the card once the board has drawn it there
+     *  user sees, or nothing while it is not in that cell - and, while the focus stands in the
+     *  card the press moved, has focus follow the card once the board has drawn it there
      *  (`focusAfterMove`). */
     const placed = () => {
       const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
@@ -638,8 +643,10 @@ export function IssueBoard({
       // focus off the press's card, so after it a focus on the body cannot tell that draw from a
       // reader's click. A choice of the question places the card while the question is still
       // open, so `questionTookFocusFrom` still holds what the question took the focus from.
-      if (document.activeElement === from || questionTookFocusFrom.current === from) {
-        focusAfterMove.current = { from, key, laneId, status: target.status };
+      const active = document.activeElement;
+      const stood = pressed.contains(active) ? active : questionTookFocusFrom.current;
+      if (pressed.contains(stood)) {
+        focusAfterMove.current = { from: stood, key, laneId, status: target.status };
       }
     };
     if (lanes && lane !== undefined) {
