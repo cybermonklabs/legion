@@ -627,6 +627,7 @@ func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssu
 			spec += skeletonTyped(refs.DecisionSupertag, "d", skeletonDecisions, none)
 		}
 		issue.key = createReadCostIssue(t, s, skeletonProject, "The issue of "+shape.name, spec, readCostWriter)
+		issue.spec = waitSkeletonSpecIndexed(t, s, issue.key, "r1")
 		serves := func(string) string {
 			return ` serves="` + refs.BlockRef("dispatch://"+issue.key+"/spec", "r1") + `" surface="cli" run="go test ./..."`
 		}
@@ -665,15 +666,40 @@ func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssu
 			issue.key, shape.name, shape.label, skeletonHeld(shape.requirements), issue.decisions, skeletonHeld(shape.checks), skeletonHeld(shape.planTasks),
 			shape.comments, shape.heldAsks(), skeletonAnswered, len(shape.others))
 	}
-	for _, issue := range issues {
-		var read struct {
-			PrimaryArtifactID string `json:"primary_artifact_id"`
-		}
-		s.read(t, "read "+issue.key, "/api/v1/issues/"+issue.key, &read)
-		issue.spec = read.PrimaryArtifactID
-	}
 	t.Logf("c-tree-read-bound: seeding took %s", time.Since(started).Round(time.Second))
 	return issues
+}
+
+// waitSkeletonSpecIndexed answers the artifact id of key's spec once the serving build's block
+// index holds the spec's block want, polling every skeletonOwedPoll for skeletonOwedWait. A spec of
+// more blocks than a write indexes in its own request, the largest spec's, is left to the block
+// index's reconciliation, and until a tick indexes it the build refuses a pointer at one of its
+// blocks, which the Verification document's checks are.
+func waitSkeletonSpecIndexed(t *testing.T, s *readCostServer, key, want string) string {
+	t.Helper()
+	var read struct {
+		PrimaryArtifactID string `json:"primary_artifact_id"`
+	}
+	s.read(t, "read "+key, "/api/v1/issues/"+key, &read)
+	why := ""
+	held := testwait.Holds(skeletonOwedWait, skeletonOwedPoll, func() bool {
+		answer, err := s.write(http.MethodGet, "/api/v1/artifacts/"+read.PrimaryArtifactID+"/blocks", readCostReader, nil, http.StatusOK)
+		if err != nil {
+			why = err.Error()
+			return false
+		}
+		var blocks []readCostBlock
+		if err := json.Unmarshal(answer.body, &blocks); err != nil {
+			why = fmt.Sprintf("decode the blocks of %s's spec: %v", key, err)
+			return false
+		}
+		why = fmt.Sprintf("the blocks read of %s's spec answers %d blocks and no %s", key, len(blocks), want)
+		return slices.ContainsFunc(blocks, func(block readCostBlock) bool { return block.ID == want })
+	})
+	if !held {
+		t.Fatalf("the spec of %s was not indexed within %s: %s", key, skeletonOwedWait, why)
+	}
+	return read.PrimaryArtifactID
 }
 
 // ───── database time, from pg_stat_statements ──────────────────────────────
