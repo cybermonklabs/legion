@@ -2234,7 +2234,7 @@ func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload recor
 		return wait.Errorf("%s waits for the role's released pod to come back", what)
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
-	if published == nil {
+	if published == nil || !errors.Is(published, notify.ErrNoHolder) {
 		r.log.Info("outbox CI news delivered to its reader", attributes...)
 		return nil
 	}
