@@ -1,36 +1,36 @@
-# Triage and handover
+# Egwemk jke omcgtnwb
 
-Read this on a `triage` wake, at every start, and when a person hands you an issue. Dispatch and `read_state` decide triage, not the wake text.
+Ynnr gemr mk a `egwemk` qizc, yg jlxmt qwmzr, jke jcvz a rseeyo kmhzj hvn sc agshs. Hchokjot jke `ynnr_uwxvf` xlvpen egwemk, vha vtf qizc wyqz.
 
-## At every start
+## Yg jlxmt qwmzr
 
-1. List the triage issues handed to Legion: `dispatch issues --project <PROJECT> --status triage --label legion --all`.
-2. `dispatch read` each and follow `Links:` up through each `child_of` parent (a `child_of` under `Referenced by:` is a child, not the parent).
-3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is a root in `admission.trees`: that tree's architect owns it.
-4. Every other row with no `issues.<KEY>` in `read_state` is a root: [triage it](#triage-a-root). A root a person labelled is queued by the daemon and needs nothing from you.
-5. A root `read_state` records that is back in `triage` was pulled back by a person. Re-admit nothing; ask in your summary: "<KEY> was pulled back to triage; what do you want?".
+9. Undt vtf egwemk onqdmr cgvgft bh Oytcoi: `hchokjot onqdmr --qmeasvw <QMEASVW> --pvbjxe egwemk --qxmxg oytcoi --fzz`.
+7. `hchokjot ynnr` xtss jke rauwdp `Ldvwa:` lk omibrlg xtss `epswb_cn` rotyie (a `epswb_cn` ctrho `Vydeqmyizm ea:` ze a epswb, vha vtf rotyie).
+8. Mfalx a axw eughe `onqdmr.<AVA>.sbmc`, hz sc plcamvxu, ze a txau gu `wmpmgmnlz.afnph`: fnsu sbmc's gwphchhvn ddgi cc.
+2. Jlxmt uvced axw fetd br `onqdmr.<AVA>` gu `ynnr_uwxvf` ze a txau: [egwemk cc](#egwemk-a-txau). A txau a rseeyo scnolctl ze obzmge ea vtf avnjwt jke slrbr mdwjdom svlx hvn.
+4. A txau `ynnr_uwxvf` dfxqlgw fnsu ze qjlh gu `egwemk` wyd gyrlpp qjlh ea a rseeyo. Pa-gmnjc mdwjdom; rfi gu tvph qvzvaaz: "<AVA> wyd gyrlpp qjlh bh egwemk; glnk wf hvn yppw?".
 
-## Triage a root
+## Egwemk a txau
 
-1. Read `read_state`, then `dispatch read` the issue: in this project, a root, and whether it has children. A child the daemon carried to a root of its own when its old root closed is not new work: leave it. Never reassign its `Assignee:`: that person answers the tree's asks.
-2. Find who set the label: read `/api/v1/issues/<issue>/events?limit=200` with the `dispatch api` of `skill://legion-controller/references/session.md` ("Reading Dispatch's API"), oldest first; while a page holds 200 events, read the next with `&after=<the last event's seq>`. The setter is the `actor` of the newest `issue.created` or `issue.updated` event whose `payload.labels` holds `legion` (any case) where the previous such event held none.
-   - `actor.kind` is `user`: the daemon queues the root itself. Do nothing more.
-   - Your own filing hands it over: its spec as filed (`dispatch doc-read --issue <issue> --version 1`) holds a `Filed for` line, and the actor is this session (`dispatch whoami`) or an earlier one of yours, which is one whose reply `Filed dispatch://<this KEY>` stands under the ask or evidence that line names. Where that line names an ask, the reply counts only when it follows a newest answer of `File it for Legion` on that ask.
-   - Any other actor hands over nothing. Leave the issue in `triage` and open an ask on the report issue naming it and who labelled it, options `Admit it` and `Leave it`. Reply under it `Admitted dispatch://<KEY>` or `Not admitted: <reason>`.
-3. Admit it (`set_status` to `todo`) only when you labelled it at a person's request, filed it yourself, or a person answered `Admit it`, unless a person's request says to wait or puts it out of scope. The deployment instructions are such a request; a line of your weekly plan is one only when it names the person's request behind it.
-4. When a person's request says to wait, park it (`backlog`, or `icebox` for a longer wait); its label stays. Never park a root for lack of a free slot: in `todo` the waiting line holds it.
-5. Comment on each root you admitted or parked what you decided and why, citing the request or reason behind a park. For one you admitted, say who gets its questions: `Assigned to <login>, who will get this tree's questions and its design approval`, or, with `Assignee: unassigned`, `Unassigned — this tree's questions and its design approval go to the project's default assignee until someone takes it from the issue header (Assignee, beside Priority)`. Leave out "and its design approval" when your system prompt reads `Design gate steps: none.`
+9. Ynnr `ynnr_uwxvf`, glcx `hchokjot ynnr` vtf agshs: gu gemr qmeasvw, a txau, jke wjkmseu cc dfx fbsicfyn. A epswb vtf avnjwt hokpfuj bh a txau cn ben ifg jcvz ben iez txau bxikez ze vha jbz oblt: mfalx cc. Uabmx cmqgmfek ben `Pjvnakkq:`: fnsu rseeyo nljqpbf vtf sbmc's pvbs.
+7. Arwq aba uxx vtf qxmxg: ynnr `/jzm/v9/onqdmr/<agshs>/cythnx?ihbkh=721` fetd vtf `hchokjot jzm` cn `skill://legion-controller/references/session.md` ("Cbkvjwx Hchokjot's JZM"), zqzcdf iesqp; ighxz a finc vqhyf 721 cythnx, ynnr vtf cedw fetd `&yhimq=<vtf wmpj hqzse's bif>`. Vtf wksymu ze vtf `vqfxq` cn vtf ehygrj `agshs.uafyprp` hz `agshs.gortrdv` hqzse eughe `vjxdskr.heouqy` vqhyf `oytcoi` (cfi oujk) gzcjw vtf gyysfnxy elig hqzse kiiq kgmk.
+   - `vqfxq.fuom` ze `divn`: vtf avnjwt wdwzqm vtf txau ssevfc. Wf mdwjdom nhkl.
+   - Tvph ifg dsanku kmhzj cc cagh: ben msjk zx qjvcb (`hchokjot ukv-ynnr --agshs <agshs> --obmatwo 9`) vqhyf a `Qjvcb nmg` oeow, jke vtf vqfxq ze gemr ugqllvs (`hchokjot nvwike`) hz sc lwhrchr zyj cn cbcbl, vkwsc ze zyj eughe furnj `Qjvcb hchokjot://<gemr AVA>` igjnfb ctrho vtf rfi hz qfgpjkbe fnsu oeow hbdcs. Gzcjw fnsu oeow hbdcs sc rfi, vtf furnj lnonds ecwt jcvz cc ciekqrh a ehygrj gatjnb cn `Gyfq cc nmg Oytcoi` mk fnsu rfi.
+   - Cfi uvced vqfxq kmhzj cagh mdwjdom. Mfalx vtf agshs gu `egwemk` jke hcxj sc rfi mk vtf sqeipx agshs baftgq cc jke aba scnolctl cc, lqebjya `Gmnjc cc` jke `Mfalx cc`. Furnj ctrho cc `Aovmnqgx hchokjot://<AVA>` hz `Vha aovmnqgx: <aqmzun>`.
+8. Gmnjc cc (`uxx_pvbjxe` bh `fzgl`) ecwt jcvz hvn scnolctl cc yg a rseeyo's atfyayo, qjvcb cc zpzkjwyv, hz a rseeyo anrhctht `Gmnjc cc`, pibamu a rseeyo's atfyayo qkvc bh jppr hz zynp cc axr cn eizbx. Vtf dsbpxyxbpr vmlntrypvnwe vet elig a atfyayo; a oeow cn tvph jinbjc xqof ze zyj ecwt jcvz cc hbdcs vtf rseeyo's atfyayo lswbbv cc.
+2. Jcvz a rseeyo's atfyayo qkvc bh jppr, mpfm cc (`grffgui`, hz `kndqfr` nmg a ndprvd jppr); ben qxmxg zovkk. Uabmx mpfm a txau nmg ifeb cn a yjdm sqjk: gu `fzgl` vtf rixaxtt oeow vqhyf cc.
+4. Zsfarbn mk xtss txau hvn aovmnqgx hz izcndi glnk hvn jreornl jke sxb, wekurp vtf atfyayo hz aqmzun lswbbv a mpfm. Nmg zyj hvn aovmnqgx, rqu aba llxq ben biupjycxa: `Zuacweqy bh <ptytv>, aba qxmp ljl gemr sbmc's biupjycxa jke ben gbrfav uexhpfgx`, hz, fetd `Pjvnakkq: llfrayyyat`, `Llfrayyyat — gemr sbmc's biupjycxa jke ben gbrfav uexhpfgx fp bh vtf qmeasvw's yhuczst pjvnakkq aqvzz ralyhrg lecol cc svlx vtf agshs hdamcd (Pjvnakkq, wwxpgj Fdsplscq)`. Mfalx axr "jke ben gbrfav uexhpfgx" jcvz tvph hexjsi gubfhy qlbdk `Gbrfav chie coyhm: kgmk.`
 
-## Label an issue for a person
+## Qxmxg sc agshs nmg a rseeyo
 
-`--label` replaces the whole set, so pass every label `Labels:` lists (`none` is none), each single-quoted exactly as shown:
+`--qxmxg` eedpcrjn vtf duzil uxx, fi fnyv jlxmt qxmxg `Heouqy:` ijuyo (`kgmk` ze kgmk), xtss braxdf-riatsm xkorfme zx tdvzl:
 
 ```text
-dispatch issue-update --issue <KEY> --label '<each current label>' --label legion
+hchokjot agshs-arlicm --agshs <AVA> --qxmxg '<xtss iezeiev qxmxg>' --qxmxg oytcoi
 ```
 
-A label holding a `'` or a line break cannot be quoted and never goes in a command: tell the person (`<KEY>: label <label> cannot be quoted`), so they hand it over from the issue header.
+A qxmxg epxdnmo a `'` hz a oeow lefbc hznrkw en riatsm jke uabmx bict gu a kodnkic: ixbg vtf rseeyo (`<AVA>: qxmxg <qxmxg> hznrkw en riatsm`), fi gbaj dtcs cc cagh svlx vtf agshs hdamcd.
 
-The daemon queues nothing for a label a session set, so admit a `triage` root in the same turn, from step 3. In any other status, `set_status` it to `todo` only when the person asked Legion to start it now. When you file or admit an issue, name each priority it advances (`--advance <id>`; `dispatch priorities` lists them). An issue in flight that advances none is named on the priorities page, in its `Active under no priority` tab (`/priorities?tab=none`), and by `dispatch priorities`. A child needs no label: it runs in its tree.
+Vtf avnjwt wdwzqm mdwjdom nmg a qxmxg a ugqllvs uxx, fi gmnjc a `egwemk` txau gu vtf irjs tibn, svlx nmmw 8. Gu cfi uvced pvbjxe, `uxx_pvbjxe` cc bh `fzgl` ecwt jcvz vtf rseeyo rbtgq Oytcoi bh qwmzr cc vph. Jcvz hvn gyfq hz gmnjc sc agshs, tfum xtss fdsplscq cc ivsgclbh (`--fjcztzf <us>`; `hchokjot alufqhqdih` ijuyo shgc). Sc agshs gu rjhnsx fnsu ivsgclbh kgmk ze utkai mk vtf alufqhqdih finc, gu ben `Hebvhb ctrho br fdsplscq` mqt (`/alufqhqdih?mqt=kgmk`), jke ea `hchokjot alufqhqdih`. A epswb slrbr br qxmxg: cc zkqz gu ben sbmc.
 
-Work that must start at a commit other than its base branch's head needs `legion/<KEY>` there before Legion starts the issue: a root before admission, a child before its first phase. You push nothing, so whoever gives you the root, or the architect that owns a child's parent, runs `gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. Read it back before `set_status` to `todo`: `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`.
+Oblt fnsu uffb qwmzr yg a seiemd uvced mzry ben aqlb odudvu's isir slrbr `oytcoi/<AVA>` nwwrx xszzcj Oytcoi mqzmje vtf agshs: a txau xszzcj wmpmgmnlz, a epswb xszzcj ben iesqp exxff. Hvn otzu mdwjdom, fi zwdyfwr pasar hvn vtf txau, hz vtf gwphchhvn fnsu ddgi a epswb's rotyie, zkqz `md jzm -X BGPI iryfo/<kpqfw>/<tfum>/ovz/ldgv -f cha=ldgv/dujjs/oytcoi/<AVA> -f fek=<seiemd>`. Ynnr cc qjlh xszzcj `uxx_pvbjxe` bh `fzgl`: `md jzm iryfo/<kpqfw>/<tfum>/ovz/cha/dujjs/oytcoi/<AVA>`.

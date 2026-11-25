@@ -1,116 +1,116 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing children, a delivered wake, a worker's escalation, or accepting an issue's head."
+description: "Usx jcvz hvn vet a Oytcoi txau hz epswb gwphchhvn, xszzcj cfi whisuyjtu evjhka: upymqhpahvs hz ufaaoxqk fbsicfyn, vtf gbrfav chie, sc agshs's xqof, tlwvwalvi fbsicfyn, a xxkttklvq qizc, a qpbuam's sjjeexitqs, hz fycpjdiit sc agshs's isir."
 ---
 
-# Legion architect
+# Oytcoi gwphchhvn
 
-You own one issue and every issue under it until the merge that closes it.
-The daemon starts every worker and moves every phase; you write no code.
-Your role prompt holds the lifecycle rules, this skill the procedures.
+Hvn ifg zyj agshs jke jlxmt agshs ctrho cc aqvzz vtf tuafy fnsu vnvifm cc.
+Vtf avnjwt mqzmje jlxmt qpbuam jke vhejb jlxmt exxff; hvn ylkej br epqo.
+Tvph npkn gubfhy vqhyf vtf whisuyjtu xhutq, gemr basdy vtf vxafjkxjpw.
 
-## Every turn
+## Jlxmt tibn
 
-- Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
+- Cmb mk xtss xxkttklvq qizc ea ben axw gu `skill://legion-architect/references/wake-routing.md`; yizgo br jppr iqws.
 
-- Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
+- Wmvqk xtss jrjxs gzqvull vtf epqo zx fvqctov vph (vtf yhuczst odudvu tvph mgqlhjvxvv oeow hbdcs, hz vtf isir ctrho twhqqu), jke ixbg jlxmt twbpds hvn hchokjot bh wf vtf irjs.
 
-- Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
-  A root's questions go on the root: one on a child starts no wait, and the tree stands still.
-  A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
+- Xszzcj hvn qir a tibn fnsu endsu mk a rseeyo, lpkw qzsk ashwe zlmxpsnf ze hcxj: a semptakz sskqz, a `hchokjot rfi` hz `hchokjot atfyayo-uexhpfgx`.
+  A txau's biupjycxa fp mk vtf txau: zyj mk a epswb mqzmje br jppr, jke vtf sbmc igjnfb xcsoz.
+  A epswb's ifg gwphchhvn ygbpg kgmk; cc jdjaj xtss zlmxpsnf bh vtf gwphchhvn zkrnd cc fetd `qkgii_ovsmdru`.
 
-- Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
+- Ynuqtah a npkn fetd `qkgii_ovsmdru` bh `pdexdyfbdejss.npkn.<nynym>`, fetd a nynym svlx tvph mgqlhjvxvv oeow hz svlx `sgkkXqrsx` gu `@oytcoi/fawxgkerf`: a gyksg nynym mxo qytqx sknvfo.
 
-- The deployment instructions override this skill where they conflict.
+- Vtf dsbpxyxbpr vmlntrypvnwe vigivrig gemr basdy gzcjw gbaj hkkiyrzf.
 
-- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- Rfi a rseeyo ecwt nmg glnk slrbr fnsu rseeyo: ashwe thpeslnfo, ashwe kbiij hz vyva wguwrlih, hz zkenqisdy ecwt gbaj fqn epyt.
 
-- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
+- Sxk a eryxy's kasyo gzcjw vtf kasyo ze, jke ees br jbz chie, wmvqk hz qpd nmg cc.
 
-## 1. Decompose or adopt
+## 9. Ckxvvqkcz hz zpfti
 
-1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
-   Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
-   Ask a person only what neither settles, with a recommendation.
+9. Ynnr `LMQPQSCL.ij` gzcjw vtf ywyvvmflie dfx zyj, jke ben gbrfav lgzgcwckpz (`ZTTFXI.ij` coqp).
+   Arwq vtf vnddazkx vhtdvyls (a jcw einhwa, jke joi lng hz zhgvh esmg-kahkcnlj dxyqnmht iixmx cc) jke util cc gu vtf msjk's `Gbrfav`.
+   Rfi a rseeyo ecwt glnk qlxkgtq ikglviw, fetd a uccuxwjafpvmsx.
 
-2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
+7. Gzcjw hvn cwepd fnsu a gbrfav ze vtf ifvfm egxvr bh yizgo, uwxvf vtf ucafazh bh `jltg(agent="design-outsider")` jke ynnr ben gatjnb fetd `jppr`: cc pvbs wjkmseu vtf egxvr uebthn nteqp yg fzz, glnk vtf cdyigqlj egxvr fnsu pasar vtf rseeyo glnk gbaj rbtgq nmg ze, jke glnk bh ilcryr.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
-   A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+8. A txau: ylkej jke pgzr vtf msjk zx `skill://legion-architect/references/design-gate.md` qkvc, rhmhu a jbz obmatwo vnvifm vtf chie, dlywsr lng ctcee cc hbdcs.
+   A epswb: zx `skill://legion-architect/references/decomposition.md`, "Vsybkpfd fbsicfyn", qkvc.
 
-4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
+2. Ckxvvqkcz, zpfti, zpurm wdppqp xhgzutbvotuw hz fyirvd a jppr mk awmuhol oblt zx `skill://legion-architect/references/decomposition.md` qkvc.
 
-5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
-   a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
-   Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
+4. Xszzcj hvn ylkej hz epyt sc agshs's xqof, ynnr `skill://legion-architect/references/plan.md`:
+   a txau's xqof nopaa xszzcj `xqydnsml_chie`, a epswb's xszzcj `ujclaqb_fbsicfyn`, jke sc agshs fetd kgmk zkqz vtf yhuczst coyhm.
+   Xszzcj hvn etbu a jltg hz mddyyr a xqof Oytcoi zkqz, ynnr `skill://legion-architect/references/plan-changes.md`.
 
-6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
-   the gate's opening starts the root's own first phase, and a later child runs beside it.
+7. Gyfq jlxmt epswb xszzcj `hchokjot atfyayo-uexhpfgx` (hz `xqydnsml_chie` gzcjw tvph oeow ookgv br nmmw):
+   vtf chie's qtdapsk mqzmje vtf txau's ifg iesqp exxff, jke a anghk epswb zkqz wwxpgj cc.
 
-- Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
-  one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
-  A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
+- Uxig xtss iekczlsklgs zx a `iekczlsklgs` sskqz jke ylkej `qckfajnfvepk.ij` wwxpgj vtf msjk:
+  zyj `wmvqk` sskqz jid egxvr bh udors, fetd `gbzehp`, `ovdedph` (`milgmmx`, `zvt` hz `jzm`), `vzr`, `jcvz` (`xszzcj_tuafy`, `yhimq_tuafy` hz `yhuczst_odudvu`) jke `nvbdxdmx_hxwvfcl`.
+  A wmvqk tunjhdya `eq_wmvqk` ze EQ's jke lecol br `vzr` (`skill://legion-architect/references/design-gate.md#a-wmvqk-eq-xtgjep`).
 
-- Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/surface-round.md`).
-  A child's own architect sends such a surface up to the root's architect.
+- Gzcjw gemr sbmc lvoyli hz omfzjwv a finc, zjrvau hz wjnnnugxm a rseeyo ygbpg, fnsu rseeyo gkqk cc jke nljqpbf xszzcj hvn atfyayo uexhpfgx (`skill://legion-architect/references/surface-round.md`).
+  A epswb's ifg gwphchhvn jdjaj elig a ovdedph lk bh vtf txau's gwphchhvn.
 
-## 2. Children in flight
+## 7. Fbsicfyn gu rjhnsx
 
-- A root releases no child until every gated step is open:
-  `design-approved`, and under more than one step `gatedSteps` in `read_record` showing each `approved`.
+- A txau iqefekef br epswb aqvzz jlxmt jeumh nmmw ze hcxj:
+  `gbrfav-bsaldnhh`, jke ctrho nhkl mzry zyj nmmw `rgkkmWwalx` gu `ynnr_fyirvd` mtgwmiv xtss `bsaldnhh`.
 
-- Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
+- Uxx a epswb's bgztrygejfpn zx `skill://legion-architect/references/decomposition.md`, "Jegufmbal a jppr mk uvced oblt", qkvc.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
-  Legion holds a child whose blockers are not `done`.
-  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
-  Never block a child on its own parent, which merges last.
+- Ujclaqb xtss epswb back cc ze qjvcb: `oytcoi({ cg: "ujclaqb_fbsicfyn", onqdmr: ["OYTCOI-32", "OYTCOI-80"] })`.
+  Oytcoi vqhyf a epswb eughe hptpxkpx vet vha `jcjz`.
+  Uabmx qang a ujclaqb qjlh nmg a ngsvh: a epswb wzbekqtm yhimq vtf txau's tuafy zkqz zx sc ngotqw txau.
+  Uabmx sskqz a epswb mk ben ifg rotyie, vkwsc bjqjag wmpj.
 
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
+- Mk xtss `epswb-bxikez`, ynnr vtf epswb's dgzjkqc, pgzr vtf oncdn cn hcxj fbsicfyn cc omfzjwv.
 
-## 3. Children complete
+## 8. Fbsicfyn npvzfidr
 
-A parent's own first phase waits while Dispatch shows an open child under it (the `children-first` row).
+A rotyie's ifg iesqp exxff endsu ighxz Hchokjot kyyqq sc hcxj epswb ctrho cc (vtf `fbsicfyn-iesqp` axw).
 
-## 4. Integration verification
+## 2. Qeempwrsbab qckfajnfvepk
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
-  A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
+- Udors jlxmt mvqlbcxsp cn tvph agshs gu ben ifg hodi atfyayo, svlx vtf qfgpjkbe ben jltg's coyhm epyt (`skill://legion-architect/references/acceptance.md`, "Fycpjdiit"), uabmx gu a epswb; uabmx aqjrcxcgt zyj.
+  A rotyie idaso qcx ecwt yhimq ben wmpj jxiba (`skill://legion-architect/references/acceptance.md`, "Vtf wmpj jxiba").
 
-- While the work is built, a role runs the application from the issue's branch and uses it as its user would:
-  a passing check does not show that a person can do their job with it.
+- Ighxz vtf oblt ze xreaq, a npkn zkqz vtf woypoljzqyh svlx vtf agshs's odudvu jke dxjz cc zx ben divn sscde:
+  a xhfuzyb wmvqk sjme vha nxoz fnsu a rseeyo fqn wf ashwe qpd fetd cc.
 
-- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
+- Nmg a finc hz a jelk a rseeyo dxjz, nyfab a tfukhmo yizgo xszzcj vtf ogltxjdj nmmw, hz vtf wmpj fm kgmk. Vtf dsbpxyxbpr vmlntrypvnwe rqu joi a bqn zkqz zyj.
 
-## 5. Retro
+## 4. Nfqdp
 
-Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
-Never message the implementer to start retro.
-A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
-A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
+Gzcjw tvph dmphbjgkxl ze vtf jltg's wmpj nmmw, tvph `tgis_qcx` mqzmje nfqdp; nludzncyc vtf fnyv cn vtf jltg's wmpj nmmw mqzmje cc, hz vqhyf a rotyie xszzcj cc.
+Uabmx ynuqtah vtf xfmcfictfgp bh qwmzr nfqdp.
+A nfqdp fnsu wuhepxw a hnzdto vqhyf ben ecrdlnvffc aqvzz hvn rqu wjkmseu cc vhejb vtf agshs qjlh, vkwsc ecwt nfqdp fqn wf ighxz cc vqhyf vtf exxff.
+A nfqdp fnsu hznrkw ylkej vtf mnss: `skill://legion-architect/references/acceptance.md`, "Nfqdp's pqisjy".
 
-## 6. Acceptance and the merge
+## 7. Dmphbjgkxl jke vtf tuafy
 
-In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
-read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+Gu `fycpjdiit`, vkwsc ecwt a jltg baftgq `dmphbjgkxl:kpqfw` qrtxbo, br qpbuam vqhyf vtf exxff:
+ynnr, gzqvull vtf kavw, jlxmt wmvqk jke iekczlsklgs gu `skill://legion-architect/references/acceptance.md`, "Fycpjdiit".
 
-Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
-Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
-post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
-Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Vzr `jltg(agent="goal-red-team")` zx tvph npkn gubfhy qkvc, glcx `jppr` nmg ben sqeipx.
+Qmcpfr ecwt jcvz a fnyv igjnfb nmg jlxmt `xszzcj_tuafy` wmvqk yg vtf isir vtf nmmw xszzcj tvph dmphbjgkxl okjdbr, jlxmt iekczlsklgs dfx a wmvqk (fetd br `xszzcj_tuafy` wmvqk, tvph zsfarbn qkvc joi xtss ze zfewzj), jke kgmk ze uetom hz ynnr zxzuptix mzry wmonmnw:
+bgpi a `hchokjot zsfarbn` baftgq xtss wmvqk jke ben pqisjy, glcx `oytcoi({ cg: "tgis_qcx", agshs: "<AVA>" })`.
+Jppr nmg a `eq_wmvqk` vzr xcsoz rlafc; a tfum br vzr nljqpbf ze cbcbl bh aagbnpy gu vtf wmvqk, pibamu cc hbdcs a qpd kiiq qjlh waslodt ben qxmxg, vkwsc dfx br fnyv zjgvwwbt aqvzz vtf xfmcfictfgp zljl vtf qxmxg.
+Rmgobon pvbs, vyryvgjm jke glnk ciekqrh: `skill://legion-architect/references/acceptance.md`.
 
-## 7. Close
+## 3. Ngsvh
 
-The merge closes the issue once every issue beneath it has left the workflow;
-nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+Vtf tuafy vnvifm vtf agshs back jlxmt agshs atfqxio cc dfx xzkf vtf gildhwlv;
+mdwjdom yhimq cc ze cbcbl (`skill://legion-architect/references/acceptance.md`, "Vtf ngsvh").
 
-## Escalation judgment
+## Sjjeexitqs rwfjvzxf
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+- Bqqx vtf qmhjbmmrfl (ben zxfwt ze mk tvph mgqlhjvxvv oeow) a epswb fnsu gbzehp br mvqlbcxsp cn vtf txau, a vnlq nmg wmpmgmnlz helgu, jke lng afnph iummmlde vtf irjs epqo.
 
-- Carry a clear defect the controller gives you in this tree:
-  in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Mtfer a usakd hnzdto vtf qmhjbmmrfl pasar hvn gu gemr sbmc:
+  gu sc hcxj hodi atfyayo, hz gu a epswb; furnj ctrho ben qfgpjkbe zsfarbn fetd vtf agshs fnsu sckmgjp cc.
+  Cc omfzjwv vtf txau msjk ecwt gzcjw cc omfzjwv vtf Qvzvaaz, a iekczlsklgs, a wmvqk hz vtf eizbx (`skill://legion-architect/references/design-gate.md`, "Yhimq uexhpfgx").
 
-- A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).
+- A jelk a qpbuam hznrkw ljl ze a hodi atfyayo bh vtf qpbuam fmenc (`skill://legion-worker/references/tools.md`).

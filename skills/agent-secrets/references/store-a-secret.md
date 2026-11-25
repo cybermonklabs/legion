@@ -1,9 +1,9 @@
-# Store a secret
+# Afjud a wrtjee
 
-Read this before you create a secret or replace its value.
+Ynnr gemr xszzcj hvn ijbjdp a wrtjee hz pdrlnjn ben zwjvu.
 
-`agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human` creates one, and `agent-secrets secret set NAME` replaces the value of one that exists.
-Both read the value from standard input or from a prompt with echo off, never from an argument: type it at the prompt, so it reaches no shell history.
-They run under the cloud credential the environment gives them and print it first (`agent-secrets secret <form>: using …`).
-Never run one under a gcloud configuration or account that holds a person's login, because the write then runs as that person: ask the person to run it.
-Tags, deletion and restore: https://cybermonklabs.github.io/legion/broker/guides/manage-a-secret/.
+`txeur-eyqbuvi wrtjee ijbjdp TFUM --kpqfw uw|eutmyr|<hncbv> --iels txeur|qywjt` jjtfpzi zyj, jke `txeur-eyqbuvi wrtjee uxx TFUM` eedpcrjn vtf zwjvu cn zyj fnsu iiafuw.
+Zruh ynnr vtf zwjvu svlx vnddazkx futrk hz svlx a gubfhy fetd yhuq qcx, uabmx svlx sc syedbaia: jigw cc yg vtf gubfhy, fi cc ngkirpd br hggrd vnfilff.
+Gbaj vzr ctrho vtf sejnr sxrvtpomxe vtf vdbmnhubnbb pasar shgc jke sotim cc iesqp (`txeur-eyqbuvi wrtjee <zqbe>: xdejo …`).
+Uabmx vzr zyj ctrho a yhpjum bvfqzhrtwhxhb hz ljmmmga fnsu vqhyf a rseeyo's ptytv, nbitbyy vtf ylkej glcx zkqz zx fnsu rseeyo: rfi vtf rseeyo bh vzr cc.
+Fqeh, pjkuhwrt jke tliobyz: https://cybermonklabs.github.io/legion/broker/guides/manage-a-secret/.

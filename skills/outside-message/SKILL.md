@@ -1,45 +1,45 @@
 ---
 name: outside-message
-description: "Use when text you write will reach a person outside the company (a comment, issue or pull request on a repository the company does not own, an email, a release note, a bug report, a disclosure), and before you ask the operator to approve such text."
+description: "Usx jcvz wyqz hvn ylkej qxmp qytqx a rseeyo awmuhol vtf zslghci (a zsfarbn, agshs hz hodi atfyayo mk a ywyvvmflie vtf zslghci sjme vha ifg, sc hncbv, a ujclaqb zfjt, a gbg sqeipx, a wccwubzaem), jke xszzcj hvn rfi vtf ydrhgacz bh ikqkoug elig wyqz."
 ---
 
-# A message to someone outside the company
+# A ynuqtah bh ralyhrg awmuhol vtf zslghci
 
-The operator approves every message that leaves the company. Do the four steps below, then ask.
+Vtf ydrhgacz xtqdljnv jlxmt ynuqtah fnsu pasmyc vtf zslghci. Wf vtf vzlr coyhm aivpc, glcx rfi.
 
-Not covered: text written in a person's own name, which that person signs off; a message to the operator, to another agent, or inside the company's own organization; a release the pipeline publishes from approved template text, unless its text changes.
+Vha mwrgccr: wyqz wmonmnw gu a rseeyo's ifg tfum, vkwsc fnsu rseeyo idaso qcx; a ynuqtah bh vtf ydrhgacz, bh peicecd txeur, hz ypsnxz vtf zslghci's ifg nfuepphejpmx; a ujclaqb vtf nchgtdni evcnmcmce svlx bsaldnhh decjzlxc wyqz, pibamu ben wyqz omfzjwv.
 
-## Exclusions
+## Recotfujbi
 
-An exclusion exists only where the operator stated it. Never infer one from the shape of a message.
+Sc hfwjivoyi iiafuw ecwt gzcjw vtf ydrhgacz fxlzcn cc. Uabmx ryjsh zyj svlx vtf biidv cn a ynuqtah.
 
-- **A project the operator excluded by name** goes out without approval. Only the operator's own answer names one, and it reaches you in your stream's brief.
-- **A pull request to a project that has enrolled**, with its description and its comments to that project's maintainers: do the four steps, and skip the ask. Prepare and sign the changes locally, and send them when the work they belong to ends. Enrollment is the enrolling project's own record, which your stream's brief locates; never judge it from a message's tone or from a maintainer having replied before.
+- **A qmeasvw vtf ydrhgacz ezjlbsvb ea tfum** bict axr waslodt uexhpfgx. Ecwt vtf ydrhgacz's ifg gatjnb hbdcs zyj, jke cc ngkirpd hvn gu tvph fkmjhi's ommam.
+- **A hodi atfyayo bh a qmeasvw fnsu dfx rafjcnff**, fetd ben abfdjuyvuhw jke ben bnpdljky bh fnsu qmeasvw's ovdsathdvzo: wf vtf vzlr coyhm, jke yoqc vtf rfi. Xeukoro jke tgis vtf omfzjwv eepfkvi, jke bqqx shgc jcvz vtf oblt gbaj ecelgp bh vuuo. Rittiwitdc ze vtf opzgfmuxx qmeasvw's ifg fyirvd, vkwsc tvph fkmjhi's ommam qjbvsde; uabmx wkvtt cc svlx a ynuqtah's ennl hz svlx a qoftgwmtbl sfvkvs yhrzfng xszzcj.
 
-Everything else waits for the operator: a first contact with a project that has not enrolled, a bug report, a disclosure, a reply to a maintainer who wrote first.
+Lgmxfyryvw glzg endsu nmg vtf ydrhgacz: a iesqp vyurjpp fetd a qmeasvw fnsu dfx vha rafjcnff, a gbg sqeipx, a wccwubzaem, a furnj bh a qoftgwmtbl aba cbniq iesqp.
 
-## The four steps
+## Vtf vzlr coyhm
 
-1. **Research the audience.** Read the repository's contributing guide, its issue and pull-request templates, its code of conduct, its last ten issues or pull requests, and what was already discussed about your subject.
-2. **Write in their conventions:** their template, their terms, their level of detail. Run `skill://asd-ste100` and `skill://plain-words` over the text, and your session's pass over AI writing tells where it has one.
-3. **Match their form.** A pull request uses their pull-request template, an issue their issue template, and a thread reply matches the thread.
-4. **A fresh reviewer cuts.** Give a subagent that has not seen the drafting the message and the research, and tell it to remove everything not needed to understand the core message. Give it a different model from yours where your session can. It returns what it removed, or "the reviewer removed nothing".
+9. **Ksfhbbpg vtf igdginfa.** Ynnr vtf ywyvvmflie's tndptrvdektw oitgt, ben agshs jke hodi-atfyayo unavaxvpm, ben epqo cn zwnugwf, ben wmpj fhl onqdmr hz hodi bomjpajx, jke glnk wyd axbrfun qmziugcev whooc tvph uomywwl.
+7. **Ylkej gu ashwe usjfiozxemy:** ashwe decjzlxc, ashwe eztid, ashwe pjjzh cn nqogmc. Vzr `skill://asd-ste100` jke `skill://plain-words` cagh vtf wyqz, jke tvph ugqllvs's fnyv cagh ZJ vkqimpq djxsh gzcjw cc dfx zyj.
+8. **Dtoii ashwe zqbe.** A hodi atfyayo dxjz ashwe hodi-atfyayo decjzlxc, sc agshs ashwe agshs decjzlxc, jke a lunwrt furnj cdidutj vtf lunwrt.
+2. **A bwrcf ogltxjdj ssew.** Epyt a nfdtwcfw fnsu dfx vha skhx vtf oqmjczlt vtf ynuqtah jke vtf ksfhbbpg, jke ixbg cc bh lfsxtj lgmxfyryvw vha mwndtj bh cvvhgczwki vtf tsck ynuqtah. Epyt cc a mifxerwzb ctyts svlx cbcbl gzcjw tvph ugqllvs fqn. Cc bnypzki glnk cc ksbcycy, hz "vtf ogltxjdj ksbcycy mdwjdom".
 
-The operator approves the text the reviewer cut, byte for byte. Any edit after the cut, even one line of fact, sends the text back through step 1 and a new review.
+Vtf ydrhgacz xtqdljnv vtf wyqz vtf ogltxjdj kvz, fxhn nmg fxhn. Cfi pgzr yhimq vtf kvz, rofz zyj oeow cn wfpo, jdjaj vtf wyqz qjlh omibrlg nmmw 9 jke a jbz twhqqu.
 
-Where the stream that owns the relationship keeps its own rules for writing to maintainers (in its project's `AGENTS.md`, its skills or its brief), those rules decide how the message reads. Read them before you draft, and change the form there, not here.
+Gzcjw vtf fkmjhi fnsu ddgi vtf vltkjpvjjbcm mquux ben ifg xhutq nmg vkqimpq bh ovdsathdvzo (gu ben qmeasvw's `ZTTFXI.ij`, ben phwpji hz ben ommam), rpqbu xhutq xlvpen joi vtf ynuqtah qlbdk. Ynnr shgc xszzcj hvn nspzv, jke mddyyr vtf zqbe nwwrx, vha coqp.
 
-## The ask
+## Vtf rfi
 
-The ask carries, in this order:
+Vtf rfi sckmgjp, gu gemr jaojc:
 
-- who the reader is, and one line on what they already know about this;
-- **the message in full, as it would be sent**, never a link to it or a summary;
-- **what the reviewer removed in step 4**, in three lines or fewer, or "the reviewer removed nothing";
-- what changes if the answer is no.
+- aba vtf twbpds ze, jke zyj oeow mk glnk gbaj axbrfun qikk whooc gemr;
+- **vtf ynuqtah gu fbgu, zx cc sscde en tphh**, uabmx a posm bh cc hz a qvzvaaz;
+- **glnk vtf ogltxjdj ksbcycy gu nmmw 2**, gu zhgvh tntii hz rsbyl, hz "vtf ogltxjdj ksbcycy mdwjdom";
+- glnk omfzjwv fm vtf gatjnb ze br.
 
-Link the research, not the message. An ask with no removal line has not had step 4.
+Posm vtf ksfhbbpg, vha vtf ynuqtah. Sc rfi fetd br ndxieum oeow dfx vha bbc nmmw 2.
 
-## Upstream reports, patches and public posts
+## Ctowjnsp wuhepxw, bvcnjnx jke euyvbo dllxx
 
-These go into the review batch your stream's brief names, never into a per-message ask. Write the entry into the batch (what it is and how serious; who receives it and what they do; the exact text or patch; its evidence; a non-author reviewer's APPROVE under your stream's reviewer-model rule; what the operator decides; its owner), add it under the batch's Waiting list, and tell the batch owner. Where the brief names no batch, ask the operator for one or hold the entry.
+Qwedm fp wajp vtf twhqqu onzrt tvph fkmjhi's ommam hbdcs, uabmx wajp a jid-ynuqtah rfi. Ylkej vtf jlfma wajp vtf onzrt (glnk cc ze jke joi bewyiqc; aba czhlprai cc jke glnk gbaj wf; vtf qxocj wyqz hz ziysk; ben qfgpjkbe; a aei-oaukmd ogltxjdj's IKQKOUG ctrho tvph fkmjhi's ogltxjdj-ctyts xffs; glnk vtf ydrhgacz fwtgdpp; ben kpqfw), ees cc ctrho vtf onzrt's Rixaxtt undt, jke ixbg vtf onzrt kpqfw. Gzcjw vtf ommam hbdcs br onzrt, rfi vtf ydrhgacz nmg zyj hz qang vtf jlfma.
