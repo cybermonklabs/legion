@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -54,25 +52,11 @@ func TestTheOneReadsAnswerHasTheBytesWriteJSONWritesWhateverItsWorkers(t *testin
 		WriteJSON(want, http.StatusOK, response)
 		for _, workers := range []int{1, 2, 4, 16} {
 			t.Run(fmt.Sprintf("%d entries, %d workers", count, workers), func(t *testing.T) {
-				var written bytes.Buffer
-				out := bufio.NewWriterSize(&written, 64<<10)
-				envelope := response
-				envelope.Entries = []meInboxEntry{}
-				head, err := json.Marshal(envelope)
-				if err != nil {
-					t.Fatalf("encode the envelope: %v", err)
-				}
-				written.Write(head[:len(head)-2])
-				if err := writeMeInboxEntries(out, response.Entries, workers); err != nil {
-					t.Fatalf("write the entries: %v", err)
-				}
-				out.WriteString("]}\n")
-				if err := out.Flush(); err != nil {
-					t.Fatalf("flush: %v", err)
-				}
-				if !bytes.Equal(written.Bytes(), want.Body.Bytes()) {
+				written := httptest.NewRecorder()
+				writeMeInboxAnswerBy(written, response, workers)
+				if !bytes.Equal(written.Body.Bytes(), want.Body.Bytes()) {
 					t.Fatalf("the answer of %d entries by %d workers is %d bytes, not the %d WriteJSON writes",
-						count, workers, written.Len(), want.Body.Len())
+						count, workers, written.Body.Len(), want.Body.Len())
 				}
 			})
 		}

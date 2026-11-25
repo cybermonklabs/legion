@@ -194,12 +194,15 @@ const inboxReadMarkAgentReplies = `
 // (dismissInboxThreads) holds the same locks and takes the same bound.
 const inboxReadStatementTimeout = 10 * time.Second
 
-// inboxStatementBoundSetting is the statement_timeout the mark-all's and the dismissal's
-// transactions set for themselves alone in their first statement (set_config's is_local, as `set
-// local` sets it, beside the transaction's now()): every statement after it is bounded by
-// inboxReadStatementTimeout, unless a test set a bound of its own (server.inboxStatementBound).
-func (s *server) inboxStatementBoundSetting() string {
-	return fmt.Sprintf("%dms", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())
+// boundInboxStatements sets the statement_timeout of the mark-all's and the dismissal's
+// transactions in their first statement, for tx alone (set_config's is_local, as `set local` sets
+// it), and answers the transaction's now() it reads beside it: every statement after it is bounded
+// by inboxReadStatementTimeout, unless a test set a bound of its own (server.inboxStatementBound).
+func (s *server) boundInboxStatements(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+	var at time.Time
+	err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`,
+		fmt.Sprintf("%dms", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())).Scan(new(string), &at)
+	return at, err
 }
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
@@ -623,8 +626,8 @@ func (s *server) markInboxReadThreads(
 	// The statement bound, set for this transaction alone as `set local` sets it, and the
 	// transaction's now() beside it, which the events this route appends and the marks they cause
 	// are dated at (commitInboxMarks): one statement, before the first lock.
-	var at time.Time
-	if err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`, s.inboxStatementBoundSetting()).Scan(new(string), &at); err != nil {
+	at, err := s.boundInboxStatements(ctx, tx)
+	if err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,
@@ -671,7 +674,7 @@ func (s *server) markInboxReadThreads(
 			events = append(events, inboxEvent{event: userAgentStateEvent(actor, session), marks: replies.marks[session]})
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, failpoint.InboxRead, at, marked, events)
+	return s.commitInboxMarks(ctx, tx, failpoint.InboxRead, at, marked, events, false)
 }
 
 // inboxEvent is one event a write route over these rows appends, with the marks it causes: the
@@ -686,10 +689,11 @@ type inboxEvent struct {
 
 // commitInboxMarks ends both write routes over these rows. A request that changed nothing
 // announces nothing: the Inbox marks itself read on every click, and each event would refetch the
-// list in every tab the viewer has open. It still commits, since the one write such a request can
-// hold is a restore's settle of the roots it locked (inboxRestoreSettleAgentRoots,
-// api/inbox_dismiss.go), which clears a column another restore left owed and changes no answer:
-// an owed root with no mark reads as live before it and after it (myAgentOwedRoot). A request that
+// list in every tab the viewer has open. Such a request rolls back unless mayHaveWritten, which
+// only a restore that locked Agent roots passes: the one write a request that changed nothing can
+// hold is that restore's settle of its roots (inboxRestoreSettleAgentRoots, api/inbox_dismiss.go),
+// which clears a column another restore left owed and changes no answer - an owed root with no mark
+// reads as live before it and after it (myAgentOwedRoot) - and which it commits. A request that
 // changed something takes the project of every event it appends - step 6 of the lock order above,
 // in one sorted order after the rows it wrote and before the first append, an agent reply's event
 // naming no owner and so taking no lock here - and then appends them, each followed by the marks
@@ -701,9 +705,12 @@ type inboxEvent struct {
 // between the rows the route wrote and the marks (failpoint.InboxRead, failpoint.InboxDismiss),
 // decided before the batch is sent and queued before the first mark.
 func (s *server) commitInboxMarks(
-	ctx context.Context, tx pgx.Tx, writer string, at time.Time, changed int, events []inboxEvent,
+	ctx context.Context, tx pgx.Tx, writer string, at time.Time, changed int, events []inboxEvent, mayHaveWritten bool,
 ) (int, []model.Event, error) {
 	if len(events) == 0 {
+		if !mayHaveWritten {
+			return 0, nil, tx.Rollback(ctx)
+		}
 		return 0, nil, tx.Commit(ctx)
 	}
 	owners := make([]model.Event, len(events))

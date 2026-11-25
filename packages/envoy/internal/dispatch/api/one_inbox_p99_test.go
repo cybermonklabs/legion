@@ -174,11 +174,10 @@ type oneInboxHere struct {
 }
 
 func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
-	// Not parallel: it prints the one read's p50 beside the base build's, which Verification's
-	// c-p99 judges over three runs against oneInboxReadBound
-	// (dispatch://INFRA-1098/spec#b-r-no-regression@v173), and fails this run where a write's p50
-	// is above its bound in oneInboxWriteBounds times the base build's, round trips on loopback
-	// timed in this run, wall clock that the load of the tests beside it can push past.
+	// Not parallel: it prints the one read's p50 beside the base build's, which is judged across
+	// runs (oneInboxReadBound), and fails this run where a write's p50 is above its bound in
+	// oneInboxWriteBounds times the base build's, round trips on loopback timed in this run, wall
+	// clock that the load of the tests beside it can push past.
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take c-p99's measurement", dismissedScaleEnv)
 	}
@@ -660,14 +659,12 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // of the reads it replaces on the base build, after one of each not counted, alternating which
 // build is read first, and prints both builds' p50, p95 and p99 on one line, with each of the base
 // build's reads apart and what each build answered, and the two p50s again on a c-p99: read-p50
-// line under reader's key. It fails no run on the read's ratio: Verification's c-p99 judges the
-// read over three runs' c-p99: read-p50 lines, the median of their p50s of the one read at most
-// oneInboxReadBound times the median of the base build's
-// (dispatch://INFRA-1098/spec#b-r-no-regression@v173). Each write still fails in its own run
-// (measureOneInboxWrite). For the reader whose Inbox holds the gated issues' items
-// (seedOneInboxGate), the reading not counted must carry an approval gate on every entry of those
-// issues (requireOneInboxGates): a build whose statement leaves the gate out fails there. The
-// corpus does not change between readings, so that one answer proves what each would.
+// line under reader's key. It fails no run on the read's ratio, which is judged across three runs
+// (oneInboxReadBound); each write still fails in its own run (measureOneInboxWrite). For the
+// reader whose Inbox holds the gated issues' items (seedOneInboxGate), the reading not counted
+// must carry an approval gate on every entry of those issues (requireOneInboxGates): a build whose
+// statement leaves the gate out fails there. The corpus does not change between readings, so that
+// one answer proves what each would.
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
 	replaced := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox"}

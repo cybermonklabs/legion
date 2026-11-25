@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -428,12 +429,19 @@ func (s *server) readMeInbox(ctx context.Context, statement string, args []any) 
 	return read, nil
 }
 
-// writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries a few at
-// a time: the envelope is encoded with no entry and the entries into its array in turn
-// (writeMeInboxEntries), so no buffer holds the whole of a page at once - several megabytes for
-// the person whose history is a hundred times the median, which the encoder otherwise grows by
-// doubling and the collector then scans.
+// writeMeInboxAnswer writes response with the bytes WriteJSON writes for it (writeMeInboxAnswerBy),
+// its entries encoded by as many goroutines as the process runs at once, up to
+// meInboxEncodeWorkers.
 func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
+	writeMeInboxAnswerBy(w, response, min(runtime.GOMAXPROCS(0), meInboxEncodeWorkers))
+}
+
+// writeMeInboxAnswerBy writes response with the bytes WriteJSON writes for it, its entries a few at
+// a time by up to workers goroutines: the envelope is encoded with no entry and the entries into
+// its array in turn (writeMeInboxEntries), so no buffer holds the whole of a page at once - several
+// megabytes for the person whose history is a hundred times the median, which the encoder
+// otherwise grows by doubling and the collector then scans.
+func writeMeInboxAnswerBy(w http.ResponseWriter, response meInboxResponse, workers int) {
 	entries := response.Entries
 	response.Entries = []meInboxEntry{}
 	envelope, err := json.Marshal(response)
@@ -449,7 +457,6 @@ func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 	// The envelope ends with its empty entries, `[]}`, so the entries go between its last two bytes.
 	_, err = out.Write(envelope[:len(envelope)-2])
 	if err == nil {
-		workers := min(runtime.GOMAXPROCS(0), meInboxEncodeWorkers)
 		err = writeMeInboxEntries(out, entries, workers)
 	}
 	if err == nil {
@@ -472,33 +479,33 @@ const (
 )
 
 // meInboxChunks holds the buffers a chunk of entries is encoded into.
-var meInboxChunks = sync.Pool{New: func() any { return new([]byte) }}
+var meInboxChunks = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // meInboxEncoded is one chunk of entries as it encodes: the entries' JSON, comma-separated, or the
 // error the first one that failed gave.
 type meInboxEncoded struct {
-	buffer *[]byte
+	buffer *bytes.Buffer
 	err    error
 }
 
 // encodeMeInboxChunk is entries encoded one after another, comma-separated, into a buffer of the
-// pool; the writer returns it once it has written it.
+// pool; the writer returns it once it has written it. Each entry is encoded by one encoder of the
+// chunk, which writes json.Marshal's bytes and a newline, and the newline becomes the comma before
+// the next entry.
 func encodeMeInboxChunk(entries []meInboxEntry) meInboxEncoded {
-	buffer := meInboxChunks.Get().(*[]byte)
-	encoded := (*buffer)[:0]
+	buffer := meInboxChunks.Get().(*bytes.Buffer)
+	buffer.Reset()
+	encoder := json.NewEncoder(buffer)
 	for index := range entries {
-		if index > 0 {
-			encoded = append(encoded, ',')
-		}
-		entry, err := json.Marshal(entries[index])
-		if err != nil {
-			*buffer = encoded
+		if err := encoder.Encode(entries[index]); err != nil {
 			meInboxChunks.Put(buffer)
 			return meInboxEncoded{err: err}
 		}
-		encoded = append(encoded, entry...)
+		buffer.Bytes()[buffer.Len()-1] = ','
 	}
-	*buffer = encoded
+	if buffer.Len() > 0 {
+		buffer.Truncate(buffer.Len() - 1)
+	}
 	return meInboxEncoded{buffer: buffer}
 }
 
@@ -511,31 +518,40 @@ func writeMeInboxEntries(out *bufio.Writer, entries []meInboxEntry, workers int)
 	chunkOf := func(index int) []meInboxEntry {
 		return entries[index*meInboxEncodeChunk : min((index+1)*meInboxEncodeChunk, len(entries))]
 	}
+	// write writes chunk index once it is encoded, after a comma unless it is the first, and gives
+	// its buffer back to the pool.
+	write := func(index int, encoded meInboxEncoded) error {
+		if encoded.err != nil {
+			return encoded.err
+		}
+		err := error(nil)
+		if index > 0 {
+			err = out.WriteByte(',')
+		}
+		if err == nil {
+			_, err = out.Write(encoded.buffer.Bytes())
+		}
+		meInboxChunks.Put(encoded.buffer)
+		return err
+	}
 	if chunks < 2 || workers < 2 {
 		for index := range chunks {
-			encoded := encodeMeInboxChunk(chunkOf(index))
-			if encoded.err != nil {
-				return encoded.err
-			}
-			err := error(nil)
-			if index > 0 {
-				err = out.WriteByte(',')
-			}
-			if err == nil {
-				_, err = out.Write(*encoded.buffer)
-			}
-			meInboxChunks.Put(encoded.buffer)
-			if err != nil {
+			if err := write(index, encodeMeInboxChunk(chunkOf(index))); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	results := make([]chan meInboxEncoded, chunks)
+	// A ring of result slots, a chunk's slot its index modulo their number. A chunk takes a window
+	// token before it is handed out and the writer gives it back once it has received that chunk, so
+	// no more chunks are out at once than there are slots: chunk index+len(results), which shares
+	// chunk index's slot, is handed out only once chunk index has left it, and no worker waits to
+	// deliver a chunk.
+	results := make([]chan meInboxEncoded, min(2*workers, chunks))
 	for index := range results {
 		results[index] = make(chan meInboxEncoded, 1)
 	}
-	window := make(chan struct{}, 2*workers)
+	window := make(chan struct{}, len(results))
 	next := make(chan int)
 	stop := make(chan struct{})
 	var group sync.WaitGroup
@@ -559,25 +575,14 @@ func writeMeInboxEntries(out *bufio.Writer, entries []meInboxEntry, workers int)
 	for range workers {
 		group.Go(func() {
 			for index := range next {
-				results[index] <- encodeMeInboxChunk(chunkOf(index))
+				results[index%len(results)] <- encodeMeInboxChunk(chunkOf(index))
 			}
 		})
 	}
 	for index := range chunks {
-		encoded := <-results[index]
+		encoded := <-results[index%len(results)]
 		<-window
-		if encoded.err != nil {
-			return encoded.err
-		}
-		err := error(nil)
-		if index > 0 {
-			err = out.WriteByte(',')
-		}
-		if err == nil {
-			_, err = out.Write(*encoded.buffer)
-		}
-		meInboxChunks.Put(encoded.buffer)
-		if err != nil {
+		if err := write(index, encoded); err != nil {
 			return err
 		}
 	}
@@ -1451,8 +1456,9 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	// rows already.
 	visible := meInboxVisible("g.node_kind", "g.node_id")
 	order := meInboxOrderOf(shape)
-	// The walk's reach: the relations of every node tied to the person, or under a state of the
-	// page's own nodes alone (above).
+	// The walk's reach: the relations of every node tied to the person, one probe a kind, or under a
+	// state of the page's own nodes alone (above), each probe with all of a node's kinds
+	// (meInboxWalked).
 	pageKeys, pageNodes, walkFrom := ``, ``, ``
 	inbound := `t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
@@ -1473,19 +1479,19 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	),`
 		walkFrom = `
 		cross join page_nodes p`
-		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = k.kind
+		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = any(k.kinds)
 				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
 		if shape.state == myRepliesStateDismissed {
 			// The person's end is tested off every index (meInboxBuild's comment), so this read
 			// takes graph_tuples_as_of_in from the page's node and never an index led by the person.
-			outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = k.kind
+			outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = any(k.kinds)
 				and t.from_kind || '' = k.node_kind and t.from_id || '' = k.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
 		} else {
 			// The person's end and then the page's node bind graph_tuples_current's whole key, and
 			// the value test and meInboxOutOfPerson state that index's predicate, so this read is one
 			// index descent.
-			outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+			outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = any(k.kinds)
 				and t.to_kind = p.node_kind and t.to_id = p.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 		}
@@ -1665,21 +1671,18 @@ func meInboxWalked(shape meInboxShape, walkFrom, inbound, outbound string, readK
 		group by k.node_kind, k.node_id
 	),`
 	}
-	anyKind := func(narrow string) string {
-		return strings.Replace(narrow, `t.kind = k.kind`, `t.kind = any(k.kinds)`, 1)
-	}
 	return `
 	` + kinds("kind_lists_in", "kinds_in") + `
 	` + kinds("kind_lists_out", "kinds_out") + `
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, stated.kind, '` + meInboxInbound + `', stated.at
 		from kind_lists_in k` + walkFrom + `
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.at, t.asserted`, anyKind(inbound)) + `) stated
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.at, t.asserted`, inbound) + `) stated
 		where stated.asserted
 		union all
 		select stated.to_kind, stated.to_id, stated.kind, '` + meInboxOutbound + `', stated.at
 		from kind_lists_out k` + walkFrom + `
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.at, t.asserted`, anyKind(outbound)) + `) stated
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.at, t.asserted`, outbound) + `) stated
 		where stated.asserted
 	),`
 }

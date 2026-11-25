@@ -19,7 +19,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -31,8 +30,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // agentRootDismissedAt is the root's own mark of its author's dismissal, nil where it holds none.
@@ -274,7 +271,7 @@ func owedAgentRoot(t *testing.T, seed inboxReadSeed) {
 	`, seed.agent); err != nil {
 		t.Fatalf("write alice's mark on %s: %v", seed.agent, err)
 	}
-	root := holdGateRow(t, database, "the agent thread's root", `select 1 from messages where id = $1 for no key update`, seed.agent)
+	root := holdGateAgentRoot(t, database, "the agent thread's root", seed.agent)
 	older := beginGateHold(t, database, "the release before's restore")
 	deleteMarkAsTheOlderRestore(t, older.tx, seed.agent)
 	older.commit(t)
@@ -306,19 +303,8 @@ func TestOneMaintenancePassSettlesAnOwedAgentRoot(t *testing.T) {
 	seed := seedInboxRead(t)
 	database := seed.database
 	owedAgentRoot(t, seed)
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	ctx, stop := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), nil)
-	}()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
-		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0
-	})
-	stop()
-	<-done
+	logs := captureLogs(t)
+	runOneMaintenancePass(t, database, logs)
 	if owed := owedRows(t, database.Pool, seed.agent); owed != 0 {
 		t.Fatalf("after the loop's pass the root %s holds %d owed rows, want the pass to have settled it; the sweep logged %q",
 			seed.agent, owed, logs.Lines("owed agent root"))
@@ -337,7 +323,7 @@ func TestTheMaintenanceSweepSkipsAnOwedAgentRootAnotherTransactionHolds(t *testi
 	seed := seedInboxRead(t)
 	database := seed.database
 	owedAgentRoot(t, seed)
-	held := holdGateRow(t, database, "the owed root", `select 1 from messages where id = $1 for no key update`, seed.agent)
+	held := holdGateAgentRoot(t, database, "the owed root", seed.agent)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := sweepAgentDismissalsOwed(ctx, database.Pool); err != nil {

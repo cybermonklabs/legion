@@ -1,9 +1,9 @@
 //go:build basebuild
 
-// The basebuild tag, and how a test of it is run: store_census_test.go. This file's test reads the
-// base release at $TMPDIR/base-dispatch (baseRelease), built from BASELINE_SHA, and is run as
+// The basebuild tag, and how a test of it is run: store_census_test.go. This file's tests read the
+// base release at $TMPDIR/base-dispatch (baseRelease), built from BASELINE_SHA, and are run as
 //
-//	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes$' -count=1 -v
+//	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^(TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes|TestTheBaseReleasesRestoreAndThisHeadsSessionReplyBothLandWhileThisHeadServes)$' -count=1 -v
 
 package main
 
@@ -35,19 +35,7 @@ import (
 // head's Inbox with no mark on its root.
 func TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
-	base := baseRelease(t)
-	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
-
-	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey})
-	previous.waitHealthy(t)
-	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey})
-	current.waitHealthy(t)
-	database, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the run's database: %v", err)
-	}
-	t.Cleanup(func() { database.Close(ctx) })
+	databaseURL, previous, current, database := serveBothBuilds(t, ctx)
 
 	// One one-off message of alice's to a session, with the session's reply, written as the base
 	// release writes them, and dismissed through the base release's own route.
@@ -60,38 +48,10 @@ func TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes(t *t
 		t.Fatalf("write alice's message to s1: %v", err)
 	}
 	reply := sessionReplyAsTheBaseWritesIt(t, ctx, database, root)
-	dismissed := previous.send(t, http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
-		"threads": []string{"agent:" + root},
-		"seen_replies": map[string]any{"agent:" + root: map[string]any{
-			"newest_reply": reply, "unread_replies": []string{reply},
-		}},
-	}), asUser("alice"))
-	if dismissed.status != http.StatusOK || !dismissedOne(t, dismissed) {
-		t.Fatalf("the base release's dismissal of %s: %s, want one thread dismissed", root, dismissed)
-	}
+	dismissAsTheBase(t, previous, root, reply)
 	requireRootColumnIsAlicesMark(t, ctx, database, root, "the base release's dismissal while both serve")
 
-	dropPause := func() {
-		if _, err := database.Exec(ctx, `
-			drop trigger if exists tester_pause_before_a_marks_delete on user_agent_thread_dismissed;
-			drop function if exists tester_pause_before_a_marks_delete();
-		`); err != nil {
-			t.Errorf("drop the pause before a mark's delete: %v", err)
-		}
-	}
-	if _, err := database.Exec(ctx, `
-		create function tester_pause_before_a_marks_delete() returns trigger language plpgsql as $$
-		begin
-		  perform pg_sleep(2);
-		  return old;
-		end;
-		$$;
-		create trigger tester_pause_before_a_marks_delete before delete on user_agent_thread_dismissed
-		  for each row execute function tester_pause_before_a_marks_delete();
-	`); err != nil {
-		t.Fatalf("pause each delete of a mark: %v", err)
-	}
-	t.Cleanup(dropPause)
+	dropPause := pauseEachMarkDelete(t, ctx, database)
 
 	replier, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
@@ -135,19 +95,7 @@ func TestTheBaseReleasesRestoreAndASessionsReplyBothLandWhileThisHeadServes(t *t
 //	go test -tags basebuild -timeout 30m ./cmd/dispatch -run '^TestTheBaseReleasesRestoreAndThisHeadsSessionReplyBothLandWhileThisHeadServes$' -count=1 -v
 func TestTheBaseReleasesRestoreAndThisHeadsSessionReplyBothLandWhileThisHeadServes(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
-	base := baseRelease(t)
-	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
-
-	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey})
-	previous.waitHealthy(t)
-	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey})
-	current.waitHealthy(t)
-	database, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the run's database: %v", err)
-	}
-	t.Cleanup(func() { database.Close(ctx) })
+	_, previous, current, database := serveBothBuilds(t, ctx)
 
 	// One one-off message of alice's to a session, its attempt to s1 and the session's reply,
 	// written as the base release writes them, and dismissed through the base release's own route.
@@ -166,15 +114,7 @@ func TestTheBaseReleasesRestoreAndThisHeadsSessionReplyBothLandWhileThisHeadServ
 		t.Fatalf("write alice's message to s1 and its attempt: %v", err)
 	}
 	reply := sessionReplyAsTheBaseWritesIt(t, ctx, database, root)
-	dismissed := previous.send(t, http.MethodPost, "/api/v1/me/inbox/dismiss", encodeJSON(t, map[string]any{
-		"threads": []string{"agent:" + root},
-		"seen_replies": map[string]any{"agent:" + root: map[string]any{
-			"newest_reply": reply, "unread_replies": []string{reply},
-		}},
-	}), asUser("alice"))
-	if dismissed.status != http.StatusOK || !dismissedOne(t, dismissed) {
-		t.Fatalf("the base release's dismissal of %s: %s, want one thread dismissed", root, dismissed)
-	}
+	dismissAsTheBase(t, previous, root, reply)
 	requireRootColumnIsAlicesMark(t, ctx, database, root, "the base release's dismissal while both serve")
 
 	dropPause := pauseEachMarkDelete(t, ctx, database)
@@ -209,10 +149,30 @@ func TestTheBaseReleasesRestoreAndThisHeadsSessionReplyBothLandWhileThisHeadServ
 	requireInbox(t, current, []string{root}, nil)
 }
 
+// serveBothBuilds boots the base release and then this head over a run's database of its own, as a
+// roll has both serve it, and connects to that database. It answers the database's URL, the two
+// processes and the connection, which the test's cleanup closes.
+func serveBothBuilds(t *testing.T, ctx context.Context) (string, *dispatchProcess, *dispatchProcess, *pgx.Conn) {
+	t.Helper()
+	databaseURL := censusDatabase(t)
+	base := baseRelease(t)
+	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
+
+	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey})
+	previous.waitHealthy(t)
+	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey})
+	current.waitHealthy(t)
+	database, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to the run's database: %v", err)
+	}
+	t.Cleanup(func() { database.Close(ctx) })
+	return databaseURL, previous, current, database
+}
+
 // pauseEachMarkDelete widens a restore's window between its mark and the root with a trigger that
 // pauses two seconds before each delete of a mark, which changes no lock either write takes or the
-// order it takes them in, as the test above does, and answers the drop of that trigger, which the
-// test's cleanup runs too.
+// order it takes them in, and answers the drop of that trigger, which the test's cleanup runs too.
 func pauseEachMarkDelete(t *testing.T, ctx context.Context, database *pgx.Conn) func() {
 	t.Helper()
 	drop := func() {
