@@ -69,8 +69,9 @@ type DeliveryWake struct {
 	// call took nothing, since something already brought the role back or took the claim over.
 	NotReleased bool
 	// OpenResumePause and WakeStartQueued say, where the role's open resume refused the take, what
-	// that resume is, as the take read it in its own transaction (OpenPodResume). The caller logs
-	// the refusal from them and reads nothing itself (internal/daemon's logRefusedByOpenResume).
+	// that resume is, as the take read it in its own transaction, after the refusal and under the
+	// lock it holds on the claim's row (openPodResume). The caller logs the refusal from them and
+	// reads nothing itself (internal/daemon's logRefusedByOpenResume).
 	//
 	// OpenResumePause is the project pause that held that resume (pod_resumes.pause_id): the
 	// resume is then that pause's held wake (decision 15 of dispatch://INFRA-3759). It is 0 for a
@@ -82,8 +83,10 @@ type DeliveryWake struct {
 	// once the release's teardown row leaves the outbox (record's outboxInOrder), and a pause's
 	// held wake runs its start at the pause's resume. The caller logs such a refusal at debug.
 	//
-	// Both are zero where the take's read found no open resume. A resume that another wake took
-	// after that read can still refuse the take, and then both are zero too.
+	// Both are zero only where the take was not refused by an open resume: it took the wake, or it
+	// answered InRelease, StartQueued or NotReleased before it tried. A resume another wake of the
+	// role took while this take waited for the claim's row is in them, since the read comes after
+	// the refusal that resume made.
 	OpenResumePause int64
 	WakeStartQueued bool
 }
@@ -127,8 +130,10 @@ type DeliveryWake struct {
 // wakeForDelivery): the pause's held wake, whose start is queued for the pause's resume, and a
 // workflow wake whose start has not run. Both are normal, and the call answers what that open
 // resume is for them: the pause that held it (OpenResumePause), and whether a wake's own start of
-// the role is queued (wakeStartQueued, WakeStartQueued). The caller can then tell such a wake
-// from a resume with no start behind it, with no read of its own.
+// the role is queued (wakeStartQueued, WakeStartQueued). It reads both after the refusal, under
+// the lock it holds on the claim's row, so a resume another wake of the role took while this take
+// waited for that lock is what they name. The caller can then tell such a wake from a resume with
+// no start behind it, with no read of its own.
 //
 // The caller read the claim as released from its machine, outside this transaction, and a start
 // can run and finish between that read and the read of the queued starts: the cancel's start
@@ -189,7 +194,7 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
 			return err
 		}
-		_, pause, open, err := openPodResume(ctx, tx, project, issue, role)
+		_, _, open, err := openPodResume(ctx, tx, project, issue, role)
 		if err != nil {
 			return err
 		}
@@ -197,10 +202,7 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 			if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
 				return err
 			}
-		} else if wake.WakeStartQueued, err = wakeStartQueued(ctx, tx, issue, role, generation); err != nil {
-			return err
 		}
-		wake.OpenResumePause = pause
 		held, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
@@ -214,7 +216,20 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.NotReleased = !released; wake.NotReleased {
 			return nil
 		}
-		wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, held)
+		if wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, held); err != nil || wake.Taken {
+			return err
+		}
+		// The take was refused, and the role's open resume is what refuses it. The read above was
+		// made before this transaction locked the claim's row, so a resume another wake of the
+		// role took while this one waited for that lock is not in it. Read it again here, under
+		// the lock and after the refusal, so the caller names the wake that refused this one
+		// rather than a resume with nothing behind it (logRefusedByOpenResume).
+		_, pause, open, err := openPodResume(ctx, tx, project, issue, role)
+		if err != nil || !open {
+			return err
+		}
+		wake.OpenResumePause = pause
+		wake.WakeStartQueued, err = wakeStartQueued(ctx, tx, issue, role, generation)
 		return err
 	})
 	return wake, err

@@ -71,7 +71,9 @@ body: |-
   roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
   released role. The docs say how an operator ends it when the cluster cannot be fixed. A delivery
   wake that meets a wake whose start is still queued logs at debug, not as a resume with no process
-  behind it. A waiting retry logs
+  behind it, and one whose take a pause's held wake refused in the same moment logs at info and
+  names that pause, since the take reads the open resume after the refusal, under the lock it
+  holds on the claim's row. A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z
 custom:

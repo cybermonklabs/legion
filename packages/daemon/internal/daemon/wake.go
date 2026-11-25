@@ -453,8 +453,10 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // logRefusedByOpenResume says why a delivery wake whose take the role's open resume refused
 // resumes a claim that is still released (wakeForDelivery), by whose that open resume is
 // (store.DeliveryWake.OpenResumePause) and by whether a wake's own start of the role is queued
-// (WakeStartQueued), both from the take's one read of that open resume in its own transaction,
-// which this does not read again. One a pause held (its pause, the held wake of decision 15
+// (WakeStartQueued), both read by the take in its own transaction, after the refusal and under
+// the lock it holds on the claim's row, so a resume another wake took while that take waited for
+// the lock is in them; this does not read either again. One a pause held (its pause, the held
+// wake of decision 15
 // of dispatch://INFRA-3759) is one of three wakes. The pause's owed launch, and the workflow's
 // wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause (the
 // listener's report of a role message the pause held, or of a message another session sent the
@@ -479,9 +481,7 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 //
 // Any other open resume over a released claim is one whose process never came — a resume the
 // store refused after its take committed, or a daemon that stopped between the two — and the line
-// says so at Warn: the resume goes ahead either way. A take refused by a resume that another wake
-// took after the take's read is logged at Warn too, since that read found no resume to say whose
-// it is.
+// says so at Warn: the resume goes ahead either way.
 func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail string, wake store.DeliveryWake) {
 	if wake.OpenResumePause != 0 {
 		r.log.Info("wake: a released role's open resume is its pause's held wake; this wake resumes the role through the wake pacing",
