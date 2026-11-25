@@ -1498,3 +1498,53 @@ func TestTheWakeLetOutStampIsTheMomentOfEachLetOut(t *testing.T) {
 	h.wantStarts(secondToken, 1)
 	want(t, stamp{token: h.token, at: start}, stamp{token: secondToken, at: waiting.At})
 }
+
+// A wait the daemon was told of ends with no let-out where a request the pacing lets through
+// launches the claim in the waiting wake's place, and the daemon is told that end at the request's
+// moment. The resume's stuck clock stops for a wait (Deps.WakeQueued), so a wait whose end went
+// untold would leave that clock stopped, and a launch that then took no turn would never be
+// reported. A request that launches nothing leaves the wake waiting at its place, and the daemon
+// is told nothing for it.
+func TestAWaitThatEndsWithNoLetOutIsToldAtItsEnd(t *testing.T) {
+	var mu sync.Mutex
+	var queued int
+	var ended []time.Time
+	h := pacedHarness(t, wakeRate, func(d *Deps) {
+		d.WakeQueued = func(token claim.Token, _ string, _ claim.Role) {
+			mu.Lock()
+			defer mu.Unlock()
+			if token == secondToken {
+				queued++
+			}
+		}
+		d.WakeLetOut = func(token claim.Token, _ string, _ claim.Role, at time.Time) {
+			mu.Lock()
+			defer mu.Unlock()
+			if token == secondToken {
+				ended = append(ended, at)
+			}
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
+	want := func(t *testing.T, wantQueued int, wantEnded ...time.Time) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if queued != wantQueued || !slices.EqualFunc(ended, wantEnded, time.Time.Equal) {
+			t.Fatalf("the daemon was told %d waits began and waits ended at %v, want %d and %v", queued, ended, wantQueued, wantEnded)
+		}
+	}
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
+	want(t, 1)
+
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.wantStarts(secondToken, 0)
+	want(t, 1)
+
+	h.clock.Advance(wakePart)
+	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.wantStarts(secondToken, 1)
+	want(t, 1, h.clock.Now())
+}

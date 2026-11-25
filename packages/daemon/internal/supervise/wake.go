@@ -126,12 +126,14 @@ type WakePace struct {
 	Burst int
 }
 
-// WakeWaiting is a machine's waiting wake as its view publishes it: what kind of wake it is
+// WakeWaiting is a machine's waiting wake as its view names it: what kind of wake it is
 // (WakeLaunch or WakePluginRefresh, the two kinds a machine parks) and the moment the pacing
-// estimates it lets the wake's place out (wakepace.Place.Estimate, read where the view is
-// published), which is when it runs (wakeNow). It is the memory-only `wake` the machine holds,
-// cut down to what a reader outside this package is owed: never the launch itself, and never the
-// state the gate found, which only an operator's request that does not wait reads (dropWakeFor).
+// estimates it lets the wake's place out (wakepace.Place.Estimate, read from the pacer when the
+// view is read, Machine.View), which is when it runs (wakeNow). A waiting wake holds a place and
+// no moment, so two reads of one wake can name two moments. It is the memory-only `wake` the
+// machine holds, cut down to what a reader outside this package is owed: never the launch itself,
+// and never the state the gate found, which only an operator's request that does not wait reads
+// (dropWakeFor).
 type WakeWaiting struct {
 	Kind WakeKind
 	At   time.Time
@@ -299,8 +301,8 @@ func (w *wake) leave() {
 // instead (pauseHolds, pauseGate), whoever raised it; a place its caller took for it is given up
 // as the decision ends (Machine.handle). The daemon is told of a paced launch's let-out when the
 // pacer lets its place out (wakeLetOut, decision 14) — here, for a place let out at once, and at
-// the wake's turn for one that waits (wakeNow) — and of the wait as it begins (wakeQueued), never
-// of a moment at the join.
+// the wake's turn for one that waits (wakeNow) — and of the wait as the decision that began it
+// ends (tellWakeQueue), never of a moment at the join.
 func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepace.Place, run, again func(context.Context) error) error {
 	kind := WakeLaunch
 	if intent := m.pluginRelaunch; intent != nil {
@@ -328,7 +330,6 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepac
 		m.wakeRan(kind, true, 0, let)
 		return run(ctx)
 	}
-	m.wakeQueued()
 	// The intent of a stale-plugin relaunch travels with the launch it names, so the wake that
 	// holds that launch holds the intent while it waits and gives it back at its turn
 	// (markPluginRelaunch, runWake, wake.pluginMark). A launch that runs above leaves it on the
@@ -475,8 +476,8 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake) error {
 // decision ends (Machine.handle). Only a wake of the pacing's own moves: a launch the pause's gate
 // holds or one waiting for its pod's start has no place of the pacing's to move.
 //
-// Nothing is told the daemon here: the wake still waits in a queue, which it was told at the park
-// (wakeQueued), and its let-out is told when it comes (wakeNow).
+// Nothing is told the daemon here: the wake still waits in a queue, which it was told at the end
+// of the decision that parked it (tellWakeQueue), and its let-out is told when it comes (wakeNow).
 func (m *Machine) takeEarlierPlace(carried *wakepace.Place) bool {
 	w := m.wake
 	if carried == nil || w == nil || w.place == nil || w.pause != 0 || w.park != nil || !m.placeBefore(carried, w.place) {
@@ -525,19 +526,6 @@ func (m *Machine) leaveUntaken(carried *wakepace.Place) {
 	if m.wake == nil || m.wake.place != carried {
 		carried.Leave()
 	}
-}
-
-// startMarks is whether ev is a start that carries an Envoy message for the claim's role
-// (RequestSpawn.Message, RequestRuleResume.Message), which marks the claim before its row runs
-// (Machine.handle, markMessage).
-func startMarks(ev Event) bool {
-	switch ev := ev.(type) {
-	case RequestSpawn:
-		return ev.Message
-	case RequestRuleResume:
-		return ev.Message
-	}
-	return false
 }
 
 // messageMarked is the MessageMarked row: the claim is marked for the message the listener's
@@ -869,18 +857,18 @@ func (m *Machine) wakeRan(kind WakeKind, paced bool, waitedFor time.Duration, le
 }
 
 // WakeRanMessage and WakeRanFields are the shape of that line, for the one wake lane outside this
-// package: the catch-up the daemon's outbox runs, which the pacing held on its row rather than in
-// a machine (the outbox's wakeRan). The shape is the contract — one grep over the daemon's log
-// finds every wake of a restart or a plugin wave, whichever lane caused it, and a reader counts
-// the wakes of a minute against the rate and the burst each line names — so the two lanes compose
-// it here rather than each write their own. A caller with a claim of its own, where this package's
-// logger already carries one, prepends it to the fields.
+// package: the catch-up the daemon's outbox runs, whose place in the pacing's queue belongs to its
+// outbox row rather than to a machine (the outbox's wakeRan). The shape is the contract — one grep
+// over the daemon's log finds every wake of a restart or a plugin wave, whichever lane caused it,
+// and a reader counts the wakes of a minute against the rate and the burst each line names — so
+// the two lanes compose it here rather than each write their own. A caller with a claim of its
+// own, where this package's logger already carries one, prepends it to the fields.
 const WakeRanMessage = "supervise: wake ran"
 
 // WakeRanFields is the fields of a wake's line, in order, as wakeRan states them. A wake that
 // waited nothing leaves waitedFor out, one no let-out of the pacer's ran — the zero Let, which is
-// what the catch-up lane passes, since its row waits on no place — leaves queue and turnsWaited
-// out, and one that did not come late for its message (lateForMessage) leaves that out.
+// a wake the pacing did not hold — leaves queue and turnsWaited out, and one that did not come
+// late for its message (lateForMessage) leaves that out.
 func WakeRanFields(kind WakeKind, paced bool, waitedFor time.Duration, let wakepace.Let, lateForMessage bool, rate, burst int) []any {
 	fields := []any{"kind", kind, "waited", waitedFor > 0}
 	if waitedFor > 0 {

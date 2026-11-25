@@ -237,8 +237,9 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // was held for has ended (decision 7): it joins the queue its claim's class names (WakeQueue) and
 // its TimerWake is bound to that place, exactly as the wake gate parks a launch (reserveWake,
 // bindWake, parkWake). A launch the pacer lets out at once runs now, and the daemon is told that
-// let-out (wakeLetOut, decision 14); one that waits tells the daemon it waits (wakeQueued) and is
-// told of its let-out at its turn (wakeNow). A daemon whose pacing is off runs it now, unpaced. A
+// let-out (wakeLetOut, decision 14); one that waits is told to the daemon as waiting when this
+// decision ends (tellWakeQueue) and of its let-out at its turn (wakeNow). A daemon whose pacing
+// is off runs it now, unpaced. A
 // launch that had its turn from the pacing before the pause's gate held it (wake.paid) runs now
 // with no place of its own: a wake the pacing let out, whose turn met the pause, writes its one
 // wake line now, reporting the whole of its hold from its join (runWake), and one that passed the
@@ -264,7 +265,6 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 		m.wakeLetOut(let.At)
 		return m.runWake(ctx, waiting, true)
 	}
-	m.wakeQueued()
 	return m.parkWake(ctx, waiting)
 }
 
@@ -393,22 +393,44 @@ func (m *Machine) stopAtResult(ctx context.Context) error {
 	return m.suspendHeld(ctx)
 }
 
-// wakeLetOut tells the daemon the moment a launch of this claim is let out (Deps.WakeLetOut,
-// decision 14), at the let-out itself and never at the join: the pacer's let-out of a waiting
-// place at the wake's turn (wakeNow), a place the pacer lets out at once at the wake gate
-// (reserveWake) or at the pause's let-out (letOutHeldLaunch), and an operator's request that runs
-// a waiting launch now (runParkedLaunchNow, runDroppedLaunchForRetry), whose let-out is now.
+// wakeLetOut tells the daemon the moment a launch of this claim stops waiting for the wake pacing
+// (Deps.WakeLetOut, decision 14). A let-out is told at the let-out itself and never at the join:
+// the pacer's let-out of a waiting place at the wake's turn (wakeNow), a place the pacer lets out
+// at once at the wake gate (reserveWake) or at the pause's let-out (letOutHeldLaunch), and an
+// operator's request that runs a waiting launch now (runParkedLaunchNow,
+// runDroppedLaunchForRetry), whose let-out is now. A wait that ends with no let-out is told at the
+// end of its decision (tellWakeQueue). Either way the daemon has been told the end of the wait it
+// was last told of (Machine.queueTold).
 func (m *Machine) wakeLetOut(at time.Time) {
+	m.queueTold = false
 	if m.deps.WakeLetOut != nil {
 		m.deps.WakeLetOut(m.claim.Token, m.claim.Issue, m.claim.Role, at)
 	}
 }
 
-// wakeQueued tells the daemon a paced launch of this claim has begun to wait in the pacing's
-// queue (Deps.WakeQueued): the wake gate's, and the pause's let-out's, whose place the pacer does
-// not let out at once (reserveWake, letOutHeldLaunch).
-func (m *Machine) wakeQueued() {
-	if m.deps.WakeQueued != nil {
-		m.deps.WakeQueued(m.claim.Token, m.claim.Issue, m.claim.Role)
+// tellWakeQueue tells the daemon that this claim's paced launch began to wait in the pacing's
+// queue in the decision now ending (Deps.WakeQueued), or that a wait the daemon was told of ended
+// in it with no let-out (wakeLetOut, at the decision's now). It is the end of every decision
+// (Machine.unlock), so no path that parks a wake or takes one off the machine has to name it.
+//
+// A wait begins at the wake gate's park and at the pause's let-out's (reserveWake,
+// letOutHeldLaunch). It ends with no let-out where a request the pacing lets through launched the
+// claim in the waiting wake's place or stopped it (dropWakeFor, reparkWake), where the project
+// pause's gate took the launch (pauseGate), and where the process the wake waited over was let go
+// and nothing took its place (letGo). The resume's stuck clock stops for the wait and starts at
+// its end, so a wait whose end the daemon was never told would leave that clock stopped, and a
+// role no wake brought back would never be reported. A wake that is dropped and taken up again in
+// one decision, or that moves to another place (reparkWake, takeEarlierPlace), waits on, and the
+// daemon is told nothing.
+func (m *Machine) tellWakeQueue() {
+	queued := m.pacedWake() != nil
+	switch {
+	case queued && !m.queueTold:
+		m.queueTold = true
+		if m.deps.WakeQueued != nil {
+			m.deps.WakeQueued(m.claim.Token, m.claim.Issue, m.claim.Role)
+		}
+	case !queued && m.queueTold:
+		m.wakeLetOut(m.deps.Clock.Now())
 	}
 }

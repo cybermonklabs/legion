@@ -463,10 +463,6 @@ type RequestSpawn struct {
 	// as its decision ends (Machine.handle), and the turn it would have taken goes to the wake
 	// behind it.
 	Place *wakepace.Place
-	// Message is whether the start carries an Envoy message waiting for the claim's role: the
-	// decision marks the claim at its now before the launch reaches the gate (Claim.MessageMarkAt,
-	// markMessage), so that launch joins the pacing's first queue (WakeQueue).
-	Message bool
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -552,22 +548,22 @@ type ResumePause struct {
 // included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
 // launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
 // often as the rule meets the claim without ever relaunching one that is running. Reason is the
-// rule, for the line it logs. Message is whether the start that asks it carries an Envoy message
-// waiting for the claim's role, as RequestSpawn.Message is: the claim is marked at the decision's
-// now, whatever its row decides, so a launch it raises joins the pacing's first queue.
+// rule, for the line it logs.
 type RequestRuleResume struct {
-	Claim   claim.Token
-	Reason  string
-	Message bool
+	Claim  claim.Token
+	Reason string
 }
 
 // MessageMarked is the daemon's word that a wake for a waiting Envoy message reached this claim:
-// the report of the listener that carried the message for the claim's role (dispatch://INFRA-5682
-// R1). The claim's mark becomes At where none stands (Claim.MessageMarkAt, markMessage), and a
-// wake of the claim waiting in the pacing's second queue moves to the first, so a role whose
-// message Envoy keeps an hour is not woken behind a restart's backlog. It writes nothing to the
-// store: the daemon persists the mark before it posts this. A claim in any state may be marked,
-// and the mark decides nothing else, so every state takes it and none moves.
+// the listener's report of a message for the claim's role or session, or a start row whose wake
+// carried one (dispatch://INFRA-5682 R1). At is the mark the store holds once the daemon has
+// written it there, which is the earliest that stands. The claim's mark becomes At where none
+// stands (Claim.MessageMarkAt, markMessage), and a wake of the claim waiting in the pacing's
+// second queue moves to the first, so a role whose message Envoy keeps an hour is not woken
+// behind a restart's backlog. It writes nothing to the store: the daemon persists the mark before
+// it posts this, and posts it before the start it belongs to, so the launch that start raises
+// joins the first queue. A claim in any state may be marked, and the mark decides nothing else,
+// so every state takes it and none moves.
 type MessageMarked struct {
 	Claim claim.Token
 	At    time.Time

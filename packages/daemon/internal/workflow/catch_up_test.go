@@ -358,15 +358,12 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // The catch-up a start writes in place of a launch waits its turn in the daemon's wake pacing:
-// the ready carries the mark only that start sets (intake.ClaimReady.Paced), the engine takes one
-// turn from the limiter it was given, and the row is due at the moment that turn comes and
-// carries it (record.Notice.PacedAt), which is what the outbox reads for the wait in the line
-// that wake writes and what a ready compares its now against. A launch's own ready takes no turn,
-// whatever the pacing: the launch already took one at the machine's gate. An engine with no
-// limiter at all — the deployment that paces nothing — writes both at once, with no moment.
+// the ready carries the mark only that start sets (intake.ClaimReady.Paced). The row has no
+// due moment when it commits, and the daemon's hook then receives its id to queue it.
+// A launch's own ready takes no turn, and without pacing both kinds are due at once.
 func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
-	turn := now.Add(90 * time.Second)
+	held := record.CatchUpHeldAt
 	for _, tc := range []struct {
 		name    string
 		paced   bool
@@ -375,7 +372,7 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 		marked  time.Time
 		reserve int
 	}{
-		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: turn, marked: turn, reserve: 1},
+		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: held, marked: held, reserve: 1},
 		{name: "a launch's ready while the pacing is on", pacing: true, due: now},
 		{name: "a start's ready while the pacing is off", paced: true, due: now},
 	} {
@@ -383,10 +380,18 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 			pool := migratedPool(t)
 			seedAdmittedTree(t, pool, 1)
 			reserved := 0
+			var joined int64
 			cfg := Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories,
 				Clock: func() time.Time { return now }}
 			if tc.pacing {
-				cfg.Reserve = func(time.Time) time.Time { reserved++; return turn }
+				cfg.HoldCatchUp = func(id int64, issue string) {
+					reserved++
+					joined = id
+					var due time.Time
+					if err := pool.QueryRow(t.Context(), `select next_at from outbox where id = $1 and issue = $2`, id, issue).Scan(&due); err != nil || !due.Equal(held) {
+						t.Errorf("the hold hook saw row %d due at %s, error %v; want a committed held row", id, due, err)
+					}
+				}
 			}
 			engine := New(record.NewStore(), cfg, nil)
 			token, err := claim.NewToken("legion", "LEGION-1", claim.RoleArchitect)
@@ -399,10 +404,11 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 			}
 
 			var due time.Time
+			var id int64
 			// A catch-up the pacing reserved no moment for carries none at all (omitzero).
 			var marked *time.Time
-			if err := pool.QueryRow(t.Context(), `select next_at, (payload->>'paced_at')::timestamptz from outbox
-				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&due, &marked); err != nil {
+			if err := pool.QueryRow(t.Context(), `select id, next_at, (payload->>'paced_at')::timestamptz from outbox
+				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&id, &due, &marked); err != nil {
 				t.Fatalf("read the catch-up: %v", err)
 			}
 			var reservedAt time.Time
@@ -412,6 +418,9 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 			if !due.UTC().Equal(tc.due) || !reservedAt.Equal(tc.marked) || reserved != tc.reserve {
 				t.Fatalf("the catch-up is due at %s, reserved for %s, after %d reservations; want %s, %s, %d",
 					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
+			}
+			if tc.reserve != 0 && id != joined {
+				t.Fatalf("joined row %d, want catch-up %d", joined, id)
 			}
 		})
 	}

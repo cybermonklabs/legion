@@ -3408,7 +3408,7 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
-func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
 	// The claims of the issue's catch-ups are serialized with this drop by an advisory lock keyed
 	// by the issue, which a catch-up's claim takes too (ClaimRow). The lease check below is a
 	// subquery over the outbox, and Postgres rechecks a concurrently updated row's new version
@@ -3426,22 +3426,43 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 	// would close a deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.outbox.catch-up:' || $1::text))`,
 		issue); err != nil {
-		return fmt.Errorf("lock the claims of the catch-ups of %s: %w", issue, err)
+		return nil, fmt.Errorf("lock the claims of the catch-ups of %s: %w", issue, err)
 	}
 	// A catch-up that carries kept decisions and one of whose telling's rows (itself, the row it
 	// copies, or a copy of either) is under a live lease is kept: that row may be publishing now,
 	// and the decisions this one claims are that telling's to settle.
-	if _, err := tx.Exec(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up'
+	rows, err := tx.Query(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up'
 		and not exists (select 1 from processed_events where source = $3
 			and event_id = $4 || coalesce((outbox.payload->>'resend_of')::bigint, outbox.id))
 		and not (payload->'catch_up'->'kept' is not null and exists (select 1 from outbox live
 			where live.kind = outbox.kind and live.issue = outbox.issue
 			and coalesce((live.payload->>'resend_of')::bigint, live.id) = coalesce((outbox.payload->>'resend_of')::bigint, outbox.id)
-			and live.lease_token <> '' and live.lease_until > $5))`,
-		string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix, now); err != nil {
-		return fmt.Errorf("drop the queued catch-ups of %s: %w", issue, err)
+			and live.lease_token <> '' and live.lease_until > $5))
+		returning id`, string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix, now)
+	if err != nil {
+		return nil, fmt.Errorf("drop the queued catch-ups of %s: %w", issue, err)
 	}
-	return nil
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("read the dropped catch-ups of %s: %w", issue, err)
+	}
+	return ids, nil
+}
+
+// ReleaseHeldCatchUp makes the held catch-up row id due at at, the moment the wake pacing let its
+// place out, and records that let-out on the notice for the line its wake writes: PacedAt becomes
+// at, and PacedTurns turns, the turns it waited (Notice.PacedAt). It answers whether the row was
+// held. A row a newer catch-up dropped, or one let out already, is left as it is, so a let-out
+// made twice, or made after the drop, changes nothing.
+func ReleaseHeldCatchUp(ctx context.Context, tx pgx.Tx, id int64, at time.Time, turns int) (bool, error) {
+	tag, err := tx.Exec(ctx, `update outbox set next_at = $3,
+		payload = payload || jsonb_build_object('paced_at', $3::timestamptz, 'paced_turns', $4::int)
+		where id = $1 and next_at = $2 and kind = 'notice' and payload->>'kind' = 'catch-up'`,
+		id, CatchUpHeldAt, at.UTC(), turns)
+	if err != nil {
+		return false, fmt.Errorf("release held catch-up row %d: %w", id, err)
+	}
+	return tag.RowsAffected() != 0, nil
 }
 
 func (s *Postgres) OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error) {

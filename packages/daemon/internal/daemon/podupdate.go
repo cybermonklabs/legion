@@ -237,10 +237,11 @@ func (h podHolds) since(opened, now time.Time) time.Duration {
 // alone (roundClock.roundBound), which is the one reader of the latest let-out of all the roles.
 // A hold that stands counts to now. A hold that ended at the resume or at a role's ready counts to
 // the later of that end and the latest let-out of a launch its pause held for a role of the pod
-// (store.PausePodHold.LetOut), which may still be ahead: a role whose launch waits its turn in the
-// wake pacing can answer no round, and the pause, not the role, kept it from taking a turn, as the
-// stuck clock of its resume counts nothing before that let-out either (decision 14 of
-// dispatch://INFRA-3759). A hold a deletion ended counts to that end: the pod is gone.
+// (store.PausePodHold.LetOut), which is the sweep's own now while such a launch still waits in
+// the wake pacing's queue: a role whose launch waits its turn in the wake pacing can answer no
+// round, and the pause, not the role, kept it from taking a turn, as the stuck clock of its
+// resume counts nothing before that let-out either (decision 14 of dispatch://INFRA-3759). A hold
+// a deletion ended counts to that end: the pod is gone.
 func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 	switch {
 	case hold.EndedAt.IsZero():
@@ -311,7 +312,7 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 			since = *c.UpdateOpenedAt
 		}
 	}
-	read, err := s.supervisor.store.PausePodHoldsSince(ctx, s.cfg.Project, since)
+	read, err := s.supervisor.store.PausePodHoldsSince(ctx, s.cfg.Project, since, now)
 	if err != nil {
 		return nil, err
 	}

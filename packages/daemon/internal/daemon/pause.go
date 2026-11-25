@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,6 +53,9 @@ const pauseStopWait = 10 * time.Minute
 // neither pauses nor reads a pause, and its machines are handed no flag (nil Deps.Paused, never
 // paused).
 type projectPause struct {
+	// ctx ends when the daemon stops, which ends the stuck-clock writes this half makes again
+	// (writeResumeClock).
+	ctx     context.Context
 	service *pause.Service
 	store   *store.Store
 	// records is the project's records (projectRecords), built with no wake: the stop transaction
@@ -74,16 +78,23 @@ type projectPause struct {
 	// the service's acts and so of the Effects, is served after both are set.
 	workflow   *workflowRuntime
 	supervisor *supervisor
+	// clockWrites is, for each claim with a write of its resume's stuck clock under way, the
+	// channel the newest of those writes closes as it ends (writeResumeClock), which the next one
+	// waits on: the stop of a clock and its start are each written on a goroutine of their own,
+	// and a start that landed before the stop it follows would leave the clock stopped. clockMu
+	// guards the map.
+	clockMu     sync.Mutex
+	clockWrites map[claim.Token]chan struct{}
 }
 
 // newProjectPause builds the daemon's pause over st for cfg's project. Its flag reads no pause
-// until the boot loads it (supervision.start).
-func newProjectPause(cfg config.Config, st *store.Store, token string, w *workflowRuntime, clock supervise.Clock, log *slog.Logger) (*projectPause, error) {
+// until the boot loads it (supervision.start). ctx is the daemon's own, which ends when it stops.
+func newProjectPause(ctx context.Context, cfg config.Config, st *store.Store, token string, w *workflowRuntime, clock supervise.Clock, log *slog.Logger) (*projectPause, error) {
 	pods, err := st.PodRecordsOf(cfg.Project)
 	if err != nil {
 		return nil, err
 	}
-	p := &projectPause{store: st, records: projectRecords{Store: record.NewStore(), project: cfg.Project}, pods: pods, project: cfg.Project,
+	p := &projectPause{ctx: ctx, store: st, records: projectRecords{Store: record.NewStore(), project: cfg.Project}, pods: pods, project: cfg.Project,
 		token: token, backstop: releaseBackstop(cfg), now: clock.Now, log: log, workflow: w}
 	// The service reads the rows the pause holds and whether a controller is registered, and no
 	// issue record, so it reads the store as it is (pause.Options.Records).
@@ -302,33 +313,94 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	return made, nil
 }
 
-// wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment a launch of the claim token is
-// let out — the wake pacing's let-out of its place, or an operator's request that runs it now —
-// becomes the stuck clock of its role's open resume (store.Store.SetResumeClock, which never moves
-// a clock back), so a launch that waited its turn in a long queue is not warned stuck for the
-// wait. The machine calls it at the let-out, inside its decision, so the write runs on a goroutine
-// of its own, as podResume's stamp does, under a hold mark of its own; a failed write is logged
-// and the clock keeps the moment it had.
+// wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment a launch of the claim token
+// stops waiting for the wake pacing — the pacer's let-out of its place, an operator's request that
+// runs it now, or the end of a wait that no let-out ended — becomes the stuck clock of its role's
+// open resume, and that clock runs from it (store.Store.SetResumeClock, which never moves a clock
+// back), so a launch that waited its turn in a long queue is not warned stuck for the wait. The
+// machine calls it inside its decision, so the write runs on a goroutine of its own
+// (writeResumeClock).
 func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Role, at time.Time) {
+	p.writeResumeClock(token, issue, role, "start the stuck clock of its resume", func(ctx context.Context) error {
+		_, err := p.store.SetResumeClock(ctx, p.token, issue, role, at)
+		return err
+	})
+}
+
+// wakeQueued is supervise.Deps.WakeQueued: a paced launch of the claim token has begun to wait in
+// the wake pacing's queue, and the stuck clock of its role's open resume stops until the wait ends
+// (store.Store.SetResumeQueued, wakeLetOut). A place in the queue has no moment until the pacer
+// lets it out, so there is no moment to set the clock to while it waits
+// (dispatch://INFRA-5682 R1).
+func (p *projectPause) wakeQueued(token claim.Token, issue string, role claim.Role) {
+	p.writeResumeClock(token, issue, role, "stop the stuck clock of its resume", func(ctx context.Context) error {
+		return p.store.SetResumeQueued(ctx, p.token, issue, role)
+	})
+}
+
+// writeResumeClock makes one write of the stuck clock of the open resume of issue's role, the
+// claim token's, on a goroutine of its own under a hold mark of its own, as podResume's stamp is
+// made: the machine calls from inside its decision. The writes of one claim are made in the
+// order the machine asked for them (clockWrites), and a write that fails is made again until it
+// lands or the daemon stops (writeAgainUntilMade). Both are for the stop: a start lost, or made
+// before the stop it follows, would leave the clock stopped, and a resume whose clock is stopped
+// is passed over by the stuck warning and the stranded report. The next daemon starts every clock
+// this one left stopped (startStoppedResumeClocks).
+func (p *projectPause) writeResumeClock(token claim.Token, issue string, role claim.Role, what string, write func(context.Context) error) {
 	if issue == "" || role == claim.RoleController {
 		return
 	}
+	done := make(chan struct{})
+	p.clockMu.Lock()
+	if p.clockWrites == nil {
+		p.clockWrites = make(map[claim.Token]chan struct{})
+	}
+	before := p.clockWrites[token]
+	p.clockWrites[token] = done
+	p.clockMu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
-		defer cancel()
-		if _, err := p.store.SetResumeClock(ctx, p.token, issue, role, at); err != nil {
-			p.log.Warn("wake: could not start a resume's stuck clock at its launch's let-out moment",
-				"claim", token, "at", at, "error", err)
+		defer func() {
+			p.clockMu.Lock()
+			if p.clockWrites[token] == done {
+				delete(p.clockWrites, token)
+			}
+			p.clockMu.Unlock()
+			close(done)
+		}()
+		if before != nil {
+			<-before
+		}
+		bounded := func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), readyReleaseTimeout)
+			defer cancel()
+			return write(ctx)
+		}
+		failed := func(err error) {
+			p.log.Warn("wake: could not "+what+"; trying again", "claim", token, "in", wakeWriteRetry, "error", err)
+		}
+		if err := bounded(p.ctx); err != nil && p.ctx.Err() == nil {
+			failed(err)
+			writeAgainUntilMade(p.ctx, bounded, failed)
 		}
 	}()
 }
 
-// wakeQueued is supervise.Deps.WakeQueued: a paced launch of the claim token has begun to wait in
-// the wake pacing's queue. It does nothing yet. It is the hook the resume's stuck clock will write
-// the wait by — that clock does not run while the launch's place waits, and starts at its let-out
-// (wakeLetOut) — and the daemon wires it now so that the machines tell it every wait from the
-// start.
-func (p *projectPause) wakeQueued(claim.Token, string, claim.Role) {}
+// startStoppedResumeClocks starts, at the boot, the stuck clock of every open resume the previous
+// daemon left stopped for a launch waiting in its pacing's queue (store.Store.StartQueuedResumeClocks).
+// That queue went with that daemon, so none of those launches waits in one now. It runs before a
+// claim is restored, so a machine that parks one of those launches again stops its clock again
+// after this (wakeQueued), and a resume whose launch this boot does not raise again is not left
+// with a clock that never runs.
+func (p *projectPause) startStoppedResumeClocks(ctx context.Context) error {
+	started, err := p.store.StartQueuedResumeClocks(ctx, p.token, p.now())
+	if err != nil {
+		return err
+	}
+	if started > 0 {
+		p.log.Info("wake: started the stuck clocks the previous daemon left stopped for launches waiting in its pacing", "resumes", started)
+	}
+	return nil
+}
 
 // Paused is the catch-up once a pause has committed and the flag is set (pause.Effects, decision
 // 3): every live role of the project's machines but the controller's that the pause's

@@ -900,8 +900,9 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	now := func() time.Time { return wakeOrigin }
-	engine := wakeEngine(records, pacedWakes(), now)
+	clock := &waveClock{now: wakeOrigin}
+	now := clock.Now
+	engine := wakeEngine(records, testCatchUpPacing(t, pool, pacedWakes(), clock), now)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		handlers: []intake.Handler{engine, admit.New(records, engine, 2, "legion", quietLogger())}, now: now}
@@ -925,6 +926,7 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 			}
 		}
 	}
+	letOutCatchUps(t, clock, waveSize-1)
 
 	rows := noticeRows(t, pool)
 	if len(rows) != waveSize+1 {
@@ -953,8 +955,8 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 	assertSpread(t, "the catch-up wave's rows", moments, wakeOrigin)
 }
 
-// The negative control of the catch-up case: the engine with no Reserve, which is the daemon's
-// own wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
+// The negative control of the catch-up case: the engine with no hold hook, which is the daemon's
+// wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
 // once, and the architects it wakes all read their context in the same minute.
 func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 	t.Parallel()
@@ -2328,8 +2330,8 @@ func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool)
 // the catch-up waits, is published after it and never before it, so the architect is woken once
 // and reads the later notice in the turn that wake starts.
 //
-// The negative control is the pacing reverted for this lane, the engine given no Reserve
-// (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is then due at once, the ready
+// The negative control is the pacing reverted for this lane, the engine given no hold hook
+// (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is due at once, the ready
 // has nothing to leave where it was, and the architect's minute holds the whole wave.
 func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testing.T) {
 	t.Parallel()
@@ -2337,13 +2339,24 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	now := wakeOrigin
+	clock := &waveClock{now: wakeOrigin}
+	// Jitter the first interval only. The pending turn already includes that jitter when the
+	// later notice reads its estimate, so the notice and catch-up are due in the same drain.
+	first := true
+	limiter := wakepace.New(testWakeRate, testWakeBurst, func(interval time.Duration) time.Duration {
+		if first {
+			first = false
+			return interval / 2
+		}
+		return 0
+	})
+	pacing := testCatchUpPacing(t, pool, limiter, clock)
 	publisher := &holderPublisher{}
-	engine := wakeEngine(records, pacedWakes(), func() time.Time { return now })
+	engine := wakeEngine(records, pacing, clock.Now)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 		notices: publisher, trees: outboxTreeStore(t, pool), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		handlers: []intake.Handler{engine, admit.New(records, engine, 2, "legion", quietLogger())},
-		now:      func() time.Time { return now }}
+		now:      clock.Now, catchUps: pacing}
 
 	for i := 1; i <= waveSize; i++ {
 		key := fmt.Sprintf("LEGION-%d", i)
@@ -2356,8 +2369,10 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 	// An architect from the middle of the queue, whose turn is minutes out.
 	const woken = "LEGION-20"
 	catchUp, ok := noticeRowOf(t, pool, woken)
-	if !ok || !catchUp.paced() || !catchUp.nextAt.After(now.Add(time.Minute)) {
-		t.Fatalf("the catch-up of %s is %+v, want one the pacing holds more than a minute out", woken, catchUp)
+	due := pacing.estimate(catchUp.id)
+	if !ok || !catchUp.pacedAt.Equal(record.CatchUpHeldAt) || !catchUp.nextAt.Equal(record.CatchUpHeldAt) ||
+		!due.After(clock.Now().Add(time.Minute)) {
+		t.Fatalf("the catch-up of %s is %+v (estimate %s), want held with its estimate more than a minute out", woken, catchUp, due)
 	}
 	architect := mustClaimToken(t, woken, claim.RoleArchitect)
 
@@ -2369,15 +2384,19 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 			woken, after.nextAt, catchUp.nextAt)
 	}
 	rows := noticeRows(t, pool)
-	moments := make([]time.Time, 0, len(rows))
-	for _, row := range rows {
-		moments = append(moments, row.nextAt)
+	letOut := make(map[int64]time.Time, len(rows))
+	readLetOuts := func() {
+		for _, row := range noticeRows(t, pool) {
+			if row.paced() && !row.pacedAt.Equal(record.CatchUpHeldAt) {
+				letOut[row.id] = row.pacedAt
+			}
+		}
 	}
-	assertSpread(t, "the queue after the architect's ready", moments, wakeOrigin)
+	readLetOuts()
 
 	// The later notice of that tree, written while the catch-up waits and due at once.
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, woken, record.Notice{Kind: "phase-finished", Role: claim.RoleArchitect,
-		Phase: phase.Planning, Summary: "the planner finished"}, now))
+		Phase: phase.Planning, Summary: "the planner finished"}, clock.Now()))
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("drain the outbox while the catch-up waits: %v", err)
 	}
@@ -2385,13 +2404,21 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 		t.Fatalf("published %v to the architect of %s while its catch-up waits, want nothing: it is woken once, by the catch-up", got, woken)
 	}
 
-	now = catchUp.nextAt
+	letOutCatchUps(t, clock, 19)
+	readLetOuts()
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("drain the outbox at the catch-up's moment: %v", err)
 	}
 	if got := publishedTo(t, publisher, woken); fmt.Sprint(got) != "[catch-up phase-finished]" {
 		t.Fatalf("published %v to the architect of %s, want the catch-up and then the notice written behind it", got, woken)
 	}
+	letOutCatchUps(t, clock, waveSize-20)
+	readLetOuts()
+	moments := make([]time.Time, 0, len(rows))
+	for _, row := range rows {
+		moments = append(moments, letOut[row.id])
+	}
+	assertSpread(t, "the queue after the architect's ready", moments, wakeOrigin)
 }
 
 // publishedTo is the kind of each notice published to the issue's architect, in order.

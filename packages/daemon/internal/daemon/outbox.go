@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -83,6 +84,7 @@ type outbox struct {
 	records    record.Store
 	dispatch   dispatch.Client
 	notices    notify.Publisher
+	catchUps   *catchUpPacing
 	supervisor *supervisor
 	trees      outboxTrees
 	tokens     appauth.Tokens
@@ -1851,29 +1853,30 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // attempt would count one wake many times in the minute it lands in (scripts/wake-windows.py
 // counts every paced line and builds a window for each).
 //
-// How long the wake waited is the row's own record, not a clock and not its next_at: the engine
-// carried both the moment it reserved and the moment it reserved from, so PacedAt less PacedFrom
-// is what the pacing held this wake for, whatever a retry since has written into next_at
-// (record.Notice.PacedAt, PacedFrom, the store's RetryOutbox). The pair is one clock's: the row's
-// created_at is the database's now() at the start of the fact's transaction, so a wake read
-// against it would be the engine's clock less the database's, and a row the burst let straight
-// out — the first wake of a wave, reserved for the instant it was composed — would report the
+// How long the wake waited is the row's own record, not a clock and not its next_at: the notice
+// carries both the moment the pacing let it out and the moment its hold began, so PacedAt less
+// PacedFrom is what the pacing held this wake for, whatever a retry since has written into
+// next_at (record.Notice.PacedAt, PacedFrom, the store's RetryOutbox). The pair is one clock's:
+// the row's created_at is the database's now() at the start of the fact's transaction, so a wake
+// read against it would be the engine's clock less the database's, and a row the pacer let
+// straight out — the first wake of a wave, let out at the instant it joined — would report the
 // transaction's own duration as a wait. It waited nothing and says so, as supervise's line does;
 // reading the wait from the runner's clock instead would call every such row held, by however
 // long the lane took to pick it up.
 //
 // The pace the line names is the one the daemon holds its machines to (supervise.WakePace, set in
-// openSupervision): the rate and the burst alone, never its Pacer — the reservation that decided
-// when this row was due is the workflow engine's (workflow.Config.Reserve), taken from the same
-// limiter the pacer draws its turns from. A catch-up waits on its row rather than on a place in the
-// pacer's queues, so its line names no queue, no turns waited and no lateness for a message (the
-// zero wakepace.Let, and false). A test that builds the runner by hand over a supervisor with no
-// pace reads the pacing off, which is that line's own reading of it.
+// openSupervision), the rate and the burst alone. The queue is the pacer's second, which every
+// catch-up waits in (catchUpPacing, dispatch://INFRA-5682 R2), and the turns are the ones its
+// let-out recorded on the notice (record.Notice.PacedTurns), which a re-held copy keeps. A
+// catch-up carries no message, so the line never says it came late for one. A test that builds
+// the runner by hand over a supervisor with no pace reads the pacing off, which is that line's
+// own reading of it.
 func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 	architect, _ := claim.NewToken(r.project, row.Issue, claim.RoleArchitect)
 	pace := r.supervisor.deps.WakePace
 	fields := append([]any{"claim", string(architect)},
-		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom), wakepace.Let{}, false, pace.Rate, pace.Burst)...)
+		supervise.WakeRanFields(supervise.WakeCatchUp, true, notice.PacedAt.Sub(notice.PacedFrom),
+			wakepace.Let{At: notice.PacedAt, Queue: wakepace.Second, Turns: notice.PacedTurns}, false, pace.Rate, pace.Burst)...)
 	r.log.Info(supervise.WakeRanMessage, fields...)
 }
 
@@ -1967,6 +1970,19 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
 	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+		// A catch-up the wake pacing still holds in its queue has no moment of its own
+		// (record.CatchUpHeldAt), so this row waits for the pacer's estimate of its place
+		// (catchUpPacing.estimate), or parkedWakeBound where that comes first (parkedWait): the
+		// estimate moves as wakes ahead of the place leave or a message wake goes ahead of it, and
+		// a held row with no place yet has none, so the row reads again within the bound.
+		if due.Equal(record.CatchUpHeldAt) {
+			estimate := r.catchUps.estimate(earlier)
+			if !estimate.After(r.now()) {
+				estimate = r.now().Add(parkedWakeBound)
+			}
+			return r.parkedWait(estimate, fmt.Sprintf("%s's notice row %d waits behind its catch-up, row %d, which the wake pacing holds",
+				architect, row.ID, earlier))
+		}
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
 		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
@@ -2678,6 +2694,24 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// a claim that already existed keeps one rule instead of a special case.
 		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
+		}
+		// A start whose wake carried an Envoy message marks its claim before it asks for the
+		// launch, so that launch waits in the pacing's message queue (dispatch://INFRA-5682 R1).
+		// The listener's report that raised the wake marked the claim in its own transaction
+		// (workflow's listenerWake), and that mark stands unless the role has taken a turn since,
+		// so the write here keeps it; it marks a row a daemon before this release queued. The
+		// machine is told the mark the store holds, in whatever state the claim is: a start that
+		// meets a wake already waiting asks for no launch, and that wake moves by the mark alone.
+		if payload.WakeKind == pods.WakeRoleMessage || payload.WakeKind == pods.WakeAgentMessage {
+			mark, err := store.MarkClaimMessage(ctx, r.pool, token, r.now().UTC())
+			if err != nil {
+				return err
+			}
+			if !mark.IsZero() {
+				if err := machine.Handle(ctx, supervise.MessageMarked{Claim: token, At: mark}); err != nil {
+					return fmt.Errorf("mark claim %s for its waiting message: %w", token, err)
+				}
+			}
 		}
 		state := machine.Claim().State
 		// A phase worker's start is one row that carries its task, so the claim is brought back

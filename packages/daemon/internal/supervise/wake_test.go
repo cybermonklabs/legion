@@ -1755,7 +1755,8 @@ func TestTheProcessAWaitingLaunchReplacesIsNotProbedInsideTheWait(t *testing.T) 
 	h.reach(StateWorking)
 	firstAhead(h.deps.WakePace.Pacer, 4)
 	h.observe(runtime.Gone)
-	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantWaitingWake(WakeLaunch)
+	place := h.m.wake.place
 
 	// The connection closes behind the process the sweep found gone. The runtime would answer
 	// that it cannot say what became of the pod, which is the answer that arms the interval.
@@ -1771,7 +1772,12 @@ func TestTheProcessAWaitingLaunchReplacesIsNotProbedInsideTheWait(t *testing.T) 
 
 	h.wantCalls("Probe", 0)
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
-	h.wantWakeDueAt(waiting)
+	// A turn of the wave ahead ran inside the probe interval, and its jitter moved the moment of
+	// every place behind it, so the wake is read by its place: the same one, never a second place
+	// at the back of the queue.
+	if h.m.wake == nil || h.m.wake.place != place {
+		t.Fatalf("the claim holds wake %+v, want the wake it held, at the same place: nothing it met took a second place", h.m.wake)
+	}
 	h.wantStarts(h.token, 1)
 
 	h.advanceToTurn(h.m)
