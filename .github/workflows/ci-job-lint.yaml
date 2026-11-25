@@ -179,15 +179,17 @@ jobs:
       # A package's `bun run lint` checks only the paths its recipe names. This is the command the
       # root README.md's "Development" section documents, over the whole tree, so a fixture,
       # config or test file that Biome would rewrite fails here instead of on the next person who
-      # runs it.
+      # runs it. The script runs `biome check .` with every diagnostic shown, and also fails on each
+      # file Biome skips for its size, which Biome reports only as an info diagnostic while it exits 0.
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Check the whole tree with Biome
-        run: bunx biome check .
+        run: .github/scripts/check-biome-tree.sh
 
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name
       # one the floor takes. The test scans every tracked shell script and every tracked text file
-      # for those, so it runs here, on every change: the test job runs it too, but only when its
-      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      # for those, so it runs here, on every change, and only here: the test job's bun test of
+      # scripts/e2e/lib leaves this file out.
       - name: Check every NATS server a script starts or installs is one the floor takes
         run: bun test scripts/e2e/lib/nats-image.test.ts
 

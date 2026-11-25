@@ -636,9 +636,7 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 	go func() {
 		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 1, 10*time.Second); waiting < 1 {
-		t.Fatal("the pass never waited on the live write's row; the interleaving did not happen")
-	}
+	storetest.WaitForLockWaiters(t, writer, 1)
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the live write: %v", err)
 	}

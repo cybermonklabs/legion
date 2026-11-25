@@ -2,6 +2,7 @@ package gcp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,12 +11,13 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/sjawhar/envoy/testexec"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests sit inside the package because the pieces they run are unexported; they reach the
@@ -282,38 +284,46 @@ const (
 // The kubelet stops the advertiser with SIGTERM, which it must act on itself: as its container's
 // PID 1 it gets no default action. It exits 0 at once, mid-wait, rather than when its sleep ends.
 // The negative controls are the two ways it could fail: killed by the signal (no trap, which as PID
-// 1 would ignore it until the grace period's SIGKILL), or exiting only after its 30 s sleep (a trap
-// held behind a foreground sleep).
+// 1 would ignore it until the grace period's SIGKILL), or exiting only once its sleep returns (a
+// trap held behind a foreground sleep). Here the sleep lasts until the test ends it, so such an
+// advertiser never exits: its shell is killed at the test binary's deadline and the wait for its
+// exit fails by name. Nothing reads that sleep after the exit, since a correct trap may end and
+// reap it before exiting, and a check that it still runs would then fail a right advertiser.
 func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	realSleep, err := exec.LookPath("sleep")
 	require.NoError(t, err, "sleep is not on PATH")
 	r := newTailnetRig(t, "")
-	// A sleep that waits for real, after logging that the advertiser is waiting. It holds none of
-	// the advertiser's output, so Wait does not wait for it once the advertiser is gone, and
-	// records its PID, so the test ends it.
-	sleep := "#!/bin/sh\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 30 >/dev/null 2>&1\n"
+	// A sleep that waits for real until the test ends it (a day, longer than any test binary runs),
+	// after logging that the advertiser is waiting. It first lets go of the advertiser's output, so
+	// Wait does not wait for it once the advertiser is gone, and records its PID.
+	sleep := "#!/bin/sh\nexec >/dev/null 2>&1\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 86400\n"
 	sleep = strings.NewReplacer("FAKE", r.fake, "REALSLEEP", realSleep).Replace(sleep)
 	require.NoError(t, testexec.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
-	t.Cleanup(func() {
-		if b, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid")); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-	})
-	cmd := shellCommand(t, "-c", tailnetAdvertiserScript(r.host))
+	cmd := shellCommandUntilTheTestDeadline(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	// The advertiser leads a process group of its own, which the test's cleanup kills with every
+	// process it started: its sleep outlives it, and may not have recorded its PID yet when the test
+	// fails.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
-	require.Eventually(t, func() bool { return tailnetIndexOf(r.events(t), 0, "sleep ") >= 0 }, 10*time.Second, 50*time.Millisecond,
-		"the advertiser never waited (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds)
-	sent := time.Now()
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	// The shimmed sleep logs its line before it records its PID, so the wait is for the PID: the
+	// whole line, since a read while the shim writes it can see a prefix of the number. It is the
+	// advertiser's first wait, the fact the SIGTERM must land in.
+	testwait.Until(t, fmt.Sprintf("the advertiser's first wait (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds), func() (string, bool) {
+		recorded, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid"))
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+		require.NoError(t, err)
+		_, err = strconv.Atoi(strings.TrimSpace(string(recorded)))
+		return string(recorded), err == nil && strings.HasSuffix(string(recorded), "\n")
+	})
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	err = cmd.Wait()
-	took := time.Since(sent)
 	require.NoError(t, err, "the advertiser was killed by SIGTERM rather than exiting on it:\n%s", out.String())
-	require.Less(t, took, 5*time.Second, "the advertiser exited %s after SIGTERM, held by its sleep:\n%s", took, out.String())
 }
 
 // The ready file appears only once the node's service-host capability lists the Service: every

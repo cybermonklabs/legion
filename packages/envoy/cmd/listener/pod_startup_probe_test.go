@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/testexec"
 )
 
 // hubStartupProbe is the exec command of the startup probe of the session listener's pod that
@@ -66,23 +65,21 @@ func metricsScrape(t *testing.T, handler http.Handler) string {
 }
 
 // runHubStartupProbe runs command, the hub pod's startup probe as its golden records it, with a
-// fake curl first on PATH that records its arguments, prints scrape and exits 0, so the script's
-// status is its grep's verdict on scrape. It returns that status and the fake's arguments; a
-// command that does not start fails the test.
+// fake curl first on PATH (testdata/startup-probe/curl) that records its arguments, prints scrape
+// and exits 0, so the script's status is its grep's verdict on scrape. It returns that status and
+// the fake's arguments; a command that does not start fails the test. The fake is checked in rather
+// than written here: a test that writes an executable and runs it can meet ETXTBSY when another
+// test forks while the write's descriptor is open (Go issue 22315).
 func runHubStartupProbe(t *testing.T, command []string, scrape string) (int, string) {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "bin")
-	if err := os.Mkdir(bin, 0o700); err != nil {
-		t.Fatalf("make the fake curl's directory: %v", err)
+	bin, err := filepath.Abs(filepath.Join("testdata", "startup-probe"))
+	if err != nil {
+		t.Fatalf("find the fake curl's directory: %v", err)
 	}
+	dir := t.TempDir()
 	scrapeFile, argsFile := filepath.Join(dir, "scrape"), filepath.Join(dir, "curl-args")
 	if err := os.WriteFile(scrapeFile, []byte(scrape), 0o600); err != nil {
 		t.Fatalf("write the scrape: %v", err)
-	}
-	fake := "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$CURL_ARGS\"\ncat \"$SCRAPE\"\n"
-	if err := testexec.WriteFile(filepath.Join(bin, "curl"), []byte(fake), 0o700); err != nil {
-		t.Fatalf("write the fake curl: %v", err)
 	}
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "SCRAPE=" + scrapeFile, "CURL_ARGS=" + argsFile}
@@ -115,6 +112,7 @@ func runHubStartupProbe(t *testing.T, command []string, scrape string) (int, str
 // packages/envoy/infra/gcp/clusteredhub_listener.go) to the one registerListGauges registers, and
 // a rename on either side fails it.
 func TestHubListenerStartupProbePassesOnlyOnceV1Serves(t *testing.T) {
+	t.Parallel()
 	command, path := hubStartupProbe(t)
 	const gauge = "envoy_active_interests"
 	run := func(t *testing.T, state, scrape string, want int) {

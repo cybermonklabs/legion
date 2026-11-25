@@ -1,6 +1,6 @@
 package intake
 
-//ci:reads packages/contracts/fixtures/github-envelopes/* TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt globs it and reads each file; TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer reads one
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json
 
 import (
 	"bytes"

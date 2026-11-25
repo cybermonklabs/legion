@@ -225,7 +225,7 @@ GitHub release. Nothing is committed: the tag records the version.
 ## Why only main publishes a plugin
 
 Only main publishes: a workflow_dispatch from another branch skips this job and publish, so
-no branch build ever reaches npm or moves `latest` (AGENTS.md, "Deploys come only from
+no branch build ever reaches npm or moves `latest` (CONTRIBUTING.md, "Deploys come only from
 main"). A workflow_dispatch on main runs it as a push does.
 
 ## Why pi_envoy_build reads the tags before setup-bun, and what a re-run releases

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/lockwaittest"
 )
 
@@ -323,6 +324,9 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
+		// The holder is rolled back however the step ends: a wait below that fails the test leaves
+		// the tick queued behind it otherwise. A rollback after the step's own is a no-op.
+		testcleanup.Add(t, func() { _ = holder.Rollback(context.Background()) })
 		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
@@ -334,10 +338,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			}
 			close(ticked)
 		}()
-		if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-			holder.Rollback(ctx)
-			t.Fatalf("the tick never queued behind %s", step.name)
-		}
+		storetest.WaitForLockWaiters(t, holder, 1)
 		if running := waitingStatement(t, holder); !strings.Contains(running, step.wantStatement) {
 			t.Errorf("the tick waiting on %s is running %q, want the statement that takes it", step.name, running)
 		}

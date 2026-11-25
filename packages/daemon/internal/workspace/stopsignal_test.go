@@ -13,6 +13,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// inFlight runs f on a goroutine of its own and answers the channel its answer arrives on, for a
+// row that waits, under a bound of its own (testwait.Receive), for a call that may never return.
+func inFlight[T any](f func() T) <-chan T {
+	answered := make(chan T, 1)
+	go func() { answered <- f() }()
+	return answered
+}
+
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the
 // command it is waiting for ends, so the command waits in a loop of short foreground sleeps rather
 // than in one long one: a SIGTERM it handles is then acted on within one sleep of its arrival,
@@ -130,9 +138,12 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget's stop ended a command that ignores SIGTERM", err, elapsed)
 		}
+		// The stop's SIGKILL reaches the helper with the leader, before the run ends, so five
+		// seconds after the run's end is the signal's delivery and nothing else: a helper still
+		// running then was signalled late, or not at all.
 		helperGone := func() bool { return len(gitProcessesUnder(t, marker)) == 0 }
-		if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, helperGone) {
-			t.Errorf("the helper the command forked was still running after the run ended in %s: %v (RunCommand = %v)", elapsed, gitProcessesUnder(t, marker), err)
+		if !testwait.Holds(5*time.Second, testwait.Poll, helperGone) {
+			t.Errorf("the helper the command forked was still running 5s after the run ended in %s: %v (RunCommand = %v)", elapsed, gitProcessesUnder(t, marker), err)
 		}
 	})
 

@@ -22,6 +22,7 @@ import (
 // start is killed only with 30 s left of the test binary's deadline, so a loaded machine that
 // starts the binary late kills no start that would have refused on its own.
 func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
@@ -50,6 +51,7 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 // its own /metrics counts each admission under its credential and route. Started with no list,
 // the same binary admits both, as it did before the list existed.
 func TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-process-key")
 	listed := issuer.Mint(t, key, issuer.Claims(listenerListedSubject, listenerTestAudience))
