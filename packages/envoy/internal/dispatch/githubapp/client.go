@@ -315,10 +315,8 @@ func WithLimits(limits Limits) Option {
 type Client struct {
 	app auth.AppConfig
 	key *rsa.PrivateKey
-	// base is the API origin of every call, parsed once (New). Each call's own path is joined
-	// onto it, its path onto the origin's and the origin's query ahead of the call's own
-	// (target), where a path appended to the origin's text sat inside the origin's query and
-	// GitHub was asked the origin's own path with that query's last value changed.
+	// base is the API origin of every call, parsed once (New), which each call's own path is
+	// joined onto (target).
 	base *url.URL
 	http *http.Client
 	now  func() time.Time
