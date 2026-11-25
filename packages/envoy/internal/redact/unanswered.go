@@ -126,6 +126,11 @@ func redirectedElsewhere(failed string, asked *url.URL) bool {
 	return err != nil || !strings.EqualFold(at.Host, asked.Host)
 }
 
+// AskedURL is u, the URL a request asked, as Unanswered names it (askedURL): the name a line about
+// a request that got an answer gives the URL too, so the URL has one name wherever it prints,
+// whether the request got an answer or not.
+func AskedURL(u *url.URL) string { return askedURL(u) }
+
 // askedURL is u, the URL a request asked, as Unanswered names it, daemon and envoy alike: scheme
 // "://" host path, with u's user information, its query and its fragment removed, where URL prints
 // that unchanged, and NotPrinted where URL refuses it (an escape, a path or a host it does not
