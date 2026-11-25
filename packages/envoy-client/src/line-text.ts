@@ -11,6 +11,11 @@
  */
 export const UNESCAPED_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
 
+/** Whether the UTF-16 unit `unit` is one of `UNESCAPED_LINE_BREAKS`: each is one unit. */
+export function isUnescapedLineBreak(unit: number): boolean {
+  return unit === 0x0085 || unit === 0x2028 || unit === 0x2029;
+}
+
 /**
  * `text` with each run of white space, each line break among it, made one space: what a host
  * prints where another author's words sit on one of its own lines, so no line they start can stand

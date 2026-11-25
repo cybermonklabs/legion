@@ -26077,18 +26077,21 @@ describe("consumer delivery", () => {
       expect(card).not.toContain("first part only");
     });
 
-    // A delivery Dispatch aims at this session - a person's Send, aside or BTW, an issue message,
-    // a comment mention - whose post its author deleted before the session read it whole. Dispatch
-    // failed the delivery's attempt at the delete (`queueDeletedPostSettlement`,
-    // packages/envoy/internal/dispatch/api/post_history.go), so nothing is left to deliver: the
-    // session shows no card of it, the part the event carried included, starts no turn of any
-    // mode, accepts and answers nothing, and settles the frame `done` on the session it names, also
-    // where the host moved to another conversation inside the read. The render keeps the delivery
-    // the frame names (`renderInbound`), so the frame never falls through to the conversation the
-    // host has open as a card of no delivery would.
+    // A delivery Dispatch aims at this session whose post was deleted before the session read it
+    // whole. Dispatch lets an author delete an issue message or a comment, so an issue message or a
+    // comment mention can be one. It refuses to delete a person's Send, aside or BTW in a
+    // conversation (`NOT_AN_ISSUE_MESSAGE`,
+    // packages/envoy/internal/dispatch/api/message_corrections.go); those rows hold the session to
+    // the same rule for any delivery whose read answers its post deleted. Nothing of the post is
+    // left to show or to work on: the session shows no card of it, the part the event carried
+    // included, starts no turn of any mode, accepts and answers nothing, and settles the frame
+    // `done` on the session it names, also where the host moved to another conversation inside the
+    // read. The attempt stays as Dispatch recorded it, as a card's attempt does: `sent` or `queued`
+    // once the listener took the frame, or failed where the delete caught the send in flight
+    // (`queueDeletedPostSettlement`, packages/envoy/internal/dispatch/api/post_history.go). The
+    // render keeps the delivery the frame names (`renderInbound`), so the frame never falls through
+    // to the conversation the host has open as a card of no delivery would.
     describe("a delivery whose post was deleted before the read", () => {
-      const DELETED_WARNING =
-        "envoy: a delivery's post was deleted before this session read it whole; nothing is shown";
       const deletion = {
         body: "",
         deleted_at: "2026-11-03T00:00:00Z",
@@ -26129,55 +26132,47 @@ describe("consumer delivery", () => {
           const key = moves ? `${row.key}-moved` : row.key;
           const where = moves ? "after the host moved inside the read" : "in the session it names";
           test(`${row.name}: no card, no turn, no accept and a done frame ${where}`, async () => {
-            const warnings: string[] = [];
-            const stopSink = logger.registerLogSink((entry) => {
-              if (entry.level === "warn") warnings.push(entry.message);
-            });
             /** Every Dispatch route the session asked, in order. */
             const reads: string[] = [];
             const sideTurns: string[] = [];
             let open = "ses_delivery";
-            try {
-              const session = await bootConsumer(key, {
-                hostSessionID: () => open,
-                runEphemeralTurn: async ({ promptText }) => {
-                  sideTurns.push(promptText);
-                  return { replyText: "An answer." };
-                },
-                dispatch: (url) => {
-                  if (!url.pathname.startsWith("/api/v1/")) return undefined;
-                  reads.push(url.pathname);
-                  if (url.pathname !== row.read) return undefined;
-                  if (moves) open = "ses_moved";
-                  return row.deleted();
-                },
-              });
+            const session = await bootConsumer(key, {
+              hostSessionID: () => open,
+              runEphemeralTurn: async ({ promptText }) => {
+                sideTurns.push(promptText);
+                return { replyText: "An answer." };
+              },
+              dispatch: (url) => {
+                if (!url.pathname.startsWith("/api/v1/")) return undefined;
+                reads.push(url.pathname);
+                if (url.pathname !== row.read) return undefined;
+                if (moves) open = "ses_moved";
+                return row.deleted();
+              },
+            });
 
-              const inbox = session.relay(1, row.envelope(key));
-              await until(
-                () => session.replies(inbox).some((word) => word === "done" || word === "nak"),
-                "the frame's answer"
-              );
+            const inbox = session.relay(1, row.envelope(key));
+            await until(
+              () => session.replies(inbox).some((word) => word === "done" || word === "nak"),
+              "the frame's answer"
+            );
 
-              expect(session.replies(inbox)).toContain("done");
-              expect(session.replies(inbox)).not.toContain("nak");
-              expect(reads.filter((path) => path === row.read)).toHaveLength(1);
-              // Nothing was accepted and nothing was answered: Dispatch failed the attempt.
-              expect(reads.filter((path) => path.endsWith("/accept"))).toEqual([]);
-              expect(session.dispatchReplies).toEqual([]);
-              // No card in either conversation, no turn of any mode, no side turn.
-              expect(session.cards(`dispatch-${key}`)).toEqual([]);
-              expect(
-                session.fixture.deliveries.filter((delivery) =>
-                  String(delivery.content).includes(row.carried(key))
-                )
-              ).toEqual([]);
-              expect(session.fixture.userMessages).toEqual([]);
-              expect(sideTurns).toEqual([]);
-              expect(warnings).toContain(DELETED_WARNING);
-            } finally {
-              stopSink();
-            }
+            expect(session.replies(inbox)).toContain("done");
+            expect(session.replies(inbox)).not.toContain("nak");
+            expect(reads.filter((path) => path === row.read)).toHaveLength(1);
+            // Nothing was accepted and nothing was answered: the attempt stays as Dispatch
+            // recorded it.
+            expect(reads.filter((path) => path.endsWith("/accept"))).toEqual([]);
+            expect(session.dispatchReplies).toEqual([]);
+            // No card in either conversation, no turn of any mode, no side turn.
+            expect(session.cards(`dispatch-${key}`)).toEqual([]);
+            expect(
+              session.fixture.deliveries.filter((delivery) =>
+                String(delivery.content).includes(row.carried(key))
+              )
+            ).toEqual([]);
+            expect(session.fixture.userMessages).toEqual([]);
+            expect(sideTurns).toEqual([]);
           });
         }
       }

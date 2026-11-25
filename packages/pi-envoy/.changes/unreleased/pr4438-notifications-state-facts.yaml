@@ -22,8 +22,7 @@ body: |-
   each picture's name on that picture's line, and each value among a delivered card's fields, such
   as a comment's quote or an ask's option labels, stays on its line: NEXT LINE (U+0085), LINE
   SEPARATOR and PARAGRAPH SEPARATOR in it print as one space.
-  A delivery Dispatch aims at the session (a person's Send, aside or BTW, an issue message, a
-  comment mention) whose post its author deleted before the session read its body whole shows no
-  card and starts no turn, in the session it names or in one the host moved to during the read;
-  nothing is accepted or answered, since Dispatch failed the attempt at the delete, and its frame
-  is answered `done`.
+  A delivery Dispatch aims at the session (an issue message, a comment mention) whose post its
+  author deleted before the session read its body whole shows no card and starts no turn, in the
+  session it names or in one the host moved to during the read; nothing is accepted or answered,
+  the attempt keeps the state Dispatch recorded for it, and its frame is answered `done`.

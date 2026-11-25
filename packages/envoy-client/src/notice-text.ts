@@ -83,70 +83,49 @@ export function encodeFieldLines(fields: object): Iterable<string> {
 
 /**
  * `value` with each string in it, at any depth, holding one space for each character of
- * `UNESCAPED_LINE_BREAKS` in it. Nothing of `value` is written to: an object or a list that holds
- * such a string, or holds one that does at any depth, is copied, and every other object or list is
- * itself, copied nowhere. A copy has the prototype of what it copies (none for an object made with
- * none), and holds its own fields alone, in their order, each defined rather than assigned
- * (`defineOwn`); a list's copy keeps its length. One pass, depth first: the objects and lists the
- * walk is inside wait on a stack of its own, as in `parseFrameJSON`, so the walk takes time linear
- * in the value's size at any depth, and a value too deep for the encoder fails in the encoder.
+ * `UNESCAPED_LINE_BREAKS` in it. Nothing of `value` is written to: every list and plain object in
+ * it (`copiesAsData`), `value` itself included, is copied, as the encoder copies each again
+ * (`normalizeValue` in `@toon-format/toon`), so copying only those that change would save nothing.
+ * Any other object, such as a `Date`, goes to the encoder as itself. A copy has the prototype of
+ * what it copies (none for an object made with none), and holds its own fields alone, in their
+ * order, each defined rather than assigned (`defineOwn`); a list's copy keeps its length. The
+ * objects and lists still to copy wait on a stack of the walk's own, as in `parseFrameJSON`, so
+ * the walk takes time linear in the value's size at any depth, and a value too deep for the
+ * encoder fails in the encoder.
  */
 function fieldsOnTheirLines(value: object): object {
-  // The objects and lists that hold `at`, from `value` down.
-  const holders: Open[] = [];
-  let at = opened(value, "");
-  for (;;) {
-    const field = at.fields[at.next];
-    if (field === undefined) {
-      const written = at.copy ?? at.from;
-      const holder = holders.pop();
-      if (holder === undefined) return written;
-      write(holder, at.key, at.from, written);
-      at = holder;
-      continue;
-    }
-    const [key, item] = field;
-    if (typeof item === "object" && item !== null) {
-      holders.push(at);
-      at = opened(item, key);
-    } else {
-      const written = typeof item === "string" ? item.replace(UNESCAPED_LINE_BREAKS, " ") : item;
-      write(at, key, item, written);
+  const copy = emptyCopy(value);
+  // Each object or list still to copy, beside the copy its fields go to.
+  const pending: [object, object][] = [[value, copy]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [from, to] = next;
+    for (const [key, item] of Object.entries(from)) {
+      let written: unknown = item;
+      if (typeof item === "string") {
+        written = item.replace(UNESCAPED_LINE_BREAKS, " ");
+      } else if (typeof item === "object" && item !== null && copiesAsData(item)) {
+        const held = emptyCopy(item);
+        pending.push([item, held]);
+        written = held;
+      }
+      defineOwn(to, key, written);
     }
   }
+  return copy;
 }
 
-/** An object or a list the walk of `fieldsOnTheirLines` is in: the field of its holder it is
- *  (`key`), its own fields in their order, the index of the next one to read, and its copy, made
- *  once a field of it is written as a value other than its own. */
-interface Open {
-  readonly from: object;
-  readonly key: string;
-  readonly fields: readonly (readonly [string, unknown])[];
-  next: number;
-  copy: object | undefined;
+/** Whether the walk copies `item`: a list, or an object whose prototype is `Object`'s or none, as
+ *  the encoder takes apart field by field. */
+function copiesAsData(item: object): boolean {
+  if (Array.isArray(item)) return true;
+  const prototype: unknown = Object.getPrototypeOf(item);
+  return prototype === Object.prototype || prototype === null;
 }
 
-function opened(from: object, key: string): Open {
-  return { from, key, fields: Object.entries(from), next: 0, copy: undefined };
-}
-
-/** Gives the field `key` of `at`, which held `item`, the value `written`, and moves past it. The
- *  first value that is not the one it replaces copies `at`, with the fields before it as they
- *  are. */
-function write(at: Open, key: string, item: unknown, written: unknown): void {
-  if (at.copy === undefined && written !== item) {
-    const copy: object = Array.isArray(at.from)
-      ? new Array(at.from.length)
-      : Object.create(Object.getPrototypeOf(at.from));
-    for (let index = 0; index < at.next; index++) {
-      const [before, kept] = at.fields[index] ?? [];
-      if (before !== undefined) defineOwn(copy, before, kept);
-    }
-    at.copy = copy;
-  }
-  if (at.copy !== undefined) defineOwn(at.copy, key, written);
-  at.next++;
+/** A copy of `from` with none of its fields yet: a list of its length, or an object of its
+ *  prototype. */
+function emptyCopy(from: object): object {
+  return Array.isArray(from) ? new Array(from.length) : Object.create(Object.getPrototypeOf(from));
 }
 
 /** Sets `key` of `target` to `value` as an own field of it, defined and not assigned: an

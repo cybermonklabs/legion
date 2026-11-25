@@ -1173,24 +1173,26 @@ function withWholeBody(event: DispatchEvent, whole: WholeBody | undefined): Disp
 }
 
 /**
- * The delivery a targeted frame asks of the session, read from the frame as the schema checked it
- * (`DispatchTargetedFrameSchema`): the message or comment, the attempt and its mode, where the
- * answer goes, and the broadcast a message is one copy of. None of that is read from the body, so a
- * render given the body whole (`whole`) names the delivery the frame names, a post deleted since
- * included, whose payload then holds no body for a schema to require. `body` alone is the body
- * the server answered (empty for a post deleted since), and `bodyTruncated` is left out once that
- * body was read. Undefined for a frame whose event and delivery do not match, which the schema
- * refuses before this is asked.
+ * The delivery a targeted frame asks of the session: the message or comment, the attempt and its
+ * mode, where the answer goes, and the broadcast a message is one copy of, read from the frame as
+ * the schema checked it (`DispatchTargetedFrameSchema`), whose event is `checked`; and its body,
+ * read from `payload`, the payload `withWholeBody` made of that event, so whether a read replaces
+ * the body is `withWholeBody`'s rule alone. Nothing else is read from `payload`, so a render given
+ * the body whole names the delivery the frame names, a post deleted since included, whose payload
+ * then holds no body for a schema to require. `body` is that payload's body (empty for a post
+ * deleted since), and `bodyTruncated` is there while that payload says the body is its first part
+ * only. Undefined for a frame whose event and delivery do not match, which the schema refuses
+ * before this is asked.
  */
 function targetedDelivery(
-  event: DispatchEvent,
+  checked: DispatchEvent,
   requested: z.infer<typeof DispatchTargetedDeliverySchema>,
-  whole: WholeBody | undefined
+  payload: DispatchEvent["payload"]
 ): DispatchDelivery | undefined {
-  const refreshed = whole !== undefined && bodyWasCut(event.payload) ? whole : undefined;
-  const read = refreshed?.deleted_at === undefined ? refreshed?.body : "";
-  if (event.type === "message.created" && !isCommentTargetedDelivery(requested)) {
-    const message = DispatchTargetedMessagePayloadSchema.safeParse(event.payload);
+  const body = typeof payload["body"] === "string" ? payload["body"] : "";
+  const carried = payload["body_truncated"] === true ? { body, bodyTruncated: true } : { body };
+  if (checked.type === "message.created" && !isCommentTargetedDelivery(requested)) {
+    const message = DispatchTargetedMessagePayloadSchema.safeParse(checked.payload);
     if (!message.success) return undefined;
     return {
       resource: "message",
@@ -1199,19 +1201,15 @@ function targetedDelivery(
       mode: requested.mode,
       replyPath: dispatchReplyPath("message", message.data.id),
       replyFields: {},
-      issueKey: event.issue_key,
-      body: read ?? message.data.body,
-      ...(read === undefined && message.data.body_truncated === true
-        ? { bodyTruncated: true }
-        : {}),
+      issueKey: checked.issue_key,
+      ...carried,
       ...(typeof message.data.broadcast_id === "string"
         ? { broadcastId: message.data.broadcast_id }
         : {}),
     };
   }
-  if (event.type === "comment.created" && isCommentTargetedDelivery(requested)) {
-    const comment = DispatchTargetedCommentPayloadSchema.safeParse(event.payload);
-    if (!comment.success) return undefined;
+  if (checked.type === "comment.created" && isCommentTargetedDelivery(requested)) {
+    if (!DispatchTargetedCommentPayloadSchema.safeParse(checked.payload).success) return undefined;
     return {
       resource: "comment",
       id: requested.comment_id,
@@ -1219,11 +1217,8 @@ function targetedDelivery(
       mode: requested.mode,
       replyPath: dispatchReplyPath("comment", requested.comment_id),
       replyFields: { target: requested.target },
-      issueKey: event.issue_key,
-      body: read ?? comment.data.body,
-      ...(read === undefined && comment.data.body_truncated === true
-        ? { bodyTruncated: true }
-        : {}),
+      issueKey: checked.issue_key,
+      ...carried,
     };
   }
   return undefined;
@@ -1231,8 +1226,8 @@ function targetedDelivery(
 
 /** The frame one Dispatch envelope's payload carries. `wholeBody` is the item the event named as
  *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
- *  it had carried that body whole, and a targeted frame's delivery is read from the frame as it
- *  was checked, before that body is put in (`targetedDelivery`). */
+ *  it had carried that body whole (`withWholeBody`), and a targeted frame's delivery is read from
+ *  the frame as it was checked, with the body that event carries (`targetedDelivery`). */
 function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): DispatchFrame {
   let value: unknown;
   try {
@@ -1248,11 +1243,12 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): Dispatch
       // `notify`, `quiet` and `created_at` are fields of the event the frame wraps, which is where
       // the outbox marshals them, and the schema drops all three as unknown keys.
       const wireFrame = value as { readonly event: WireEvent };
+      const event = withWholeBody(targeted.data.event, wholeBody);
       return {
-        event: withWholeBody(targeted.data.event, wholeBody),
+        event,
         notify: wireFrame.event.notify,
         quiet: wireFrame.event.quiet,
-        delivery: targetedDelivery(targeted.data.event, targeted.data.delivery, wholeBody),
+        delivery: targetedDelivery(targeted.data.event, targeted.data.delivery, event.payload),
         createdAt:
           typeof wireFrame.event.created_at === "string" ? wireFrame.event.created_at : undefined,
       };

@@ -28,7 +28,7 @@
  * to the next.
  */
 
-import { headUnits, UNESCAPED_LINE_BREAKS } from "./line-text";
+import { headUnits, isUnescapedLineBreak } from "./line-text";
 
 /** The words of one block, and what its opening tag says of them. */
 export interface Words {
@@ -490,10 +490,7 @@ function attribute(key: string, value: string): string {
         escaped += "&quot;";
         break;
       default:
-        escaped +=
-          unit < 0x20 || value[index]?.search(UNESCAPED_LINE_BREAKS) === 0
-            ? `&#${unit};`
-            : value[index];
+        escaped += unit < 0x20 || isUnescapedLineBreak(unit) ? `&#${unit};` : value[index];
     }
   }
   return ` ${key}="${escaped}"`;

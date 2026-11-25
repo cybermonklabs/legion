@@ -2294,9 +2294,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // A delivery whose post that read, made as the session the frame names, found deleted since
     // its event. The render still names the delivery the frame names (`renderInbound`), but none
     // of the post is left to show, the part the event carried included, and no work is left for
-    // the agent. Dispatch failed the delivery's attempt when the post was deleted
-    // (`queueDeletedPostSettlement`, `packages/envoy/internal/dispatch/api/post_history.go`), so
-    // the attempt is neither accepted nor answered here, and the inbox lists no summary of it.
+    // the agent, so the attempt is neither accepted nor answered here, and the inbox lists no
+    // summary of it. The attempt stays as Dispatch recorded it, as a card's attempt does: Dispatch
+    // records it `sent` or `queued` once the listener takes the frame, before this session reads
+    // it (`completeMessageDelivery`, `completeCommentDelivery`), and a delete fails only an attempt
+    // still `pending` (`queueDeletedPostSettlement`,
+    // `packages/envoy/internal/dispatch/api/post_history.go`), so it failed this one only where it
+    // caught the send in flight.
     // Any other frame of a post deleted since is a card that names the delete (`deleted_at`,
     // `deleted_by`) with no body.
     const deletedDelivery = deletedSince ? rendered.delivery : undefined;
