@@ -120,6 +120,14 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		<-letPublishGo
 	}
 	delivery.beforeHandBackPublish.Store(&hook)
+	// admitted closes once the hand-back is admitted (afterHandBackAdmitted): counted, so
+	// handBacksLanded reads it. Read before then, handBacksLanded answers that no hand-back waits,
+	// and a row that ended the stop's context on that answer would end it before the hand-back's
+	// publish began.
+	admitted := make(chan struct{})
+	var admitting sync.Once
+	afterAdmitted := func() { admitting.Do(func() { close(admitted) }) }
+	delivery.afterHandBackAdmitted.Store(&afterAdmitted)
 
 	stopping, endStop := context.WithCancel(context.Background())
 	defer endStop()
@@ -135,6 +143,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	testwait.Receive(t, "the callback's hand-back to reach its publish (control: a rule that withheld it never does)", atPublish)
 	if !heldPastTheStop {
 		releasePublish()
+		testwait.Receive(t, "the callback's hand-back to be admitted once released (control: a sealed delivery withholds it)", admitted)
 		testwait.Receive(t, "the callback's hand-back to land once released (control)", delivery.handBacksLanded())
 	}
 	endStop()

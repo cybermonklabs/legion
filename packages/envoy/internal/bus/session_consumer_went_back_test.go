@@ -70,9 +70,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	waitForAckFloor(t, consumers, session, before)
 	waitForAckPending(t, consumers, session, 0)
 
-	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	waitForReconnectAfterCut(t, owner, consumers)
+	cutStream(t, srv, owner, consumers, func(int64) int64 { return 0 })
 	state := streamStateAfterCut(t, consumers)
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)

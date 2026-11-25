@@ -81,10 +81,8 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	t.Logf("before the loss the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq)
 
-	size, kept := srv.CutStream(t, Stream, func(size int64) int64 { return size/2 + 1 })
+	size, kept := cutStream(t, srv, owner, consumers, func(size int64) int64 { return size/2 + 1 })
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
-
-	waitForReconnectAfterCut(t, owner, consumers)
 	state := streamStateAfterCut(t, consumers)
 	lost := state.lastSeq
 	t.Logf("after the cut the stream's last sequence is %d, where it was %d", lost, before+acked)

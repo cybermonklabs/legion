@@ -698,13 +698,54 @@ func waitForStoredState(t *testing.T, owner *Client, sessionID string) {
 	testnats.AwaitConsumerStored(t, owner.Connection(), Stream, name)
 }
 
-// waitForReconnectAfterCut waits until the stream's owner and the session consumers' client have
-// both reconnected to the server a row's cut of the stream restarted (testnats.Server.CutStream).
-func waitForReconnectAfterCut(t *testing.T, owner *Client, consumers *SessionConsumers) {
+// cutStream cuts the stream's store as testnats.Server.CutStream does, keep deciding how much of
+// its first message block is left, and waits until the stream's owner and the session consumers'
+// client have each reconnected to the server the cut restarted. A client that reads as connected
+// right after the cut may not yet have seen the server go: the restart is its next connection
+// event, and a publish made before that fails while the client reconnects. So each client is waited
+// for until it is connected on a connection life that began after the cut (cutLifeOf): a
+// connection the client dialled in place of the one before, or the one before reconnected again.
+func cutStream(t *testing.T, srv *testnats.Server, owner *Client, consumers *SessionConsumers, keep func(size int64) int64) (before, after int64) {
 	t.Helper()
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
+	ownerWas, consumersWas := cutLifeOf(owner), cutLifeOf(consumers.client)
+	before, after = srv.CutStream(t, Stream, keep)
+	testwait.Until(t, "the stream's owner and the session consumers to reconnect after the cut", func() (string, bool) {
+		ownerNow, consumersNow := cutLifeOf(owner), cutLifeOf(consumers.client)
+		return fmt.Sprintf("the owner %s (before the cut: %s); the session consumers' client %s (before the cut: %s)",
+				ownerNow, ownerWas, consumersNow, consumersWas),
+			ownerNow.after(ownerWas) && consumersNow.after(consumersWas)
 	})
+	return before, after
+}
+
+// cutLife is which connection a client holds, whether that connection is up, and how many times
+// nats.go has reconnected it.
+type cutLife struct {
+	conn       *nats.Conn
+	connected  bool
+	reconnects uint64
+}
+
+// cutLifeOf reads client's connection life now.
+func cutLifeOf(client *Client) cutLife {
+	conn := client.Connection()
+	if conn == nil {
+		return cutLife{}
+	}
+	return cutLife{conn: conn, connected: conn.Status() == nats.CONNECTED, reconnects: conn.Stats().Reconnects}
+}
+
+// after reports whether l is a connected life that began after was: on another connection, or on
+// the same one reconnected since.
+func (l cutLife) after(was cutLife) bool {
+	return l.connected && l.conn != nil && (l.conn != was.conn || l.reconnects > was.reconnects)
+}
+
+func (l cutLife) String() string {
+	if l.conn == nil {
+		return "holds no connection"
+	}
+	return fmt.Sprintf("holds connection %p, connected %t, reconnected %d times", l.conn, l.connected, l.reconnects)
 }
 
 // streamStateAfterCut is the stream's state as the server a row's cut restarted reports it once

@@ -97,10 +97,8 @@ func runLossCut(t *testing.T, cut lossCut) {
 	if cut.whole {
 		keep = func(int64) int64 { return 0 }
 	}
-	size, kept := srv.CutStream(t, Stream, keep)
+	size, kept := cutStream(t, srv, owner, consumers, keep)
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
-
-	waitForReconnectAfterCut(t, owner, consumers)
 	state := streamStateAfterCut(t, consumers)
 	lost := state.lastSeq
 	t.Logf("after the cut the stream's last sequence is %d, where it was %d", lost, before+cut.acked)
