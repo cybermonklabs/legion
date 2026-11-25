@@ -7,6 +7,7 @@ import {
   createComment,
   createIssueArtifact,
   dashboardOrigin,
+  editComment,
   getArtifactText,
   listMyAnswers,
   userHeaders,
@@ -417,6 +418,17 @@ test("a margin thread's replies link each reference the shared table links and n
         issueKey: world.host.key,
         replyTo: root.id,
       });
+      continue;
+    }
+    if (item.row.refs.includes("dispatch://agent/a(b)c")) {
+      // The balanced-parentheses row is a readable session reference but not a delivery target.
+      // An edit stores text without delivering it, so this row can still exercise the renderer.
+      const reply = await createComment(
+        world.host.key,
+        { body: "Text before the edit.", reply_to: root.id },
+        referenceAgent
+      );
+      await editComment(reply.id, { body: item.body }, referenceAgent);
       continue;
     }
     await createComment(world.host.key, { body: item.body, reply_to: root.id }, referenceAgent);
