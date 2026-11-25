@@ -23,6 +23,9 @@ import { sql } from "./psql";
 const tables = [
   "embeddings",
   "agent_tokens",
+  // The read-only personal tokens (migration 20261120023712), a table of their own beside
+  // agent_tokens that no foreign key reaches.
+  "agent_read_tokens",
   "architecture_sources",
   "legion_current",
   "legion_observations",

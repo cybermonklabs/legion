@@ -22,6 +22,11 @@ export const versionFields = {
   mime: z.string().optional(),
   /** The stored bytes' hash; present on a document version read as well as a file version. */
   sha256: z.string().optional(),
+  /** A file's or an image's version token, `sha256:` and the SHA-256 of its bytes: what an upload
+   *  replacing that version names as its precondition's `document`, and what `dispatch doc-read`
+   *  prints for it. Absent on a document's version, whose token is its live tree's (`/text`), and
+   *  from a server that predates it. */
+  token: z.string().optional(),
 };
 
 export const VersionSchema = z.strictObject(versionFields).readonly();

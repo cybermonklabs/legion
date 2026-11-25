@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -291,7 +292,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
 	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
-	// held one would pass every test of this rig (INFRA-3169).
+	// held one would pass every test of this rig (INFRA-3169). That mark is the rig's one
+	// sequential flow's: a goroutine a test starts beside it takes worker() instead.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
 		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
@@ -351,6 +353,15 @@ func (r *podUpdateRig) drifts(reasons ...string) {
 	for _, token := range r.tokens {
 		r.rt.ScriptPodDrift(token, reasons...)
 	}
+}
+
+// worker is the context of a goroutine a test starts beside the rig's own calls — a machine's
+// Handle, a lane's execute — with a hold mark of its own (store.ForConcurrentWorker), as each of
+// production's goroutines takes. On r.ctx the two would share one mark: the goroutine's
+// transaction would set it, and the pool would refuse the rig's next read a second connection it
+// does not hold (store.ErrNestedAcquire).
+func (r *podUpdateRig) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
 }
 
 // tick is one orphan sweep: the claims as the store holds them now, put to the sweep.
@@ -2601,19 +2612,18 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 	relaunching := rig.tokens[claim.RoleTester]
 	go func() {
 		m, _ := rig.sup.Machine(relaunching)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(rig.worker(), supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: *rig.claimOf(claim.RoleTester).Locator, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
 
-	var live []supervise.Claim
-	select {
-	case live = <-read:
-	case <-time.After(10 * time.Second):
-		close(released)
-		t.Fatal("the live read did not answer while a claim's machine was inside a Resume; it waited on the decision")
-	}
-	close(released)
+	// The read is the answer of a call the test started: a read that waited on the decision would
+	// give none, and the wait gives up by name at the test binary's deadline (testwait.Receive),
+	// letting the held Resume go first.
+	release := sync.OnceFunc(func() { close(released) })
+	defer release()
+	live := testwait.Receive(t, "the live read while a claim's machine is inside a Resume; a read that waits on the decision gives none", read)
+	release()
 
 	var answered []claim.Role
 	for _, c := range live {

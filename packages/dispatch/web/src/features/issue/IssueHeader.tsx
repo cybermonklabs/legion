@@ -94,6 +94,8 @@ import {
 import { closeIssueWords, releaseClaimWords, selectableStatuses } from "./issue-header-words";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
+import { useIssueStatusMove } from "./parent-status/useIssueStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -209,6 +211,11 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
+  // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
+  // parent or an open child, then the write below, or the question where Dispatch's rule would
+  // refuse it.
+  const statusMove = useIssueStatusMove(issue);
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -219,6 +226,11 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    // A status the page took for one the rule could not refuse, which Dispatch refused under it
+    // all the same, asks as a refused dry run does (`statusMove.onError`).
+    onError: (error, input) => {
+      statusMove.onError(error, issue.key, input);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -242,6 +254,12 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
+  const requestStatus = (status: string) => {
+    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+  };
+  // A status write is out, or the rule's question is checking or asking about one: no second
+  // status write can start.
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
@@ -252,18 +270,18 @@ export function IssueHeader({
       id: "close",
       keys: [],
       label: "Close issue",
-      run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
-      // rendered at all; a row offered while the write is in flight would submit a second one.
-      when: () => !isClosed && !updateIssue.isPending,
+      run: () => requestStatus("done"),
+      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
+      // all; a row offered while a status write is in flight would submit a second one.
+      when: () => !isClosed && !statusBusy,
     },
     {
       effect: "moves nothing",
       id: "reopen",
       keys: [],
       label: "Reopen issue",
-      run: () => drafts.requestStatusSubmit("backlog"),
-      when: () => isClosed && !updateIssue.isPending,
+      run: () => requestStatus("backlog"),
+      when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       effect: "moves nothing" as const,
@@ -275,8 +293,14 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
-  const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // The status the select and the closed line show while it is out: the one the rule's question
+  // is checking or asking about, else the one the write is saving.
+  const checkingStatus = statusMove.pending;
+  const statusSaving =
+    checkingStatus !== undefined ||
+    (updateIssue.isPending && updateIssue.variables?.status !== undefined);
+  const pendingStatus =
+    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -440,8 +464,8 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            disabled={statusBusy}
+            onClick={() => requestStatus("backlog")}
             title="Reopen into Backlog"
             type="button"
           >
@@ -536,8 +560,8 @@ export function IssueHeader({
             <select
               aria-label="Status"
               className={`${issueStatusSelectClassName} ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
+              disabled={isClosed || statusBusy}
+              onChange={(event) => requestStatus(event.target.value)}
               value={pendingStatus ?? issue.status}
             >
               {selectableStatuses(isClosed).map((status) => (
@@ -622,8 +646,8 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`${issueStateButtonClassName} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              disabled={statusBusy}
+              onClick={() => requestStatus("done")}
               type="button"
             >
               {pendingStatus === "done"
@@ -883,6 +907,11 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
+      <IssueStatusNotes
+        issueKey={issue.key}
+        noteClassName={`mt-1 text-sm ${dangerText}`}
+        statusMove={statusMove}
+      />
       {subscribersOpen ? (
         // The reader is in this panel, so every read inside it - each chip's agent registry
         // among them - goes out now rather than waiting for the editor's first batch

@@ -401,26 +401,63 @@ interface TheirPlace {
   /** Which edge of `block` is held: the top of the block the reader is on, or the bottom of a
    *  run that is wholly above them, which is the line the content under it starts on. */
   readonly edge: "bottom" | "top";
+  /** For a run held by its bottom edge, the first box laid out under it (`contentUnder`), whose
+   *  top edge is the line held in place of the run's own bottom edge; null where none is. */
+  readonly under: Element | null;
   readonly top: number;
 }
 
 /** Where that edge stands now, under the top of the scrollport. */
 function whereItStands(drawn: HTMLElement, place: TheirPlace): number {
+  const edge = scrollportTop(whatScrolls(drawn));
+  if (place.under !== null) {
+    return place.under.getBoundingClientRect().top - edge;
+  }
   const box = place.block.getBoundingClientRect();
-  return (place.edge === "top" ? box.top : box.bottom) - scrollportTop(whatScrolls(drawn));
+  return (place.edge === "top" ? box.top : box.bottom) - edge;
+}
+
+/**
+ * The first box laid out under `element`, whose foot on the screen is `foot`: walking from the
+ * element up through its ancestors, the first following sibling that has a box, is in the flow
+ * (neither positioned out of it nor sticky) and starts at or below that foot, or null where none
+ * does. A sibling beside the element in a row starts above its foot, and the walk passes it by:
+ * its top does not move as the body grows. The element's own bottom edge is no measure of where
+ * the content under it starts: the bottom margin of a body's last block collapses through the
+ * element's foot, so a paint that fills an empty element moves that edge against the content
+ * under it. In a Conversation card the first batch of a list moves it 18.4px further than the
+ * card after it, and a correction read from it carried the reader those 18.4px wherever the
+ * document had end room to scroll into.
+ */
+function contentUnder(element: HTMLElement, foot: number): Element | null {
+  for (
+    let node: Element | null = element;
+    node !== null && node !== document.body;
+    node = node.parentElement
+  ) {
+    for (let next = node.nextElementSibling; next !== null; next = next.nextElementSibling) {
+      const { position } = getComputedStyle(next);
+      if (position === "absolute" || position === "fixed" || position === "sticky") continue;
+      const box = next.getBoundingClientRect();
+      if ((box.width > 0 || box.height > 0) && box.top >= foot - 1) return next;
+    }
+  }
+  return null;
 }
 
 /**
  * The reader's place in `drawn`: the block they are on, or - where `drawn` is wholly above
- * them - its own bottom edge, which is where the content under it starts.
+ * them - the line the content under it starts on.
  *
  * The second is a run that is one item of a longer page rather than the page's own document: a
  * comment the reader has scrolled past, whose Markdown is still being formatted, or a body
  * holding nothing but its own text while the worker parses it, which has no block to hold at
  * all. Everything they are looking at sits under it, so what its formatting adds pushes all of
- * it down, and the line that has to stay put is the one its last block ends on
- * (`features/refs/useRenderedMarkdown.tsx`). A run the reader can see, or one still below
- * them, is theirs to watch land and is held by neither rule.
+ * it down, and the line that has to stay put is the one that content starts on
+ * (`features/refs/useRenderedMarkdown.tsx`). Whether the run is wholly above is read from its
+ * own bottom edge; the line held is the top edge of the first box laid out under it
+ * (`contentUnder`), or the run's own bottom edge where none is. A run the reader can see, or one
+ * still below them, is theirs to watch land and is held by neither rule.
  *
  * Nor is a document drawn with no box anywhere on their screen - one in a tab they have switched
  * away from, whose panel is hidden while its editor stays bound - and it holds no place: read
@@ -433,11 +470,17 @@ function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
   }
   const where = readersBlock(drawn);
   if (where === undefined) {
-    const under = drawn.getBoundingClientRect().bottom - scrollportTop(whatScrolls(drawn));
-    return under <= 0 ? { block: drawn, edge: "bottom", top: under } : undefined;
+    const edge = scrollportTop(whatScrolls(drawn));
+    const foot = drawn.getBoundingClientRect().bottom;
+    if (foot - edge > 0) {
+      return undefined;
+    }
+    const under = contentUnder(drawn, foot);
+    const top = (under === null ? foot : under.getBoundingClientRect().top) - edge;
+    return { block: drawn, edge: "bottom", top, under };
   }
   const block = drawn.children[where.index];
-  return block === undefined ? undefined : { block, edge: "top", top: where.top };
+  return block === undefined ? undefined : { block, edge: "top", top: where.top, under: null };
 }
 
 /**
@@ -503,10 +546,12 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
     // the reader's screen: the place is taken afresh and nothing is written. A block drawn with
     // no box is the document in a tab the reader has switched away from, and measured as its
     // all-zero rectangle against their place it moved the tab they switched to by that place's
-    // own offset (1,040 to 1,080 in the review's harness).
+    // own offset (1,040 to 1,080 in the review's harness). So is a place held by the box under a
+    // run once that box has left the page, which would read as the same all-zero rectangle.
     if (
       kept === undefined ||
       !drawn.contains(kept.block) ||
+      (kept.under !== null && !kept.under.isConnected) ||
       offset !== left ||
       kept.block.getClientRects().length === 0
     ) {
@@ -548,7 +593,7 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
       take();
       return;
     }
-    place = { block: kept.block, edge: "top", top: top - edge };
+    place = { block: kept.block, edge: "top", top: top - edge, under: null };
     left = scrollOffset(drawn);
   };
   // Every growth is answered where it is seen, never a frame later. A mutation is answered in
