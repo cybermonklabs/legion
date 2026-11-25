@@ -27,6 +27,7 @@
  */
 import { parseArgs } from "node:util";
 import type { ArtifactText, ArtifactVersionText } from "../packages/contracts/src/dispatch-api";
+import { joinUrl } from "../packages/contracts/src/url-join";
 import {
   type ActiveDispatchConfig,
   activeDispatchSettings,
@@ -322,7 +323,7 @@ async function request(
   path: string,
   body?: unknown
 ): Promise<Response> {
-  const url = `${config.url}${path}`;
+  const url = joinUrl(config.url, path).href;
   // Who the write is by, stated in the body: see `DispatchConfig.session`. A read states
   // nothing, and neither does a run with no session to name.
   const stated =
