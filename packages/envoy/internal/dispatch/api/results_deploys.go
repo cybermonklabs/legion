@@ -142,7 +142,7 @@ func programOf(check model.CheckBlock, deploys []model.Deploy) (string, string) 
 	case 1:
 		return deploys[0].Program, ""
 	default:
-		return "", "program_not_named"
+		return deploys[0].Program, ""
 	}
 }
 
