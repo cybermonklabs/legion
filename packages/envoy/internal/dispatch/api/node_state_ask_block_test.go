@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -41,8 +40,8 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	block := "dispatch://" + issue.Key + "/spec#b-q1"
 	ask := "dispatch://" + issue.Key + "/ask/" + askID
 
-	blockBefore := readAskBlockNodeState(t, database, block)
-	askBefore := readAskBlockNodeState(t, database, ask)
+	blockBefore := storedStateOf(t, database, block)
+	askBefore := storedStateOf(t, database, ask)
 	if askBefore.state == graphstore.StateProposed {
 		t.Fatalf("the ask %s is proposed before any write, so a write of proposed on it would move nothing", ask)
 	}
@@ -56,10 +55,10 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	requireRefused(t, "the settle of the ask block",
 		dispatchRequest(t, handler, http.MethodPost, statePath(issue.Key, block, "settle"), nil, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+	if after := storedStateOf(t, database, block); after != blockBefore {
 		t.Fatalf("the refused writes moved the block %s from %+v to %+v", block, blockBefore, after)
 	}
-	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
+	if after := storedStateOf(t, database, ask); after != askBefore {
 		t.Fatalf("the refused writes on the block moved the ask %s from %+v to %+v", ask, askBefore, after)
 	}
 
@@ -115,15 +114,15 @@ func TestTheStateRouteRefusesACopiedAskBlockNamingItsSourceAsk(t *testing.T) {
 	}
 	block := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+copied.Slug, "q1")
 	ask := "dispatch://" + issue.Key + "/ask/" + askID
-	blockBefore := readAskBlockNodeState(t, database, block)
-	askBefore := readAskBlockNodeState(t, database, ask)
+	blockBefore := storedStateOf(t, database, block)
+	askBefore := storedStateOf(t, database, ask)
 
 	requireRefused(t, "proposed on the copied ask block", writeStateAs(t, handler, issue.Key, block, graphstore.StateProposed, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+	if after := storedStateOf(t, database, block); after != blockBefore {
 		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)
 	}
-	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
+	if after := storedStateOf(t, database, ask); after != askBefore {
 		t.Fatalf("the refused write moved the source ask %s from %+v to %+v", ask, askBefore, after)
 	}
 }
@@ -183,28 +182,15 @@ func TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames(t *t
 		t.Fatalf("the copy's question map is %+v, want q1 naming the ask its opening line names, %s at %s", questions, askID, ask)
 	}
 	block := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+copied.Slug, "q1")
-	blockBefore := readAskBlockNodeState(t, database, block)
-	askBefore := readAskBlockNodeState(t, database, ask)
+	blockBefore := storedStateOf(t, database, block)
+	askBefore := storedStateOf(t, database, ask)
 
 	requireRefused(t, "proposed on the unclaimed copy's ask block", writeStateAs(t, handler, issue.Key, block, graphstore.StateProposed, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+	if after := storedStateOf(t, database, block); after != blockBefore {
 		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)
 	}
-	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
+	if after := storedStateOf(t, database, ask); after != askBefore {
 		t.Fatalf("the refused write moved the source ask %s from %+v to %+v", ask, askBefore, after)
 	}
-}
-
-// askBlockNodeState holds a node's stored state and its count of state tuples.
-type askBlockNodeState struct {
-	state  string
-	tuples int
-}
-
-// readAskBlockNodeState requires a row so the states compared before and after are the store's
-// own, not a default for a node the store has not recorded.
-func readAskBlockNodeState(t *testing.T, database *store.Store, address string) askBlockNodeState {
-	t.Helper()
-	return askBlockNodeState{state: storedNodeOf(t, database, address).State, tuples: len(stateHistoryOf(t, database, address))}
 }

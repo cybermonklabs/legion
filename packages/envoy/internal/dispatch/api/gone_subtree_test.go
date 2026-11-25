@@ -260,7 +260,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	// it answers the refusal with id, the node's own, written <node>.
 	refusedGone := func(name, address, id string) string {
 		t.Helper()
-		held, tuples := storedNodeOf(t, settle.database, address).State, len(stateHistoryOf(t, settle.database, address))
+		held := storedStateOf(t, settle.database, address)
 		response := settle.asFirst(http.MethodPost, statePath(settle.issue.Key, address, "state"), map[string]any{"state": graphstore.StateGone})
 		t.Logf("%s: status=%d body=%s", name, response.Code, response.Body.String())
 		refused := response.Code == http.StatusForbidden
@@ -272,11 +272,12 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 			t.Errorf("%s answers %d %s, want 403 %s naming %s: a person alone takes a lens, a finding, a risk or a constraint to gone, its author included",
 				name, response.Code, response.Body.String(), codeStateNotPermitted, address)
 		}
-		if state := storedNodeOf(t, settle.database, address).State; state != held {
-			t.Errorf("%s left %s at %s, want the %s it held", name, address, state, held)
+		after := storedStateOf(t, settle.database, address)
+		if after.state != held.state {
+			t.Errorf("%s left %s at %s, want the %s it held", name, address, after.state, held.state)
 		}
-		if after := len(stateHistoryOf(t, settle.database, address)); after != tuples {
-			t.Errorf("%s left %s with %d state tuples, want the %d it held", name, address, after, tuples)
+		if after.tuples != held.tuples {
+			t.Errorf("%s left %s with %d state tuples, want the %d it held", name, address, after.tuples, held.tuples)
 		}
 		return strings.ReplaceAll(response.Body.String(), id, "<node>")
 	}
@@ -558,4 +559,20 @@ func stateHistoryOfNode(t *testing.T, database *store.Store, kind, id string) []
 		t.Fatalf("read the state history of %s %s: %v", kind, id, err)
 	}
 	return history
+}
+
+// storedState is a node's stored state and its count of state tuples.
+type storedState struct {
+	state  string
+	tuples int
+}
+
+// storedStateOf is what the store holds of the node at address: the state its row holds and the
+// count of its state tuples, read by the kind and the id of that row, so the row is read once
+// (storedNodeOf). It requires that row, so the states compared before and after a write are the
+// store's own, not a default for a node the store has not recorded.
+func storedStateOf(t *testing.T, database *store.Store, address string) storedState {
+	t.Helper()
+	node := storedNodeOf(t, database, address)
+	return storedState{state: node.State, tuples: len(stateHistoryOfNode(t, database, node.Kind, node.ID))}
 }
