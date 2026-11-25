@@ -9521,8 +9521,8 @@
       "capture": "appauth.answer-words/viewer-app-refused",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "m.send(request, \"read \"+what, \"/apps/\"+shown)",
-        "replacement": "m.send(request, \"read \"+what, \"\")"
+        "preimage": "m.send(request, reading, \"/apps/\"+shown)",
+        "replacement": "m.send(request, reading, \"\")"
       }
     },
     {
@@ -9535,7 +9535,7 @@
       "capture": "appauth.answer-words/viewer-app-refused",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "shown := strings.TrimSuffix(githubrest.ShownLogin(slug+\"[bot]\"), \"[bot]\")",
+        "preimage": "shown, _ := slugOfBotLogin(githubrest.ShownLogin(botLogin(slug)))",
         "replacement": "shown := slug"
       }
     },
@@ -15491,7 +15491,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-not-whole",
       "production": "leakguard graphQLAnswer: a GraphQL answer that is not one whole JSON document is quoted as the rule reads it, every run of the tokens the read carried redacted (said, shownSaid: oauth2call.Tokens then oauth2call.Field)",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-not-whole",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15505,7 +15505,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-no-status-line",
       "production": "leakguard graphQLAnswer: a GraphQL read that printed no status line quotes what gh printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-no-status-line",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15519,7 +15519,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-status",
       "production": "leakguard graphQLAnswer: a GraphQL read answered a status other than 200 quotes what gh printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-status",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15533,7 +15533,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-exit",
       "production": "leakguard graphQLAnswer: a gh that exited non-zero after a 200 quotes what it printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-exit",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15547,7 +15547,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-no-repository",
       "production": "leakguard graphQLAnswer: a GraphQL answer naming no repository quotes what gh printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-no-repository",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15561,7 +15561,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-errors",
       "production": "leakguard graphQLAnswer: the message of each error GraphQL named prints as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-errors",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15575,7 +15575,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-repository-name",
       "production": "leakguard graphQLAnswer: the nameWithOwner GraphQL answered for prints as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-repository-name",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15589,7 +15589,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-visibility",
       "production": "leakguard graphQLAnswer: a visibility GraphQL answered that is none GitHub defines prints as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.graphQLAnswer",
       "capture": "leakguard.visibility-words/graphql-visibility",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15603,7 +15603,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/rest-exit",
       "production": "leakguard Guard.ghVisibility: a gh REST read that exited non-zero quotes everything it printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/leakguard.Guard).ghVisibility",
       "capture": "leakguard.visibility-words/rest-exit",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility.go",
@@ -15617,7 +15617,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-unreached",
       "production": "leakguard curlAnswer: a curl that reached GitHub not at all quotes what it printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.curlAnswer",
       "capture": "leakguard.visibility-words/curl-unreached",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility_transport.go",
@@ -15631,7 +15631,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-exit",
       "production": "leakguard curlAnswer: a curl that exited non-zero after GitHub answered quotes what it printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.curlAnswer",
       "capture": "leakguard.visibility-words/curl-exit",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility_transport.go",
@@ -15645,7 +15645,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-status",
       "production": "leakguard curlAnswer: a curl read GitHub answered a status other than 200 quotes what it printed as the rule reads it",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.curlAnswer",
       "capture": "leakguard.visibility-words/curl-status",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility_transport.go",
@@ -15659,12 +15659,26 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/curl-caller-unreached",
       "production": "leakguard CurlResponse.Unreached: the curl answer a caller of its own reads quotes what curl printed as the rule reads it, the read's token kept for that alone",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "function": "(github.com/sjawhar/legion/daemon/internal/leakguard.CurlResponse).Unreached",
       "capture": "leakguard.visibility-words/curl-caller-unreached",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/visibility_transport.go",
         "preimage": "quoted := shownSaid(strings.TrimSpace(strings.TrimSpace(r.Body())+\" \"+strings.TrimSpace(r.Stderr)), r.token)",
         "replacement": "quoted := strings.TrimSpace(strings.TrimSpace(r.Body()) + \" \" + strings.TrimSpace(r.Stderr))"
+      }
+    },
+    {
+      "id": "leakguard-visibility-words-shown-said",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheVisibilityReadsPrintNoRunOfTheTokenTheyCarried/graphql-exit",
+      "production": "leakguard shownSaid: the one reading of gh's and curl's words every visibility read quotes, every run of the tokens the read carried redacted (oauth2call.Tokens) and the rest read as a field (oauth2call.Field)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.shownSaid",
+      "capture": "leakguard.visibility-words/graphql-exit",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/visibility.go",
+        "preimage": "return oauth2call.Field(oauth2call.Tokens(strings.TrimSpace(oneLine.Replace(text)), -1, tokens...))",
+        "replacement": "return func() string { _, _ = oauth2call.Field, oauth2call.Tokens; return strings.TrimSpace(oneLine.Replace(text)) }()"
       }
     },
     {
@@ -15736,7 +15750,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/get",
       "production": "githubrest Client.Get: a read under an endpoint that is no absolute URL with a host is refused in urljoin's fixed words, which print neither the endpoint nor url.Parse's error",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).callURL",
       "capture": "githubrest.api-address/get",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -15750,7 +15764,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/post",
       "production": "githubrest Client.Post through send: the same refusal for a write",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).callURL",
       "capture": "githubrest.api-address/post",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -15764,7 +15778,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestAReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt/pages",
       "production": "githubrest GetPages: a paged read under such an endpoint is refused in urljoin's fixed words, where its own parse of the REST base quoted the whole configured URL, user information and query included",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Client.callURL",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).callURL",
       "capture": "githubrest.api-address/pages",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -15792,7 +15806,7 @@
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
       "test": "TestATarballReadUnderAnAPIAddressThatIsNoURLRefusesWithoutPrintingIt",
       "production": "leakguard Source.read: a tarball read under an API address that is no absolute URL with a host is refused in urljoin's fixed words, which print neither the address nor url.Parse's error",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.Source.read",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/leakguard.Source).read",
       "capture": "leakguard.api-address/tarball",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/source.go",
