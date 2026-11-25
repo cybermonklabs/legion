@@ -1221,8 +1221,8 @@ const gateStopsWithin = 5 * time.Second
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	// The daemon holds the plugin to its own DaemonAPIVersion.
-	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
-	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
+	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion()) + `}`
+	previous := strconv.Itoa(api.DaemonAPIVersion() - 1)
 	for _, testCase := range []struct {
 		name, legion, step, want string
 	}{
@@ -1294,7 +1294,7 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("OMP_PROFILE", "gate")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
-		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
+		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion())+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
@@ -1344,7 +1344,7 @@ esac
 	t.Setenv("PATH", stub+":"+os.Getenv("PATH"))
 	t.Setenv("GEMINI_API_KEY", "the-daemons-own")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
-		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
+		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion())+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil

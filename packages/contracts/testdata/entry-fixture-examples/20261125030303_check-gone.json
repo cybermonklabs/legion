@@ -1,0 +1,13 @@
+{
+  "answers": [
+    { "answer": "note", "change": "remove" },
+    {
+      "answer": "state",
+      "removeKeyPaths": ["issues.*.check.note"],
+      "removeValues": { "issues.*.phase": ["implementing"] }
+    }
+  ],
+  "routes": [{ "route": "POST /legion/v1/claims/exit", "removeFieldPaths": ["detail"] }],
+  "answerRows": [],
+  "enumeratedRows": []
+}

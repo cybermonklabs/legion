@@ -1,5 +1,5 @@
 {
-  "commands": 41,
+  "commands": 42,
   "refusals": 29,
   "runs": [
     {
@@ -20,6 +20,28 @@
       "outcome": "result",
       "text": [
         "No person wrote to this session in the last 72 hours."
+      ]
+    },
+    {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
       ]
     },
     {
@@ -1347,8 +1369,8 @@
         "Work under no priority (1: DSP 1):",
         "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
         "",
-        "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+        "Priority work in backlog or icebox (1: ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · moved to backlog 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
       ]
     },
     {
@@ -1576,7 +1598,7 @@
         "Priority: P1",
         "Labels: infra",
         "Components: none live",
-        "Advances: ship-the-daemon (own), legion-first (inherited)",
+        "Advances: ship-the-daemon (own), legion-first (inherited); revision 7",
         "Route: none",
         "Repository: owner/repo (own)",
         "Progress: none",

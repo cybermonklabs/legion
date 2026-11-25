@@ -528,7 +528,8 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 // outstanding for its ack wait. The negative control is a callNATS without the INFO case for
 // ErrReconnectBufExceeded.
 func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	handlerReady := make(chan struct{}, 1)
 	linkCut := make(chan struct{})
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
