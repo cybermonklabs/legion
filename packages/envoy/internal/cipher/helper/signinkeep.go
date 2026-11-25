@@ -105,7 +105,7 @@ type heldEnrollment struct {
 func (h *signInHolds) needed(now time.Time) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.boxes) > 0 {
+	if true || len(h.boxes) > 0 {
 		return true
 	}
 	for _, held := range h.sessions {
