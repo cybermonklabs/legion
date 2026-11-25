@@ -430,6 +430,15 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 		}
 	})
 
+	// walked is the last check of issue 1's walk that ran to its end: each later check stands on
+	// it, and fails at once, naming it, where it did not end.
+	walked := ""
+	standsOn := func(t *testing.T, check string) {
+		t.Helper()
+		if walked != check {
+			t.Fatalf("issue 1's walk did not reach the end of %s (its last check to end: %q), so this check cannot run", check, walked)
+		}
+	}
 	var fixTask shimwire.Prompt
 	t.Run("fix-starts", func(t *testing.T) {
 		e := one
@@ -446,7 +455,9 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 		if owed := er.owed(); owed != "none" {
 			t.Fatalf("Dispatch owes %s a settle once unit concluded at X (%s), so a settle other than the settlement's could read the failure", e.key, owed)
 		}
-		before, reads := e.dispatchSeq(), len(r.checks.Reads())
+		before := e.dispatchSeq()
+		// The fake's reads up to the publish: control-no-settlement judges each by what it served.
+		reads := len(r.checks.Reads())
 		er.settle(e.x, run)
 
 		held := er.awaitState(scratchCICheck, e.x, "that says its run failed", func(held scratchCIState) bool { return held.CICase == scratchCIFailure })
@@ -499,10 +510,12 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 				t.Fatalf("no read of X after the settlement's publish served unit concluded failure; the reads: %+v", all)
 			}
 		})
+		walked = "fix-starts"
 	})
 
 	y := scratchCIHead(one.key, "y")
 	t.Run("fix-pushes", func(t *testing.T) {
+		standsOn(t, "fix-starts")
 		e := one
 		er := e.at()
 		e.works(claim.RoleImplementer, fixTask)
@@ -515,9 +528,11 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 		if decision := e.decision(); decision.State != "approved" || decision.Head != e.x || decision.Refused != "" {
 			t.Fatalf("the reviewer's decision after its approval of X while the head is Y = %+v, want approved at %s, not refused", decision, e.x)
 		}
+		walked = "fix-pushes"
 	})
 
 	t.Run("way-two", func(t *testing.T) {
+		standsOn(t, "fix-pushes")
 		e := one
 		er := e.at()
 		if fixes := e.fixes(); len(fixes) != 1 || fixes[0].way != 2 || fixes[0].endHead != y {
@@ -540,9 +555,11 @@ func TestFixBesideReviewThroughDispatch(t *testing.T) {
 		assertRecord(t, e.key, records, 1, 2, e.x, y, scratchCICheck)
 		assertRecord(t, e.key, records, 3, 1, e.x, e.x, "")
 		er.fact("way-two", "%s's records after the review of X: %+v", e.key, records)
+		walked = "way-two"
 	})
 
 	t.Run("end-waits", func(t *testing.T) {
+		standsOn(t, "way-two")
 		e := one
 		er := e.at()
 		tester := e.worker(claim.RoleTester)
