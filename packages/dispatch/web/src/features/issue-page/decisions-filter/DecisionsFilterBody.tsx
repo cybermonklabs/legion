@@ -735,7 +735,8 @@ export function DecisionsFilterBody({
         review={part === "review"}
         // An overtaken decision stands in the review part with its words and its mark, but
         // nothing at or under an overtaken node waits on the reader, so its row draws no Keep, no
-        // Change and no waiting colour, as its row in the outline draws none.
+        // Change and no waiting colour, as its row in the outline draws none; its words are cut at
+        // six lines, as an agent's decision's words are wherever nothing waits on the reader.
         {...(node.closed === true ? { review: false } : undefined)}
         statementNames={statementNames}
         tabStop={tabStop === id}

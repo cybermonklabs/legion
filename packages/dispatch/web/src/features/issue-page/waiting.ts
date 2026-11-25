@@ -131,6 +131,7 @@ function nodeKey(node: AnswerNode): string {
 function closedKeys(tree: TreeAnswer | undefined, asks: readonly OpenAsk[]): ReadonlySet<string> {
   const nodes = tree?.nodes ?? [];
   const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
+  if (overtaken.length === 0) return new Set();
   // The read's own id of each, which an ask's node of the conversation shares with its ask.
   const overtakenIds = new Set(overtaken.map((node) => node.id));
   // The key of each block an open question is written as whose ask's node is overtaken.

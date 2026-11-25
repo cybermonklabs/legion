@@ -2540,7 +2540,9 @@ function drawDecisions(
   );
 }
 
-test("Decisions draws an overtaken review row without counting it in the to-review flag", () => {
+/** An overtaken decision and a live one, each waiting for review and tied to statement `s1`,
+ *  stamped and drawn under Decisions (`drawDecisions`). */
+function drawOvertakenReview() {
   const old = decisionNode("old", { waiting: true });
   const live = decisionNode("live", { waiting: true });
   const root = stamped(node(KEY, "issue", [specStatement("s1"), old, live]), {
@@ -2548,6 +2550,11 @@ test("Decisions draws an overtaken review row without counting it in the to-revi
   });
   const tied = { decision: { links: [shaped(specRef("s1"))] } };
   const view = drawDecisions(root, [decision("old", tied), decision("live", tied)]);
+  return { live, old, root, view };
+}
+
+test("Decisions draws an overtaken review row without counting it in the to-review flag", () => {
+  const { live, old, root, view } = drawOvertakenReview();
   try {
     const row = rowOf(view.container, old.id);
     expect(row?.closest("[data-decisions-part]")).toHaveAttribute("data-decisions-part", "review");
@@ -2587,13 +2594,7 @@ test("Decisions draws an overtaken review row without counting it in the to-revi
 // waiting colour, as its row in the outline draws none. The live decision beside it draws all
 // three.
 test("an overtaken decision in the review part draws no Keep, no Change and no waiting colour", () => {
-  const old = decisionNode("old", { waiting: true });
-  const live = decisionNode("live", { waiting: true });
-  const root = stamped(node(KEY, "issue", [specStatement("s1"), old, live]), {
-    [old.id]: { life: "overtaken" },
-  });
-  const tied = { decision: { links: [shaped(specRef("s1"))] } };
-  const view = drawDecisions(root, [decision("old", tied), decision("live", tied)]);
+  const { live, old, view } = drawOvertakenReview();
   // What the row of `id` draws: its part, its words and its marks, whether it offers Keep and
   // Change, and whether its state is drawn in the decisions' violet, which says it waits.
   const drawn = (id: string) => {
