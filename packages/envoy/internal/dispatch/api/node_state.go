@@ -151,10 +151,13 @@ type stateTarget struct {
 
 // askBlockQuery answers the document and the block id of the `:::ask` block whose block node the
 // store keys by kind $1 and address $2: its row of type ask in the document's block index, which
-// document_blocks_node_address (migration 20261111043000) finds. Any other node has no such row.
-const askBlockQuery = `
-	select artifact_id::text, block_id from document_blocks
-	where node_kind = $1 and node_address = $2 and type = 'ask'`
+// document_blocks_node_address (migration 20261111043000) finds, and the document that row is a
+// block of (refs.BlockDocumentSQL): the document whose fragment of an issue room holds the block,
+// for a row keyed by the room's tree artifact, else the row's own artifact. Any other node has no
+// such row.
+var askBlockQuery = `
+	select (` + refs.BlockDocumentSQL("b") + `)::text, b.block_id from document_blocks b
+	where b.node_kind = $1 and b.node_address = $2 and b.type = 'ask'`
 
 // askHoldsState refuses a write on the block node of an `:::ask` block with 409 ASK_HOLDS_STATE
 // and returns nil for other nodes. It reads in the write's transaction (q), and only for nodes the

@@ -1081,6 +1081,22 @@ func (b *BlockIndexing) planBlockParents(
 	}
 	skipped := make([]bool, len(placed))
 	differences := make([]*blockParentDifference, len(placed))
+	// A prior pass of the same transaction that placed a block without reading its values
+	// (PlanDecisionNodes) records indexed.placed[id] and leaves indexed.values[id] absent. Where
+	// that cached far end disagrees with this pass's wanted parent, the block's placement is read
+	// from the store before deciding whether PlacementStored keeps the cached parent.
+	var unvalued []int
+	var unvaluedIDs []string
+	applyCached := func(position int, far blockFarEnd, placementValue string) {
+		if placementValue == PlacementStored {
+			if !removed(far) && !settles(position) {
+				keep(position, far)
+				return
+			}
+			placement.unstore(position)
+		}
+		differences[position] = &blockParentDifference{block: position, retract: []blockFarEnd{far}}
+	}
 	for position, id := range blockIDs {
 		if kept != nil && kept[position] {
 			skipped[position] = true
@@ -1099,14 +1115,20 @@ func (b *BlockIndexing) planBlockParents(
 		if far == wanted[position] {
 			continue
 		}
-		if indexed.values[id].placement == PlacementStored {
-			if !removed(far) && !settles(position) {
-				keep(position, far)
-				continue
-			}
-			placement.unstore(position)
+		if value, valued := indexed.values[id]; valued {
+			applyCached(position, far, value.placement)
+			continue
 		}
-		differences[position] = &blockParentDifference{block: position, retract: []blockFarEnd{far}}
+		unvalued, unvaluedIDs = append(unvalued, position), append(unvaluedIDs, id)
+	}
+	if len(unvalued) > 0 {
+		heldPlacements, err := heldBlockPlacements(ctx, q, refKey, unvaluedIDs)
+		if err != nil {
+			return blockPlacement{}, nil, nil, fmt.Errorf("read the placements the blocks of %s hold: %w", b.artifactID, err)
+		}
+		for index, position := range unvalued {
+			applyCached(position, indexed.placed[blockIDs[position]], heldPlacements[index])
+		}
 	}
 	probe := placement.probe(parentIDs, skipped)
 	read, err := heldBlockParentDifferences(ctx, q, refKey, topKind, topID, probe)
@@ -3418,6 +3440,35 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 		differences = append(differences, difference)
 	}
 	return differences, rows.Err()
+}
+
+// heldBlockPlacements reads the current AttributePlacement value of each block in ids from the
+// store, in the same order as ids ("" where the store holds none). It uses the same index probe as
+// heldBlockParentDifferences and runs only for blocks whose parent an earlier pass of the same
+// transaction cached in BlockIndex.placed without populating BlockIndex.values.
+func heldBlockPlacements(ctx context.Context, q Queryer, refKey string, ids []string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		select coalesce((
+			select case when t.asserted then t.to_id end from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $4
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1), '')
+		from unnest($1::text[]) with ordinality as block (id)
+		order by block.ordinality
+	`, ids, BlockNodeKind, refKey, AttributePlacement)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	placements := make([]string, 0, len(ids))
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		placements = append(placements, value)
+	}
+	return placements, rows.Err()
 }
 
 // heldLink is one link a block node states beside its membership of its document and its
