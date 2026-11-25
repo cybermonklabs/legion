@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -331,17 +330,12 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Each person the edit newly mentions takes part in the comment's thread from it (R4's mention
-	// arm), with no delivery, since an edit delivers nothing: the thread's root is read here, in
-	// the read phase, only for an edit that names somebody new.
-	var mentionedIn []graphstore.Tuple
-	if len(indexed.People) > 0 {
-		rootKind, rootID, err := inboxwrite.ThreadRoot(r.Context(), tx, graphstore.KindComment, comment.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		mentionedIn = inboxwrite.MentionParticipation(rootKind, rootID, indexed, actor, editedAt, graphstore.LatestEvent)
+	// Each person the edit newly mentions takes part in the comment's thread from it
+	// (editMentionParticipation).
+	mentionedIn, err := editMentionParticipation(r.Context(), tx, graphstore.KindComment, comment.ID, indexed, actor, editedAt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
 		s.writeHandlerError(w, err)

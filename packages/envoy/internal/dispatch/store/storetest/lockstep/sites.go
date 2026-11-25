@@ -296,9 +296,9 @@ var storeWriteCallSites = map[string]string{
 	"inboxwrite/record.go#Queue":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"inboxwrite/thread.go#queueKeepRow": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The same writer's clear of the Agent dismissals a session's reply ends
-	// (queueAgentDismissalsClear): the root message `for no key update`, which the reply's writer
-	// took before its insert already (inboxwrite.Recording.QueueRootLock), then the retraction of
-	// each dismissed mark of that root through QueueMarksEnded, then the delete of the
+	// (queueAgentDismissalsClear), under the root message `for no key update`, which the reply's
+	// writer took first (inboxwrite.Recording.QueueRootLock): the retraction of each dismissed
+	// mark of that root through QueueMarksEnded, then the delete of the
 	// user_agent_thread_dismissed rows. No lock-step test follows these steps; api's
 	// TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply runs them, holding the root as the
 	// dismiss route takes it `for update`.
