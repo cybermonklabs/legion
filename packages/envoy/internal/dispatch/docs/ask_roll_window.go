@@ -161,8 +161,9 @@ func keptAskState(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 // version keeps of no ask (keptAskState) - and reports whether it held any. It is that write, for
 // a block that has an ask (askBlocksWithAnAsk), of a writer that reads no ask's state: a version
 // written without settling (storableVersionTree) and the decisions step's restore (writePresent,
-// and movedBlockOf for a copy no row names). The rest stays as the live tree holds it, which every
-// write of an ask's state keeps in step with it (keptAskState).
+// and movedBlockOf for a block a row of the spec names; a copy movedBlockOf moves takes its
+// source's kept form from the source's node instead). The rest stays as the live tree holds it,
+// which every write of an ask's state keeps in step with it (keptAskState).
 //
 // kept for one release: stored-ask-state
 func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
