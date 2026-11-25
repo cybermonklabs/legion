@@ -309,7 +309,7 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 //     first budget statement gives no more than the bound; each later budget statement gives no
 //     more than what is left of the bound once the read has run from its first budget statement
 //     to the end of the statement before; from its last budget statement to the rollback
-//     boundedClosure sends once the read has ended, the read runs at least the budget that
+//     inJITOffRead sends once the read has ended, the read runs at least the budget that
 //     statement gave, less a millisecond; and it ends on Postgres's statement timeout, which the
 //     budget sets, not on the context. Each of these holds however late this process runs the
 //     product's goroutines, so the test's own setup and scheduling count for nothing.
@@ -360,7 +360,7 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 // closure read on the server's own statements, from the hooks pgx calls as each starts and ends:
 // from the read's first budget statement after arm (setStatementBudget, which closureBudget sends
 // before each statement of the read, starting it with refs.ClosureTag) to the start of the
-// rollback boundedClosure sends on that same connection once the read has ended. It keeps the
+// rollback inJITOffRead sends on that same connection once the read has ended. It keeps the
 // first budget the read gave and the last, each with when its statement started and when the
 // statement before it on that connection ended, and the error of the first statement to fail on
 // that connection, the one the bound cut. Statements of other connections, the server's
