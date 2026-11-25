@@ -127,7 +127,7 @@ export function RefPreviewLayer(): ReactNode {
   // A render that threw is drawn again for the next card too, as a chunk that did not load is.
   const listener = <CardAsked ask={ask} />;
   return (
-    <ChunkBoundary fallback={listener} notLoaded={listener} reset={asks}>
+    <ChunkBoundary fallback={listener} reset={asks}>
       <RefPreviewHost />
     </ChunkBoundary>
   );

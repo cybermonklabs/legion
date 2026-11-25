@@ -52,29 +52,38 @@ test("a part that renders draws as it is", () => {
 });
 
 // A chunk under it that fails to download online (`ChunkNotLoaded`) draws what its host names for
-// that, or nothing, and never the fallback a host names for a render that threw: a list of writes
-// whose chunk cannot load draws nothing, as it does with no write to show, while one whose render
-// threw draws an alert (`features/writes/write-hosts.tsx`).
-test("a chunk under it that fails to download draws what the host names for that, or nothing, and never the fallback", async () => {
+// that, or else the fallback its host names for a render that threw, or nothing when the host
+// names neither: a host that names only `fallback` is never silent when its chunk fails. The
+// pending-writes indicator names a line of its own for that (`features/writes/write-hosts.tsx`).
+test("a chunk under it that fails to download draws what the host names for that, or else its fallback, or nothing", async () => {
   const NotLoaded = failingChunkComponent();
   const logged = quietConsoleError();
   const view = render(
     <div>
       <section aria-label="Quiet">
+        <ChunkBoundary>
+          <NotLoaded />
+        </ChunkBoundary>
+      </section>
+      <section aria-label="Fallback only">
         <ChunkBoundary fallback={<p>Could not show it</p>}>
           <NotLoaded />
         </ChunkBoundary>
       </section>
-      <ChunkBoundary fallback={<p>Could not show it</p>} notLoaded={<p>Could not load it</p>}>
-        <NotLoaded />
-      </ChunkBoundary>
+      <section aria-label="Both">
+        <ChunkBoundary fallback={<p>Could not show it</p>} notLoaded={<p>Could not load it</p>}>
+          <NotLoaded />
+        </ChunkBoundary>
+      </section>
     </div>
   );
   try {
-    await waitFor(() => expect(logged).toHaveBeenCalledTimes(2));
-    expect(screen.getByText("Could not load it")).toBeTruthy();
+    await waitFor(() => expect(logged).toHaveBeenCalledTimes(3));
     expect(screen.getByRole("region", { name: "Quiet" })).toBeEmptyDOMElement();
-    expect(screen.queryByText("Could not show it")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Fallback only" })).toHaveTextContent(
+      /^Could not show it$/u
+    );
+    expect(screen.getByRole("region", { name: "Both" })).toHaveTextContent(/^Could not load it$/u);
   } finally {
     logged.mockRestore();
     view.unmount();

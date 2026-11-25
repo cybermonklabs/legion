@@ -42,7 +42,15 @@ import {
   tabReloads,
   WRITE_KINDS_CHUNK,
 } from "./shell";
-import { type Browser, type BrowserContext, expect, type Page, type Route, test } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+  test,
+} from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -1380,57 +1388,46 @@ async function reloadWithKindsHeld(page: Page): Promise<Route> {
   return held;
 }
 
+/** The line that stands in the pending-writes indicator's place while its chunk cannot load
+ *  online (`ChangesNotSent`, `web/src/features/writes/write-hosts.tsx`): a status that counts the
+ *  changes not sent. It is no region, so `pendingWrites` still locates the indicator alone. */
+function changesNotSent(page: Page): Locator {
+  return page.getByRole("status").filter({ hasText: /\bchanges? not sent\b/u });
+}
+
 // The pending-writes indicator is a chunk of its own, and its download can fail while the browser
 // is online - a deployment that replaced the build the page loaded - with no recovery reload to
 // follow: the tab's three reloads are spent here, as a tab whose assets kept failing has spent
 // them. The indicator's host is in the status corner, outside the page's error boundary, so the
-// failure stops at the indicator's own (`ChunkBoundary`, `web/src/features/writes/write-hosts.tsx`):
-// the indicator draws nothing, and the rest of the page stays drawn and signed in. The app's top
-// boundary (`web/src/main.tsx`) would replace the whole app, `AuthGate` with it, so the tab would
-// stop answering another tab's sign-out, and stop showing the sign-in page on a 401, while its
-// write went on. The writes host's prefetch of the indicator is held on the wire, the status
+// failure stops at the indicator's own (`ChunkBoundary`, `web/src/features/writes/write-hosts.tsx`),
+// and the rest of the page stays drawn and signed in. The app's top boundary (`web/src/main.tsx`)
+// would replace the whole app, `AuthGate` with it, so the tab would stop answering another tab's
+// sign-out, and stop showing the sign-in page on a 401, while its write went on. In the
+// indicator's place a line says that the write still out is not sent, with a Reload
+// (`ChangesNotSent`): the indicator is the one place a reader learns of it, so its failure is
+// never silent. The writes host's prefetch of the indicator is held on the wire, the status
 // change is pressed and held at the network - the indicator mounts on the held download - and
-// the download then fails. React reports a failure an error boundary caught on the console
-// (`onCaughtError`) in the commit that draws that boundary, which is what the row waits for. The
-// host stays mounted, so the reader who stays on the page must get the indicator back - its
-// Retry, Discard and Stop trying - once the chunk can come down: the next write the reader
-// presses draws it afresh (`ChunkBoundary`'s `reset`), which asks for the chunk again, and the
-// row lets that request through.
+// the download then fails (`failTheIndicatorOverAHeldWrite`). The host stays mounted, so the
+// reader who stays on the page must get the indicator back - its Retry, Discard and Stop trying -
+// once the chunk can come down: the next write the reader presses draws it afresh
+// (`ChunkBoundary`'s `reset`), which asks for the chunk again, and the row lets that request
+// through.
 // SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
-test("a pending-writes indicator whose chunk fails to download online with no reload to follow leaves the page drawn and signed in, and the next write draws it", async ({
+test("a pending-writes indicator whose chunk fails to download online with no reload to follow leaves the page drawn and signed in, says in its place that the change is not sent, and the next write draws it", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "An indicator that cannot load" });
-  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const spent = await recordTabReloads(page, [3, 2, 1]);
-    // Every status change is held at the network, out and never answered, so a write is out
-    // while the indicator mounts.
-    await holdStatusChanges(page, path);
-    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
-    await page.goto(`/issues/${issue.key}`);
-    const indicator = await indicatorCode.held;
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const statusSent = page.waitForRequest(
-      (request) => request.method() === "PATCH" && new URL(request.url()).pathname === path
-    );
-    await page.getByLabel("Status").selectOption("backlog");
-    await statusSent;
-
-    const caught = page.waitForEvent("console", (message) =>
-      message.text().includes("Failed to fetch dynamically imported module")
-    );
-    await indicator.abort();
-    await caught;
+    const { page, spent } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     await expect(page.getByLabel("Status")).toHaveValue("backlog");
-    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect(
+      changesNotSent(page),
+      "the failure left the write still out with no word in the indicator's place"
+    ).toHaveText("1 change not sent");
     expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
 
     // The status change is still out, held at the network, and its field waits for it, so the
@@ -1441,6 +1438,7 @@ test("a pending-writes indicator whose chunk fails to download online with no re
       pendingWrites(page),
       "the write pressed after the failure did not draw the indicator again"
     ).toBeVisible();
+    await expect(changesNotSent(page)).toHaveCount(0);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
   } finally {
@@ -1449,10 +1447,12 @@ test("a pending-writes indicator whose chunk fails to download online with no re
 });
 
 /** Opens the issue `key` in a new page of `alice`'s, with the tab's three recovery reloads spent,
- *  every status change of the issue held at the network and the first download of the
- *  pending-writes indicator held on the wire. A status change pressed then mounts the indicator
- *  on the held download, which then fails. Answers with the page, the tab's reloads as spent,
- *  and the status change held. */
+ *  every status change of the issue held at the network, out and never answered unless the row
+ *  answers it, and the first download of the pending-writes indicator held on the wire. A status
+ *  change pressed then mounts the indicator on the held download, which then fails. React
+ *  reports a failure an error boundary caught on the console (`onCaughtError`) in the commit
+ *  that draws that boundary, which is what this waits for. Answers with the page, the tab's
+ *  reloads as spent, and the status change held. */
 async function failTheIndicatorOverAHeldWrite(
   alice: BrowserContext,
   key: string
@@ -1512,15 +1512,53 @@ test("a pending-writes indicator whose chunk fails to download online with no re
   }
 });
 
+// The same failure, and every later download of the indicator's chunk fails too, as on a page
+// whose build a deployment replaced. Dispatch then refuses the one write, which draws the
+// indicator afresh (`ChunkBoundary`'s `reset`), and its chunk fails again. The line in its place
+// then says that the change is not saved (`ChangesNotSent`), so the reader learns of the refusal,
+// which only the indicator names, and has the Reload that brings the indicator back.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a pending-writes indicator whose chunk fails to download online at every ask, with no reload to follow, says in its place that its one write is not saved once Dispatch refuses it", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A refusal the indicator cannot show" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const { page, spent, statusChange } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
+    await expect(changesNotSent(page)).toHaveText("1 change not sent");
+    // Playwright tries the last route added first, so this one fails every later request for the
+    // indicator's chunk, which `holdFirstRequest` would let through.
+    const failed: string[] = [];
+    await page.route(PENDING_WRITES_CHUNK, (route) => {
+      failed.push(route.request().url());
+      return route.abort();
+    });
+
+    await statusChange.fulfill(STATUS_REFUSED);
+    await expect(
+      changesNotSent(page),
+      "the line in the indicator's place did not say the refused change is not saved"
+    ).toHaveText("1 change not sent — Not saved");
+    expect(failed, "the refusal did not ask for the indicator's chunk again").not.toEqual([]);
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    expect(await tabReloads(page), "the failures reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
 // The same failure, and then the one write the indicator would show lands: no write is left for
-// it to show, so its boundary does not draw it afresh, and no request for its chunk goes out. A
-// boundary that drew the indicator afresh at every change of which writes it shows, its last
-// write going among them, asked for the chunk again for a list that draws nothing, and a download
-// that failed then could spend one of the tab's recovery reloads for it (`PendingWritesHost`,
+// it to show, so its boundary does not draw it afresh, and no request for its chunk goes out. The
+// line that stood in its place goes with that write, since no change is out then. A boundary
+// that drew the indicator afresh at every change of which writes it shows, its last write going
+// among them, asked for the chunk again for a list that draws nothing, and a download that failed
+// then could spend one of the tab's recovery reloads for it (`PendingWritesHost`,
 // `web/src/features/writes/write-hosts.tsx`). The next write the reader presses asks again (the
 // first of these rows).
 // SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
-test("a pending-writes indicator whose chunk failed to download online asks for nothing when its last write lands", async ({
+test("a pending-writes indicator whose chunk failed to download online asks for nothing when its last write lands, and the line in its place goes with that write", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -1529,6 +1567,7 @@ test("a pending-writes indicator whose chunk failed to download online asks for 
   try {
     const { page, spent, statusChange } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
     await expect(pendingWrites(page)).toHaveCount(0);
+    await expect(changesNotSent(page)).toHaveText("1 change not sent");
     expect(await keptWrites(page)).toBe(1);
     const asked: string[] = [];
     page.on("request", (request) => {
@@ -1544,6 +1583,10 @@ test("a pending-writes indicator whose chunk failed to download online asks for 
     // that commit, which is where a boundary drawn afresh asks for its chunk.
     await nextFrames(page);
     expect(asked, "the last write's landing asked for the indicator's chunk again").toEqual([]);
+    await expect(
+      changesNotSent(page),
+      "the line in the indicator's place stayed after the last write landed"
+    ).toHaveCount(0);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
   } finally {

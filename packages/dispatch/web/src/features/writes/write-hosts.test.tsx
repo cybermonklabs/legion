@@ -229,16 +229,66 @@ test.each(
   }
 });
 
-// A chunk that fails to download online draws no alert: the indicator draws nothing, as it does
-// with no write to show, until a change of its writes draws it again (`ChunkBoundary`'s `reset`).
-test("a chunk that fails to download under the pending-writes indicator draws nothing in its place", async () => {
+// A chunk that fails to download online under the pending-writes indicator draws no alert, and
+// never nothing: a line in the indicator's place, drawn from the store's rows with no chunk
+// (`ChangesNotSent`), counts the changes not sent, says "Not saved" once Dispatch refuses one, and
+// offers a Reload. The indicator is the one place a reader learns that a write is still out or was
+// refused, so its failure is never silent. The line goes with the last write. Alice's write waits
+// for her sign-out in another tab (`Writes.holdFor`), so it stays out, and the indicator names it
+// by its label: the part that stands for the indicator's chunk draws there, and fails. Released,
+// the write goes out and Dispatch refuses it, which draws the indicator afresh (`reset`), and the
+// part fails again. The Discard of the refused write, which the indicator alone offers, is the
+// store's here.
+test("a pending-writes indicator whose chunk fails to download online draws a line in its place that counts the changes not sent, says when one is not saved, reloads, and goes with the last write", async () => {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(client);
+  writes.holdFor("alice");
   const logged = quietConsoleError();
-  const view = drawARefusedWrite(PendingWritesHost, <NotLoaded />);
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <PendingWritesHost />
+    </QueryClientProvider>
+  );
   try {
-    await waitFor(() => expect(logged).toHaveBeenCalled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    act(() => {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          // A label is text, which a row draws as it is; a part in its place draws in the
+          // indicator's own render.
+          label: (<NotLoaded />) as unknown as string,
+          method: "PATCH",
+          presentation: "indicator",
+          write: () => Promise.reject(new ApiError(422, { code: "KEY_REUSED", error: "refused" })),
+        })
+        .catch(() => undefined);
+    });
+    const line = await screen.findByRole("status");
+    expect(line).toHaveTextContent(/^1 change not sent$/u);
     expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(logged).toHaveBeenCalled();
+
+    act(() => writes.release("alice"));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/^1 change not sent — Not saved$/u)
+    );
+    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+
+    act(() => screen.getByRole("button", { name: "Reload" }).click());
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    const [refused] = writes.rows();
+    act(() => {
+      expect(writes.discard(refused?.id ?? -1)).toBe(true);
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
   } finally {
+    reload.mockRestore();
     logged.mockRestore();
     view.unmount();
   }

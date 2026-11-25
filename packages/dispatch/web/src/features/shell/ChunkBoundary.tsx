@@ -5,10 +5,11 @@ import { ChunkNotLoaded } from "./chunk-component";
 interface ChunkBoundaryProps {
   readonly children: ReactNode;
   /** What draws in the place of `children` once a render under them has thrown: nothing, unless
-   *  a host names something. A chunk that could not load draws `notLoaded` instead. */
+   *  a host names something. A chunk that could not load draws it too, unless the host names
+   *  `notLoaded`. */
   readonly fallback?: ReactNode;
   /** What draws in the place of `children` once a chunk under them could not load
-   *  (`ChunkNotLoaded`, `chunkComponent`): nothing, unless a host names something. */
+   *  (`ChunkNotLoaded`, `chunkComponent`): `fallback`, unless a host names something else. */
   readonly notLoaded?: ReactNode;
   /** For a host whose part draws with no reader action (the two lists of writes, the
    *  reference-preview layer): a value that changes whenever the part may be wanted again - a
@@ -56,14 +57,11 @@ type Failure = "none" | "chunk" | "render";
  *
  * Why not `ErrorBoundary`: that one tells the reader which region failed, with a reload button,
  * in the region's own place, for every throw. Here a chunk that could not load is told from a
- * render that threw, and each host names what stands in its part's place for each. The
- * pending-writes indicator draws nothing while it has nothing to show, and nothing while its
- * chunk cannot load, until its `reset` draws it again; React logs the failure itself
- * (`onCaughtError`). A render of a list of writes that throws draws an alert that says which list
- * could not be shown (`features/writes/write-hosts.tsx`): that is a fault the reader must be told
- * of, never silence. A surface a reader opened draws an alert that says it could not open, for
- * either throw (`askedSurface`). The reference-preview layer draws nothing for either throw but
- * listeners that hear the reader ask for a card, and each such ask changes its `reset`.
+ * render that threw. A host names what stands in its part's place for a render that threw
+ * (`fallback`). A chunk that could not load draws the same, unless the host names something
+ * else for it (`notLoaded`). So a host that names only `fallback` is never silent when its chunk
+ * fails. A host that names neither draws nothing in its part's place. React logs the failure
+ * itself (`onCaughtError`). Each host's own comment says what it names, and why.
  */
 export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: Failure }> {
   state: { failed: Failure } = { failed: "none" };
@@ -84,6 +82,6 @@ export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: Failu
   render(): ReactNode {
     const { failed } = this.state;
     if (failed === "none") return this.props.children;
-    return failed === "chunk" ? this.props.notLoaded : this.props.fallback;
+    return failed === "chunk" ? (this.props.notLoaded ?? this.props.fallback) : this.props.fallback;
   }
 }
