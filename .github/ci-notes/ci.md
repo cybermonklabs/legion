@@ -1722,9 +1722,10 @@ each changes, to name a number no other one has taken. The pull request's text i
 
 ## Why every Biome step prints every warning and error
 
-Every step that runs Biome over a tree carries `--diagnostic-level=warn --max-diagnostics=none`,
-and links here. Biome prints 20 diagnostics by default, and infos count among the 20, so the
-error that fails a step can be one it does not print. #5195's lint run
+Every step that runs Biome over a tree links here, and each but lint's whole-tree check carries
+`--diagnostic-level=warn --max-diagnostics=none`. Biome prints 20 diagnostics by default, and
+infos count among the 20, so the error that fails a step can be one it does not print. #5195's
+lint run
 (https://github.com/cybermonklabs/legion/actions/runs/45179104499/job/137708378563) printed 20
 infos, then `Diagnostics not shown: 17.` and `Found 1 error.`: the error, a formatting error in
 packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json, was among the 17, and the
@@ -1736,6 +1737,13 @@ error fail, and it makes warnings fail, not infos. The level must not go above `
 counts only the diagnostics the level keeps, so with `--diagnostic-level=error
 --error-on-warnings` a tree whose one fault is a warning exits 0, where the step without the
 level exits 1.
+
+Lint's whole-tree check runs .github/scripts/check-biome-tree.sh, which passes
+`--max-diagnostics=none` and keeps the infos. It must: Biome does not read a file of its
+`files.maxSize` or more and says so only in an info, and the script fails naming each such file
+from that info. `--files-max-size` would not stand in for the info: it does not change the limit
+of a nested biome.json that sets none (packages/claude-envoy's), which stays at Biome's default of
+1 MiB.
 
 ## What the ci-images job copies, and why the order is the point
 
