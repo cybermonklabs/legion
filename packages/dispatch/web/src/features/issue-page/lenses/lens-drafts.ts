@@ -25,20 +25,26 @@ import { type StoreKind, storeAddressOf, storeKindOf } from "./store-link";
  *  line's parts (`FactParts`) a lens, a risk, a constraint or a finding. */
 export interface LensChip {
   /** The target's `dispatch://` address, as its own row carries it, but a check's id in the tree
-   *  read where the read gives the check no address (`TreeDraftContext.referenceOf`). */
+   *  read where the read gives the check no address (`TreeDraftContext.referenceOf`) or holds no
+   *  node of it yet (`unheldChip`). */
   readonly address: string;
   /** The target's words, whole; in a fact line, the words the line names it by. */
   readonly words: string;
   /** Set only where `words` are the page's and not the author's: the page's word for a lens,
-   *  which names a lens whose kind has no words (`lensChipWords`). */
+   *  which names a lens whose kind has no words (`lensChipWords`), and the page's word for the
+   *  kind of a node the read so far holds none of (`unheldChip`). */
   readonly chrome?: true;
-  /** The target's id in the tree read, where a view draws its row: where a step drafted it, and
-   *  for a constraint of the issue, which Graph draws, where none did (`graphOnly`). The link's
-   *  `?node=`. */
+  /** The target's id in the tree read, where a view draws its row: where a step drafted it; for a
+   *  constraint of the issue, which Graph draws, where none did; and for a node the read so far
+   *  holds none of, whose row Graph's address reads Graph's pages to reach (both `graphOnly`).
+   *  The link's `?node=`. */
   readonly id?: string;
-  /** Set where Graph alone draws the target's row: a constraint of the issue that no step drafted
-   *  from the answer, as from Conversation's, which holds the issue's constraints as context
-   *  (R5). The chip links Graph's row of it, from every view (`NodeLink.tsx`, R7). */
+  /** Set where the chip links Graph's row of its target, from every view (`NodeLink.tsx`, R7):
+   *  where Graph alone draws that row, for a constraint of the issue that no step drafted from the
+   *  answer, as from Conversation's, which holds the issue's constraints as context (R5); and
+   *  where the read so far holds no node of the target, since no view's row of it is known until
+   *  its page is read, and Graph's address reads Graph's pages until it holds the node
+   *  (`unheldChip`). */
   readonly graphOnly?: true;
   /** The target's state and visibility, as the tree read gives them, for the node marks. */
   readonly state?: string;
@@ -249,15 +255,21 @@ export function lensDrafts(
 
 /**
  * The chips of `draft`, once every node has been offered to the steps, from the answer's tuples
- * in the answer's order. Each chip carries its target's address, its state and its visibility,
- * and its id in the tree read only where a view draws the target's row, which makes it a link to
- * that row (`?node=`): where a step drafted the target, and for a constraint of the issue, which
- * Graph draws (`constraintChip`).
+ * in the answer's order (`endChips`). Each chip of a node the answer holds carries its address,
+ * its state and its visibility, and its id in the tree read only where a view draws the target's
+ * row, which makes it a link to that row (`?node=`): where a step drafted the target, and for a
+ * constraint of the issue, which Graph draws (`constraintChip`). Where the read so far holds no
+ * node at a chip's far end, the chip is drawn at once by its kind's word, linked by the far end's
+ * read id to Graph's row (`unheldChip`): the server answers a tuple with the page that holds its
+ * `from` node, wherever the whole answer holds its `to` node, so that node stands on a page not
+ * yet read. A far end is missing only at a tuple's `to`, so a chip of `triggered`, whose far end
+ * is a tuple's `from`, always names a node the read holds. Once that page is read, the tree is
+ * built again from the answer that holds the node, and the chip is that node's.
  *
  * - A lens: a chip for each lens its `triggered_by` tuples name (`triggeredBy`) and for each lens
- *   whose `triggered_by` names it (`triggered`), only for a lens the read holds, each named by its
- *   kind's words as its tag is; and `lenses`, every lens of the answer by its address, one map
- *   shared by every lens.
+ *   whose `triggered_by` names it (`triggered`), each named by its kind's words as its tag is
+ *   (`lensChip`); and `lenses`, every lens of the answer by its address, one map shared by every
+ *   lens.
  * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's whole
  *   words (`wholeWords`).
  * - Any draft with a `constrained_by` tuple, a statement above all: a chip for each constraint it
@@ -271,39 +283,28 @@ export function lensChips(
   answer: TreeAnswer,
   context: TreeDraftContext
 ): void {
-  const constrainedBy = uniqueChips(
-    targetsOf(node, "constrained_by", context).flatMap((target) => {
-      const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
-      return address === undefined ? [] : [constraintChip(target, address, context)];
-    })
-  );
+  const constrainedBy = endChips(node, "constrained_by", "to", context, (target) => {
+    const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
+    return address === undefined ? undefined : constraintChip(target, address, context);
+  });
   if (draft.lens === undefined && constrainedBy.length === 0) return;
   const facts: LensFacts = { ...(draft.lens ?? NO_CHIPS), constrainedBy };
   if (draft.type === "lens") {
     draft.lens = {
       ...facts,
       lenses: lensPlaces(answer, context),
-      triggered: lensChipsTo(
-        context
-          .tuplesTo(node.id)
-          .flatMap((tuple) =>
-            tuple.kind === "triggered_by" ? (context.nodeOf(tuple.from.id) ?? []) : []
-          ),
-        context
-      ),
-      triggeredBy: lensChipsTo(targetsOf(node, "triggered_by", context), context),
+      triggered: endChips(node, "triggered_by", "from", context, lensChip),
+      triggeredBy: endChips(node, "triggered_by", "to", context, lensChip),
     };
   } else if (draft.type === "risk") {
     draft.lens = {
       ...facts,
-      preventedBy: uniqueChips(
-        targetsOf(node, "prevented_by", context).map((check) =>
-          chipTo(
-            check,
-            context.referenceOf(check) ?? check.id,
-            { words: wholeWords(check, context) },
-            context
-          )
+      preventedBy: endChips(node, "prevented_by", "to", context, (check) =>
+        chipTo(
+          check,
+          context.referenceOf(check) ?? check.id,
+          { words: wholeWords(check, context) },
+          context
         )
       ),
     };
@@ -480,27 +481,67 @@ export function plainRuns(markdown: string): DisplayTree[] {
   return words === "" ? [] : [{ text: words, type: "text" }];
 }
 
-/** The nodes of the answer the tuples of `kind` from `node` point at, in the answer's order. */
-function targetsOf(
-  node: TreeAnswerNode,
-  kind: string,
-  context: TreeDraftContext
-): TreeAnswerNode[] {
-  return context.tuplesFrom(node.id).flatMap((tuple) => {
-    const target = tuple.kind === kind ? context.nodeOf(tuple.to.id) : undefined;
-    return target === undefined ? [] : [target];
-  });
-}
+/** A kind of tuple whose far end a chip names (`endChips`). */
+type ChipTuple = "constrained_by" | "prevented_by" | "triggered_by";
 
-/** The chip of each of `lenses` that is a lens, named by its kind's words as its tag is. */
-function lensChipsTo(lenses: readonly TreeAnswerNode[], context: TreeDraftContext): LensChip[] {
+/** The kind of node at the far end of each kind of tuple a chip names, by whose word a chip
+ *  names a node the read so far holds none of (`unheldChip`). */
+const FAR_KINDS: Readonly<Record<ChipTuple, "check" | "constraint" | "lens">> = {
+  constrained_by: "constraint",
+  prevented_by: "check",
+  triggered_by: "lens",
+};
+
+/**
+ * The chips of the nodes at the `end` of `node`'s tuples of `kind`, in the answer's order, with a
+ * later chip of an address an earlier one holds left out (`uniqueChips`): `held`'s chip of a node
+ * the answer holds, where it makes one, and the chip of its kind's word of a node the read so far
+ * holds none of (`unheldChip`).
+ */
+function endChips(
+  node: TreeAnswerNode,
+  kind: ChipTuple,
+  end: "from" | "to",
+  context: TreeDraftContext,
+  held: (target: TreeAnswerNode, context: TreeDraftContext) => LensChip | undefined
+): LensChip[] {
+  const tuples = end === "to" ? context.tuplesFrom(node.id) : context.tuplesTo(node.id);
   return uniqueChips(
-    lenses.flatMap((lens) => {
-      const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
-      if (address === undefined) return [];
-      return [chipTo(lens, address, lensChipWords(kindOf(lens, context)), context)];
+    tuples.flatMap((tuple) => {
+      if (tuple.kind !== kind) return [];
+      const target = context.nodeOf(tuple[end].id);
+      const chip = target === undefined ? unheldChip(kind, tuple[end].id) : held(target, context);
+      return chip === undefined ? [] : [chip];
     })
   );
+}
+
+/**
+ * The chip of the node `readId` at the far end of a tuple of `kind`, where the read so far holds
+ * no node of it: the server answers a tuple wherever the whole answer holds its `to` node, so
+ * that node stands on a page not yet read. It is drawn at once by the page's word for its kind
+ * (`FAR_KINDS`, `chrome`), and linked by its read id to Graph's row (`graphOnly`): no view's row
+ * of it is known until its page is read, and Graph's address reads Graph's pages until it holds
+ * the node. A constraint and a lens are at their store address (`storeAddressOf`), and a check at
+ * its read id, as a check the read gives no address is.
+ */
+function unheldChip(kind: ChipTuple, readId: string): LensChip {
+  const type = FAR_KINDS[kind];
+  return {
+    address: type === "check" ? readId : storeAddressOf(type, readId),
+    chrome: true,
+    graphOnly: true,
+    id: readId,
+    words: kindWords(NODE_TYPE_NAMES[type]),
+  };
+}
+
+/** The chip of `lens` where it is a lens, named by its kind's words as its tag is. */
+function lensChip(lens: TreeAnswerNode, context: TreeDraftContext): LensChip | undefined {
+  const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
+  return address === undefined
+    ? undefined
+    : chipTo(lens, address, lensChipWords(kindOf(lens, context)), context);
 }
 
 /** The chip naming `target` at `address` by `named`'s words, linked by its read id where a step

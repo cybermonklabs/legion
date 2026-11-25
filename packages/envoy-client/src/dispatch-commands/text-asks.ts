@@ -31,6 +31,7 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 
 /** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
  *  them, as the release before writes them: one per line that names a block id. */
+// kept for one release: release-before-text
 export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
   return lines.flatMap((line) => {
     const opener = openerOf(line);
@@ -41,6 +42,7 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
 /** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
  *  attributes read as the release before wrote them, or undefined where it names no block id. Its
  *  id is read as `askOpeners` reads it (`askOpenerBlockId`). */
+// kept for one release: release-before-text
 function openerOf(line: string): TextAsk | undefined {
   const end = line.lastIndexOf("}");
   const start = line.indexOf("ask{");
@@ -67,12 +69,14 @@ function openerOf(line: string): TextAsk | undefined {
 }
 
 /** `{ [name]: value }`, or nothing where value is undefined. */
+// kept for one release: release-before-text
 function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
   return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
 }
 
 /** A quoted attribute value with its character references read back: the renderer writes `"`
  *  as `&#x22;`, `&` as `&amp;`, and a line break as `&#xA;`. */
+// kept for one release: release-before-text
 function attributeValue(raw: string): string {
   const named: Record<string, string> = { amp: "&", quot: '"', lt: "<", gt: ">", apos: "'" };
   return raw.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (whole, reference: string) => {
@@ -86,6 +90,7 @@ function attributeValue(raw: string): string {
 
 /** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
  *  none or no such list. */
+// kept for one release: release-before-text
 function selectionOf(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   try {

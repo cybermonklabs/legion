@@ -1114,7 +1114,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	}
 	indexing.stated.Tuples = append(indexing.stated.Tuples, moves...)
 	sources := authoredSourcesOf(markdown, nodes, located, pointers)
-	placement, parents, placed, err := indexing.planBlockParents(ctx, q, index, record, nodes, fits, fragments, typed.askParents, nil, sources)
+	placement, parents, placed, err := indexing.planBlockParents(ctx, q, index, record, nodes, fits, fragments, typed.asks(), nil, sources)
 	if err != nil {
 		return BlockIndexing{}, err
 	}

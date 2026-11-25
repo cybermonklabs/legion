@@ -557,7 +557,13 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 // The base attributes a node write states for one node, as its mark carries them (nodeMarks), and
 // markInserted beside them, which says the write's insert made the node: no attribute, and no tuple
 // states it, but the append of an armless write (ArmlessFresh) leaves the conflict arm off for the
-// tuples of such a node, which no earlier statement can have appended.
+// tuples of such a node, which no earlier statement can have appended. The base attributes' bits
+// follow baseAttributes' order, visibility, state, project, parties: ownedAttributes and
+// BaseAttributeValues give the attribute at index i of baseAttributes the bit 1 << i, and the
+// append's based (queueAppendStatement) reads a mark's bits through those. A reorder of either alone
+// would have the append read the bit of one attribute as another's, so a write could state an
+// attribute its mark does not carry and leave out one it carries; TestBaseAttributesStandInMarkOrder
+// holds the two in step.
 const (
 	markVisibility = 1 << iota
 	markState

@@ -259,6 +259,8 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			// The answer is held on the ask's node alone. While a process of the release before
 			// serves, whose page reads it from the block, the block is kept in step with it.
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			ask.State, ask.Answer = asks.StateAnswered, &answer
 			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
@@ -398,6 +400,8 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	ask.State = asks.StateResolved
 	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }

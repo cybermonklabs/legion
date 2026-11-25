@@ -100,7 +100,9 @@ import (
 // there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
-// left as it is, rather than moved live at a created_at that may predate its gone statement.
+// left as it is, rather than moved live at a created_at that may predate its gone statement. The
+// first node stays for good: a rollback to any earlier release, and a write an older build makes
+// in any later roll, still reach it.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on

@@ -191,10 +191,15 @@ It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
-No setting of its own configures it.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
+The proof's `htu` must name one of the origins Dispatch is reached at, plus the request's path:
+`DISPATCH_SERVER_URL`'s origin, or one `DISPATCH_PROOF_ORIGINS` adds, a comma-separated list of origins such as the in-cluster address pods and daemons call, since a client signs the URL it calls.
+Unset, `DISPATCH_SERVER_URL`'s origin is the only one.
+An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once.
+A proof naming an origin neither setting names is refused as any wrong target is, and a proof is spent once whichever origin it names.
+That list is the one setting of its own this credential takes.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
@@ -1474,7 +1479,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A change to the stream's `MaxAge`, `Duplicates` or subjects, or to a durable's config, takes a new generation (`streamConfigGeneration` in `internal/bus/stream.go`, `consumerConfigGeneration` in `internal/dispatch/delivery/intake.go`, each pinned by a test row).
   A build that finds a higher generation deployed leaves the stream as it is and recreates a durable with the deployed config, so build N never reverts what build N+1 set.
   Dispatch keeps the stream's deployed replica count, and keeps its deployed consumer cap where that is higher than its own (`streamMaxConsumers`): the cap, like the replica count and the byte limit, is only ever raised, so it takes no generation and the two builds never lower each other's.
-  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id.
+  Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id; a topic build N stores itself is never sent over core NATS, and while the deployed stream does not capture it the publish sends nothing and fails with `bus.ErrSubjectNotDeployed`, so the queue of a message to a session no listener holds settles failed and the build announcer leaves its announcement unpublished for the next pass.
   No subject is retired while a running build publishes to it: retiring one is an operator step (`internal/bus/stream.go`, `streamReconciliation`).
   Each delivery durable has one intake holder at a time, the process that holds its `duty.Hold` (above).
 
@@ -5261,7 +5266,7 @@ Each item below names a path with its method and identity, then its purpose.
   The dashboard offers "A new version is available" only when `live` holds exactly one entry and it is not the tab's own, so no tab is told to reload while a rolling update or a rollback still runs two builds.
   An older process answers `404`, which the dashboard reads as no new version.
 
-- `/api/v1/issues?project=&status=&parent=&priority=&advances=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues?project=&status=&parent=&priority=&advances=&own=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   List issue summaries: every matching issue as an array, or, with `limit` (1–250) or `offset` (0 or more;
   alone it pages 50), one page `{issues, total, limit, offset}` cut after every filter, `total` counting the issues they match.
@@ -5275,15 +5280,17 @@ Each item below names a path with its method and identity, then its purpose.
   `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
   `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
   A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
-  `advances` repeats too, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
-  several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
-  A blank `advances` is `400 INVALID_ADVANCES`.
-  `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
-  `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
-  a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
   `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+
+  - `advances` repeats, each value a priority id (the issues that advance that priority, by their own relation or one an issue above them states, in any project), `none` (the issues that advance no live priority) or `any` (the issues that advance one, every issue `none` leaves out);
+    several are a union, so `advances=none&advances=any` is every issue, and an id no live priority carries matches no issue rather than refusing.
+    A blank `advances` is `400 INVALID_ADVANCES`.
+    `own=true` keeps, of the issues the `advances` values answer, those whose own row names a priority a value matches and no issue above them carries it: a child that only inherits a priority, or restates one an issue above it carries, is left out, and `none`, which matches no priority, keeps nothing; without an `advances` value it filters nothing.
+    `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
+    `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
+    a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:

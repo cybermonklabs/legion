@@ -1227,11 +1227,10 @@ test("an early warning's author's link whose words carry a mark is one chip", ()
 });
 
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
-// `triggered_by` names it, only for a lens the read holds, named by its kind's words as its tag
-// is, linked where a step drafted it, and with that lens's state and visibility. Every lens
-// shares one map of every lens of the answer, which the chain a lens draws reads.
-test("a trigger chip is drawn only for a lens the read holds", () => {
-  const unseen = "f9000000-0000-4000-8000-000000000009";
+// `triggered_by` names it, named by its kind's words as its tag is, linked where a step drafted
+// it, and with that lens's state and visibility. Every lens shares one map of every lens of the
+// answer, which the chain a lens draws reads.
+test("a trigger chip names each lens the read holds by its kind's words", () => {
   const { root } = drawn(
     answer(
       [
@@ -1248,7 +1247,6 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
         tuple("has_kind", SECOND, PRE_MORTEM.id),
         tuple("has_kind", THIRD, PRE_MORTEM.id),
         tuple("triggered_by", SECOND, FIRST),
-        tuple("triggered_by", SECOND, unseen),
         tuple("triggered_by", THIRD, FIRST),
       ]
     )
@@ -1299,6 +1297,135 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       },
     ],
     [`dispatch://lens/${THIRD}`, { kindWords: PRE_MORTEM_WORDS }],
+  ]);
+});
+
+// The server answers a tuple with the page that holds its `from` node, wherever the whole answer
+// holds its `to` node, so a page read so far can name a node that stands on a page not yet read.
+// Its chip is drawn at once: a statement's Constrained by, a lens's Triggered by and a risk's
+// Prevented by chip each name it by the page's word for the kind its tuple names, linked by its
+// read id to Graph's row. A lens's Triggered chip comes with the lens that names it, on that
+// lens's page. Once that page is read, the answer holds the node, and each chip is that node's,
+// by its own words.
+test("a chip whose far end no page read so far holds names its kind and links its row, and takes its words once that page is read", () => {
+  const constraint = "d4000000-0000-4000-8000-000000000004";
+  const cause = "f6000000-0000-4000-8000-000000000006";
+  const follow = "f7000000-0000-4000-8000-000000000007";
+  const checkId = `${KEY}/verification-md#c1`;
+  const statement = blockNodeId("spec", "r1");
+  /** The answer as the pages read so far hold it, and with `far` and its tuples `farTuples`
+   *  once the page that holds them is read. */
+  const tree = (far: readonly TreeAnswerNode[] = [], farTuples: readonly TreeTuple[] = []) =>
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
+        lens(SECOND, "r1", "2026-11-05T10:00:00Z"),
+        bare("risk-a", "risk", SECOND, { attributes: { heading: "The table locks." } }),
+        PRE_MORTEM,
+        TRADE_OFF,
+        ...far,
+      ],
+      [
+        tuple("has_kind", FIRST, TRADE_OFF.id),
+        tuple("has_kind", SECOND, PRE_MORTEM.id),
+        tuple("constrained_by", "r1", constraint),
+        tuple("triggered_by", SECOND, cause),
+        tuple("prevented_by", "risk-a", checkId),
+        ...farTuples,
+      ]
+    );
+  const unread = drawn(tree()).root;
+
+  expect(factsOf(rowOf(unread, SECOND)).triggeredBy).toStrictEqual([
+    {
+      address: `dispatch://lens/${cause}`,
+      chrome: true,
+      graphOnly: true,
+      id: cause,
+      words: kindWords(NODE_TYPE_NAMES.lens),
+    },
+  ]);
+  expect(
+    factsOf(rowOf(unread, FIRST)).triggered,
+    "a Triggered chip waits for the page of the lens that names it"
+  ).toStrictEqual([]);
+  expect(factsOf(rowOf(unread, "risk-a")).preventedBy).toStrictEqual([
+    {
+      address: checkId,
+      chrome: true,
+      graphOnly: true,
+      id: checkId,
+      words: kindWords(NODE_TYPE_NAMES.check),
+    },
+  ]);
+  expect(
+    factsOf(rowOf(unread, statement)),
+    "the statement draws its Constrained by chip"
+  ).toStrictEqual({
+    ...NO_FACTS,
+    constrainedBy: [
+      {
+        address: `dispatch://constraint/${constraint}`,
+        chrome: true,
+        graphOnly: true,
+        id: constraint,
+        words: kindWords(NODE_TYPE_NAMES.constraint),
+      },
+    ],
+  });
+
+  const read = drawn(
+    tree(
+      [
+        bare(constraint, "constraint", KEY, { attributes: { standard: "RFC **9110**" } }),
+        lens(cause, "r1", "2026-11-05T11:00:00Z"),
+        lens(follow, "r1", "2026-11-05T12:00:00Z"),
+        block("c1", "check", "r1", VERIFICATION, 0),
+      ],
+      [
+        tuple("has_kind", cause, TRADE_OFF.id),
+        tuple("triggered_by", follow, FIRST),
+        tuple("has_kind", follow, PRE_MORTEM.id),
+      ]
+    )
+  ).root;
+
+  expect(factsOf(rowOf(read, statement)).constrainedBy).toStrictEqual([
+    {
+      address: `dispatch://constraint/${constraint}`,
+      id: constraint,
+      state: "live",
+      visibility: "project",
+      words: "RFC 9110",
+    },
+  ]);
+  expect(factsOf(rowOf(read, SECOND)).triggeredBy).toStrictEqual([
+    {
+      address: `dispatch://lens/${cause}`,
+      id: cause,
+      state: "live",
+      visibility: "project",
+      words: "Trade-off analysis",
+    },
+  ]);
+  expect(factsOf(rowOf(read, FIRST)).triggered).toStrictEqual([
+    {
+      address: `dispatch://lens/${follow}`,
+      id: follow,
+      state: "live",
+      visibility: "project",
+      words: kindWords(PRE_MORTEM_WORDS),
+    },
+  ]);
+  expect(factsOf(rowOf(read, "risk-a")).preventedBy).toStrictEqual([
+    {
+      address: rowOf(read, blockNodeId("verification-md", "c1")).reference ?? "",
+      id: checkId,
+      state: "live",
+      visibility: "project",
+      words: "Words of c1.",
+    },
   ]);
 });
 

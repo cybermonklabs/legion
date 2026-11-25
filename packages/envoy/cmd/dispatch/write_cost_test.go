@@ -666,9 +666,6 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	at := time.Now().UTC()
 	batch := make([]graphstore.Node, 0, nodes)
 	for index := range int(nodes) {
-		// Every block carries the supertag block alone, whatever its own type (refs.BlockSupertag):
-		// a type the store holds, as every node write reads before it writes (graphstore's
-		// queueSupertagCheck).
 		batch = append(batch, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
 			Supertag: refs.BlockSupertag, Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
@@ -748,15 +745,11 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 		comments, sessions)
 }
 
-// costStoreCounts is the node and tuple store's own row counts on the arm's database, as the
-// corpus line prints them, or the words saying the arm holds no such store. Whether it does is
-// read off the database, never off which arm it is: the base build holds the store wherever
-// BASELINE_SHA names a commit holding cybermonklabs/legion#3178's graph_nodes and graph_tuples.
+// costStoreCounts is the store's own row counts on the arm's database, or the words saying the arm
+// holds none, read off the database and not the arm: a base build past #3178 holds the store too.
 func costStoreCounts(t *testing.T, arm *costArm) string {
 	t.Helper()
-	if held := arm.count(t, `
-		select count(*) from (values (to_regclass('graph_nodes')), (to_regclass('graph_tuples'))) as stored (relation)
-		where relation is not null`); held != 2 {
+	if arm.count(t, `select count(to_regclass(name)) from unnest(array['graph_nodes', 'graph_tuples']) as name`) != 2 {
 		return ", and no node and tuple store, which " + arm.name + " has not got"
 	}
 	return fmt.Sprintf(", %d node(s) and %d tuple(s)",

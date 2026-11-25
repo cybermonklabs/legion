@@ -109,6 +109,9 @@ type manifestType struct {
 	Name       string                       `json:"name"`
 	Content    string                       `json:"content"`
 	Attributes map[string]manifestAttribute `json:"attributes"`
+	// Parents are the typed blocks this type stands in, at the end of that block's own content; a
+	// type that names none is a block of its own wherever a block stands.
+	Parents []string `json:"parents"`
 }
 
 // blockManifest is a build's pmdoc/schema/blocks.json.
@@ -557,13 +560,48 @@ func typedBlockID(name string) string { return "tb-" + name }
 // (the ask type) is given two choices, First and Second. A type only the writer's manifest
 // declares is left out: the reader could not read such a document at all, which is the point of
 // the manifest's own staging tests and not of this row, which is about what both builds read.
+//
+// Where each block stands is the manifest's to say. A type that names no parents is a block of
+// the document's own, in manifest order. A type that names parents, as the reading names the
+// decision and the ask, stands only at the end of a block of one of them, so it is written there:
+// in the block of the first of its parents the document writes, after that block's own content,
+// in manifest order among that parent's other such types. A parent's fence is one colon longer
+// than the longest fence inside it, which is how markdown closes the inner block before the outer
+// one. A type none of whose parents the document writes fails the test, as does one the document
+// reaches through no block of its own. So a document of types that name no parents, as every
+// manifest before the reading's is, is each type's three-colon block in manifest order, under the
+// document's heading.
 func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 	t.Helper()
-	blocks := []string{"# Every typed block\n"}
+	var written []manifestType
 	for _, typed := range manifest.Types {
-		if !slices.ContainsFunc(reader.Types, func(other manifestType) bool { return other.Name == typed.Name }) {
+		if slices.ContainsFunc(reader.Types, func(other manifestType) bool { return other.Name == typed.Name }) {
+			written = append(written, typed)
+		}
+	}
+	writes := func(name string) bool {
+		return slices.ContainsFunc(written, func(typed manifestType) bool { return typed.Name == name })
+	}
+	// own are the types written as blocks of the document's own, and inside the types written at
+	// the end of each parent's block.
+	var own []manifestType
+	inside := map[string][]manifestType{}
+	for _, typed := range written {
+		if len(typed.Parents) == 0 {
+			own = append(own, typed)
 			continue
 		}
+		at := slices.IndexFunc(typed.Parents, writes)
+		if at < 0 {
+			t.Fatalf("the %s block stands only at the end of a block of %q, none of which both manifests declare; teach typedBlocksMarkdown where to write it", typed.Name, typed.Parents)
+		}
+		inside[typed.Parents[at]] = append(inside[typed.Parents[at]], typed)
+	}
+	placed := 0
+	// block is typed's block, the blocks inside it included, and the length of its fence.
+	var block func(typed manifestType) (string, int)
+	block = func(typed manifestType) (string, int) {
+		placed++
 		attributes := []string{"#" + typedBlockID(typed.Name)}
 		for _, name := range slices.Sorted(maps.Keys(typed.Attributes)) {
 			attribute := typed.Attributes[name]
@@ -598,7 +636,22 @@ func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 				t.Fatalf("the harness writes no %q content, as the %s block takes; teach typedBlocksMarkdown to write it", token, typed.Name)
 			}
 		}
-		blocks = append(blocks, ":::"+typed.Name+"{"+strings.Join(attributes, " ")+"}\n"+strings.Join(content, "\n\n")+"\n:::\n")
+		fence := 3
+		for _, child := range inside[typed.Name] {
+			markdown, childFence := block(child)
+			content = append(content, strings.TrimSuffix(markdown, "\n"))
+			fence = max(fence, childFence+1)
+		}
+		colons := strings.Repeat(":", fence)
+		return colons + typed.Name + "{" + strings.Join(attributes, " ") + "}\n" + strings.Join(content, "\n\n") + "\n" + colons + "\n", fence
+	}
+	blocks := []string{"# Every typed block\n"}
+	for _, typed := range own {
+		markdown, _ := block(typed)
+		blocks = append(blocks, markdown)
+	}
+	if placed != len(written) {
+		t.Fatalf("the document reaches %d of the %d typed blocks both manifests declare: a type whose parents stand only inside one another is in no block of the document's own; teach typedBlocksMarkdown where to write it", placed, len(written))
 	}
 	return strings.Join(blocks, "\n")
 }

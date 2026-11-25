@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -247,6 +248,10 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
+	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
+	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
+	ProofOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -497,6 +502,7 @@ func main() {
 	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
 	// its own tick once the server listens, below: the boot reads only what the first phase reads,
 	// so a table it does not need, held by another transaction, keeps no process from serving.
+	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
@@ -583,6 +589,7 @@ func main() {
 	// The decisions step's third phase writes the issues' documents through this service: the
 	// restore of the answered asks that left their specs and the conversion of the decisions
 	// documents, on the step's tick below.
+	// kept for one release: decisions-step
 	decisionStep.UseDocuments(documentService)
 	// R2's daemon-thread step (docs.DaemonThreadStep): it re-places under its issue each node a
 	// release before left under a message of a thread the Legion daemon's session began, once
@@ -1359,7 +1366,10 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		// kept for one release: decisions-step
+		decisionStep,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1767,6 +1777,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.AgentSecretsTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
+	if err != nil {
+		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -2314,9 +2328,15 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer,
+		// kept for one release: decisions-step
+		decisions,
+		issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2431,12 +2451,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under
-// the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
-// its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
-// Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
+// the approval relays already call, Dispatch's own projected ServiceAccount token from
+// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
+// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
+// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2454,7 +2475,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
@@ -2464,6 +2485,48 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// token reaches the reads of that class and no other route.
 		ServesReadOnly: true,
 	})
+}
+
+// proofOriginEntries reads DISPATCH_PROOF_ORIGINS: each comma-separated entry as the bare origin
+// it is, written scheme://host. A value of nothing but whitespace is unset. An entry that is not a
+// bare origin - empty, a scheme other than http or https, no host, a path, a query, a fragment or
+// user info - refuses the start, naming the entry by its position and by its value where
+// redact.URL prints it, as the DISPATCH_AGENT_SECRETS_URL refusal names its value.
+func proofOriginEntries(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is empty", i+1, len(entries))
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			parsed.Path != "" || parsed.User != nil || strings.ContainsAny(entry, "?#") {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is %q (expected an origin: an absolute http(s) URL with no path, query, fragment or user)",
+				i+1, len(entries), redact.URL(entry))
+		}
+		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+	}
+	return origins, nil
+}
+
+// proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
+// first, the one a proof naming none of them is checked against, then each origin added names. An
+// origin equal to one before it, compared without case as an origin's scheme and host are, is
+// taken once rather than refused: a deployment lists the public origin again beside the
+// in-cluster one.
+func proofOrigins(serverURL string, added []string) []string {
+	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
+	for _, origin := range added {
+		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
@@ -2545,7 +2608,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
 // the step, so the probe adds no statement to the database. It never decides `ok`.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2621,7 +2687,9 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			// kept for one release: decisions-step
+			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }
