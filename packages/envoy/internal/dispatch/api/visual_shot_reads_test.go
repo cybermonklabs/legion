@@ -4,7 +4,7 @@
 // visual-guard.ts). What a page cannot stop is a write the server makes while it answers, so this
 // test sends each API read, each sign-in read and each live view those pages make
 // (testdata/visual-shot-reads.json, which a visual row fails without), and reads every statement
-// each one ran through the tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with
+// each one ran through read_only_token_test.go's tracer of a request's statements
 // (markedStatements, writesOf). A write to any table its channel does not allow fails the test, by
 // the read or view and the table. It opens and closes a document's room as a page does too, and
 // holds the room to writing nothing.
@@ -319,9 +319,10 @@ func asShotPerson(t *testing.T, handler http.Handler, cookie *http.Cookie) http.
 }
 
 // buildShotCorpus writes, through the API alone, the corpus the reads are sent at. The broadcast's
-// body and the runbook's prose carry a nonce of the run (readOnlyTreeFiles does the same): pmdoc's
-// display cache is the process's, and a tree it already holds is neither asked of the table nor
-// stored, so under -count above 1 a corpus of fixed texts would leave the reads no tree to store.
+// body and the runbook's prose carry a nonce of the run, as the read drive's prose document does
+// (read_class_drive_seed_test.go): pmdoc's display cache is the process's, and a tree it already
+// holds is neither asked of the table nor stored, so under -count above 1 a corpus of fixed texts
+// would leave the reads no tree to store.
 func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	t.Helper()
 	nonce := rand.Text()

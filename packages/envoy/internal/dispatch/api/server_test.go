@@ -2429,3 +2429,50 @@ func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
 		t.Fatalf("unauthenticated large body status = %d body=%s, want %d", response.Code, response.Body.String(), http.StatusUnauthorized)
 	}
 }
+
+// The two waits below live here, in a file every build compiles, because tests built with and
+// without -race both call them: the xid-window tests (built without -race only), and the
+// read-only results and drive tests (built with it too).
+
+// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
+// for a quiet spell, so a test that needed settlement to run first measures its request alone.
+func awaitSettledDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	awaitQuietDatabase(t, database, true)
+}
+
+// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
+// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
+// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
+// (docs' settlement) - so a request made on a closed issue waits for the quiet alone. The quiet
+// spell is what the measurement needs (no background writer beside it), not a bound: the wait ends
+// only once the database has held quiet that long, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure says whether the last read found the database busy.
+func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
+	t.Helper()
+	const quiet = 300 * time.Millisecond
+	what := "the database to fall quiet (busy at the last read)"
+	if settled {
+		what = "documents to finish settling and the database to fall quiet (busy at the last read)"
+	}
+	var calm time.Time
+	testwait.Until(t, what, func() (bool, bool) {
+		var busy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select ($1::boolean and exists (select 1 from doc_settlements_pending))
+			    or exists (select 1 from pg_stat_activity
+			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
+		`, settled).Scan(&busy); err != nil {
+			t.Fatalf("read settlement state: %v", err)
+		}
+		switch {
+		case busy:
+			calm = time.Time{}
+		case calm.IsZero():
+			calm = time.Now()
+		case time.Since(calm) >= quiet:
+			return busy, true
+		}
+		return busy, false
+	})
+}
