@@ -90,7 +90,7 @@ export interface PhaseReminderDeps {
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
   readonly limits: StallLimits;
@@ -351,6 +351,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     return { reminds: true, work: answer.work };
   };
 
+  /** Whether the run has reached the threshold and its architect has not been told yet. */
+  const architectDue = (): boolean => !reported && stall.count >= deps.limits.architectAfter;
+
   /**
    * D6: one Envoy message to the architect that owns this worker, when a delivered reminder
    * brought the count to the threshold. It names the work the daemon answered was owed, or says
@@ -362,9 +365,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * acceptance belongs to: one that lands after the run ended acknowledges nothing.
    */
   const tellArchitect = async (work: string | undefined): Promise<void> => {
+    // A run whose claim has ended builds no publisher: its first build can run Envoy's token
+    // command, which would trade a broker token for a notice that is not sent.
+    if (deps.claim() === undefined) return;
+    // The worker's own turn may end the run, or its claim may end, while the publisher is built.
+    // What is read after it is the run as it stands, which may need no notice any more.
+    const publish = await deps.publisher();
+    if (!architectDue()) return;
     const claim = deps.claim();
     if (claim === undefined) return;
-    const publish = deps.publisher();
     if (publish === undefined) {
       deps.log.debug("legion: Envoy is off for this session; the architect is not told", {
         issue: claim.issue,
@@ -490,7 +499,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (generation === sentAt) armReminder(lastText, deps.limits.reminderMs);
       return;
     }
-    if (reported || stall.count < deps.limits.architectAfter) return;
+    if (!architectDue()) return;
     await tellArchitect(work);
   };
 

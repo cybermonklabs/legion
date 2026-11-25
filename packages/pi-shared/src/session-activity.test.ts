@@ -85,7 +85,7 @@ function reminderRig() {
     saveEntry: () => {},
     claim: () => implementer,
     readOwed: async () => ({ owes: true, work: "the implementing phase of LEGION-208" }),
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
