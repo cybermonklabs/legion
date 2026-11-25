@@ -222,8 +222,8 @@ export function IssuePropertiesRow({
         issueKey={issue.key}
         variant="header"
       />
-      <ChildrenProgress childIssues={issue.children ?? []} />
       <PullRequestLink pullRequest={issue.pull_request} />
+      <ChildrenProgress childIssues={issue.children ?? []} />
       {waiting.total > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button

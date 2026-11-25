@@ -2964,8 +2964,8 @@ test("a second status pick while the first one's dry run is out shows at once, a
 });
 
 // Part N's R22: where the issue's read carries `pull_request`, the properties line draws one link
-// after the children's progress and before the count of what waits on the reader, named by its
-// number and its state in the page's own words, and linking to its address.
+// after the assignee, before the children's progress and the count of what waits on the reader,
+// named by its number and its state in the page's own words, and linking to its address.
 test("the header links the issue's pull request by its number and its state", async () => {
   for (const [state, word] of [
     ["open", PULL_REQUEST_STATE_WORDS.open],
@@ -2998,10 +2998,14 @@ test("the header links the issue's pull request by its number and its state", as
       expect(link).toHaveAttribute("href", url);
       expect(link).toHaveTextContent(`#5545`);
       expect(link).toHaveTextContent(word);
-      const progress = within(line).getByTestId("issue-progress-subtree");
+      const assignee = within(line).getByRole("combobox", { name: "Assignee of CORE-1" });
+      const progress = within(line).getByTestId("issue-progress-children");
       const count = within(line).getByTestId("issue-whose-turn");
       expect(
-        progress.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING
+        assignee.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(
+        link.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
       expect(link.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     } finally {
