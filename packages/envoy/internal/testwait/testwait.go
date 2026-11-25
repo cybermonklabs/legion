@@ -26,7 +26,9 @@
 // (describe). After the failure the test's output carries the goroutine stacks as the wait gave
 // up, the dump Go's alarm would print had the wait not given up before it: the waiting goroutine's,
 // then those its test started, bounded (goroutineStacks); a wait that began past the margin prints
-// them only when no earlier give-up of the binary has (stacksFor).
+// them only when no earlier give-up of the binary has (stacksFor). A wait with a failure text of its
+// own that takes its bound from Bounded, Remaining, Left or Context gets the same stacks, read just
+// before that bound ends and printed when its test fails (watchBound).
 package testwait
 
 import (
@@ -53,11 +55,14 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 // Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
 // Eventually is Bounded of a minute and a second; a wait with a span or a spare of its own takes
-// those. spare is the caller's, not this package's margin.
+// those. spare is the caller's, not this package's margin. When what is left is the sooner, the
+// bound ends at the deadline less spare and is watched (watchBound): a test that fails after its
+// wait gave up there prints the goroutine stacks as that moment came.
 func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
+			watchBound(t, testDeadline.Add(-spare))
 		}
 	}
 	return bound
@@ -162,7 +167,8 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 // when t ends: Receive's end, for a call that takes a context, or a socket whose deadline is the
 // context's. Under -timeout 0 it has no deadline; under a -timeout of 30 s or less its deadline
 // has already passed when the test starts, so a call under it fails at once, as every wait here
-// does.
+// does. Its deadline is watched (watchBound): a test that fails after a call under it gave up
+// prints the goroutine stacks as that deadline came.
 func Context(t *testing.T) context.Context {
 	end, bounded := giveUpAt(t)
 	if !bounded {
@@ -170,6 +176,7 @@ func Context(t *testing.T) context.Context {
 		t.Cleanup(cancel)
 		return ctx
 	}
+	watchBound(t, end)
 	ctx, cancel := context.WithDeadline(context.Background(), end)
 	t.Cleanup(cancel)
 	return ctx
@@ -227,13 +234,4 @@ func gaveUp(t *testing.T, what string, spent bool, reading func() string) {
 	t.Errorf("%s", text)
 	printStacks(t, stacks)
 	t.FailNow()
-}
-
-// Stacks prints to t's output what a give-up of this package prints after its failure: the
-// goroutine stacks, once per test binary, or the line that says an earlier give-up printed them.
-// It is for a wait with a give-up of its own, which this package does not end, such as one bounded
-// by Bounded (cmd/cipher's): such a wait does not say when it began, so it asks for them once, as
-// a wait begun past the margin does (stacksFor).
-func Stacks(t *testing.T) {
-	printStacks(t, stacksFor(t.Name(), true))
 }

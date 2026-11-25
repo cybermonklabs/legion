@@ -20,7 +20,9 @@
 // prints what it points to (describe). After the failure of any wait here that gives up, Receive's
 // included, the test's output carries the goroutine stacks as the wait gave up, the dump Go's alarm
 // would print had the wait not given up before it: the waiting goroutine's, then those its test
-// started, bounded (goroutineStacks).
+// started, bounded (goroutineStacks). A wait with a failure text of its own that takes its bound
+// from Bounded, Remaining or Context gets the same stacks, read just before that bound ends and
+// printed when its test fails (watchBound).
 //
 // The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
 // deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
@@ -81,7 +83,8 @@ func Until[T any](t testing.TB, what string, read func() (T, bool)) T {
 }
 
 // Context gives a context whose deadline is the binary's deadline less the margin, cancelled when
-// t ends. Under -timeout 0 it has no deadline.
+// t ends. Under -timeout 0 it has no deadline. Its deadline is watched (watchBound): a test that
+// fails after a call under it gave up prints the goroutine stacks as that deadline came.
 func Context(t testing.TB) context.Context {
 	end, bounded := giveUpAt(t)
 	if !bounded {
@@ -89,6 +92,7 @@ func Context(t testing.TB) context.Context {
 		t.Cleanup(cancel)
 		return ctx
 	}
+	watchBound(t, end)
 	ctx, cancel := context.WithDeadline(context.Background(), end)
 	t.Cleanup(cancel)
 	return ctx
@@ -97,11 +101,14 @@ func Context(t testing.TB) context.Context {
 // Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
 // A wait with a span or a spare of its own takes those; Eventually and Receive have none. spare is
-// the caller's, not this package's margin.
+// the caller's, not this package's margin. When what is left is the sooner, the bound ends at the
+// deadline less spare and is watched (watchBound): a test that fails after its wait gave up there
+// prints the goroutine stacks as that moment came.
 func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
 		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
+			watchBound(t, testDeadline.Add(-spare))
 		}
 	}
 	return bound

@@ -65,13 +65,10 @@ func waitsGaveUp(t *testing.T) bool {
 // noteGaveUp writes to stderr, at once, that a wait of t gave up at the binary's deadline less
 // waitMargin, as testwait's own waits do (testwait.gaveUp): without -v a failed subtest's text is
 // printed only when its parent test ends, and go test's alarm, should it come first, prints no
-// running test's log, so this line is what still names the test whose wait gave up. It then prints
-// the goroutine stacks to t's output (testwait.Stacks), the dump the alarm would have printed had
-// the wait not given up before it. The caller then fails the test with the text that says what it
-// waited for.
+// running test's log, so this line is what still names the test whose wait gave up. The caller
+// then fails the test with the text that says what it waited for.
 func noteGaveUp(t *testing.T) {
 	_, _ = fmt.Fprintf(os.Stderr, "testwait: %s: gave up waiting %s before the test binary's deadline\n", t.Name(), waitMargin)
-	testwait.Stacks(t)
 }
 
 // heldBeforeGiveUp is testwait.Holds bounded by the moment every wait for a fact in these tests

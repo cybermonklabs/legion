@@ -41,6 +41,7 @@ func stacksFor(name string, once bool) string {
 		return "testwait: " + name + ": no goroutine stacks for this give-up: an earlier give-up of this test binary printed them\n"
 	}
 	stacksPrinted.Store(true)
+	markPrinted(name)
 	return goroutineStacks(name, traces())
 }
 
@@ -204,12 +205,18 @@ type stackGroup struct {
 const groupIDs = 20
 
 // goroutineStacks is what a give-up in the test named name prints of traces, a dump of every
-// goroutine whose first trace is the waiting goroutine's: a line that counts the goroutines by
-// owner; the waiting goroutine's trace; then, until stackBound, each other stack once, the test's
-// first, then those of no running creator, then the binary's, each stack that more than one
+// goroutine whose first trace is the waiting goroutine's, read as the wait gave up (dumpStacks).
+func goroutineStacks(name string, traces []string) string {
+	return dumpStacks(name, "as the wait gave up", traces)
+}
+
+// dumpStacks is what the test named name prints of traces, a dump of every goroutine whose first
+// trace is the waiting goroutine's, read at the moment when says: a line that counts the goroutines
+// by owner; the waiting goroutine's trace; then, until stackBound, each other stack once, the
+// test's first, then those of no running creator, then the binary's, each stack that more than one
 // goroutine shares under a line that counts them; and a last line that says how much was printed
 // and what the bound cut. Other running tests' goroutines are counted and not printed.
-func goroutineStacks(name string, traces []string) string {
+func dumpStacks(name, when string, traces []string) string {
 	goroutines := ownTraces(traces)
 	counts := map[owner]int{}
 	var groups []*stackGroup
@@ -231,8 +238,8 @@ func goroutineStacks(name string, traces []string) string {
 	slices.SortStableFunc(groups, func(a, b *stackGroup) int { return int(a.owner) - int(b.owner) })
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "testwait: %s: the goroutine stacks as the wait gave up: %d goroutines: the waiting one, %d this test started, %d whose creator is no longer running, %d of the test binary, and %d other running tests started, which are not printed\n",
-		name, len(goroutines), counts[ownedByTest], counts[ownedByNone], counts[ownedByBinary], counts[ownedByOtherTest])
+	fmt.Fprintf(&out, "testwait: %s: the goroutine stacks %s: %d goroutines: the waiting one, %d this test started, %d whose creator is no longer running, %d of the test binary, and %d other running tests started, which are not printed\n",
+		name, when, len(goroutines), counts[ownedByTest], counts[ownedByNone], counts[ownedByBinary], counts[ownedByOtherTest])
 	out.WriteString(goroutines[0].trace + "\n\n")
 	printed, printedGoroutines, size := 1, 1, 0
 	cutGroups, cutGoroutines := 0, 0

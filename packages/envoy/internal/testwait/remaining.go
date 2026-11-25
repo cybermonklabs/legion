@@ -37,7 +37,9 @@ func Remaining(t *testing.T, spare time.Duration) time.Duration {
 // Left is Remaining for a caller that must not end its goroutine, such as a helper a hook calls on
 // a goroutine other than the test's, where t.Fatal would end the hook rather than the test: with
 // spare or less of the deadline left it fails nothing and returns, as an error, the line Remaining
-// fails with, "testwait: <test>: " and the cause (spent).
+// fails with, "testwait: <test>: " and the cause (spent). Otherwise the span it gives ends at the
+// deadline less spare, which is watched (watchBound): a test that fails after its wait gave up
+// there prints the goroutine stacks as that moment came.
 func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 	deadline, bounded := t.Deadline()
 	if !bounded {
@@ -48,6 +50,7 @@ func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 		timeout, known := binaryTimeout()
 		return 0, errors.New(oneLine.Replace("testwait: " + t.Name() + ": " + spent(left, spare, timeout, known)))
 	}
+	watchBound(t, deadline.Add(-spare))
 	return left - spare, nil
 }
 
