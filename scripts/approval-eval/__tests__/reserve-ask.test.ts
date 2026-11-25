@@ -211,60 +211,90 @@ describe("the fake's trees", () => {
   });
 });
 
+/*
+ * `claim.ts` records the owner's written release of the reserve, so `decideAsk` keeps every ask.
+ * The tests below read the facts the rule decides on, which `decideAsk` still reads from Dispatch
+ * and prints: each root and whether it is listed. `reserve.test.ts` reads the rule over those
+ * facts as it held before the release.
+ */
 describe("decideAsk from version 3's cut", () => {
-  test("an ask is kept only when its root at the opening and its root now are both listed", async () => {
+  test("reads both roots and whether each is listed, and keeps a listed tree and an unlisted one", async () => {
     expect(await decide(V3_UNDER_LISTED)).toMatchObject({
       issue: "ACME-12",
       opening_root: "ACME-4",
       root_now: "ACME-4",
       decision: "kept",
     });
-    expect((await decide(V3_ON_UNLISTED)).decision).toBe("held");
-    // Version 2's hash picks no root from version 3's cut: an unlisted root is held either way.
-    expect((await decide(V3_UNDER_UNLISTED)).decision).toBe("held");
+    expect(await decide(V3_ON_UNLISTED)).toMatchObject({
+      opening_root: "ACME-3",
+      root_now: "ACME-3",
+      opening_listed: false,
+      now_listed: false,
+      decision: "kept",
+    });
+    expect(await decide(V3_UNDER_UNLISTED)).toMatchObject({
+      opening_root: "ACME-1",
+      root_now: "ACME-1",
+      opening_listed: false,
+      now_listed: false,
+      decision: "kept",
+    });
   });
 
-  test("a tree that moved under a listed root since the opening stays held", async () => {
+  test("a tree that moved under a listed root since the opening: its root at the opening is not listed", async () => {
     expect(await decide(V3_MOVED_UNDER_LISTED)).toMatchObject({
       opening_root: "ACME-3",
       root_now: "ACME-4",
       opening_listed: false,
       now_listed: true,
-      decision: "held",
+      decision: "kept",
     });
   });
 
-  test("a tree that moved out of a listed root since the opening is held", async () => {
+  test("a tree that moved out of a listed root since the opening: its root now is not listed", async () => {
     expect(await decide(V3_MOVED_OUT_OF_LISTED)).toMatchObject({
       opening_root: "ACME-4",
       root_now: "ACME-3",
-      decision: "held",
+      opening_listed: true,
+      now_listed: false,
+      decision: "kept",
     });
   });
 });
 
 describe("decideAsk before version 3's cut", () => {
-  test("version 2's hash holds a picked root, and a listed root at the opening releases", async () => {
-    expect((await decide(V2_ON_PICKED)).decision).toBe("held");
-    expect((await decide(V2_ON_PICKED_LISTED)).decision).toBe("kept");
+  test("a picked root, a listed root and an unpicked root are each read and kept", async () => {
+    expect(await decide(V2_ON_PICKED)).toMatchObject({
+      opening_root: "ACME-1",
+      root_now: "ACME-1",
+      opening_listed: false,
+      decision: "kept",
+    });
+    expect(await decide(V2_ON_PICKED_LISTED)).toMatchObject({
+      opening_root: "ACME-2",
+      opening_listed: true,
+      decision: "kept",
+    });
     expect((await decide(V2_ON_UNPICKED)).decision).toBe("kept");
   });
 
-  test("a listed root now releases nothing when the root at the opening was not listed", async () => {
+  test("a listed root now is read apart from the unlisted root at the opening", async () => {
     expect(await decide(V2_MOVED_UNDER_LISTED)).toMatchObject({
       opening_root: "ACME-1",
       root_now: "ACME-2",
-      decision: "held",
+      opening_listed: false,
+      now_listed: true,
+      decision: "kept",
     });
   });
 
-  test("a root now that the hash does not pick frees nothing the root at the opening holds", async () => {
+  test("a root now that the hash does not pick is read apart from the picked root at the opening", async () => {
     expect(await decide(V2_MOVED_UNDER_UNPICKED)).toMatchObject({
       opening_root: "ACME-1",
       root_now: "ACME-3",
       opening_listed: false,
       now_listed: false,
-      decision: "held",
+      decision: "kept",
     });
   });
 

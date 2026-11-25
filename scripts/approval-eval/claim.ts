@@ -45,5 +45,10 @@ export const RESERVE_READS: readonly ReserveRead[] = [];
  * any run reads it. Item 7 ends the reserve at the claim's recorded result, not at the draw: the
  * final test the draw takes is still read once, by the claim run after it, so this record is never
  * set at the draw.
+ *
+ * The owner of INFRA-2897's next round released every version in writing on 2026-11-25 at
+ * 03:09:26Z, because the claim will not run (that document's "Version 3 released"). No claim run
+ * read the reserve, so `RESERVE_READS` stays empty.
  */
-export const RESERVE_ENDED: string | null = null;
+export const RESERVE_ENDED: string | null =
+  "dispatch://INFRA/artifact/infra-2897-final-test-reserve-md#b-ce3f87c8-a421-4fc7-8566-8465d2c20c75@v43";
