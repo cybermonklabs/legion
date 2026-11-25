@@ -2356,6 +2356,38 @@ test("a words match lifted under a parent the outline holds under an overtaken n
   }
 });
 
+// Under Spec the words filter lifts a match under the line of a parent the view's answer holds
+// live, where the outline holds that parent overtaken itself and under no closed node. The
+// parent's life in the view is the view's own, so the match stands under a live parent: it is
+// not closed, with the words as with none, though the outline closes it under that parent. Only a
+// parent the outline holds under a closed node closes the rows under its line.
+test("a view's row under a parent the view holds live is not closed by that parent's overtaken life in the outline", () => {
+  const outline = outlineOf([
+    readBlock("r2", "requirement", "spec", 0, { state: "overtaken", text: "The page draws r2." }),
+    readBlock("r3", "requirement", "spec", 1, { parent: "r2", text: "A zebra crosses r3." }),
+  ]);
+  const spec = readAnswer([
+    readBlock("r2", "requirement", "spec", 0, { role: "query", text: "The page draws r2." }),
+    readBlock("r3", "requirement", "spec", 1, {
+      parent: "r2",
+      role: "query",
+      text: "A zebra crosses r3.",
+    }),
+  ]);
+  const root = { ...outline, views: { spec } };
+  const r3Under = (query: string) =>
+    readNodeOf(presetView(root, "spec", query).root, blockReadId("spec", "r3"));
+  expect(markKeys(readNodeOf(outline, blockReadId("spec", "r2")))).toEqual(["closed", "life"]);
+  expect(markKeys(readNodeOf(outline, blockReadId("spec", "r3")))).toEqual(["closed"]);
+  expect(markKeys(r3Under(""))).toEqual([]);
+  expect(r3Under("zebra")?.parentLine).toMatchObject({
+    id: "spec#b-r2",
+    readId: blockReadId("spec", "r2"),
+  });
+  expect(r3Under("zebra")?.parentLine?.life).toBeUndefined();
+  expect(markKeys(r3Under("zebra"))).toEqual([]);
+});
+
 /** The ask of the question written as block `q1` of the spec. */
 const BLOCK_ASK = "ask-1";
 
