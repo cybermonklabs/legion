@@ -163,6 +163,13 @@ func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.Write
 	return uploadedInput(pmdoc.ParseFragment(markdown, opensDocument, budget))
 }
 
+// parseFragmentInputReferring is parseFragmentInput where a reference to one of footnotes, the
+// labels the document or its batch defines outside markdown, is read as a reference to that
+// definition (pmdoc.ParseFragmentReferring), as an insert's and a replacement's markdown is read.
+func parseFragmentInputReferring(markdown string, opensDocument bool, footnotes []string, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+	return uploadedInput(pmdoc.ParseFragmentReferring(markdown, opensDocument, footnotes, budget))
+}
+
 // opensDocument reports whether text written at position lands where the document begins: before
 // its first block, or at the start of the text of a first block that is a top-level textblock.
 func opensDocument(tree *pmdoc.Node, position int) bool {

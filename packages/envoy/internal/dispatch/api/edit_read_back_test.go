@@ -89,6 +89,48 @@ func TestDocumentEditReadBackNamesAMovedBlock(t *testing.T) {
 	}
 }
 
+// A move into a typed block, and one out of it, names the block the operation moved: where the
+// read-back listed only the document's own blocks, a paragraph moved into a requirement read as
+// removed, and one moved out of it as a new paragraph (INFRA-4345 R13). An insert the requirement
+// cannot hold where its anchor lands is refused 400 INSERT_DOES_NOT_FIT, and the document keeps
+// its version.
+func TestDocumentEditReadBackNamesABlockMovedIntoOrOutOfATypedBlock(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Typed move", "Outside paragraph O.\n\n:::requirement{#r-a}\nInner paragraph A.\n\nInner paragraph B.\n:::\n")
+	var paragraphs []string
+	for _, block := range listedBlocks(t, handler, issue.PrimaryArtifactID) {
+		if block.Type == "paragraph" {
+			paragraphs = append(paragraphs, block.ID)
+		}
+	}
+	if len(paragraphs) != 3 {
+		t.Fatalf("paragraphs = %q, want O, A and B", paragraphs)
+	}
+	outside, inner, last := paragraphs[0], paragraphs[1], paragraphs[2]
+
+	into := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{
+		"ops": []map[string]any{{"op": "move", "block": outside, "before": "block:" + last}},
+	})
+	if want := outside + " paragraph: moved into requirement r-a"; !into.Changed || !strings.Contains(into.Written, want) || strings.Contains(into.Written, "removed") {
+		t.Fatalf("move into the requirement: changed = %v, written = %q, want it to hold %q and nothing removed", into.Changed, into.Written, want)
+	}
+
+	out := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{
+		"ops": []map[string]any{{"op": "move", "block": inner, "before": "block:r-a"}},
+	})
+	if want := inner + " paragraph: moved to the start of the document"; !out.Changed || !strings.Contains(out.Written, want) {
+		t.Fatalf("move out of the requirement: changed = %v, written = %q, want it to hold %q", out.Changed, out.Written, want)
+	}
+
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"ops": []map[string]any{{"op": "insert", "before": "block:" + last, "markdown": "## A heading"}},
+	}, "alice")
+	if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INSERT_DOES_NOT_FIT" || !strings.Contains(text, "paragraph+") {
+		t.Fatalf("insert of a heading in the requirement: status %d, code %q, %q; want 400 INSERT_DOES_NOT_FIT naming the rule", refused.Code, code, text)
+	}
+}
+
 // A batch that leaves the document exactly as it found it wrote no markdown, and says so by
 // carrying none.
 func TestDocumentEditReadBackOfABatchThatChangedNothingIsEmpty(t *testing.T) {

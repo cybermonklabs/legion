@@ -211,11 +211,11 @@ func ListContent(fragment *Node) bool {
 }
 
 // BlockIndexes is the index of the document-level block holding target's start and of the one
-// holding its end, both by childBlock's rule over the document - the first block whose range holds the position -
-// found in one pass over the document's children. A write reads the blocks it changed from the
-// two, so it walks the document once rather than once an endpoint. Either endpoint lying in no
-// block is ErrTargetNotFound, as a lookup of that endpoint alone gives it, and the zero
-// ValidDocument wants a document.
+// holding its end, both by childBlock's rule over the document - the first block whose range
+// holds the position - found in one pass over the document's children. A write reads the blocks
+// it changed from the two, so it walks the document once rather than once an endpoint. Either
+// endpoint lying in no block is ErrTargetNotFound, as a lookup of that endpoint alone gives it,
+// and the zero ValidDocument wants a document.
 func (d ValidDocument) BlockIndexes(target Range) (first, last int, err error) {
 	if d.doc == nil {
 		return 0, 0, wantsDocument("BlockIndexes")

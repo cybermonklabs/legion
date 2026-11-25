@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1166,17 +1167,36 @@ func runeBoundaryBelow(text string, bound int) int {
 // edit makes (stampAskBlockIDs) runs before the batch starts.
 //
 // It also holds the quote finder over that tree, which flattens the tree's text once for every
-// quote the batch resolves against it (pmdoc.QuoteFinder).
+// quote the batch resolves against it (pmdoc.QuoteFinder), and the footnote labels the batch's
+// operations define, which a reference in any of its operations may refer to (footnoteLabels).
 type batchTree struct {
-	node   *pmdoc.Node
-	valid  pmdoc.ValidDocument
-	err    error
-	done   bool
-	quotes *pmdoc.QuoteFinder
+	node      *pmdoc.Node
+	valid     pmdoc.ValidDocument
+	err       error
+	done      bool
+	quotes    *pmdoc.QuoteFinder
+	footnotes []string
 }
 
 func newBatchTree(node *pmdoc.Node) *batchTree {
 	return &batchTree{node: node}
+}
+
+// footnoteLabels is every footnote label a reference in an operation's markdown may refer to: the
+// ones the tree defines and the ones the batch's operations define, wherever in the batch
+// (INFRA-4345 R5: a replace writing `[^1]` and an insert of its definition at the end, in one
+// batch, stored the reference escaped).
+func (t *batchTree) footnoteLabels(markdown string) []string {
+	if !strings.Contains(markdown, "[^") {
+		return nil
+	}
+	labels := pmdoc.FootnoteLabelsOf(t.node)
+	for _, label := range t.footnotes {
+		if !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	return labels
 }
 
 // validatedBatchTree is a batch tree whose validation its caller already paid for: the fork read
@@ -1222,6 +1242,17 @@ func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 // leaves is weighed against what one upload may hold where it is written (refuseGrowth).
 func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string) (editBatch, error) {
 	tree := start
+	// The footnote labels the batch's inserts and replacements define, which a reference written
+	// by any of its operations, an earlier one included, refers to (batchTree.footnoteLabels).
+	var footnotes []string
+	for _, op := range ops {
+		for _, label := range append(pmdoc.DefinedFootnoteLabels(op.Markdown), pmdoc.DefinedFootnoteLabels(op.With)...) {
+			if !slices.Contains(footnotes, label) {
+				footnotes = append(footnotes, label)
+			}
+		}
+	}
+	tree.footnotes = footnotes
 	beforeTree := start.node
 	budget := pmdoc.NewWriteBudget()
 	if before == "" {
@@ -1285,6 +1316,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 			}
 		}
 		tree = newBatchTree(next)
+		tree.footnotes = footnotes
 	}
 	moves := map[string]bool{}
 	for _, op := range ops {
@@ -1681,7 +1713,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			at = pmdoc.Range{From: 0, To: pmdoc.Size(tree.node)}
 		}
 		// Front matter opens only the document's start, so only there does the insert read it.
-		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget)
+		with, err := parseFragmentInputReferring(op.Markdown, opensDocument(tree.node, at.From), tree.footnoteLabels(op.Markdown), budget)
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
 		}
@@ -2420,10 +2452,10 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		}
 		if blocks {
 			// The blocks the document keeps are the second parse's, the one the batch pays for.
-			if with, err = parseFragmentInput(replacement, opens, budget); err != nil {
+			if with, err = parseFragmentInputReferring(replacement, opens, tree.footnoteLabels(replacement), budget); err != nil {
 				return nil, invalidMarkdownOp("with", err)
 			}
-		} else if with, err = inlineReplacement(replacement, edgesOf(at, r), budget); err != nil {
+		} else if with, err = inlineReplacement(replacement, edgesOf(at, r), tree.footnoteLabels(replacement), budget); err != nil {
 			return nil, err
 		}
 	}
@@ -2522,8 +2554,8 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 // applyReplace does. Text no such parse has sorted could reach that refusal as a footnote
 // definition, a link reference definition or two paragraphs across a blank line, none of them
 // HTML. The elements it makes are spent from budget, the batch's.
-func inlineReplacement(markdown string, edges textEdges, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	inline, err := pmdoc.ParseInline(markdown, budget)
+func inlineReplacement(markdown string, edges textEdges, footnotes []string, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+	inline, err := pmdoc.ParseInlineReferring(markdown, footnotes, budget)
 	if err != nil {
 		if errors.Is(err, pmdoc.ErrSchema) {
 			return nil, &ErrInvalidOp{Field: "with", Reason: fmt.Sprintf(

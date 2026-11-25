@@ -6086,6 +6086,13 @@ Each item below names a status and code, then its meaning.
 
   A document edit quote crosses textblock boundaries.
 
+- `400 INSERT_DOES_NOT_FIT`
+
+  An `insert` anchored on a block inside a typed block, by the block's id or by a quote of its text, lands inside that typed block beside the block it names, and the typed block's content rule cannot hold the markdown there: a requirement or a check holds paragraphs alone, and an ask no paragraph after its options; nothing in the batch is written.
+  The message names the anchor, the typed block and its id, its rule and what it cannot hold: `insert before "Inner paragraph B." lands inside the requirement block "r-a", whose content rule, paragraph+, cannot hold a heading there; …`.
+  Write what the rule holds there, or anchor the insert on the typed block itself (`before: block:r-a`), which writes the markdown beside it.
+  A `move` into a typed block that cannot hold the moved block is `400 INVALID_OP`, naming the same rule.
+
 - `400 REPLACE_FIELDS`
 
   A `replace` names no `with` (a JSON `null` is none), or carries a member besides `op`, `find`, `with` and `occurrence`, whatever that member holds (`markdown`, `markdown: ""`, `text`, `replacement`); nothing in the batch is written.

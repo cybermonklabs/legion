@@ -14,9 +14,9 @@ const listAnchorFixture = "- a\n  - x\n  - y\n- b\n\n" + askFixture
 
 // List content an insert or a move anchors inside a list joins that list: beside the item the
 // anchor stands in, or as an item of the list whose own block the anchor is. Content that is no
-// list content keeps the document-level placement, after the block holding the anchor, so a
-// paragraph anchored on a nested item lands after the whole list and one anchored on a block of a
-// decision lands beside the decision rather than in it.
+// list content keeps the placement after the block holding the anchor, so a paragraph anchored on
+// a nested item lands after the whole list, and one anchored on a block of a decision lands in the
+// decision, beside that block, as an anchor inside any typed block places it (INFRA-4345 R13).
 func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -73,7 +73,7 @@ func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
 					After:    "block:" + blockIDOfText(t, tree, "Which transport?"),
 				}
 			},
-			want: "- a\n  - x\n  - y\n- b\n\n" + askFixture + "\nPlain.\n",
+			want: "- a\n  - x\n  - y\n- b\n\n:::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n\nPlain.\n:::\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
