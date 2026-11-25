@@ -1420,7 +1420,7 @@ WORKDIR /home/legion
 #    @oh-my-pi/pi-natives native/natives-dir.js names .omp/natives, since the build sets none of
 #    PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, XDG_CACHE_HOME and OMP_CONFIG_ROOT) — the build's success is
 #    the check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
-#    (ubuntu-24.04, AVX2), 123 MiB; this layer ships it, so a pod whose node selects the same
+#    (ubuntu-24.04, AVX2), 124 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
 #    six copies in an issue pod. The probes in the final step never wait on it.

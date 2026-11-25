@@ -20,7 +20,7 @@ import (
 )
 
 // OMPHome puts in home, a fresh HOME a test runs omp under, the native module omp would otherwise
-// write there on its first run: one .node file of about 123 MiB at the pin, the variant the CPU
+// write there on its first run: one .node file of about 124 MiB at the pin, the variant the CPU
 // runs, which omp extracts from its own binary into .omp/natives/<version>-<digest prefix> (the
 // version and the first 12 hexadecimal digits of the embedded addons' digest) under any HOME that
 // lacks it. Oh My Pi reads that directory from elsewhere only under a variable a test would have to
