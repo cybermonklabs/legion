@@ -601,7 +601,7 @@ func recoveryDoors() []recoveryDoor {
 		doors = append(doors, recoveryDoor{door.name, ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
 	}
 	for _, door := range compactDoors() {
-		doors = append(doors, recoveryDoor{door.name, door.ask, "a compaction would abort that turn", wantCompactionReaches})
+		doors = append(doors, recoveryDoor{door.name, door.ask, "Oh My Pi refuses a compaction's handoff in that turn", wantCompactionReaches})
 	}
 	return doors
 }

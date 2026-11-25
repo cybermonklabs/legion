@@ -814,9 +814,11 @@ of its own, and a root whose tree lingers or stands at `phase: done` is re-admit
 generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
-provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
-sends the claim whatever task it owed again, so the session, its workspace and everything the
-worker knows of its issue stay, and only the transcript the provider is asked to read gets shorter.
+provider keeps refusing: the daemon has Oh My Pi write a handoff document of that session, with
+Oh My Pi's `handoff` request and never its `compact` request, whose summary request Anthropic
+refuses for a long Claude session, and then sends the claim whatever task it owed again, so the
+session, its workspace and everything the worker knows of its issue stay, and only the
+transcript the provider is asked to read gets shorter.
 It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
 suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
 role, and the daemon's controller keeper for the project's own controller claim, which only
@@ -832,17 +834,19 @@ forgets, and that read records what it finds as the sweep's report of the proces
 it finds the process running and clears a death charge, it writes the claim as the daemon holds
 it, as that report's write does, and it stops, suspends, forgets, takes back and starts nothing.
 A process that read finds running is refused
-`CLAIM_IN_A_TURN`, because a compaction would abort the turn that may be the one ending the run
-of refusals. A claim whose session is being compacted takes that code too. A claim whose process
-the runtime would not answer for, and a claim that records no process to read, are refused
-`CLAIM_UNSETTLED` instead, each left exactly as the request found it, since nobody read whether
-a turn of it runs. A claim stored working that no process stands behind is refused
+`CLAIM_IN_A_TURN`, because Oh My Pi refuses a handoff in a turn, and that turn may be the one
+ending the run of refusals. A claim whose session is being compacted takes that code too. A
+claim whose process the runtime would not answer for, and a claim that records no process to
+read, are refused `CLAIM_UNSETTLED` instead, each left exactly as the request found it, since
+nobody read whether a turn of it runs. A claim stored working that no process stands behind is
+refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
 whose keeper does nothing while it is stored working, it names
 `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
-A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
-printed with its reason, and whatever task the claim owed has gone again all the same.
+A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
+answered with no document is printed with its reason, and whatever task the claim owed has gone
+again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
 left refused, and for a claim stored working that no process stands behind, which the compaction

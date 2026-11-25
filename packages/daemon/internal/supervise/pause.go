@@ -306,9 +306,18 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		return m.persist(ctx)
 	}
 	// Published before the write, so View shows the stopped claim while the stop's transaction
-	// runs.
+	// runs. A change of the pending delivery the store has not taken goes on the claim the stop
+	// writes, in the one transaction, as persist carries it (letGo's take-back of a confirmation).
 	m.publish()
-	err := m.owes("PauseStopped", m.putStop(ctx, m.stored(), stop))
+	c := m.stored()
+	if m.carryPending && m.claim.Pending != nil {
+		pending := *m.claim.Pending
+		c.Pending = &pending
+	}
+	err := m.owes("PauseStopped", m.putStop(ctx, c, stop))
+	if err == nil && c.Pending != nil {
+		m.unsaved, m.carryPending = false, false
+	}
 	if m.owedWrite != nil {
 		m.owedWrite.stops = []PauseStop{stop}
 	}

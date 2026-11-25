@@ -36,6 +36,11 @@ import (
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
 func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, admitted func()) error {
+	// The admission writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return err
+	}
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err

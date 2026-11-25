@@ -1761,6 +1761,16 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
+// Nor is a confirmed delivery retired while a send of it is still in flight (Machine.send): a turn
+// taken for the task's while its send was adopting the working copy or minting its identity may
+// be another input's (turnAnswers), and only the send's own outcome says whether the prompt went
+// out at all. A refused or lost send takes that confirmation back and the task goes again
+// (refused); retired at the foreign turn's end, the task would be gone before that outcome came,
+// and the refusal would find nothing to take back. The outcome is a decision of its own, and the
+// settle that follows it retires the task where its turn is over (acked, ackedInTurn). A
+// successful result of any prompt of the task ends the doubt sooner (Machine.ranTask): it says a
+// turn ran the task, so the send's acknowledgement, still on its way, has nothing left to decide.
+//
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
 // suspension is different: the operator resumes this same claim, so its pending phase task waits
@@ -1778,7 +1788,8 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending()
+	inFlight := m.send != nil && m.send.id == p.ID && m.ranTask != p.ID
+	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending() && !inFlight
 	suspended := m.claim.State == StateSuspended && p.Phase != "" && m.claim.SuspendedBy.RetiresPhaseTask()
 	if !turnOver && !suspended {
 		return nil
@@ -2074,8 +2085,8 @@ func (m *Machine) awaitResult(id string, news []byte) {
 
 // forgetOutstanding ends the wait for every prompt of the pending task at once
 // (Machine.outstanding): a turn's result, the sweep's answer that the agent is in no prompt, a
-// compaction, a let-go, a take-back of a task whose turn its process can no longer finish, and a
-// retirement each end the wait for all of them.
+// let-go, a take-back of a task whose turn its process can no longer finish, and a retirement
+// each end the wait for all of them.
 func (m *Machine) forgetOutstanding() {
 	m.outstanding = nil
 }
@@ -2130,17 +2141,16 @@ func (m *Machine) turnNews() []byte {
 // and a task taken back unread loses the mark, so nothing the worker reports from whatever turn
 // follows belongs to it. A caller whose prompt's turn is over or aborted therefore leaves nothing
 // of the task outstanding before it calls, since the set is what this reads to tell the two
-// apart: a provider error's result has ended the wait already (promptResulted), and a compaction
-// ends it itself (compactStart).
+// apart: a provider error's result has ended the wait already (promptResulted).
 //
 // A confirmation it clears was taken by a turn that was not the task's — another input's, or one
 // the prompt's own answer says came to nothing — so what it told goes back to untold with it, and
-// the next prompt carries that sentence again (moveTelling). Two callers clear a confirmation a
-// turn of the task itself may have taken, and the untelling is right for both: a provider error
+// the next prompt carries that sentence again (moveTelling). One caller clears a confirmation a
+// turn of the task itself may have taken, and the untelling is right for it: a provider error
 // (providerErrored) is a model call that failed, often the turn's first, so the agent never read
 // the prompt, and where an earlier call of the turn did, the sentence is told twice rather than
-// lost; a compaction (compactStart) aborts the turn, and the sentence repeated in the next prompt
-// is the safe way round. A confirmation kept for an outstanding prompt keeps its telling too,
+// lost. A compaction takes nothing back: it is Oh My Pi's handoff, which aborts no turn
+// (compactStart). A confirmation kept for an outstanding prompt keeps its telling too,
 // moved with it to the new id, so that a later take-back of the same confirmation under that id
 // still finds it.
 //
@@ -2240,10 +2250,10 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 //   - takeBackPending, a prompt that came to nothing: a late busy answer, refusal or result that
 //     ran no turn (lateRefused, refusedElsewhere, refusedUnprompted, waitedOutAnswer,
 //     promptResulted), a wait for a turn that ran out (noTurn; it and the answers that charge the
-//     prompt go through promptFailed), a provider error (providerErrored) and a compaction
-//     (compactStart). With no prompt of the task left outstanding it takes the telling back; with
-//     one outstanding it keeps the confirmation and moves the telling to the new id. Either way it
-//     writes the claim with the delivery (putClaimAndDelivery) when this reports true.
+//     prompt go through promptFailed) and a provider error (providerErrored). With no prompt of
+//     the task left outstanding it takes the telling back; with one outstanding it keeps the
+//     confirmation and moves the telling to the new id. Either way it writes the claim with the
+//     delivery (putClaimAndDelivery) when this reports true.
 //   - takeBackPending again, where that write failed in the kept case: it moves the telling back
 //     to the id the store still holds the confirmation under, and writes nothing, since the store
 //     never took the move.

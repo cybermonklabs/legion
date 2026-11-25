@@ -464,10 +464,13 @@ func TestAReplayedRefusalLeavesATaskThisConnectionReSent(t *testing.T) {
 	}
 }
 
-// A send's outcome can arrive after settle retired its task: the turn end's retire failed and
-// left the task held, and the next event's settle retires it. The acknowledgement then has no
-// task to mark, and it must record nothing rather than end the daemon.
-func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
+// A send's acknowledgement can arrive after the turn it started has already ended: the turn's
+// start confirmed the task while the send was in flight. That end retires nothing, since only the
+// send's outcome says whether the prompt went out (settle). The late acknowledgement records the
+// prompt, which waits on its result, and the result retires the task and serves its run. Before
+// the send counted, the turn's end retired the task, and a refusal of the send arriving after it
+// found nothing to take back.
+func TestALateAcknowledgementOfATaskWhoseTurnRanWaitsForItsResult(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	gated := newGatedConn()
@@ -476,33 +479,41 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := waitFor(t, "the send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
-		t.Fatal(err)
+	for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
 	}
-	h.store.fail("RetireDelivery", errBoom)
-	if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: testToken}); err == nil {
-		t.Fatal("the turn end's retire succeeded, want it to fail and leave the task held")
-	}
-	h.store.fail("RetireDelivery", nil)
-	if h.claim().Pending == nil {
-		t.Fatal("the task was retired, want it held after the failed retire")
+	if p := h.claim().Pending; p == nil || p.ID != id || p.ConfirmedAt.IsZero() {
+		t.Fatalf("after the turn's end the claim holds %+v, want %s confirmed and held while its send is in flight", p, id)
 	}
 
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("the late acknowledgement panicked: %v", r)
-			}
-		}()
-		if err := h.m.Handle(h.ctx, PromptAcked{Claim: testToken, Generation: h.generation(), DeliveryID: id}); err != nil {
-			t.Fatalf("the late acknowledgement: %v", err)
-		}
-	}()
-	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
-		t.Fatalf("after the late acknowledgement: pending %+v serving %d, want run 7 served", c.Pending, c.ServingGeneration)
-	}
 	gated.release <- struct{}{}
 	h.m.Wait()
+	if p := h.claim().Pending; p == nil || p.ID != id {
+		t.Fatalf("after the late acknowledgement the claim holds %+v, want %s held for its prompt's result", p, id)
+	}
+	charged := h.claim().Budgets
+	h.advance(2 * testRPC) // no wait for a turn is armed for the turn that has already run
+	if got := h.claim().Budgets; got != charged {
+		t.Fatalf("the claim's budgets are %+v after the wait, want %+v: the prompt's turn ran", got, charged)
+	}
+
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true})
+
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the prompt's result: pending %+v serving %d, want run 7 served", c.Pending, c.ServingGeneration)
+	}
+	// Nothing of the finished task's prompt is left to hold the next one.
+	go func() {
+		for range gated.entered {
+			gated.release <- struct{}{}
+		}
+	}()
+	h.must(RequestDeliver{Claim: testToken, Task: "the next task", Generation: 8})
+	if prompts := gated.Prompts(); len(prompts) != 2 || prompts[1].Message != "the next task" {
+		t.Fatalf("the prompts are %+v, want the task once and then the next task", prompts)
+	}
 }
 
 // A replayed refusal of a prompt no turn confirmed takes nothing back, even from a connection that

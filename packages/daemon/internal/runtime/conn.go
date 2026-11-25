@@ -74,13 +74,13 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // inside that bound rather than by the caller's deadline.
 const WorkspaceWorkTimeout = 30 * time.Second
 
-// CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
-// not worker_rpc_timeout_seconds, because a compaction is a model call over the whole transcript
-// where every other request on this interface is a frame the far side answers at once. It is a
-// constant rather than a setting for the reason WorkspaceWorkTimeout is one: a compaction that
-// cannot finish in this long is one the caller is told about rather than one the daemon waits
-// longer for. Ten minutes is the ladder's own widest step (supervise's promptRetryMax), so a
-// compaction never outlasts the wait the stuck claim is already in.
+// CompactTimeout is how long Oh My Pi is given to shorten a session: the operation's own bound,
+// not worker_rpc_timeout_seconds, because the handoff that shortens it is a model call over the
+// whole transcript where every other request on this interface is a frame the far side answers
+// at once. It is a constant rather than a setting for the reason WorkspaceWorkTimeout is one: a
+// compaction that cannot finish in this long is one the caller is told about rather than one the
+// daemon waits longer for. Ten minutes is the ladder's own widest step (supervise's
+// promptRetryMax), so a compaction never outlasts the wait the stuck claim is already in.
 const CompactTimeout = 10 * time.Minute
 
 // Conn is one agent's live connection, as everything above the transport sees it: a way to ask
@@ -107,11 +107,13 @@ type Conn interface {
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
 	// workspace the daemon cannot reach itself.
 	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
-	// Compact asks Oh My Pi to compact its session's context, writing the summary to
-	// customInstructions, and returns when it answers or bound runs out. Nil is a session
-	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already
-	// compacted, a summarizer that failed — is a refusal carrying its words (RefusalReason);
-	// every other error is transport.
+	// Compact asks Oh My Pi to shorten its session's context with a handoff, the document
+	// written to customInstructions, and returns when it answers or bound runs out. It never
+	// asks for Oh My Pi's `compact`, whose summary request Anthropic refuses for a long Claude
+	// session (dispatch://INFRA-5798). Nil is a session shortened. A handoff Oh My Pi refused —
+	// one asked for in a turn, a session with nothing to hand off, a model call that failed — or
+	// answered with no document is a refusal carrying the reason (RefusalReason); every other
+	// error is transport.
 	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
 	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares
 	// holds work that no branch or tag on origin holds, within timeout. The read snapshots the

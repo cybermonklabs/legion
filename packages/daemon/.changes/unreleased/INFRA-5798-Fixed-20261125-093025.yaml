@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  `legion claims compact` and the controller's `compact` now shorten a claim's Oh My Pi session
+  with Oh My Pi's `handoff` request, not its `compact` request. Anthropic refused the summary
+  request that `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`, 6 of 6
+  times in dispatch://INFRA-1484's replay), and accepted the `handoff` request for the same
+  session (0 of 3 refused). The handoff writes its document as the session's compaction entry,
+  method `handoff`, on the same session, and the daemon never falls back to `compact`. The answer
+  is the same `{compacted, reason}`: Oh My Pi's own words for a handoff it refused (`Cannot hand
+  off while a response is in progress`, `Nothing to hand off (already compacted)`), and `Oh My Pi
+  made no handoff document. The session did not change.` for a success that carries no handoff.
+  A task whose prompt Oh My Pi has accepted when the compaction is asked for is now sent once: the
+  handoff aborts no turn, so the daemon no longer takes the task back and sends it again after
+  the compaction. A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that
+  Oh My Pi refuses a compaction's handoff in that turn. A pod of an older release needs nothing
+  new: its shim forwards the `handoff` line to Oh My Pi as it forwarded `compact`.
+time: 2026-11-25T09:30:25Z
+custom:
+  Issue: INFRA-5798
