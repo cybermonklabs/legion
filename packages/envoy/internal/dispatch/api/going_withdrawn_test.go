@@ -467,3 +467,61 @@ func TestTheGraphReadOfARunWithdrawnBeforeItsEndingAnswersWhatItsStreamWillAnswe
 		t.Fatalf("the stream of run %s, withdrawn with no ending stored, and its graph read after it answer %+v, want the withdrawal alone, %+v", run.ID, streamed, want)
 	}
 }
+
+// Row 8: a withdrawn run whose rows a process of the release before deleted. During a roll and
+// after a rollback such a process deletes the going_requests row of every run an hour old, which
+// takes its going_request_posts and going_events rows with it, and marks no node gone (R4 and R11
+// of the spec of dispatch://INFRA-1950, dispatch://INFRA-1950/spec#b-r-interaction and
+// dispatch://INFRA-1950/spec#b-r-one-truth). The run's node stays live until this
+// build's sweep reads it as rowless (goingRowlessRuns), at most one maintenance pass later. In that
+// time the stream answers 404, and the read of the run's own address must still give no part of a
+// deleted post's body, which R3 of dispatch://INFRA-1523 holds for every read that quotes the post:
+// with the posts rows gone, the withdrawal test (graphstore.RunWithdrawnSQL) no longer finds the
+// deleted post, so a read that trusts it answers the frames the run stored, which quote it.
+func TestTheGraphReadOfAWithdrawnRunWhoseRowsAnOlderBuildDeletedQuotesNoDeletedPost(t *testing.T) {
+	t.Parallel()
+	answerer := &fakeAnswerer{}
+	rig := newGoingRoutesRig(t, answerer)
+	issue := createInteractionIssue(t, rig.handler, "GWO", "Where the answer reads", "The issue the comment is on.")
+	const phrase = "zarquonolderbuilddeletedrows"
+	comment := createThreadComment(t, rig.handler, issue.Key, map[string]any{"body": "The " + phrase + " drifted."}, "alice")
+	run := askQuotingPost(t, rig, answerer, "GWO", "comment", comment.ID, phrase)
+	deleteThreadComment(t, rig.handler, comment.ID, "alice")
+	want := streamedFrames(t, withdrawnGoingStream(3))
+	if after := rig.requireTheGraphReadAnswersTheStream(t, run.ID, "after the delete"); !reflect.DeepEqual(after, want) {
+		t.Fatalf("after the delete the stream and the graph read answer %+v, want the withdrawal alone, %+v", after, want)
+	}
+
+	ctx := context.Background()
+	if _, err := rig.database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, run.ID); err != nil {
+		t.Fatalf("delete the going_requests row of run %s as a process of the release before does: %v", run.ID, err)
+	}
+	var posts int
+	var state string
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select (select count(*) from going_request_posts where request_id = $1::uuid),
+		       (select state from graph_nodes where kind = $2 and id = $3)`,
+		run.ID, graphstore.KindInteraction, run.ID).Scan(&posts, &state); err != nil {
+		t.Fatalf("read the rows of run %s after the delete of its row: %v", run.ID, err)
+	}
+	if posts != 0 || state == graphstore.StateGone {
+		t.Fatalf("after the delete of its row run %s holds %d going_request_posts rows and its node is %s, want none and a node not yet gone, as the release before leaves it", run.ID, posts, state)
+	}
+	if stream := rig.stream(t, run.ID, "alice", ""); stream.Code != http.StatusNotFound {
+		t.Fatalf("after the delete of its row the stream of run %s answers %d %s, want 404", run.ID, stream.Code, stream.Body.String())
+	}
+
+	address := "dispatch://" + graphstore.KindInteraction + "/" + run.ID
+	response := graphRequest(t, rig.handler, url.Values{"from": {address}})
+	if response.Code == http.StatusNotFound {
+		return
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("after the delete of its row alice's ?from=%s answers %d %s, want 404 or the run with no part of the deleted post", address, response.Code, response.Body.String())
+	}
+	for _, frame := range decodeBody[model.GraphReferences](t, response).Node.Frames {
+		if data, _ := json.Marshal(frame.Data); strings.Contains(string(data), phrase) {
+			t.Fatalf("the comment %s is deleted and run %s withdrawn, and once a process of the release before deleted the run's rows, before this build's sweep took its node gone, the run's own address answers its author frame %d %s %s, which quotes the deleted comment: want no part of its body", comment.ID, run.ID, frame.Sequence, frame.Name, data)
+		}
+	}
+}
