@@ -915,14 +915,14 @@ async function completeHandoff(
   }
   if (args.verdict === "pending") {
     throw new Error(
-      "handoff_complete's pending verdict reports a production check: send check_opened_at from the look task, or pass or fail to complete a step"
+      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
   // so without the round trip.
   if (args.wake_at !== undefined) {
     throw new Error(
-      "handoff_complete's wake_at reports a production check: send check_opened_at from the look task; a step's completion carries no wake"
+      "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
