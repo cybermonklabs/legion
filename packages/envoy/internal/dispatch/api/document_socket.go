@@ -8,7 +8,9 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -38,15 +40,19 @@ const docSocketCredentialRefusal = "the document socket takes a sign-in, or an a
 //   - the access-log line, which names the caller the layers inside it decided;
 //   - the process name (nameDocumentSocketProcess), set before any layer inside it answers, so
 //     every answer the api package writes for the socket names the process that wrote it;
-//   - the heartbeat (whileCallerResolves), which asks on each StreamHeartbeat whether the sign-in
-//     still resolves (signInStillResolves);
+//   - the socket's write holder (holdDocumentSocketWrite), outside the heartbeat so the
+//     heartbeat's copy of the request shares it;
+//   - the heartbeat (whileCallerResolves), which asks on each StreamHeartbeat whether the
+//     credential that admitted the socket still resolves, and judges the spec-writer rule again
+//     for a socket armed to write a document the rule holds (documentSocketStillResolves);
 //   - the broker token's decision (decideBrokerToken), made once for the request, since its
 //     proof is single use;
 //   - the store's transaction tracking (trackTransactions);
 //   - the credential rule (refuseDocumentSocketCredential), which reads no room;
 //   - the parameter check (refuseUnstorableParameters), so no room Postgres refuses as text
 //     reaches a read;
-//   - the write decision (decideDocumentSocketWrite), which reads the room's artifact.
+//   - the write decision (decideDocumentSocketWrite), which reads the room's artifact and fills
+//     the write holder.
 //
 // The process name is the document service's own (docs.Service.ProcessName), found by an
 // interface of its own, so a document service that names no process mounts the same chain
@@ -56,10 +62,88 @@ func (s *server) documentSocketHandler(serve http.HandlerFunc) http.Handler {
 	if named, ok := s.deps.Docs.(interface{ ProcessName() string }); ok {
 		process = named.ProcessName()
 	}
-	return accesslog.HandlerOn(documentSocketPattern, nameDocumentSocketProcess(process,
-		s.whileCallerResolves(s.signInStillResolves, s.decideBrokerToken(trackTransactions(
+	return accesslog.HandlerOn(documentSocketPattern, nameDocumentSocketProcess(process, holdDocumentSocketWrite(
+		s.whileCallerResolves(s.documentSocketStillResolves, s.decideBrokerToken(trackTransactions(
 			s.refuseDocumentSocketCredential(s.refuseUnstorableParameters(documentSocketPattern,
-				s.decideDocumentSocketWrite(serve))))))), s.clock())
+				s.decideDocumentSocketWrite(serve)))))))), s.clock())
+}
+
+// documentSocketWrite is a document socket's write as its heartbeat judges it again: the
+// spec-writer rule's writer and the document the rule holds, armed once the document service has
+// admitted the socket writable (decideDocumentSocketWrite, docs.SocketCaller.Admitted). It is
+// armed on the goroutine that serves the socket and read on the heartbeat's, so it is an atomic
+// pointer. It stays empty for every socket the rule cannot refuse later - a sign-in's, a
+// read-only one, one whose credential holds the person scope, one to a document the rule does not
+// hold - and for one the document service admitted read-only (a closed issue, a page the fleet
+// does not admit), and its heartbeat then reads nothing of the rule.
+type documentSocketWrite struct {
+	armed atomic.Pointer[documentSpecWrite]
+}
+
+// documentSpecWrite is a document socket's write that the spec-writer rule holds: who writes, as
+// the rule judges the token's write (specWriter), and the document.
+type documentSpecWrite struct {
+	writer   specWriter
+	artifact model.Artifact
+}
+
+// documentSocketWriteKey carries a document socket's documentSocketWrite on its request's context.
+type documentSocketWriteKey struct{}
+
+// holdDocumentSocketWrite puts one empty documentSocketWrite on the request's context for next:
+// the holder decideDocumentSocketWrite fills and documentSocketStillResolves reads, which share it
+// because the heartbeat's copy of the request is made inside this.
+func holdDocumentSocketWrite(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(context.WithValue(r.Context(), documentSocketWriteKey{}, &documentSocketWrite{})))
+	}
+}
+
+// documentSocketStillResolves is the document socket's heartbeat (whileCallerResolves). It asks
+// again of the credential that admitted the socket, and of nothing the request carries beside it:
+//
+//   - A broker-issued token (ciphertoken.Presented) is asked what the live socket's heartbeat asks
+//     of one (brokerTokenHeartbeat), the one check both sockets call, so a check added to it holds
+//     here too. Then, for a socket armed to write a document the spec-writer rule holds
+//     (documentSocketWrite), the rule is judged again (specWriterRefusesDocument), since its
+//     answer can change while the socket is open: the architect role moves, the label legion is
+//     added, the project is marked. A refusal, or a read of the rule that fails, logs one line and
+//     answers errDocumentWriteRevoked, which closes the socket with 4412; the provider
+//     reconnects, and the new upgrade decides the write afresh. A socket the holder leaves
+//     unarmed costs no read.
+//   - Any other request was admitted by its sign-in (refuseDocumentSocketCredential), which is
+//     asked again (signInStillResolves). A bearer sent beside the cookie is never read, so it
+//     never keeps the socket open once the sign-in has ended.
+func (s *server) documentSocketStillResolves(r *http.Request) error {
+	if _, presented := ciphertoken.Presented(r); !presented {
+		return s.signInStillResolves(r)
+	}
+	if err := s.brokerTokenHeartbeat(r); err != nil {
+		return err
+	}
+	held, _ := r.Context().Value(documentSocketWriteKey{}).(*documentSocketWrite)
+	if held == nil {
+		return nil
+	}
+	write := held.armed.Load()
+	if write == nil {
+		return nil
+	}
+	refuses, err := specWriterRefusesDocument(r.Context(), s.deps.Store.Pool, write.writer, write.artifact)
+	switch {
+	case err != nil && r.Context().Err() != nil:
+		// The socket's own end cut the read short: it is closing already, and closes nothing more.
+		return err
+	case err != nil:
+		slog.Warn("dispatch: closed a writable document socket: the read of the spec-writer rule failed; the provider reconnects",
+			"artifact", write.artifact.ID, "issue", *write.artifact.IssueKey, "session", write.writer.actor.ID, "error", err)
+		return errDocumentWriteRevoked
+	case refuses:
+		slog.Info("dispatch: closed a writable document socket whose token the spec-writer rule no longer lets write; the provider reconnects read-only",
+			"artifact", write.artifact.ID, "issue", *write.artifact.IssueKey, "session", write.writer.actor.ID)
+		return errDocumentWriteRevoked
+	}
+	return nil
 }
 
 // nameDocumentSocketProcess sets docs.ProcessHeader to process on the answer's header before next
@@ -157,6 +241,14 @@ func (s *server) refuseDocumentSocketCredential(next http.HandlerFunc) http.Hand
 // that fails refuses the upgrade (writeHandlerError), so no connection is admitted writable on a
 // read that did not answer. The document service's own conditions, an open issue and a live fleet
 // that admits the page, still decide beside this one (docs.SocketCaller.MayWrite).
+//
+// A writable connection to a document the spec-writer rule holds is judged by the rule again at
+// each heartbeat, since the rule's answer can change while the connection is open
+// (documentSocketStillResolves). So the writer and the document go into the socket's write
+// holder (documentSocketWrite), armed only once the document service reports that it admitted the
+// socket writable (docs.SocketCaller.Admitted); a socket it opens read-only costs its heartbeat no
+// read. The heartbeat reaches the rule only through the holder documentSocketHandler puts on the
+// request, so a request that carries none may not write such a document at all.
 func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -179,19 +271,33 @@ func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFu
 			return
 		}
 		mayWrite := false
+		var recheck *documentSpecWrite
 		if person {
-			if mayWrite, err = s.documentWritable(r.Context(), r.PathValue("room"), caller, recorded); err != nil {
+			if mayWrite, recheck, err = s.documentWritable(r.Context(), r.PathValue("room"), caller, recorded); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
 		}
-		next(w, r.WithContext(docs.WithSocketCaller(r.Context(), docs.SocketCaller{Actor: recorded, MayWrite: mayWrite})))
+		handed := docs.SocketCaller{Actor: recorded, MayWrite: mayWrite}
+		if recheck != nil {
+			held, ok := r.Context().Value(documentSocketWriteKey{}).(*documentSocketWrite)
+			handed.MayWrite = ok
+			if ok {
+				handed.Admitted = func(writable bool) {
+					if writable {
+						held.armed.Store(recheck)
+					}
+				}
+			}
+		}
+		next(w, r.WithContext(docs.WithSocketCaller(r.Context(), handed)))
 	}
 }
 
 // documentWritable is whether caller, a broker-issued token's caller that names a person and is
 // recorded as recorded, may write room's document, as the edits route decides the same token's
-// write:
+// write, and, for a write the spec-writer rule holds and passes, that write, which the socket's
+// heartbeat judges again (documentSpecWrite; nil for every other answer):
 //
 //   - A token that names one project writes only a document of that project, read as the
 //     project check reads it (artifactProject). A document of no project, a room that is no
@@ -200,33 +306,40 @@ func (s *server) decideDocumentSocketWrite(next http.HandlerFunc) http.HandlerFu
 //   - The spec-writer rule passes (specWriterRefusesDocument): on an issue Legion runs, the
 //     issue's spec or Verification document is written only by a person's credential or by an
 //     architect session of the issue's chain. Its refusal is a no and writes no answer. A
-//     credential that holds the person scope passes it at once, so its document is not read.
+//     credential that holds the person scope passes it at once, so its document is not read, and
+//     no later answer of the rule can refuse it.
 //
 // A room that is no artifact (ARTIFACT_NOT_FOUND, isArtifactNotFound) is a no as well, and the
 // api package writes no 404 for it: the document service answers that room 404 itself. The reads
 // go to the pool and hold no transaction (store.ErrNestedAcquire). Any other error is a read that
 // failed, which the caller answers.
-func (s *server) documentWritable(ctx context.Context, room string, caller, recorded model.Actor) (bool, error) {
+func (s *server) documentWritable(ctx context.Context, room string, caller, recorded model.Actor) (bool, *documentSpecWrite, error) {
 	pool := s.deps.Store.Pool
 	if caller.Project != nil && *caller.Project != "" {
 		project, err := artifactProject(ctx, pool, room)
 		if err != nil || project != *caller.Project {
-			return false, err
+			return false, nil, err
 		}
 	}
 	writer := specWriter{actor: recorded, person: caller.Credential.Holds(model.ScopePerson)}
 	if writer.person {
-		return true, nil
+		return true, nil, nil
 	}
 	artifact, err := loadArtifactRowByID(ctx, pool, room)
 	if isArtifactNotFound(err) {
-		return false, nil
+		return false, nil, nil
 	}
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	refuses, err := specWriterRefusesDocument(ctx, pool, writer, artifact)
-	return err == nil && !refuses, err
+	if err != nil || refuses {
+		return false, nil, err
+	}
+	if _, held := specWriterDocumentName(artifact); !held {
+		return true, nil, nil
+	}
+	return true, &documentSpecWrite{writer: writer, artifact: artifact}, nil
 }
 
 // specWriterRefusesDocument is whether the spec-writer rule refuses writer a write of artifact, as
