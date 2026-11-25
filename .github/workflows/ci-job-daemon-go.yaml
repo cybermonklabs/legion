@@ -117,9 +117,10 @@ jobs:
     # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
     # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
     # forced-order.sh's 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg
-    # needs more. The step that finds the commit the run's tree lands onto adds a fetch two commits
-    # deep, bounded by its own 3 minutes. It fits because the 15.0 above is the whole plain step's,
-    # and a leg's share is less (.github/go-legs.yaml: leg 1's longest package takes 501 s).
+    # needs more. The step that finds the commit the run's tree lands onto adds a fetch, two commits
+    # deep on a pull request or a merge group, bounded by its own 3 minutes. It fits because the
+    # 15.0 above is the whole plain step's, and a leg's share is less (.github/go-legs.yaml: leg
+    # 1's longest package takes 501 s).
     timeout-minutes: 60
     services:
       postgres:
@@ -221,7 +222,7 @@ jobs:
         run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # The commit this run's tree lands onto, for internal/store's deployed-order upgrade test
-      # (packages/daemon/internal/store/migration_upgrade_from_main_test.go#migrationBaseEnv): the
+      # (`packages/daemon/internal/store/migration_upgrade_from_main_test.go#migrationBaseEnv`): the
       # test migrates a database with that commit's own migration files, then upgrades it to this
       # tree. .github/scripts/edited-migrations-base.sh picks the commit as it does for
       # envoy-go-build's edited-migrations check, fetches it into this checkout, which is one commit
@@ -268,9 +269,13 @@ jobs:
       # pull request the stamp is main's order with the branch's entries after it, the order main
       # takes if the branch merges next; in a merge group it is the order main takes. So the
       # order a production build numbers its entries in is tested before it reaches main. The
-      # checkout is one commit deep, and the order needs HEAD's history back to main's
-      # first-parent line and main's own, so the first step fetches both, with no blob (the script
-      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # checkout is shallow, and the order needs HEAD's history back to main's first-parent line
+      # and main's own, so the first step fetches both, with no blob (the script reads commits and
+      # trees alone), and hands the stamp to the second as its output. The step "Find the commit
+      # this run's tree lands onto" has fetched before it: two commits deep on a pull request or a
+      # merge group, and on a dispatch of a branch as deep as the merge base needs, which can be
+      # the whole history. git refuses --unshallow on a whole repository, so it is passed only
+      # while the checkout is shallow. The second
       # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
       # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
       # merge queue's test job runs, reads every go test step. The plain step compiled this test
@@ -282,7 +287,9 @@ jobs:
         id: contract-order
         run: |
           head=$(git rev-parse HEAD)
-          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          unshallow=()
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
+          git fetch --filter=blob:none "${unshallow[@]}" origin "$head" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
           echo "$stamp"
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
