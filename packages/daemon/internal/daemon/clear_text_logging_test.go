@@ -547,7 +547,10 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 		{
 			// reconcileListing's error for a recovery's listing: the todo issue's preparation, whose
 			// read of its repository's default branch GitHub's rate limit refused (prepareRead's
-			// intake.RetryLater).
+			// intake.RetryLater). The repository is one to recover, which GitHub answered once
+			// since (readAnswered), not one still unread: the recovery defers an unrecorded issue
+			// on an unread repository to a read of its own (deferUnreadIssues) and prepares it in
+			// no listing.
 			name: "repositories.go:recoverRepositories workflow: the issues of the repositories to recover were not recovered", capture: "sink/daemon/repositories.go/recoverRepositories",
 			message: "workflow: the issues of the repositories to recover were not recovered from Dispatch's listing; recovering them again",
 			level:   "WARN", keys: []string{"error"},
@@ -560,6 +563,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 					dispatch: dispatch.New(listing.URL, dispatch.BearerTransport(oauth2calltest.Token, nil)), installs: &installations{}, repositories: repos, log: log.logger(),
 					defaultBranches: newDefaultBranches(sinkTokens{}, repos, github.URL, defaultBranchTTL, time.Now)}
 				w.leaveForRecovery(ghrepo.MustParse("acme/widgets"))
+				w.readAnswered(ghrepo.MustParse("acme/widgets"))
 				w.recoverRepositories(context.Background())
 				return oauth2calltest.Token, github
 			},
