@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -33,7 +34,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // ---- the model stand-in of one driven pane, and the responses it served --------------------------
@@ -518,4 +522,88 @@ func (r *stepModelsLive) writeEvidenceJSON(name string, value any) {
 		r.t.Fatalf("encode the evidence file %s: %v", name, err)
 	}
 	r.writeEvidence(name, append(encoded, '\n'))
+}
+
+// newStepModelsLive readies everything the panes need before the daemon boots: the real Dispatch
+// with the project and the two issues; the `legion` binary and the two Oh My Pi plugins built from
+// this checkout; the claude-envoy plugin built from it too; an Oh My Pi profile routed to the
+// stand-ins; each issue's jj workspace at its implementer's pushed head; GitHub's stand-in at that
+// head; the store seeded; and the daemon booted over the local runtime with both harnesses
+// resolved.
+//
+// It sets no environment variable of its own process and no working directory, and it calls no
+// fixtureenv.Live: it reaches no cluster and no GitHub, and the daemon's boot gets the Claude Code
+// paths through overrides.environ, which is the daemon's environment alone.
+func newStepModelsLive(t *testing.T) *stepModelsLive {
+	t.Helper()
+	omp, claudeCode := testbin.OMP(t), testbin.Claude(t)
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatalf("bun is not on PATH, and the chain builds the claude-envoy plugin and reads each record with it: %v", err)
+	}
+	for _, tool := range []string{"jj", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is not on PATH: %v", tool, err)
+		}
+	}
+	proof := newLiveProofOn(t, workflowNATS(t))
+	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
+	// daemon's project is its Dispatch project, so the run takes a short one of its own.
+	proof.cfg.Project = "SM" + randomSuffix(t)[:6]
+	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
+	// The testers run on Claude Code and the implementers and architects on Oh My Pi, so one run
+	// drives both real harnesses behind the real shim.
+	proof.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleTester: runtime.BackendClaude}
+	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &stepModelsLive{
+		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
+		tokens:         &workflowTokenRecorder{},
+		bun:            bun,
+		claude:         claudeCode,
+		panes:          map[claim.Token]*stepModelsStandin{},
+		overlays:       map[claim.Token][]string{},
+	}
+	r.root = proofCheckoutRoot(t)
+	r.work = t.TempDir()
+	r.evidence = os.Getenv(stepModelsEvidenceEnv)
+	if r.evidence == "" {
+		r.evidence = filepath.Join(r.work, "step-models-evidence")
+	}
+	if err := os.MkdirAll(r.evidence, 0o700); err != nil {
+		t.Fatalf("make the evidence directory %s: %v", r.evidence, err)
+	}
+	r.note("the run writes its evidence to %s", r.evidence)
+
+	r.dispatch = startHandoffDispatch(t, r.root)
+	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Dispatch token file: %v", err)
+	}
+	r.cfg.DispatchURL = r.dispatch.base
+
+	r.legion = buildProofLegion(t, r.root, r.work)
+	r.home = filepath.Join(r.work, "omp-home")
+	r.profile = "legion-step-models-" + strings.ToLower(r.cfg.Project)
+	installProofPlugins(t, r.root, r.work, r.home, r.profile, omp)
+	r.pluginDir = r.buildClaudeEnvoy()
+	return r
+}
+
+// buildClaudeEnvoy builds the claude-envoy plugin this run's Claude panes load, from this
+// checkout, as packages/claude-envoy/tests/legion-phase-hook-claude.test.ts builds it. The daemon
+// resolves it from LEGION_CLAUDE_PLUGIN_DIR in its own environment (resolveClaude), which
+// overrides.environ carries.
+func (r *stepModelsLive) buildClaudeEnvoy() string {
+	t := r.t
+	t.Helper()
+	out := filepath.Join(r.work, "claude-envoy")
+	build := exec.Command(r.bun, filepath.Join(r.root, "packages", "claude-envoy", "scripts", "build.ts"), "--out", out)
+	build.Dir = r.root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the claude-envoy plugin into %s: %v\n%s", out, err, output)
+	}
+	r.note("built the claude-envoy plugin this checkout ships into %s", out)
+	return out
 }
